@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Пёрышко (прямой вывод, тест)
+Comment=Пёрышко напрямую на видеокарте (DRM/KMS), без labwc
+Exec=/home/zumka/Documents/antigravity/silly-tesla/session/start-feather-drm.sh
+Type=Application
+DesktopNames=FeatherDE
+Keywords=wayland;compositor;feather;rust;

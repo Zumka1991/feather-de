@@ -1,0 +1,9 @@
+<!doctype html><html><body style="margin:0;background:#eee;font:20px sans-serif">
+<div id="b" style="position:absolute;width:200px;height:200px;background:linear-gradient(45deg,#f06,#09f);border-radius:30px"></div>
+<div style="height:4000px;padding:300px 40px">Прокрутка<br>текст</div>
+<script>
+let f=0,t0=performance.now(),b=document.getElementById('b');
+function tick(t){f++;b.style.transform=`translate(${300+250*Math.sin(t/400)}px,${250+150*Math.cos(t/300)}px) rotate(${t/10}deg)`;
+if(t-t0>=2000){console.log('FPS='+(f*1000/(t-t0)).toFixed(1));f=0;t0=t;}requestAnimationFrame(tick);}
+requestAnimationFrame(tick);
+</script></body></html>

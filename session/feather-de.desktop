@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Пёрышко DE (Feather Wayland)
+Comment=Сверхбыстрое и легкое окружение рабочего стола в стиле macOS на Rust
+Exec=/home/zumka/Documents/antigravity/silly-tesla/session/start-feather-de.sh
+Type=Application
+DesktopNames=FeatherDE
+Keywords=wayland;compositor;macos;feather;rust;
