@@ -14,6 +14,8 @@ use crate::fsops::{self, Entry, Kind};
 use crate::icons::{draw_glyph, Glyph, Icon, IconCache};
 use crate::text::FontSystem;
 use crate::theme::{self, colors, rgba};
+#[path="picker.rs"] mod picker;
+use picker::PickerState;
 
 pub const SIDEBAR_W: f32 = 220.0;
 pub const TOOLBAR_H: f32 = 52.0;
@@ -49,6 +51,8 @@ pub enum Effect {
     Clipboard(Vec<PathBuf>),
     /// Drag these files out (Wayland DnD: other programs, the desktop, our own folders)
     StartDrag(Vec<PathBuf>),
+    Picked(feather_ui::picker::Selection),
+    CheckSave(PathBuf),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -81,6 +85,7 @@ enum Hit {
     Toolbar,
     Menu(usize),
     Nothing,
+    PickerAccept,PickerCancel,PickerName,PickerFilter,PickerChoice(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -119,6 +124,7 @@ pub struct Mods {
 }
 
 pub struct App {
+    picker:Option<PickerState>,
     pub w: f32,
     pub h: f32,
     pub maximized: bool,
@@ -173,6 +179,7 @@ impl App {
     /// `reveal` selects that item once the folder is read; `rename` then starts renaming it
     pub fn new(fonts: FontSystem, start: PathBuf, reveal: Option<PathBuf>, rename: bool) -> (Self, Vec<Effect>) {
         let mut app = Self {
+            picker:None,
             w: 1000.0,
             h: 640.0,
             maximized: false,
@@ -232,7 +239,7 @@ impl App {
         if path == fsops::home() {
             return std::env::var("USER").unwrap_or_else(|_| "Домой".into());
         }
-        if path == fsops::trash_files_dir() {
+        if self.picker.is_none() && path == fsops::trash_files_dir() {
             return "Корзина".into();
         }
         path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Компьютер".into())
@@ -340,7 +347,7 @@ impl App {
         self.visible = (0..self.entries.len())
             .filter(|&i| {
                 let e = &self.entries[i];
-                (self.show_hidden || !e.hidden) && (query.is_empty() || e.name.to_lowercase().contains(&query))
+                (self.show_hidden || !e.hidden) && (query.is_empty() || e.name.to_lowercase().contains(&query))&&self.picker_matches(e)
             })
             .collect();
         self.cursor = self.cursor.filter(|&c| c < self.visible.len());
@@ -359,6 +366,10 @@ impl App {
         let entry = self.entry(visible).clone();
         if entry.is_dir {
             self.navigate(entry.path, true)
+        } else if self.picker.is_some(){
+            self.select_only(visible);
+            if let Some(picker)=self.picker.as_mut(){if picker.config.mode==feather_ui::picker::Mode::Save{picker.name=entry.name;}}
+            self.picker_accept()
         } else {
             fsops::open_external(&entry.path);
             self.flash(format!("Открывается «{}»", entry.name));
@@ -367,6 +378,11 @@ impl App {
     }
 
     fn open_selection(&mut self) -> Vec<Effect> {
+        if self.picker.is_some(){
+            let chosen=self.selected_paths();
+            if chosen.len()==1&&self.entries.iter().any(|e|e.path==chosen[0]&&e.is_dir){return self.navigate(chosen[0].clone(),true);}
+            return self.picker_accept();
+        }
         let chosen: Vec<usize> = (0..self.visible.len()).filter(|&i| self.selected.contains(&self.entry(i).path)).collect();
         match chosen.as_slice() {
             [] => Vec::new(),
@@ -530,7 +546,7 @@ impl App {
     // ---------- geometry ----------
 
     fn content(&self) -> (f32, f32, f32, f32) {
-        (SIDEBAR_W, TOOLBAR_H, (self.w - SIDEBAR_W).max(0.0), (self.h - TOOLBAR_H - PATHBAR_H).max(0.0))
+        (SIDEBAR_W, TOOLBAR_H, (self.w - SIDEBAR_W).max(0.0), (self.h - TOOLBAR_H - PATHBAR_H-self.picker_height()).max(0.0))
     }
 
     fn columns(&self) -> usize {
@@ -641,6 +657,7 @@ impl App {
             }
             return Hit::Nothing;
         }
+        if let Some(hit)=self.picker_hit(x,y){return hit;}
         if y < TOOLBAR_H && x < 80.0 {
             for (hit, cx) in self.traffic() {
                 if (x - cx).abs() <= 8.0 && (y - 26.0).abs() <= 8.0 {
@@ -674,7 +691,7 @@ impl App {
             }
             return Hit::Toolbar;
         }
-        if y >= self.h - PATHBAR_H {
+        if y >= self.h - PATHBAR_H-self.picker_height() {
             for (path, _, cx, cw) in &self.crumb_layout {
                 if x >= *cx && x < cx + cw {
                     return Hit::Crumb(path.clone());
@@ -745,6 +762,7 @@ impl App {
     }
 
     pub fn motion(&mut self, x: f32, y: f32) -> Vec<Effect> {
+        if self.picker.is_some(){self.drag_origin=None;}
         self.pointer = (x, y);
         if let Some(origin) = self.drag_origin {
             if (x - origin.0).hypot(y - origin.1) > 4.0 {
@@ -811,6 +829,8 @@ impl App {
     }
 
     pub fn press(&mut self, button: u32, x: f32, y: f32, mods: Mods) -> Vec<Effect> {
+        if self.picker.is_some()&&button==BTN_RIGHT{return Vec::new();}
+        let mods=if self.picker.as_ref().is_some_and(|p|!p.config.multiple){Mods{ctrl:false,shift:false,..mods}}else{mods};
         self.pointer = (x, y);
         self.dirty = true;
         let edges = self.resize_edges(x, y);
@@ -823,6 +843,9 @@ impl App {
             _ => {}
         }
         let hit = self.hit(x, y);
+        if button==BTN_LEFT && !matches!(hit,Hit::PickerName|Hit::PickerAccept|Hit::PickerCancel) {
+            if let Some(p)=self.picker.as_mut(){p.name_focus=false;}
+        }
         if self.menu.is_some() {
             if let (Hit::Menu(i), BTN_LEFT) = (&hit, button) {
                 let action = self.menu.as_ref().and_then(|m| m.items[*i].1);
@@ -851,6 +874,11 @@ impl App {
             return effects;
         }
         match hit {
+            Hit::PickerAccept=>return self.picker_accept(),
+            Hit::PickerCancel=>return vec![Effect::Close],
+            Hit::PickerName=>{if let Some(p)=self.picker.as_mut(){p.name_focus=true;}},
+            Hit::PickerFilter=>{self.picker_next_filter();},
+            Hit::PickerChoice(i)=>self.picker_next_choice(i),
             Hit::Close => effects.push(Effect::Close),
             Hit::Minimize => effects.push(Effect::Minimize),
             Hit::Zoom => effects.push(Effect::ToggleMaximize),
@@ -861,7 +889,7 @@ impl App {
             Hit::Search => self.search_focus = true,
             Hit::Place(i) => {
                 let path = self.places[i].path.clone();
-                if path == fsops::trash_files_dir() {
+                if self.picker.is_none() && path == fsops::trash_files_dir() {
                     let _ = std::fs::create_dir_all(&path);
                 }
                 effects.extend(self.navigate(path, true));
@@ -875,6 +903,7 @@ impl App {
             }
             Hit::Item(i) => self.click_item(i, mods),
             Hit::Content => {
+                if self.picker.as_ref().is_some_and(|p|!p.config.multiple){self.selected.clear();self.cursor=None;return effects;}
                 self.pressed = Some((Hit::Content, (x, y)));
                 self.rubber_base = if mods.ctrl || mods.shift { self.selected.clone() } else { HashSet::new() };
                 if !(mods.ctrl || mods.shift) {
@@ -918,6 +947,7 @@ impl App {
     }
 
     pub fn release(&mut self, button: u32, x: f32, y: f32) -> Vec<Effect> {
+        if self.picker.is_some(){self.pressed=None;}
         if button != BTN_LEFT {
             return Vec::new();
         }
@@ -981,6 +1011,7 @@ impl App {
     /// Files dropped into `dir`: same filesystem moves (unless the program chose copy),
     /// elsewhere copies; dropping items back where they are does nothing
     pub fn drop_files(&mut self, paths: Vec<PathBuf>, dir: PathBuf, move_allowed: bool) -> Vec<Effect> {
+        if self.picker.is_some(){return Vec::new();}
         self.drag_leave();
         let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.parent() != Some(dir.as_path()) && *p != dir).collect();
         if paths.is_empty() {
@@ -1104,6 +1135,7 @@ impl App {
         use smithay_client_toolkit::seat::keyboard::Keysym as K;
         self.dirty = true;
         let sym = K::new(sym);
+        if let Some(effects)=self.picker_key(sym,text,mods){return effects;}
         // Editing a name or the search field
         if let Some((_, name)) = self.rename.as_mut() {
             match sym {
@@ -1170,7 +1202,7 @@ impl App {
                 self.search.clear();
                 self.refilter();
             }
-            K::Left | K::Right | K::Up | K::Down | K::Home | K::End | K::Page_Up | K::Page_Down => self.move_cursor(sym, mods.shift),
+            K::Left | K::Right | K::Up | K::Down | K::Home | K::End | K::Page_Up | K::Page_Down => self.move_cursor(sym, mods.shift&&self.picker.as_ref().is_none_or(|p|p.config.multiple)),
             _ if ctrl => match text.map(str::to_lowercase).as_deref().or(latin(sym)) {
                 Some("a" | "ф") => {
                     self.selected = self.visible.iter().map(|&i| self.entries[i].path.clone()).collect();
@@ -1271,6 +1303,7 @@ impl App {
         self.paint_pathbar(pm);
         self.paint_sidebar(pm);
         self.paint_menu(pm);
+        self.paint_picker(pm);
     }
 
     fn paint_sidebar(&mut self, pm: &mut PixmapMut) {
@@ -1564,7 +1597,7 @@ impl App {
     }
 
     fn paint_pathbar(&mut self, pm: &mut PixmapMut) {
-        let y = self.h - PATHBAR_H;
+        let y = self.h - PATHBAR_H-self.picker_height();
         theme::fill_rect(pm, SIDEBAR_W, y, self.w - SIDEBAR_W, PATHBAR_H, colors::window());
         theme::fill_rect(pm, SIDEBAR_W, y, self.w - SIDEBAR_W, 1.0, colors::separator());
         self.layout_crumbs();
@@ -1680,6 +1713,33 @@ mod tests {
             std::fs::write(root.join(name), name).unwrap();
         }
         root
+    }
+
+    #[test]
+    fn native_picker_filters_multiple_directories_save_confirmation_and_cancel() {
+        use feather_ui::picker::{Config,Filter,Mode};
+        let root=fixture("picker");
+        let mut app=app_in(&root);
+        app.set_picker(Config {filters:vec![Filter{name:"PNG".into(),rules:vec![(1,"image/png".into())]}],..Default::default()});
+        assert!(app.visible.iter().all(|&i|app.entries[i].is_dir || app.entries[i].name=="photo.png"));
+        app.selected.insert(root.join("photo.png"));
+        assert!(matches!(app.picker_accept().as_slice(),[Effect::Picked(s)] if s.paths.len()==1));
+        app.set_picker(Config{mode:Mode::Directory,multiple:true,..Default::default()});
+        app.selected.clear(); app.selected.extend([root.join("Альфа"),root.join("beta")]);
+        assert!(matches!(app.picker_accept().as_slice(),[Effect::Picked(s)] if s.paths.len()==2));
+        app.set_picker(Config{mode:Mode::Save,name:"file2.txt".into(),..Default::default()});
+        assert!(matches!(app.picker_accept().as_slice(),[Effect::CheckSave(_)]));
+        assert!(app.save_checked(root.join("file2.txt"),Ok(Some(false))).is_empty());
+        assert!(matches!(app.picker_accept().as_slice(),[Effect::Picked(s)] if s.paths[0]==feather_ui::picker::path_bytes(&root.join("file2.txt"))));
+        let p=app.picker.as_mut().unwrap();p.name="  spaces.txt  ".into();
+        let effects=app.picker_accept();
+        assert!(matches!(effects.as_slice(),[Effect::CheckSave(p)] if p.file_name().unwrap()=="  spaces.txt  "));
+        assert!(app.save_checked(root.join("stale"),Ok(None)).is_empty());
+        assert!(matches!(app.save_checked(root.join("  spaces.txt  "),Ok(None)).as_slice(),[Effect::Picked(_)]));
+        app.set_picker(Config::default());
+        assert!(matches!(app.picker_key(smithay_client_toolkit::seat::keyboard::Keysym::Escape,None,Mods::default()).unwrap().as_slice(),[Effect::Close]));
+        assert_eq!(std::fs::read_to_string(root.join("file2.txt")).unwrap(),"file2.txt");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// FEATHER_FILES_PREVIEW=/dir cargo test -p feather-files preview -- --ignored

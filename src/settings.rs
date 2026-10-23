@@ -1,81 +1,453 @@
-//! Persistent user preferences (~/.config/feather-de/settings.conf, simple key=value)
-
-use std::path::PathBuf;
-
-use crate::theme::{Appearance, WallpaperTheme};
-
-pub struct Settings {
-    pub appearance: Appearance,
-    pub wallpaper: WallpaperTheme,
-    /// Explicit HiDPI scale chosen by the user (None = automatic)
-    pub scale: Option<f64>,
-    pub dock_zoom: bool,
-    /// Pinned Dock apps (desktop/app ids) in order; None = defaults
-    pub dock: Option<Vec<String>>,
+//! Preferences and XKB preparation. Disk access / XKB includes run on a worker.
+use crate::{
+    theme::{Appearance, WallpaperTheme},
+    FeatherCompositor,
+};
+use smithay::{
+    input::keyboard::xkb,
+    reexports::calloop::{channel, LoopHandle},
+};
+use std::{
+    path::PathBuf,
+    sync::{mpsc, Arc, Mutex},
+};
+#[derive(Clone, Copy, Debug)]
+pub struct InputSource {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub badge: &'static str,
+    pub short: &'static str,
 }
-
-impl Default for Settings {
+pub const SOURCES: [InputSource; 12] = [
+    InputSource {
+        id: "us",
+        label: "ABC — США",
+        badge: "A",
+        short: "EN",
+    },
+    InputSource {
+        id: "ru",
+        label: "Русская",
+        badge: "РУ",
+        short: "RU",
+    },
+    InputSource {
+        id: "gb",
+        label: "Английская — Великобритания",
+        badge: "GB",
+        short: "GB",
+    },
+    InputSource {
+        id: "de",
+        label: "Немецкая",
+        badge: "DE",
+        short: "DE",
+    },
+    InputSource {
+        id: "fr",
+        label: "Французская",
+        badge: "FR",
+        short: "FR",
+    },
+    InputSource {
+        id: "es",
+        label: "Испанская",
+        badge: "ES",
+        short: "ES",
+    },
+    InputSource {
+        id: "it",
+        label: "Итальянская",
+        badge: "IT",
+        short: "IT",
+    },
+    InputSource {
+        id: "pt",
+        label: "Португальская",
+        badge: "PT",
+        short: "PT",
+    },
+    InputSource {
+        id: "ua",
+        label: "Украинская",
+        badge: "УК",
+        short: "UA",
+    },
+    InputSource {
+        id: "by",
+        label: "Белорусская",
+        badge: "БЕ",
+        short: "BY",
+    },
+    InputSource {
+        id: "pl",
+        label: "Польская",
+        badge: "PL",
+        short: "PL",
+    },
+    InputSource {
+        id: "tr",
+        label: "Турецкая",
+        badge: "TR",
+        short: "TR",
+    },
+];
+pub fn source(id: &str) -> Option<InputSource> {
+    SOURCES.iter().find(|s| s.id == id).copied()
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Shortcut {
+    #[default]
+    AltShift,
+    CtrlSpace,
+    CtrlShift,
+}
+impl Shortcut {
+    pub const ALL: [Self; 3] = [Self::AltShift, Self::CtrlSpace, Self::CtrlShift];
+    pub fn option(self) -> &'static str {
+        match self {
+            Self::AltShift => "grp:alt_shift_toggle",
+            Self::CtrlSpace => "grp:ctrl_space_toggle",
+            Self::CtrlShift => "grp:ctrl_shift_toggle",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AltShift => "Alt + Shift",
+            Self::CtrlSpace => "Ctrl + Space",
+            Self::CtrlShift => "Ctrl + Shift",
+        }
+    }
+    fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.option() == s)
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Keyboard {
+    pub layouts: Vec<String>,
+    pub shortcut: Shortcut,
+}
+impl Default for Keyboard {
     fn default() -> Self {
-        // Light appearance by default, like a fresh macOS install
         Self {
-            appearance: Appearance::Light,
-            wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
-            scale: None,
-            dock_zoom: true,
-            dock: None,
+            layouts: vec!["us".into(), "ru".into()],
+            shortcut: Shortcut::default(),
         }
     }
 }
-
+impl Keyboard {
+    fn normalized(mut self) -> Self {
+        let mut layouts = Vec::new();
+        for id in self.layouts {
+            if source(&id).is_some() && !layouts.contains(&id) && layouts.len() < 4 {
+                layouts.push(id);
+            }
+        }
+        if layouts.is_empty() {
+            layouts = Self::default().layouts;
+        }
+        self.layouts = layouts;
+        self
+    }
+    pub fn sources(&self) -> Vec<InputSource> {
+        self.layouts.iter().filter_map(|s| source(s)).collect()
+    }
+    pub fn compile(&self) -> Result<String, String> {
+        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        xkb::Keymap::new_from_names(
+            &ctx,
+            "evdev",
+            "pc105",
+            &self.layouts.join(","),
+            "",
+            Some(self.shortcut.option().into()),
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        )
+        .map(|k| k.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))
+        .ok_or_else(|| "Не удалось подготовить раскладки клавиатуры".into())
+    }
+}
+#[derive(Clone, Debug)]
+pub struct Display {
+    pub name: String,
+    pub mode: crate::system_settings::Mode,
+}
+#[derive(Clone, Debug)]
+pub struct Settings {
+    pub appearance: Appearance,
+    pub wallpaper: WallpaperTheme,
+    pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
+    pub default_browser: Option<String>,
+    pub default_terminal: Option<String>,
+    pub scale: Option<f64>,
+    pub dock_zoom: bool,
+    pub dock: Option<Vec<String>>,
+    pub animations: bool,
+    pub keyboard: Keyboard,
+    pub display: Option<Display>,
+}
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            appearance: Appearance::Light,
+            wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
+            wallpaper_image: None,
+            default_browser: None,
+            default_terminal: None,
+            scale: None,
+            dock_zoom: true,
+            dock: None,
+            animations: true,
+            keyboard: Keyboard::default(),
+            display: None,
+        }
+    }
+}
 fn path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("feather-de").join("settings.conf"))
+    Some(base.join("feather-de/settings.conf"))
 }
-
 impl Settings {
     pub fn load() -> Self {
+        path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map_or_else(Self::default, |t| Self::parse(&t))
+    }
+    fn parse(text: &str) -> Self {
         let mut s = Self::default();
-        let Some(text) = path().and_then(|p| std::fs::read_to_string(p).ok()) else {
-            return s;
-        };
         for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
-            match (k.trim(), v.trim()) {
-                ("appearance", "dark") => s.appearance = Appearance::Dark,
-                ("appearance", "light") => s.appearance = Appearance::Light,
-                ("wallpaper", id) => {
-                    if let Some(t) = WallpaperTheme::from_id(id) {
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let v = v.trim();
+            match k.trim() {
+                "appearance" => match v {
+                    "dark" => s.appearance = Appearance::Dark,
+                    "light" => s.appearance = Appearance::Light,
+                    _ => {}
+                },
+                "wallpaper" => {
+                    if let Some(t) = WallpaperTheme::from_id(v) {
                         s.wallpaper = t;
                     }
                 }
-                ("scale", v) => s.scale = v.parse::<f64>().ok().map(|v| v.clamp(1.0, 2.5)),
-                ("dock_zoom", v) => s.dock_zoom = v == "true",
-                ("dock", v) => {
-                    s.dock = Some(v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+                "wallpaper_image" => s.wallpaper_image = crate::wallpaper::ImageSource::parse(v),
+                "default_browser" => s.default_browser = Some(v.to_string()),
+                "default_terminal" => s.default_terminal = Some(v.to_string()),
+                "scale" => {
+                    s.scale = v
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .map(|v| v.clamp(1.0, 2.5))
+                }
+                "dock_zoom" => {
+                    if let Ok(v) = v.parse() {
+                        s.dock_zoom = v;
+                    }
+                }
+                "animations" => {
+                    if let Ok(v) = v.parse() {
+                        s.animations = v;
+                    }
+                }
+                "dock" => {
+                    s.dock = Some(
+                        v.split(',')
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(str::to_string)
+                            .collect(),
+                    )
+                }
+                "keyboard_layouts" => {
+                    s.keyboard.layouts = v.split(',').map(str::trim).map(str::to_string).collect()
+                }
+                "keyboard_shortcut" => {
+                    if let Some(v) = Shortcut::parse(v) {
+                        s.keyboard.shortcut = v;
+                    }
+                }
+                "display" => {
+                    let fields: Vec<_> = v.split(';').collect();
+                    if fields.len() == 4
+                        && fields[0]
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    {
+                        if let (Ok(width), Ok(height), Ok(refresh)) = (
+                            fields[1].parse::<i32>(),
+                            fields[2].parse::<i32>(),
+                            fields[3].parse::<i32>(),
+                        ) {
+                            if (320..=16384).contains(&width)
+                                && (200..=16384).contains(&height)
+                                && (1000..=1000000).contains(&refresh)
+                            {
+                                s.display = Some(Display {
+                                    name: fields[0].into(),
+                                    mode: crate::system_settings::Mode {
+                                        width,
+                                        height,
+                                        refresh,
+                                    },
+                                });
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
         }
+        s.keyboard = s.keyboard.normalized();
         s
     }
-
-    pub fn save(&self) {
-        let Some(p) = path() else { return };
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
+    fn text(&self) -> String {
+        let mut text=format!("appearance={}\nwallpaper={}\n{}dock_zoom={}\n{}animations={}\nkeyboard_layouts={}\nkeyboard_shortcut={}\n{}",
+            if self.appearance==Appearance::Dark{"dark"}else{"light"},self.wallpaper.id(),self.scale.map(|v|format!("scale={v}\n")).unwrap_or_default(),
+            self.dock_zoom,self.dock.as_ref().map(|d|format!("dock={}\n",d.join(","))).unwrap_or_default(),self.animations,self.keyboard.layouts.join(","),self.keyboard.shortcut.option(),
+            self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
+        if let Some(image) = &self.wallpaper_image {
+            text.push_str(&format!("wallpaper_image={}\n", image.id()));
         }
-        let text = format!(
-            "appearance={}\nwallpaper={}\n{}dock_zoom={}\n{}",
-            if self.appearance == Appearance::Dark { "dark" } else { "light" },
-            self.wallpaper.id(),
-            self.scale.map(|v| format!("scale={v}\n")).unwrap_or_default(),
-            self.dock_zoom,
-            self.dock.as_ref().map(|d| format!("dock={}\n", d.join(","))).unwrap_or_default(),
+        for (key, value) in [
+            ("default_browser", &self.default_browser),
+            ("default_terminal", &self.default_terminal),
+        ] {
+            if let Some(value) = value {
+                if !value.chars().any(char::is_control) {
+                    text.push_str(&format!("{key}={value}\n"));
+                }
+            }
+        }
+        text
+    }
+    fn write(&self, p: &std::path::Path) -> std::io::Result<()> {
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = p.with_extension(format!("tmp-{}", std::process::id()));
+        std::fs::write(&tmp, self.text())?;
+        std::fs::rename(tmp, p)
+    }
+}
+enum Update {
+    Keyboard {
+        generation: u64,
+        config: Keyboard,
+        keymap: Result<String, String>,
+    },
+    SaveError(String),
+}
+type PendingKey = Option<(u64, Keyboard)>;
+pub struct Worker {
+    latest: Arc<Mutex<Option<Settings>>>,
+    key: Arc<Mutex<PendingKey>>,
+    wake: mpsc::SyncSender<()>,
+}
+impl Worker {
+    pub fn new(
+        handle: &LoopHandle<'static, FeatherCompositor>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let latest: Arc<Mutex<Option<Settings>>> = Arc::new(Mutex::new(None));
+        let key: Arc<Mutex<PendingKey>> = Arc::new(Mutex::new(None));
+        let (wake, rx) = mpsc::sync_channel(1);
+        let (updates, source) = channel::sync_channel(2);
+        handle.insert_source(source, |event, _, state| {
+            if let channel::Event::Msg(event) = event {
+                match event {
+                    Update::Keyboard {
+                        generation,
+                        config,
+                        keymap,
+                    } => state.install_keyboard(generation, config, keymap),
+                    Update::SaveError(e) => {
+                        state.system_settings.error = Some(e);
+                        state.mark_builtin_windows_dirty();
+                        state.needs_redraw = true;
+                    }
+                }
+            }
+        })?;
+        let save = latest.clone();
+        let prepare = key.clone();
+        let location = path();
+        std::thread::Builder::new()
+            .name("feather-prefs".into())
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                while rx.recv().is_ok() {
+                    let request = prepare.lock().unwrap().take();
+                    if let Some((generation, config)) = request {
+                        let keymap = config.compile();
+                        if updates
+                            .send(Update::Keyboard {
+                                generation,
+                                config,
+                                keymap,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    let snapshot = save.lock().unwrap().take();
+                    if let (Some(s), Some(p)) = (snapshot, location.as_ref()) {
+                        if let Err(e) = s.write(p) {
+                            let _ = updates.send(Update::SaveError(format!(
+                                "Не удалось сохранить настройки: {e}"
+                            )));
+                        }
+                    }
+                }
+            })?;
+        Ok(Self { latest, key, wake })
+    }
+    pub fn save(&self, s: Settings) {
+        *self.latest.lock().unwrap() = Some(s);
+        let _ = self.wake.try_send(());
+    }
+    pub fn keyboard(&self, generation: u64, config: Keyboard) {
+        *self.key.lock().unwrap() = Some((generation, config));
+        let _ = self.wake.try_send(());
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn preferences_roundtrip_and_invalid_layouts_never_remove_all_input_sources() {
+        let mut s=Settings::parse("keyboard_layouts=ru,ru,bogus,de,fr,us,es\nkeyboard_shortcut=grp:ctrl_space_toggle\nanimations=false\nscale=NaN\n");
+        assert_eq!(s.keyboard.layouts, ["ru", "de", "fr", "us"]);
+        assert_eq!(s.scale, None);
+        assert!(!s.animations);
+        s.scale = Some(1.25);
+        let r = Settings::parse(&s.text());
+        assert_eq!(r.keyboard, s.keyboard);
+        assert_eq!(r.scale, s.scale);
+        assert!(!r.animations);
+        assert_eq!(
+            Settings::parse("keyboard_layouts=,,bogus").keyboard,
+            Keyboard::default()
         );
-        if let Err(err) = std::fs::write(&p, text) {
-            tracing::warn!("Не удалось сохранить настройки: {err}");
+    }
+    #[test]
+    fn each_offered_input_source_and_shortcut_compiles() {
+        for source in SOURCES {
+            for shortcut in Shortcut::ALL {
+                assert!(
+                    Keyboard {
+                        layouts: vec!["us".into(), source.id.into()],
+                        shortcut
+                    }
+                    .compile()
+                    .is_ok(),
+                    "{} {shortcut:?}",
+                    source.id
+                );
+            }
         }
     }
 }

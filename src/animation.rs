@@ -89,6 +89,7 @@ struct WindowMotion {
 
 #[derive(Default)]
 pub struct Animations {
+    disabled: bool,
     windows: HashMap<u64, WindowMotion>,
     overlay_key: Option<OverlayKind>,
     overlay: Option<Spring>,
@@ -97,12 +98,41 @@ pub struct Animations {
 }
 
 impl Animations {
+    pub fn enabled(&self) -> bool {
+        !self.disabled
+    }
+    pub fn set_enabled(&mut self, enabled: bool, windows: &[ManagedWindow], shell: &MacShell) {
+        self.disabled = !enabled;
+        self.windows.clear();
+        self.overlay = None;
+        self.launchpad = None;
+        self.last_frame = None;
+        self.overlay_key = shell.animation_overlay().map(|(k, _)| k);
+        if enabled {
+            for w in windows.iter().filter(|w| w.mapped) {
+                let value = if w.minimized { 0.0 } else { 1.0 };
+                self.windows.insert(
+                    w.id,
+                    WindowMotion {
+                        spring: Spring::new(value, value),
+                        minimized: w.minimized,
+                        dock: w.minimized.then(|| shell.minimized_target(w.id)),
+                    },
+                );
+            }
+            self.overlay = self.overlay_key.map(|_| Spring::new(1.0, 1.0));
+            self.launchpad = shell.launchpad.as_ref().map(|_| Spring::new(1.0, 1.0));
+        }
+    }
     pub fn active(&self) -> bool {
         self.last_frame.is_some()
     }
 
     /// Called only for frames requested by events or a still-running spring.
     pub fn advance(&mut self, windows: &[ManagedWindow], shell: &MacShell, now: Instant) -> bool {
+        if self.disabled {
+            return false;
+        }
         let dt = self
             .last_frame
             .map_or(0.0, |last| now.duration_since(last).as_secs_f64());
@@ -151,6 +181,9 @@ impl Animations {
     }
 
     pub fn window(&self, w: &ManagedWindow) -> Visual {
+        if self.disabled {
+            return Visual::default();
+        }
         let Some(motion) = self.windows.get(&w.id) else {
             return Visual::default();
         };
@@ -173,10 +206,15 @@ impl Animations {
     }
 
     pub fn draws_window(&self, w: &ManagedWindow) -> bool {
-        w.mapped && (!w.minimized || self.windows.get(&w.id).is_some_and(|m| m.spring.active()))
+        w.mapped
+            && (!w.minimized
+                || (!self.disabled && self.windows.get(&w.id).is_some_and(|m| m.spring.active())))
     }
 
     pub fn overlay(&self, shell: &MacShell) -> Visual {
+        if self.disabled {
+            return Visual::default();
+        }
         let Some((_, rect)) = shell.animation_overlay() else {
             return Visual::default();
         };
@@ -191,6 +229,9 @@ impl Animations {
     }
 
     pub fn launchpad(&self, shell: &MacShell) -> Visual {
+        if self.disabled {
+            return Visual::default();
+        }
         Visual::appearing(
             self.launchpad.as_ref().map_or(1.0, |s| s.value),
             (shell.screen_w as f64 * 0.5, shell.screen_h as f64 * 0.5),
@@ -219,6 +260,40 @@ mod tests {
         }
         assert_eq!(b.value, 1.0);
         assert!(!b.active());
+    }
+
+    #[test]
+    fn disabling_mid_flight_snaps_and_reenabling_does_not_replay_existing_windows() {
+        use crate::apps::BuiltinWindowKind;
+        let shell = MacShell::new(1440, 900);
+        let mut windows = vec![ManagedWindow::new_builtin(
+            1,
+            BuiltinWindowKind::SystemSettings,
+            40,
+            40,
+        )];
+        let mut animations = Animations::default();
+        let now = Instant::now();
+        assert!(animations.advance(&windows, &shell, now));
+        animations.set_enabled(false, &windows, &shell);
+        assert!(!animations.enabled());
+        assert!(!animations.active());
+        assert!(animations.window(&windows[0]).identity());
+        assert!(!animations.advance(&windows, &shell, now));
+        windows[0].minimized = true;
+        assert!(!animations.draws_window(&windows[0]));
+        windows[0].minimized = false;
+        animations.set_enabled(true, &windows, &shell);
+        assert!(!animations.advance(&windows, &shell, now));
+        assert!(animations.window(&windows[0]).identity());
+        windows.push(ManagedWindow::new_builtin(
+            2,
+            BuiltinWindowKind::QuickNotes,
+            40,
+            40,
+        ));
+        assert!(animations.advance(&windows, &shell, now));
+        assert!(!animations.window(&windows[1]).identity());
     }
 
     #[test]

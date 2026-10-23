@@ -407,6 +407,9 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
         .env("XDG_CURRENT_DESKTOP", "FeatherDE")
         .env("QT_QPA_PLATFORM", "wayland;xcb")
         .env("GDK_BACKEND", "wayland,x11")
+        .env("GTK_USE_PORTAL", "1")
+        .env("PLASMA_INTEGRATION_USE_PORTAL", "1")
+        .env("QT_QPA_PLATFORMTHEME", std::env::var("QT_QPA_PLATFORMTHEME").unwrap_or_else(|_|"xdgdesktopportal".into()))
         .env("MOZ_ENABLE_WAYLAND", "1")
         .env("ELECTRON_OZONE_PLATFORM_HINT", "auto")
         .env("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
@@ -430,11 +433,7 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
 /// Starts essential background session daemons (Polkit Authentication Agent for VPN/pkexec, D-Bus env)
 pub fn spawn_session_services(wayland_socket: &str, is_standalone: bool) {
     if is_standalone {
-        let dbus_cmd = format!(
-            "dbus-update-activation-environment --systemd WAYLAND_DISPLAY={ws} XDG_CURRENT_DESKTOP=FeatherDE XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM='wayland;xcb' GDK_BACKEND='wayland,x11' 2>/dev/null || true",
-            ws = wayland_socket
-        );
-        spawn_wayland_command(&dbus_cmd, wayland_socket);
+        crate::file_portal::session_start(wayland_socket.to_owned());
 
         let polkit_cmd = "killall -q lxqt-policykit-agent polkit-kde-authentication-agent-1 2>/dev/null; \
             sleep 0.15; \

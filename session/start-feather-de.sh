@@ -13,6 +13,9 @@ export XDG_CURRENT_DESKTOP="FeatherDE"
 export QT_QPA_PLATFORM="wayland;xcb"
 export GDK_BACKEND="wayland,x11"
 export MOZ_ENABLE_WAYLAND="1"
+export GTK_USE_PORTAL="1"
+export PLASMA_INTEGRATION_USE_PORTAL="1"
+export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-xdgdesktopportal}"
 export ELECTRON_OZONE_PLATFORM_HINT="auto"
 
 # 1. If launched inside an existing desktop session (nested mode), run feather-de directly:

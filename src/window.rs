@@ -21,10 +21,10 @@ use tiny_skia::PixmapMut;
 use crate::apps::BuiltinWindowKind;
 use crate::text::FontSystem;
 use crate::theme::{
-    appearance, draw_feather_logo, fill_circle, fill_rounded_rect, fill_squircle_gradient,
-    palette, render_shadow_tile, rgba, stroke_circle, stroke_line, stroke_rounded_rect, to_phys,
-    ui_scale, Appearance, WallpaperTheme, DOCK_RESERVED_HEIGHT, SHADOW_PAD, TITLEBAR_HEIGHT,
-    TOP_BAR_HEIGHT, TRAFFIC_CENTERS, TRAFFIC_RADIUS, WINDOW_CORNER_RADIUS,
+    appearance, draw_feather_logo, fill_circle, fill_rounded_rect, fill_squircle_gradient, palette,
+    render_shadow_tile, rgba, stroke_circle, stroke_line, stroke_rounded_rect, to_phys, ui_scale,
+    Appearance, DOCK_RESERVED_HEIGHT, SHADOW_PAD, TITLEBAR_HEIGHT, TOP_BAR_HEIGHT, TRAFFIC_CENTERS,
+    TRAFFIC_RADIUS, WINDOW_CORNER_RADIUS,
 };
 
 /// Width of the invisible grab band around decorated windows used for edge resizing
@@ -123,7 +123,14 @@ impl ShadowSet {
                 let start = row as usize * stride + x as usize * 4;
                 out.extend_from_slice(&data[start..start + w as usize * 4]);
             }
-            MemoryRenderBuffer::from_slice(&out, Fourcc::Abgr8888, (w, h), 1, Transform::Normal, None)
+            MemoryRenderBuffer::from_slice(
+                &out,
+                Fourcc::Abgr8888,
+                (w, h),
+                1,
+                Transform::Normal,
+                None,
+            )
         };
         // Order: TL, TR, BL, BR, Top, Bottom, Left, Right
         self.pieces = vec![
@@ -198,6 +205,7 @@ impl ShadowSet {
 }
 
 pub struct ManagedWindow {
+    pub settings_ticket: Option<std::sync::Arc<()>>,
     pub id: u64,
     pub title: String,
     pub app_id: String,
@@ -232,14 +240,14 @@ pub struct ManagedWindow {
 }
 
 pub struct BuiltinContext<'a> {
+    pub settings: &'a crate::system_settings::Panel,
+    pub settings_context: crate::system_settings::Context<'a>,
     pub notes_text: &'a str,
     pub rss_mb: f32,
     pub window_count: usize,
     pub wayland_socket: &'a str,
     pub active_layout: &'a str,
-    pub theme: WallpaperTheme,
-    pub dock_zoom_enabled: bool,
-    pub reload_count: u32,
+    pub input_shortcut: &'static str,
     pub scale_factor: f32,
 }
 
@@ -256,8 +264,103 @@ fn empty_buffer() -> MemoryRenderBuffer {
 }
 
 impl ManagedWindow {
+    pub fn settings_needs_shadow(&self) -> bool {
+        self.shadow.built_for
+            != Some((
+                self.activated,
+                ui_scale().to_bits(),
+                appearance() == Appearance::Dark,
+            ))
+    }
+    pub fn decoration_size(&self) -> (i32, i32) {
+        (self.phys_buf_w, self.phys_buf_h)
+    }
+    /// Called on the raster worker's own built-in window. The returned buffers
+    /// have never been imported by a renderer; no EGL objects leave the event loop.
+    pub fn raster_settings(
+        &mut self,
+        fonts: &mut FontSystem,
+        job: &crate::system_settings::FrameJob,
+    ) -> SettingsFrame {
+        self.width = job.width;
+        self.height = job.height;
+        self.activated = job.focused;
+        self.traffic_group_hovered = job.group_hovered;
+        self.hovered_traffic = job.traffic;
+        self.dirty = true;
+        self.shadow = ShadowSet::new();
+        if !job.shadow {
+            self.shadow.built_for = Some((
+                job.focused,
+                ui_scale().to_bits(),
+                appearance() == Appearance::Dark,
+            ));
+        }
+        let context = job.context();
+        let ctx = BuiltinContext {
+            settings: &job.panel,
+            settings_context: context,
+            notes_text: "",
+            rss_mb: 0.0,
+            window_count: 0,
+            wayland_socket: "",
+            active_layout: "",
+            input_shortcut: "",
+            scale_factor: job.scale as f32,
+        };
+        self.ensure_rendered(fonts, job.focused, &ctx);
+        let buffer = std::mem::replace(&mut self.decoration_buffer, empty_buffer());
+        let size = (self.phys_buf_w, self.phys_buf_h);
+        self.phys_buf_w = 0;
+        self.phys_buf_h = 0;
+        let shadow = job
+            .shadow
+            .then(|| std::mem::replace(&mut self.shadow, ShadowSet::new()));
+        SettingsFrame {
+            buffer,
+            shadow,
+            size,
+        }
+    }
+    pub fn install_settings_frame(
+        &mut self,
+        ticket: &std::sync::Weak<()>,
+        frame: SettingsFrame,
+    ) -> bool {
+        if self.dirty
+            || !self.settings_ticket.as_ref().is_some_and(|current| {
+                std::sync::Weak::ptr_eq(ticket, &std::sync::Arc::downgrade(current))
+            })
+        {
+            return false;
+        }
+        if (self.phys_buf_w, self.phys_buf_h) != frame.size {
+            // A size change needs a new texture anyway. Transfer the worker's
+            // pixels directly instead of allocating a third full-size CPU frame.
+            self.decoration_buffer = frame.buffer;
+        } else {
+            let mut source = frame.buffer;
+            let mut target = self.decoration_buffer.render();
+            let _ = target.draw(|dest| {
+                let mut src = source.render();
+                let _ = src.draw(|data| {
+                    dest.copy_from_slice(data);
+                    Ok::<_, ()>(Vec::new())
+                });
+                Ok::<_, ()>(vec![Rectangle::from_size(frame.size.into())])
+            });
+        }
+        if let Some(shadow) = frame.shadow {
+            self.shadow = shadow;
+        }
+        self.phys_buf_w = frame.size.0;
+        self.phys_buf_h = frame.size.1;
+        self.settings_ticket = None;
+        true
+    }
     pub fn new_wayland(id: u64, surface: ToplevelSurface) -> Self {
         Self {
+            settings_ticket: None,
             id,
             title: "Окно Wayland".to_string(),
             app_id: String::new(),
@@ -289,13 +392,22 @@ impl ManagedWindow {
 
     pub fn new_builtin(id: u64, kind: BuiltinWindowKind, x: i32, y: i32) -> Self {
         let (title, app_id, width, height) = match kind {
-            BuiltinWindowKind::AboutFeather => ("О системе Пёрышко (Feather DE)", "builtin.about", 540, 340),
-            BuiltinWindowKind::ActivityMonitor => ("Монитор системы — Пёрышко", "builtin.monitor", 620, 380),
-            BuiltinWindowKind::QuickNotes => ("Заметки (Alt+Shift: RU/EN)", "builtin.notes", 540, 360),
-            BuiltinWindowKind::SystemSettings => ("Системные настройки — Пёрышко", "builtin.settings", 580, 415),
+            BuiltinWindowKind::AboutFeather => {
+                ("О системе Пёрышко (Feather DE)", "builtin.about", 540, 340)
+            }
+            BuiltinWindowKind::ActivityMonitor => {
+                ("Монитор системы — Пёрышко", "builtin.monitor", 620, 380)
+            }
+            BuiltinWindowKind::QuickNotes => {
+                ("Заметки (Alt+Shift: RU/EN)", "builtin.notes", 540, 360)
+            }
+            BuiltinWindowKind::SystemSettings => {
+                ("Системные настройки", "builtin.settings", 800, 540)
+            }
         };
 
         Self {
+            settings_ticket: None,
             id,
             title: title.to_string(),
             app_id: app_id.to_string(),
@@ -365,7 +477,10 @@ impl ManagedWindow {
     }
 
     pub fn frame_rect(&self) -> Rectangle<i32, Logical> {
-        Rectangle::new((self.x, self.y).into(), (self.width, self.total_height()).into())
+        Rectangle::new(
+            (self.x, self.y).into(),
+            (self.width, self.total_height()).into(),
+        )
     }
 
     /// Global logical position of the client's window-geometry origin
@@ -409,6 +524,14 @@ impl ManagedWindow {
         edges.any().then_some(edges)
     }
 
+    /// System Settings draws a unified toolbar: its traffic lights sit inside the inset sidebar.
+    pub fn traffic_shift(&self) -> (f32, f32) {
+        match self.backend {
+            WindowBackend::Builtin(BuiltinWindowKind::SystemSettings) => (6.0, 6.0),
+            _ => (0.0, 0.0),
+        }
+    }
+
     pub fn in_titlebar(&self, px: f64, py: f64) -> bool {
         self.has_titlebar()
             && px >= self.x as f64
@@ -421,9 +544,10 @@ impl ManagedWindow {
         if !self.has_titlebar() {
             return None;
         }
-        let lx = (px as f32) - (self.x as f32);
-        let ly = (py as f32) - (self.y as f32);
-        if !(0.0..=TITLEBAR_HEIGHT as f32).contains(&ly) {
+        let (dx, dy) = self.traffic_shift();
+        let lx = (px as f32) - (self.x as f32) - dx;
+        let ly = (py as f32) - (self.y as f32) - dy;
+        if !(-dy..=TITLEBAR_HEIGHT as f32).contains(&ly) {
             return None;
         }
         let cy = TITLEBAR_HEIGHT as f32 * 0.5;
@@ -442,11 +566,11 @@ impl ManagedWindow {
         if !self.has_titlebar() {
             return;
         }
-        let lx = (px as f32) - (self.x as f32);
-        let ly = (py as f32) - (self.y as f32);
-        let group_hovered =
-            (TRAFFIC_CENTERS[0] - 10.0..=TRAFFIC_CENTERS[2] + 10.0).contains(&lx)
-                && (2.0..=(TITLEBAR_HEIGHT as f32 - 2.0)).contains(&ly);
+        let (dx, dy) = self.traffic_shift();
+        let lx = (px as f32) - (self.x as f32) - dx;
+        let ly = (py as f32) - (self.y as f32) - dy;
+        let group_hovered = (TRAFFIC_CENTERS[0] - 10.0..=TRAFFIC_CENTERS[2] + 10.0).contains(&lx)
+            && (2.0..=(TITLEBAR_HEIGHT as f32 - 2.0)).contains(&ly);
         let btn = self.hit_test_traffic(px, py);
         if group_hovered != self.traffic_group_hovered || btn != self.hovered_traffic {
             self.traffic_group_hovered = group_hovered;
@@ -634,14 +758,15 @@ impl ManagedWindow {
         }
 
         let bbox = bbox_from_surface_tree(wl_surface, (0, 0));
-        let geo = geometry
-            .and_then(|g| g.intersection(bbox))
-            .unwrap_or(bbox);
-        self.client_shadow = geometry.is_some()
-            && (bbox.size.w > geo.size.w + 2 || bbox.size.h > geo.size.h + 2);
+        let geo = geometry.and_then(|g| g.intersection(bbox)).unwrap_or(bbox);
+        self.client_shadow =
+            geometry.is_some() && (bbox.size.w > geo.size.w + 2 || bbox.size.h > geo.size.h + 2);
         self.geo_loc = geo.loc;
 
-        if geo.size.w > 0 && geo.size.h > 0 && (geo.size.w != self.width || geo.size.h != self.height) {
+        if geo.size.w > 0
+            && geo.size.h > 0
+            && (geo.size.w != self.width || geo.size.h != self.height)
+        {
             self.width = geo.size.w;
             self.height = geo.size.h;
             self.dirty = true;
@@ -664,7 +789,12 @@ impl ManagedWindow {
         }
     }
 
-    pub fn ensure_rendered(&mut self, fonts: &mut FontSystem, focused: bool, ctx: &BuiltinContext<'_>) {
+    pub fn ensure_rendered(
+        &mut self,
+        fonts: &mut FontSystem,
+        focused: bool,
+        ctx: &BuiltinContext<'_>,
+    ) {
         self.ensure_shadow();
 
         // Builtin windows own their whole frame; Wayland SSD windows only need a titlebar strip
@@ -706,29 +836,44 @@ impl ManagedWindow {
         let r = WINDOW_CORNER_RADIUS;
         let tb = TITLEBAR_HEIGHT as f32;
         let p = palette();
+        let unified = builtin_kind == Some(BuiltinWindowKind::SystemSettings);
+        let (tdx, tdy) = self.traffic_shift();
 
         let mut render_ctx = self.decoration_buffer.render();
         let _ = render_ctx.draw(|buf| {
             buf.fill(0);
             if let Some(mut pm) = PixmapMut::from_bytes(buf, bw as u32, bh as u32) {
                 // A Wayland titlebar is just the top of a rounded rect: extend it past the strip
-                let body_h = if builtin_kind.is_some() { win_h } else { win_h + r * 2.0 };
+                let body_h = if builtin_kind.is_some() {
+                    win_h
+                } else {
+                    win_h + r * 2.0
+                };
                 fill_rounded_rect(&mut pm, 0.0, 0.0, win_w, body_h, r, p.window_bg);
-                let tb_col = if focused { p.titlebar_active } else { p.titlebar_inactive };
-                fill_rounded_rect(&mut pm, 0.0, 0.0, win_w, tb + r * 2.0, r, tb_col);
-                if builtin_kind.is_some() {
-                    fill_rounded_rect(&mut pm, 0.0, tb, win_w, r * 2.0, 0.0, p.window_bg);
+                if unified {
+                    ctx.settings.paint(&mut pm, fonts, (0.0, tb), (win_w, win_h - tb), tb, &ctx.settings_context);
+                } else {
+                    let tb_col = if focused {
+                        p.titlebar_active
+                    } else {
+                        p.titlebar_inactive
+                    };
+                    fill_rounded_rect(&mut pm, 0.0, 0.0, win_w, tb + r * 2.0, r, tb_col);
+                    if builtin_kind.is_some() {
+                        fill_rounded_rect(&mut pm, 0.0, tb, win_w, r * 2.0, 0.0, p.window_bg);
+                    }
+                    stroke_line(&mut pm, 0.0, tb - 0.5, win_w, tb - 0.5, 1.0, p.separator);
                 }
-                stroke_line(&mut pm, 0.0, tb - 0.5, win_w, tb - 0.5, 1.0, p.separator);
 
                 // Traffic lights (12 pt), coloured when focused or hovered
-                let cy = tb * 0.5;
+                let cy = tb * 0.5 + tdy;
                 let colors = [
                     (rgba(255, 95, 87, 255), rgba(224, 68, 62, 255)),
                     (rgba(254, 188, 46, 255), rgba(222, 161, 35, 255)),
                     (rgba(40, 200, 64, 255), rgba(26, 171, 41, 255)),
                 ];
-                for (i, cx) in TRAFFIC_CENTERS.iter().enumerate() {
+                let centers = TRAFFIC_CENTERS.map(|x| x + tdx);
+                for (i, cx) in centers.iter().enumerate() {
                     let (fill, edge) = if focused || group_hovered {
                         colors[i]
                     } else {
@@ -739,7 +884,7 @@ impl ManagedWindow {
                 }
                 if group_hovered {
                     let ink = rgba(0, 0, 0, 150);
-                    let [c0, c1, c2] = TRAFFIC_CENTERS;
+                    let [c0, c1, c2] = centers;
                     stroke_line(&mut pm, c0 - 2.4, cy - 2.4, c0 + 2.4, cy + 2.4, 1.2, ink);
                     stroke_line(&mut pm, c0 + 2.4, cy - 2.4, c0 - 2.4, cy + 2.4, 1.2, ink);
                     stroke_line(&mut pm, c1 - 3.0, cy, c1 + 3.0, cy, 1.3, ink);
@@ -749,8 +894,12 @@ impl ManagedWindow {
                     fill_circle(&mut pm, c2, cy, 1.0, colors[2].0);
                 }
 
-                let title_col = if focused { p.title_active } else { p.title_inactive };
-                fonts.draw_text_clipped_centered(
+                let title_col = if focused {
+                    p.title_active
+                } else {
+                    p.title_inactive
+                };
+                if !unified { fonts.draw_text_clipped_centered(
                     &mut pm,
                     &title,
                     win_w * 0.5,
@@ -761,11 +910,30 @@ impl ManagedWindow {
                     true,
                 );
 
-                if let Some(kind) = builtin_kind {
-                    Self::draw_builtin_content(&mut pm, fonts, kind, 0.0, tb, win_w, win_h - tb, ctx);
+                }
+                if let Some(kind) = builtin_kind.filter(|_| !unified) {
+                    Self::draw_builtin_content(
+                        &mut pm,
+                        fonts,
+                        kind,
+                        0.0,
+                        tb,
+                        win_w,
+                        win_h - tb,
+                        ctx,
+                    );
                 }
 
-                stroke_rounded_rect(&mut pm, 0.25, 0.25, win_w - 0.5, body_h - 0.5, r, 0.5, p.window_outline);
+                stroke_rounded_rect(
+                    &mut pm,
+                    0.25,
+                    0.25,
+                    win_w - 0.5,
+                    body_h - 0.5,
+                    r,
+                    0.5,
+                    p.window_outline,
+                );
             }
             Result::<_, ()>::Ok(vec![Rectangle::from_size((bw, bh).into())])
         });
@@ -785,22 +953,67 @@ impl ManagedWindow {
         let p = palette();
         let row = |pm: &mut PixmapMut, fonts: &mut FontSystem, y: f32, k: &str, v: &str| {
             fonts.draw_text_right(pm, k, cx + cw * 0.5 - 8.0, y, 13.0, p.text_secondary, false);
-            fonts.draw_text_clipped(pm, v, cx + cw * 0.5 + 8.0, y, cw * 0.5 - 30.0, 13.0, p.text, false);
+            fonts.draw_text_clipped(
+                pm,
+                v,
+                cx + cw * 0.5 + 8.0,
+                y,
+                cw * 0.5 - 30.0,
+                13.0,
+                p.text,
+                false,
+            );
         };
         match kind {
             BuiltinWindowKind::AboutFeather => {
                 let size = 92.0;
-                fill_squircle_gradient(pm, cx + cw * 0.5 - size * 0.5, cy + 22.0, size, rgba(120, 205, 255, 255), rgba(20, 105, 235, 255));
-                draw_feather_logo(pm, cx + cw * 0.5, cy + 22.0 + size * 0.5, 3.6, rgba(255, 255, 255, 255));
-                fonts.draw_text_centered(pm, "Пёрышко", cx + cw * 0.5, cy + 128.0, 24.0, p.text, true);
-                fonts.draw_text_centered(pm, "Версия 0.2 • Tahoe", cx + cw * 0.5, cy + 160.0, 12.0, p.text_secondary, false);
-                let scale = format!("{}% ({})", (ctx.scale_factor * 100.0).round() as i32, ctx.wayland_socket);
+                fill_squircle_gradient(
+                    pm,
+                    cx + cw * 0.5 - size * 0.5,
+                    cy + 22.0,
+                    size,
+                    rgba(120, 205, 255, 255),
+                    rgba(20, 105, 235, 255),
+                );
+                draw_feather_logo(
+                    pm,
+                    cx + cw * 0.5,
+                    cy + 22.0 + size * 0.5,
+                    3.6,
+                    rgba(255, 255, 255, 255),
+                );
+                fonts.draw_text_centered(
+                    pm,
+                    "Пёрышко",
+                    cx + cw * 0.5,
+                    cy + 128.0,
+                    24.0,
+                    p.text,
+                    true,
+                );
+                fonts.draw_text_centered(
+                    pm,
+                    "Версия 0.2 • Tahoe",
+                    cx + cw * 0.5,
+                    cy + 160.0,
+                    12.0,
+                    p.text_secondary,
+                    false,
+                );
+                let scale = format!(
+                    "{}% ({})",
+                    (ctx.scale_factor * 100.0).round() as i32,
+                    ctx.wayland_socket
+                );
                 let mem = format!("{:.1} МБ", ctx.rss_mb);
                 let lines = [
                     ("Оформление", appearance().name().to_string()),
                     ("Масштаб", scale),
                     ("Память оболочки", mem),
-                    ("Раскладка", format!("{} (Alt+Shift)", ctx.active_layout)),
+                    (
+                        "Раскладка",
+                        format!("{} ({})", ctx.active_layout, ctx.input_shortcut),
+                    ),
                 ];
                 for (i, (k, v)) in lines.iter().enumerate() {
                     row(pm, fonts, cy + 190.0 + i as f32 * 21.0, k, v);
@@ -810,19 +1023,38 @@ impl ManagedWindow {
                 let by = cy + ch - 42.0;
                 fill_rounded_rect(pm, bx, by, bw, bh, bh * 0.5, p.control_fill);
                 stroke_rounded_rect(pm, bx, by, bw, bh, bh * 0.5, 0.5, p.glass_outline);
-                fonts.draw_text_centered(pm, "Сменить обои…", cx + cw * 0.5, by + 5.5, 13.0, p.text, false);
+                fonts.draw_text_centered(
+                    pm,
+                    "Сменить обои…",
+                    cx + cw * 0.5,
+                    by + 5.5,
+                    13.0,
+                    p.text,
+                    false,
+                );
             }
             BuiltinWindowKind::ActivityMonitor => {
                 let card_w = (cw - 56.0) / 3.0;
                 let metrics = [
                     ("Память оболочки", format!("{:.1} МБ", ctx.rss_mb)),
                     ("Окон", ctx.window_count.to_string()),
-                    ("Масштаб", format!("{}%", (ctx.scale_factor * 100.0).round() as i32)),
+                    (
+                        "Масштаб",
+                        format!("{}%", (ctx.scale_factor * 100.0).round() as i32),
+                    ),
                 ];
                 for (i, (label, val)) in metrics.iter().enumerate() {
                     let mx = cx + 20.0 + i as f32 * (card_w + 8.0);
                     fill_rounded_rect(pm, mx, cy + 16.0, card_w, 66.0, 12.0, p.card);
-                    fonts.draw_text(pm, label, mx + 14.0, cy + 26.0, 12.0, p.text_secondary, false);
+                    fonts.draw_text(
+                        pm,
+                        label,
+                        mx + 14.0,
+                        cy + 26.0,
+                        12.0,
+                        p.text_secondary,
+                        false,
+                    );
                     fonts.draw_text(pm, val, mx + 14.0, cy + 46.0, 20.0, p.text, true);
                 }
                 let ty = cy + 98.0;
@@ -832,12 +1064,20 @@ impl ManagedWindow {
                     ("Рендер", "OpenGL ES", "damage tracking"),
                     ("Темп кадров", "по vblank хоста", "неблокирующий swap"),
                     ("Дробный масштаб", "wp_fractional_scale_v1", "HiDPI"),
-                    ("Раскладка", ctx.active_layout, "Alt + Shift"),
+                    ("Раскладка", ctx.active_layout, ctx.input_shortcut),
                 ];
                 for (i, (a, b, c)) in rows.iter().enumerate() {
                     let ry = ty + 12.0 + i as f32 * 28.0;
                     if i > 0 {
-                        stroke_line(pm, cx + 34.0, ry - 6.0, cx + cw - 34.0, ry - 6.0, 1.0, p.separator);
+                        stroke_line(
+                            pm,
+                            cx + 34.0,
+                            ry - 6.0,
+                            cx + cw - 34.0,
+                            ry - 6.0,
+                            1.0,
+                            p.separator,
+                        );
                     }
                     fonts.draw_text(pm, a, cx + 34.0, ry, 13.0, p.text, false);
                     fonts.draw_text(pm, b, cx + 200.0, ry, 13.0, p.text_secondary, false);
@@ -852,43 +1092,137 @@ impl ManagedWindow {
                 for (i, line) in visible.iter().enumerate() {
                     let ly = cy + 18.0 + i as f32 * 22.0;
                     let bold = i == 0 && skip == 0;
-                    fonts.draw_text_clipped(pm, line, cx + 24.0, ly, cw - 48.0, if bold { 17.0 } else { 14.0 }, p.text, bold);
+                    fonts.draw_text_clipped(
+                        pm,
+                        line,
+                        cx + 24.0,
+                        ly,
+                        cw - 48.0,
+                        if bold { 17.0 } else { 14.0 },
+                        p.text,
+                        bold,
+                    );
                 }
                 let last_line = visible.last().copied().unwrap_or("");
                 let last_bold = visible.len() == 1 && skip == 0;
                 let size = if last_bold { 17.0 } else { 14.0 };
-                let cursor_x = cx + 24.0 + fonts.measure_text(last_line, size, last_bold).min(cw - 48.0);
+                let cursor_x = cx
+                    + 24.0
+                    + fonts
+                        .measure_text(last_line, size, last_bold)
+                        .min(cw - 48.0);
                 let cursor_y = cy + 18.0 + (visible.len().saturating_sub(1) as f32) * 22.0;
-                fill_rounded_rect(pm, cursor_x + 1.5, cursor_y, 2.0, 18.0, 1.0, rgba(255, 179, 0, 255));
+                fill_rounded_rect(
+                    pm,
+                    cursor_x + 1.5,
+                    cursor_y,
+                    2.0,
+                    18.0,
+                    1.0,
+                    rgba(255, 179, 0, 255),
+                );
             }
             BuiltinWindowKind::SystemSettings => {
-                fonts.draw_text(pm, "Основные", cx + 24.0, cy + 12.0, 17.0, p.text, true);
-                let dark = appearance() == Appearance::Dark;
-                let items: [(&str, String, (u8, u8, u8)); 5] = [
-                    ("Оформление", format!("{} • нажмите, чтобы переключить", if dark { "Тёмное" } else { "Светлое" }), (90, 90, 96)),
-                    (
-                        "Дисплеи",
-                        format!("Масштаб {}% • Super + = меняет на лету", (ctx.scale_factor * 100.0).round() as i32),
-                        (0, 122, 255),
-                    ),
-                    (
-                        "Рабочий стол и Dock",
-                        if ctx.dock_zoom_enabled { "Увеличение иконок: вкл.".to_string() } else { "Увеличение иконок: выкл.".to_string() },
-                        (52, 199, 89),
-                    ),
-                    ("Клавиатура", format!("Источник ввода: {} • Alt + Shift", ctx.active_layout), (142, 142, 147)),
-                    ("Обои", format!("{} • перезагрузок оболочки: {}", ctx.theme.name(), ctx.reload_count), (255, 149, 0)),
-                ];
-                for (i, (title, sub, col)) in items.iter().enumerate() {
-                    let iy = cy + 40.0 + i as f32 * 72.0;
-                    fill_rounded_rect(pm, cx + 20.0, iy, cw - 40.0, 62.0, 12.0, p.card);
-                    fill_squircle_gradient(pm, cx + 34.0, iy + 16.0, 30.0, rgba(col.0, col.1, col.2, 255), rgba(col.0 / 4 * 3, col.1 / 4 * 3, col.2 / 4 * 3, 255));
-                    fonts.draw_text(pm, title, cx + 78.0, iy + 13.0, 13.0, p.text, true);
-                    fonts.draw_text_clipped(pm, sub, cx + 78.0, iy + 33.0, cw - 130.0, 12.0, p.text_secondary, false);
-                    stroke_line(pm, cx + cw - 42.0, iy + 26.0, cx + cw - 37.0, iy + 31.0, 1.6, p.text_tertiary);
-                    stroke_line(pm, cx + cw - 37.0, iy + 31.0, cx + cw - 42.0, iy + 36.0, 1.6, p.text_tertiary);
-                }
+                ctx.settings
+                    .paint(pm, fonts, (cx, cy), (cw, ch), cy, &ctx.settings_context);
             }
         }
+    }
+}
+
+pub struct SettingsFrame {
+    buffer: MemoryRenderBuffer,
+    shadow: Option<ShadowSet>,
+    size: (i32, i32),
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    fn bytes(buffer: &mut MemoryRenderBuffer) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut context = buffer.render();
+        let _ = context.draw(|pixels| {
+            out.extend_from_slice(pixels);
+            Ok::<_, ()>(Vec::new())
+        });
+        out
+    }
+    #[test]
+    fn worker_settings_frame_matches_direct_paint_and_rejects_late_or_superseded_frames() {
+        fn send<T: Send>() {}
+        send::<SettingsFrame>();
+        send::<crate::system_settings::FrameJob>();
+        let mut fonts = FontSystem::new();
+        let mut worker_fonts = fonts.for_worker();
+        let panel = crate::system_settings::Panel::default();
+        let keyboard = crate::settings::Keyboard::default();
+        let mode = crate::system_settings::Mode {
+            width: 1920,
+            height: 1080,
+            refresh: 60000,
+        };
+        crate::theme::with_render_settings(1.25, Appearance::Light, || {
+            let context = crate::system_settings::Context {
+                system: Default::default(),
+                keyboard: &keyboard,
+                active: 0,
+                animations: true,
+                dock_zoom: true,
+                scale: 1.25,
+                display_name: "Window",
+                modes: &[mode],
+                current: mode,
+                direct: false,
+                wallpaper: crate::theme::WallpaperTheme::for_appearance(Appearance::Light),
+                wallpaper_image: None,
+            };
+            let mut direct = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 0, 0);
+            direct.activated = true;
+            let ctx = BuiltinContext {
+                settings: &panel,
+                settings_context: context,
+                notes_text: "",
+                rss_mb: 0.0,
+                window_count: 0,
+                wayland_socket: "",
+                active_layout: "",
+                input_shortcut: "",
+                scale_factor: 1.25,
+            };
+            direct.ensure_rendered(&mut fonts, true, &ctx);
+            let expected = bytes(&mut direct.decoration_buffer);
+            let mut target = ManagedWindow::new_builtin(2, BuiltinWindowKind::SystemSettings, 0, 0);
+            target.activated = true;
+            let ticket = std::sync::Arc::new(());
+            target.settings_ticket = Some(ticket.clone());
+            target.dirty = false;
+            let job = crate::system_settings::FrameJob::new(
+                std::sync::Arc::downgrade(&ticket),
+                &panel,
+                &ctx.settings_context,
+                &target,
+            );
+            let mut worker = ManagedWindow::new_builtin(0, BuiltinWindowKind::SystemSettings, 0, 0);
+            let wrong = std::sync::Arc::new(());
+            assert!(!target.install_settings_frame(
+                &std::sync::Arc::downgrade(&wrong),
+                worker.raster_settings(&mut worker_fonts, &job)
+            ));
+            assert!(target.install_settings_frame(
+                &job.ticket,
+                worker.raster_settings(&mut worker_fonts, &job)
+            ));
+            assert_eq!(bytes(&mut target.decoration_buffer), expected);
+            target.settings_ticket = Some(ticket);
+            target.dirty = true;
+            assert!(
+                !target.install_settings_frame(
+                    &job.ticket,
+                    worker.raster_settings(&mut worker_fonts, &job)
+                ),
+                "late frame painted over a newer edit"
+            );
+        });
     }
 }

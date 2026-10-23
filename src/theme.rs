@@ -695,6 +695,11 @@ pub fn render_frosted_wallpaper(width: i32, height: i32, theme: WallpaperTheme, 
     let (w, h) = (width.max(1) as usize, height.max(1) as usize);
     let mut rgba = vec![0u8; w * h * 4];
     render_wallpaper(&mut rgba, w as i32, h as i32, theme);
+    frost_pixels(rgba,width,height,darken)
+}
+
+pub fn frost_pixels(rgba:Vec<u8>,width:i32,height:i32,darken:f32)->Vec<u8>{
+    let (w,h)=(width.max(1) as usize,height.max(1) as usize);
     let radius = (w / 40).max(2);
     let mut out = rgba.clone();
     for c in 0..3 {

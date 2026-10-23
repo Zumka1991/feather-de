@@ -1037,12 +1037,7 @@ impl FeatherCompositor {
             MenuAction::Paste => self.paste_to_desktop(),
             MenuAction::OpenDesktop => self.files(&shell_quote(&dir)),
             MenuAction::Terminal => {
-                let terminal = crate::apps::terminal_command();
-                if terminal == "konsole" {
-                    self.spawn(&format!("cd {} && (konsole || foot || alacritty || kitty || xterm)", shell_quote(&dir)));
-                } else {
-                    self.spawn(&format!("{terminal} --cwd {}", shell_quote(&dir)));
-                }
+                self.spawn(&format!("cd {} && {}",shell_quote(&dir),self.system_preferences.terminal_command()));
             }
             MenuAction::CleanUp => {
                 let desktop = &mut self.shell.desktop;

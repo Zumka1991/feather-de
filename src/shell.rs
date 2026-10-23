@@ -307,6 +307,7 @@ enum CcItem {
 #[derive(Debug, Clone)]
 pub enum ShellClickAction {
     None,
+    SystemSettings(crate::system_settings::Action),
     Control(crate::controls::Control),
     NetworkSettings,
     BluetoothSettings,
@@ -347,6 +348,7 @@ pub enum ShellClickAction {
 /// Menus of the menu bar
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TopMenu {
+    Input,
     Client(i32),
     Tray(i32),
     Feather,
@@ -416,7 +418,7 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
     let has_window = ctx.windows.iter().any(|w| w.2);
     let on = |cond: bool, a: ShellClickAction| cond.then_some(a);
     match menu {
-        TopMenu::Client(_) | TopMenu::Tray(_) => Vec::new(),
+        TopMenu::Client(_) | TopMenu::Tray(_) | TopMenu::Input => Vec::new(),
         TopMenu::Feather => vec![
             item("Об этом компьютере", "", builtin(BuiltinWindowKind::AboutFeather, "Об этом компьютере")),
             Separator,
@@ -490,7 +492,11 @@ pub struct MacShell {
     pub screen_h: i32,
 
     pub theme: WallpaperTheme,
-    pub wallpaper_buffer: MemoryRenderBuffer,
+    pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
+    pub applied_wallpaper_image: Option<crate::wallpaper::ImageSource>,
+    pub wallpaper_texture: Option<smithay::backend::renderer::element::texture::TextureBuffer<smithay::backend::renderer::gles::GlesTexture>>,
+    pub wallpaper_texture_size:(i32,i32),
+    wallpaper_pending: Option<(Vec<u8>,(i32,i32))>,
     pub wallpaper_dirty: bool,
     cc_backdrop: Option<CcBackdrop>,
     cc_backdrop_requested: bool,
@@ -498,7 +504,11 @@ pub struct MacShell {
     pub topbar_buffer: MemoryRenderBuffer,
     pub topbar_dirty: bool,
     topbar_hits: Vec<(f32, f32, TopbarItem)>,
+    status_hover: Option<TopbarItem>,
     pub tray_items: Vec<crate::tray::Item>,
+    pub input_sources: Vec<crate::settings::InputSource>,
+    pub input_selected: usize,
+    input_shortcut: &'static str,
     tray_menu: Option<(String,u64,f32,Option<std::sync::Arc<crate::appmenu::MenuNode>>)>,
 
     pub dock_buffer: MemoryRenderBuffer,
@@ -576,20 +586,20 @@ impl MacShell {
     pub fn new(logical_w: i32, logical_h: i32) -> Self {
         let w = logical_w.max(640);
         let h = logical_h.max(480);
-        let (ww, wh) = wallpaper_buffer_size(w, h);
 
         let mut shell = Self {
             screen_w: w,
             screen_h: h,
             theme: WallpaperTheme::for_appearance(appearance()),
-            wallpaper_buffer: new_buffer(ww, wh),
+            wallpaper_image:None,applied_wallpaper_image:None,wallpaper_texture:None,wallpaper_texture_size:(1,1),wallpaper_pending:None,
             wallpaper_dirty: true,
             cc_backdrop: None,
             cc_backdrop_requested: false,
             topbar_buffer: new_buffer(to_phys(w), to_phys(TOP_BAR_HEIGHT)),
             topbar_dirty: true,
-            topbar_hits: Vec::new(),
+            topbar_hits: Vec::new(),status_hover:None,
             tray_items: Vec::new(),
+            input_sources: crate::settings::Keyboard::default().sources(),input_selected:0,input_shortcut:"Alt + Shift",
             tray_menu: None,
             dock_buffer: new_buffer(to_phys(w), to_phys(DOCK_BUF_H)),
             dock_buf_w: w,
@@ -713,8 +723,6 @@ impl MacShell {
         let h = logical_h.max(480);
         self.screen_w = w;
         self.screen_h = h;
-        let (ww, wh) = wallpaper_buffer_size(w, h);
-        self.wallpaper_buffer = new_buffer(ww, wh);
         self.topbar_buffer = new_buffer(to_phys(w), to_phys(TOP_BAR_HEIGHT));
         self.dock_buf_w = w;
         self.dock_anchor = None;
@@ -956,6 +964,7 @@ impl MacShell {
     /// Install a CPU-only result. No rasterization, file lookup, or GPU access here.
     pub fn install_asset(&mut self, asset: crate::raster::Asset) -> bool {
         match asset {
+            crate::raster::Asset::Settings(_,_)=>return false,
             crate::raster::Asset::Retry => {}
             crate::raster::Asset::Reclaimed => return false,
             crate::raster::Asset::CcBackdrop(backdrop) => {
@@ -964,9 +973,11 @@ impl MacShell {
                 if !self.control_center_open { return false; }
                 self.overlay_dirty = true;
             }
-            crate::raster::Asset::Wallpaper { buffer, glass } => {
+            crate::raster::Asset::WallpaperError(_)=>return false,
+            crate::raster::Asset::Wallpaper { pixels,size,image, glass } => {
                 let (w, h) = (glass.width(), glass.height());
-                self.wallpaper_buffer = buffer;
+                self.applied_wallpaper_image=image;
+                self.wallpaper_pending=Some((pixels,size));
                 crate::theme::set_glass_background(Some((std::rc::Rc::new(glass), self.screen_w as f32 / w as f32, self.screen_h as f32 / h as f32)));
                 self.dock_painted.clear(); self.overlay_painted.clear();
                 self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true;
@@ -1018,6 +1029,10 @@ impl MacShell {
                 self.raster_reclaim_pending = false;
             }
         }
+    }
+
+    pub fn request_raster_reclaim(&mut self) {
+        self.raster_reclaim_pending = true;
     }
 
     pub fn ensure_ghost_rendered(&mut self, fonts: &mut FontSystem) {
@@ -1080,6 +1095,13 @@ impl MacShell {
 
     fn rows_for_menu(&self, menu: TopMenu) -> Vec<MenuRow> {
         match menu {
+            TopMenu::Input=>{
+                let mut rows:Vec<_>=self.input_sources.iter().enumerate().map(|(i,s)|MenuRow::Item{label:s.label.into(),shortcut:String::new(),checked:i==self.input_selected,radio:false,submenu:None,action:Some(ShellClickAction::SystemSettings(crate::system_settings::Action::SelectSource(i)))}).collect();
+                rows.push(MenuRow::Separator);
+                rows.push(item(&format!("Переключение: {}",self.input_shortcut),"",None));
+                rows.push(item("Настройки клавиатуры…","",Some(ShellClickAction::SystemSettings(crate::system_settings::Action::Page(crate::system_settings::Page::Keyboard)))));
+                rows
+            }
             TopMenu::Client(id) | TopMenu::Tray(id) => self.native_menu_root(menu).and_then(|root| root.find(id))
                 .map(|node| {
                     let count = node.children.iter().filter(|n| n.visible).count();
@@ -1138,6 +1160,20 @@ impl MacShell {
     fn native_menu_root(&self,menu:TopMenu)->Option<&crate::appmenu::MenuNode>{
         if matches!(menu,TopMenu::Tray(_)){self.tray_menu.as_ref()?.3.as_deref()}else{self.client_menu.as_deref()}
     }
+    pub fn set_input_sources(&mut self,sources:Vec<crate::settings::InputSource>,selected:usize,shortcut:&'static str){
+        self.input_sources=sources;self.input_selected=selected;self.input_shortcut=shortcut;
+        self.topbar_dirty=true;if self.open_menu==Some(TopMenu::Input){self.overlay_dirty=true;}
+    }
+    pub fn debug_input_hit(&self,x:f64)->bool{self.topbar_item_at(x as f32)==Some(TopbarItem::Layout)}
+    pub fn input_menu_key(&mut self,direction:i32)->Option<ShellClickAction>{
+        let rows=self.rows_for_menu(TopMenu::Input);
+        let enabled:Vec<_>=rows.iter().enumerate().filter_map(|(i,r)|matches!(r,MenuRow::Item{action:Some(_),..}).then_some(i)).collect();
+        if direction==0 {let action=self.menu_hovered.and_then(|i|rows.get(i)).and_then(|r|match r{MenuRow::Item{action,..}=>action.clone(),_=>None});if action.is_some(){self.close_menus();}return action;}
+        if enabled.is_empty(){return None;}
+        let current=self.menu_hovered.and_then(|i|enabled.iter().position(|n|*n==i));
+        let next=match current{Some(i)=>(i as i32+direction).rem_euclid(enabled.len() as i32) as usize,None=>if direction>0{0}else{enabled.len()-1}};
+        self.menu_hovered=Some(enabled[next]);self.overlay_dirty=true;None
+    }
     pub fn tray_open_ids(&self)->Vec<i32>{
         let Some(TopMenu::Tray(id))=self.open_menu else{return Vec::new()};
         std::iter::once(id).chain(self.client_submenus.iter().copied()).collect()
@@ -1163,7 +1199,7 @@ impl MacShell {
         let (x0,x1,index)=self.topbar_hits.iter().find_map(|&(x0,x1,hit)|match hit{TopbarItem::Tray(i)if x>=x0 as f64&&x<x1 as f64=>Some((x0,x1,i)),_=>None})?;
         Some((self.tray_items.get(index)?,R::new(x0,0.0,x1-x0,TOP_BAR_HEIGHT as f32)))
     }
-    fn tray_visible_count(&self)->usize{self.tray_items.len().min(((self.screen_w as f32-500.0)/26.0).max(1.0) as usize).min(12)}
+    fn tray_visible_count(&self)->usize{self.tray_items.len().min(((self.screen_w as f32-500.0)/28.0).max(1.0) as usize).min(12)}
 
     fn client_row_capacity(&self) -> usize {
         (((self.screen_h - TOP_BAR_HEIGHT - 16) as f32 / MENU_ITEM_H) as usize).saturating_sub(2).max(1)
@@ -1321,7 +1357,7 @@ impl MacShell {
         let anchor = self
             .topbar_hits
             .iter()
-            .find(|(_, _, it)| *it == TopbarItem::Menu(menu))
+            .find(|(_, _, it)| *it == TopbarItem::Menu(menu)||(menu==TopMenu::Input&&*it==TopbarItem::Layout))
             .map(|(x0, _, _)| *x0)
             .unwrap_or(6.0);
         let anchor=if matches!(menu,TopMenu::Tray(_)){self.tray_menu.as_ref().map_or(anchor,|m|m.2-w*0.5)}else{anchor};
@@ -1440,6 +1476,8 @@ impl MacShell {
     // ───────────────────────── Pointer ─────────────────────────
 
     pub fn update_pointer_hover(&mut self, px: f64, py: f64) {
+        let hover=if py>=0.0&&py<TOP_BAR_HEIGHT as f64{self.topbar_item_at(px as f32)}else{None};
+        if hover!=self.status_hover{self.status_hover=hover;self.topbar_dirty=true;}
         if self.open_menu.is_some() {
             // Like macOS: with a menu open, sliding along the menu bar switches menus
             if py < TOP_BAR_HEIGHT as f64 {
@@ -1452,6 +1490,8 @@ impl MacShell {
                         self.overlay_dirty = true;
                         self.topbar_dirty = true;
                     }
+                }else if self.topbar_item_at(px as f32)==Some(TopbarItem::Layout)&&self.open_menu!=Some(TopMenu::Input){
+                    self.open_menu=Some(TopMenu::Input);self.menu_hovered=None;self.client_submenus.clear();self.client_hovered=None;self.overlay_dirty=true;self.topbar_dirty=true;
                 }
             }
             if matches!(self.open_menu, Some(TopMenu::Client(_)|TopMenu::Tray(_))) {
@@ -1531,11 +1571,15 @@ impl MacShell {
                         self.open_menu = Some(m);
                     }
                 }
-                Some(TopbarItem::ControlCenter) | Some(TopbarItem::Wifi) | Some(TopbarItem::Clock) => {
+                Some(TopbarItem::Clock)=>return Some(ShellClickAction::SystemSettings(crate::system_settings::Action::Page(crate::system_settings::Page::DateTime))),
+                Some(TopbarItem::ControlCenter) | Some(TopbarItem::Wifi) => {
                     self.control_center_open = !was.1
                 }
                 Some(TopbarItem::Spotlight) => self.spotlight_open = !was.2,
-                Some(TopbarItem::Layout) => return Some(ShellClickAction::ToggleLayout),
+                Some(TopbarItem::Layout) => {
+                    self.open_menu=(was.0!=Some(TopMenu::Input)).then_some(TopMenu::Input);
+                    self.topbar_dirty=true;self.overlay_dirty=true;
+                }
                 Some(TopbarItem::Tray(index)) => {
                     if let Some(item)=self.tray_items.get(index){return Some(ShellClickAction::Tray{key:item.key.clone(),action:crate::tray::Action::Activate,x:mx as i32,y:my as i32});}
                 }
@@ -1659,11 +1703,19 @@ impl MacShell {
             return;
         }
         if self.raster.as_ref().is_some_and(|worker| worker.submit(crate::raster::Job::Wallpaper {
-            logical: (self.screen_w, self.screen_h), theme: self.theme,
+            logical: (self.screen_w, self.screen_h), theme: self.theme,image:self.wallpaper_image.clone(),
         })) { self.wallpaper_dirty = false; }
     }
 
-    pub fn ensure_topbar_rendered(&mut self, fonts: &mut FontSystem, active_app_title: &str, active_layout: &str) {
+    pub fn upload_wallpaper(&mut self,renderer:&mut smithay::backend::renderer::gles::GlesRenderer){
+        use smithay::backend::renderer::{ImportMem,element::texture::TextureBuffer};
+        if let Some((pixels,size))=self.wallpaper_pending.take(){
+            match renderer.import_memory(&pixels,Fourcc::Abgr8888,size.into(),false){Ok(texture)=>{self.wallpaper_texture=Some(TextureBuffer::from_texture(renderer,texture,1,Transform::Normal,None));self.wallpaper_texture_size=size;},Err(e)=>tracing::warn!("wallpaper upload: {e:?}")}
+            self.request_raster_reclaim();
+        }
+    }
+
+    pub fn ensure_topbar_rendered(&mut self, fonts: &mut FontSystem, active_app_title: &str, _active_layout: &str) {
         if !self.topbar_dirty {
             return;
         }
@@ -1682,7 +1734,9 @@ impl MacShell {
         let p = palette();
         let mut hits = Vec::with_capacity(16);
         let tray=self.tray_items.clone();let visible_tray=self.tray_visible_count();
-        let tray_width=visible_tray as f32*26.0+if tray.len()>visible_tray{30.0}else{0.0};
+        let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0};
+        let input=self.input_sources.get(self.input_selected).copied().unwrap_or(crate::settings::SOURCES[0]);
+        let hover=self.status_hover;
         let mut menus = vec![(active_app_title.to_string(), TopMenu::App, true, true)];
         if let Some(root) = self.client_menu.as_ref().filter(|root| root.children.iter().any(|n| n.visible)) {
             menus.extend(root.children.iter().filter(|n| n.visible && !n.separator).map(|n| (n.label.clone(), TopMenu::Client(n.id), false, n.enabled)));
@@ -1709,7 +1763,7 @@ impl MacShell {
                 draw_feather_logo(&mut pm, 22.0, lh * 0.5, 0.95, p.menubar_text);
                 hits.push((0.0, 38.0, TopbarItem::Menu(TopMenu::Feather)));
                 let mut x = 46.0;
-                let right_reserved = fonts.measure_text(&clock, 13.0, false) + 180.0+tray_width;
+                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 162.0+tray_width;
                 for (label, menu, bold, enabled) in &menus {
                     let available = lw - right_reserved - x - 12.0;
                     if available < 24.0 { break; }
@@ -1723,40 +1777,29 @@ impl MacShell {
                     x += w + 20.0;
                 }
 
-                // Right: clock, Control Center, Spotlight, Wi-Fi, input source
-                let mut rx = lw - 12.0;
-                let cw = fonts.measure_text(&clock, 13.0, false);
-                fonts.draw_text(&mut pm, &clock, rx - cw, text_y, 13.0, p.menubar_text, false);
-                hits.push((rx - cw - 6.0, lw, TopbarItem::Clock));
-                rx -= cw + 14.0;
-
-                if cc_open {
-                    highlight(&mut pm, rx - 28.0, rx);
+                // A fixed grid keeps targets aligned when the source or clock changes.
+                let mut rx=lw-14.0;
+                let cw=fonts.measure_text(&clock,13.0,false);
+                let clock_width=cw.max(146.0);
+                if hover==Some(TopbarItem::Clock){highlight(&mut pm,rx-clock_width-4.0,lw-5.0);}
+                fonts.draw_text(&mut pm,&clock,rx-cw,text_y,13.0,p.menubar_text,false);
+                hits.push((rx-clock_width-4.0,lw,TopbarItem::Clock));rx-=clock_width+14.0;
+                for (hit,opened) in [(TopbarItem::ControlCenter,cc_open),(TopbarItem::Spotlight,sp_open),(TopbarItem::Wifi,cc_open)]{
+                    if opened||hover==Some(hit){highlight(&mut pm,rx-29.0,rx-1.0);}
+                    let center=rx-15.0;
+                    match hit {
+                        TopbarItem::ControlCenter=>draw_control_center_icon(&mut pm,center,lh*0.5,p.menubar_text),
+                        TopbarItem::Spotlight=>draw_search_icon(&mut pm,center,lh*0.5,5.0,p.menubar_text),
+                        TopbarItem::Wifi=>draw_wifi_icon(&mut pm,center,lh*0.5-2.0,p.menubar_text,wifi),_=>{}
+                    }
+                    hits.push((rx-30.0,rx,hit));rx-=30.0;
                 }
-                draw_control_center_icon(&mut pm, rx - 14.0, lh * 0.5, p.menubar_text);
-                hits.push((rx - 28.0, rx, TopbarItem::ControlCenter));
-                rx -= 32.0;
-
-                if sp_open {
-                    highlight(&mut pm, rx - 28.0, rx);
-                }
-                draw_search_icon(&mut pm, rx - 14.0, lh * 0.5, 4.8, p.menubar_text);
-                hits.push((rx - 28.0, rx, TopbarItem::Spotlight));
-                rx -= 32.0;
-
-                draw_wifi_icon(&mut pm, rx - 14.0, lh * 0.5 - 2.0, p.menubar_text, wifi);
-                hits.push((rx - 28.0, rx, TopbarItem::Wifi));
-                rx -= 34.0;
-
-                // Input source badge, like macOS ("RU" / "EN" in a rounded box)
-                let lw_text = fonts.measure_text(active_layout, 10.5, true);
-                let bw = lw_text + 10.0;
-                stroke_rounded_rect(&mut pm, rx - bw, 5.5, bw, lh - 11.0, 3.5, 1.2, p.menubar_text);
-                fonts.draw_text(&mut pm, active_layout, rx - bw + 5.0, 6.8, 10.5, p.menubar_text, true);
-                hits.push((rx - bw - 6.0, rx + 4.0, TopbarItem::Layout));
-                rx-=bw+14.0;
+                if open_menu==Some(TopMenu::Input)||hover==Some(TopbarItem::Layout){highlight(&mut pm,rx-31.0,rx-1.0);}
+                crate::system_settings::draw_input_badge(&mut pm,fonts,input.badge,rx-27.0,(lh-16.0)*0.5,22.0,16.0,p.menubar_text);
+                hits.push((rx-32.0,rx,TopbarItem::Layout));rx-=40.0;
                 for (index,item) in tray.iter().take(visible_tray).enumerate(){
-                    let x=rx-22.0;let y=(lh-18.0)*0.5;
+                    let x=rx-23.0;let y=(lh-18.0)*0.5;
+                    if hover==Some(TopbarItem::Tray(index)){highlight(&mut pm,rx-27.0,rx-1.0);}
                     // A client pixmap is authoritative; an unresolved theme name
                     // must not replace it with the generic application fallback.
                     let icon=if item.pixels.is_none()&&!item.icon_name.is_empty(){
@@ -1772,7 +1815,7 @@ impl MacShell {
                         fonts.draw_text_centered(&mut pm,&label,x+9.0,y+2.0,10.0,p.menubar_text,false);
                     }
                     if item.attention{fill_circle(&mut pm,x+17.0,y+2.0,2.0,p.accent);}
-                    hits.push((rx-26.0,rx,TopbarItem::Tray(index)));rx-=26.0;
+                    hits.push((rx-28.0,rx,TopbarItem::Tray(index)));rx-=28.0;
                 }
                 if tray.len()>visible_tray {
                     let label=format!("+{}",tray.len()-visible_tray);
@@ -1960,7 +2003,7 @@ impl MacShell {
         rects
     }
 
-    pub fn ensure_overlay_rendered(&mut self, fonts: &mut FontSystem, registry: &AppRegistry, active_layout: &str) {
+    pub fn ensure_overlay_rendered(&mut self, fonts: &mut FontSystem, registry: &AppRegistry, _active_layout: &str) {
         if self.overlay_allocated && !self.overlay_dirty {
             return;
         }
@@ -2001,6 +2044,8 @@ impl MacShell {
         let sp = (local(bar), list.map(local), count, math);
         let toast_rect = local(self.toast_rect());
         let toast = self.toast.clone().filter(|_| self.toast_visible());
+        let input_badges:Vec<_>=if self.open_menu==Some(TopMenu::Input){self.input_sources.iter().map(|s|s.badge).collect()}else{Vec::new()};
+        let active_input_label=self.input_sources.get(self.input_selected).map_or("ABC",|s|s.label);
         let (cc_open, sp_open) = (self.control_center_open, self.spotlight_open);
         let query = self.spotlight_query.clone();
         let selected = self.spotlight_selected;
@@ -2066,7 +2111,10 @@ impl MacShell {
                                 let sc = if hot { p.on_accent } else { p.text_tertiary };
                                 fonts.draw_text_right(&mut pm, shortcut, r.x + r.w - 14.0, y + 3.5, 13.0, sc, false) + 16.0
                             };
-                            fonts.draw_text_clipped(&mut pm, label, r.x + 24.0, y + 3.5, r.w - 38.0 - sw, 13.0, col, false);
+                            let inset=if let Some(badge)=input_badges.get(i){
+                                crate::system_settings::draw_input_badge(&mut pm,fonts,badge,r.x+27.0,y+5.0,22.0,16.0,col);58.0
+                            }else{24.0};
+                            fonts.draw_text_clipped(&mut pm, label, r.x + inset, y + 3.5, r.w - inset-14.0 - sw, 13.0, col, false);
                             y += MENU_ITEM_H;
                         }
                     }
@@ -2129,7 +2177,7 @@ impl MacShell {
                         CcItem::Layout => {
                             crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Keyboard,r.x+25.0,r.y+20.0,p.text_secondary,false);
                             fonts.draw_text(&mut pm, "Источник ввода", r.x + 46.0, r.y + 11.5, 13.0, p.text, true);
-                            let name = if active_layout == "RU" { "Русская" } else { "ABC" };
+                            let name = active_input_label;
                             fonts.draw_text_right(&mut pm, name, r.x + r.w - 14.0, r.y + 11.5, 13.0, p.text_secondary, false);
                         }
                     }
@@ -2413,6 +2461,23 @@ mod appmenu_tests {
         let action = shell.debug_client_menu_path("File/Nested/Child", true, &registry);
         assert!(matches!(action, Some(ShellClickAction::AppMenuActivate { generation: 7, id: 6 })));
         assert!(shell.client_open_ids().is_empty());
+    }
+
+    #[test]
+    fn source_indicator_has_stable_targets_and_menu_selects_or_opens_keyboard_settings(){
+        let mut fonts=FontSystem::new();let registry=AppRegistry::new();let mut shell=MacShell::new(1000,700);
+        shell.ensure_topbar_rendered(&mut fonts,"Терминал","EN");
+        let rect=shell.topbar_hits.iter().find(|(_,_,h)|*h==TopbarItem::Layout).copied().unwrap();
+        let slots=shell.topbar_hits.iter().filter(|(_,_,h)|!matches!(h,TopbarItem::Menu(_))).cloned().collect::<Vec<_>>();
+        shell.set_input_sources(crate::settings::Keyboard::default().sources(),1,"Ctrl + Space");
+        shell.ensure_topbar_rendered(&mut fonts,"Терминал","RU");
+        assert_eq!(slots,shell.topbar_hits.iter().filter(|(_,_,h)|!matches!(h,TopbarItem::Menu(_))).cloned().collect::<Vec<_>>());
+        shell.handle_pointer_click(((rect.0+rect.1)/2.0) as f64,12.0,&registry);assert_eq!(shell.open_menu,Some(TopMenu::Input));
+        let rows=shell.rows_for_menu(TopMenu::Input);assert!(matches!(rows[1],MenuRow::Item{checked:true,..}));
+        shell.input_menu_key(1);assert!(matches!(shell.input_menu_key(0),Some(ShellClickAction::SystemSettings(crate::system_settings::Action::SelectSource(0)))));
+        assert!(shell.open_menu.is_none());shell.open_menu=Some(TopMenu::Input);
+        for _ in 0..3{shell.input_menu_key(1);}
+        assert!(matches!(shell.input_menu_key(0),Some(ShellClickAction::SystemSettings(crate::system_settings::Action::Page(crate::system_settings::Page::Keyboard)))));
     }
 
     #[test]

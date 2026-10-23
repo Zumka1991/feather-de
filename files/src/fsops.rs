@@ -114,6 +114,9 @@ pub fn open_external(path: &Path) {
 }
 
 pub fn open_terminal(dir: &Path) {
+    if let Some(helper)=std::env::current_exe().ok().and_then(|e|e.parent().map(|d|d.join("feather-de"))).filter(|p|p.is_file()){
+        if std::process::Command::new(helper).arg("--open-terminal").arg(dir).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().is_ok(){return;}
+    }
     // Feather's own terminal next to this program first
     if let Some(own) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("feather-terminal"))).filter(|p| p.is_file()) {
         if std::process::Command::new(own).arg("--cwd").arg(dir).stdin(std::process::Stdio::null()).spawn().is_ok() {

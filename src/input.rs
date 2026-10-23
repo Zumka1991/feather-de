@@ -93,12 +93,17 @@ impl FeatherCompositor {
     fn on_keyboard<B: InputBackend>(&mut self, event: B::KeyboardKeyEvent) {
         let keycode = event.key_code();
         let key_state = event.state();
+        self.process_keyboard_key(keycode,key_state,Event::time_msec(&event));
+    }
+    pub fn debug_keyboard_key(&mut self,evdev:u32,pressed:bool){
+        self.process_keyboard_key((evdev+8).into(),if pressed{KeyState::Pressed}else{KeyState::Released},self.start_time.elapsed().as_millis() as u32);
+    }
+    fn process_keyboard_key(&mut self,keycode:smithay::input::keyboard::Keycode,key_state:KeyState,time:u32){
         if key_state == KeyState::Pressed {
             if let Some(stats) = self.frame_stats.as_mut() {
                 stats.record_key();
             }
         }
-        let time = Event::time_msec(&event);
         let serial = SERIAL_COUNTER.next_serial();
         let mut deferred: Option<KeyAction> = None;
 
@@ -188,13 +193,7 @@ impl FeatherCompositor {
             }
 
             let layout_idx = keysym_handle.xkb().lock().unwrap().active_layout().0;
-            let new_layout = if layout_idx == 1 { "RU" } else { "EN" };
-            if st.active_layout_name != new_layout {
-                st.active_layout_name = new_layout.to_string();
-                st.shell.topbar_dirty = true;
-                st.shell.overlay_dirty = true;
-                st.mark_builtin_windows_dirty();
-            }
+            if st.active_layout_index!=layout_idx as usize{st.refresh_input_source(layout_idx as usize);}
 
             if key_state != KeyState::Pressed {
                 return FilterResult::Forward;
@@ -211,6 +210,10 @@ impl FeatherCompositor {
             if st.shell.open_menu.is_some() && sym.raw() == keysyms::KEY_Escape {
                 st.shell.close_menus();
                 return FilterResult::Intercept(());
+            }
+            if st.shell.open_menu==Some(crate::shell::TopMenu::Input){
+                let direction=match sym.raw(){keysyms::KEY_Down=>Some(1),keysyms::KEY_Up=>Some(-1),keysyms::KEY_Return|keysyms::KEY_KP_Enter=>Some(0),_=>None};
+                if let Some(direction)=direction{if let Some(action)=st.shell.input_menu_key(direction){deferred=Some(KeyAction::Shell(action));}return FilterResult::Intercept(());}
             }
             if matches!(st.shell.open_menu, Some(crate::shell::TopMenu::Client(_)|crate::shell::TopMenu::Tray(_))) {
                 let direction = match sym.raw() {
@@ -269,7 +272,7 @@ impl FeatherCompositor {
                     }
                     keysyms::KEY_Return | keysyms::KEY_t => {
                         deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
-                            AppAction::Exec("konsole".to_string()),
+                            AppAction::Exec(st.system_preferences.terminal_command()),
                             "Терминал".to_string(),
                         )));
                         return FilterResult::Intercept(());
@@ -371,6 +374,10 @@ impl FeatherCompositor {
             }
 
             // Built-in Notes window receives text when it is the focused (topmost) window
+            if st.system_settings.editing()&&st.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|matches!(w.backend,WindowBackend::Builtin(BuiltinWindowKind::SystemSettings))){
+                if let Some(action)=st.system_settings.edit_key(if mods.ctrl{latin_sym.raw()}else{sym.raw()},sym.key_char(),mods.ctrl){deferred=Some(KeyAction::Shell(ShellClickAction::SystemSettings(action)));}
+                st.mark_settings_dirty();st.needs_redraw=true;return FilterResult::Intercept(());
+            }
             if let Some(top_win) = st.windows.iter_mut().rev().find(|w| w.is_visible()) {
                 if let WindowBackend::Builtin(BuiltinWindowKind::QuickNotes) = top_win.backend {
                     match sym.raw() {
@@ -923,17 +930,7 @@ impl FeatherCompositor {
                     }
                 }
                 BuiltinWindowKind::SystemSettings => {
-                    if (40.0..104.0).contains(&ly) {
-                        builtin_action = Some(ShellClickAction::ToggleAppearance);
-                    } else if (112.0..176.0).contains(&ly) {
-                        builtin_action = Some(ShellClickAction::CycleHiDpiScale);
-                    } else if (184.0..248.0).contains(&ly) {
-                        builtin_action = Some(ShellClickAction::ToggleDockZoom);
-                    } else if (256.0..320.0).contains(&ly) {
-                        builtin_action = Some(ShellClickAction::ToggleLayout);
-                    } else if (328.0..396.0).contains(&ly) && lx >= 20.0 {
-                        builtin_action = Some(ShellClickAction::CycleTheme);
-                    }
+                    builtin_action=self.system_settings.hit(lx,ly,win.width as f32,win.height as f32,&self.settings_context()).map(ShellClickAction::SystemSettings);
                 }
                 _ => {}
             }
@@ -1086,6 +1083,13 @@ impl FeatherCompositor {
             if delta != 0.0 && lp.scroll(delta, discrete) {
                 self.needs_redraw = true;
             }
+            return;
+        }
+        if let Some((w,h))=self.windows.iter().rev().find(|w|w.contains_point(self.pointer_location.x,self.pointer_location.y)).filter(|w|matches!(w.backend,WindowBackend::Builtin(BuiltinWindowKind::SystemSettings))).map(|w|(w.width as f32,w.height as f32)){
+            let mut panel=std::mem::take(&mut self.system_settings);
+            let changed=panel.scroll_by(menu_delta,w,h,&self.settings_context());
+            self.system_settings=panel;
+            if changed{self.mark_settings_dirty();self.needs_redraw=true;}
             return;
         }
         let source = event.source();

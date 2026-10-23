@@ -65,6 +65,7 @@ const URI_LIST: &str = "text/uri-list";
 
 /// Results of worker threads
 enum Msg {
+    SaveChecked(PathBuf,Result<Option<bool>,String>),
     Listed(u64, Result<Vec<fsops::Entry>, String>),
     Done(usize, &'static str),
     ExternalFiles(Vec<PathBuf>),
@@ -73,6 +74,7 @@ enum Msg {
 }
 
 struct Files {
+    picker_test_armed:bool,
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
@@ -123,8 +125,9 @@ fn main() {
     let started = Instant::now();
     // feather-files [--rename] [path]: a file path opens its folder with the file selected
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    let picker_config=args.iter().any(|a|a.as_os_str()=="--file-picker").then(||feather_ui::picker::read_config().expect("запрос выбора файла"));
     let rename = args.iter().any(|a| a.as_os_str() == "--rename");
-    let target = args.into_iter().find(|a| a.as_os_str() != "--rename");
+    let target = if let Some(config)=&picker_config{use std::os::unix::ffi::OsStringExt;config.start.as_ref().map(|p|PathBuf::from(std::ffi::OsString::from_vec(p.clone())))}else{args.into_iter().find(|a| a.as_os_str() != "--rename"&&a.as_os_str()!="--file-picker")};
     let (start, reveal) = match target {
         Some(p) if p.is_dir() && !rename => (p, None),
         Some(p) => (p.parent().map(PathBuf::from).unwrap_or_else(fsops::home), Some(p)),
@@ -161,8 +164,16 @@ fn main() {
         .insert_source(rx, |event, _, files| {
             if let channel::Event::Msg(msg) = event {
                 let effects = match msg {
+                    Msg::SaveChecked(path,result)=>files.app.save_checked(path,result),
                     Msg::Listed(generation, result) => {
                         files.app.listed(generation, result);
+                        if !files.picker_test_armed{
+                            if let Some(path)=std::env::var_os("FEATHER_PICKER_TEST_FILE"){
+                                files.picker_test_armed=true;let path=PathBuf::from(path);
+                                let delay=std::env::var("FEATHER_PICKER_TEST_DELAY_MS").ok().and_then(|s|s.parse::<u64>().ok()).unwrap_or(600);
+                                let _=files.handle.insert_source(Timer::from_duration(std::time::Duration::from_millis(delay)),move|_,_,files|{let effects=files.app.debug_picker_choose(&path);files.apply(effects);TimeoutAction::Drop});
+                            }
+                        }
                         Vec::new()
                     }
                     Msg::Done(failed, what) => files.app.operation_done(failed, what),
@@ -185,7 +196,8 @@ fn main() {
         .expect("канал результатов");
 
     let fonts = text::FontSystem::new();
-    let (app, effects) = App::new(fonts, start, reveal, rename);
+    let (mut app, effects) = App::new(fonts, start, reveal, rename);
+    if let Some(config)=picker_config{app.set_picker(config);window.set_title(app.window_title());window.set_min_size(Some((640,(app.picker_height() as u32+160).max(320))));}
     let watcher = fsops::Watcher::new();
     if let Some(w) = &watcher {
         let fd = w.fd();
@@ -202,6 +214,7 @@ fn main() {
     }
     let rgba = shm.formats().contains(&wl_shm::Format::Abgr8888);
     let mut files = Files {
+        picker_test_armed:false,
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
@@ -265,13 +278,15 @@ impl Files {
     fn apply(&mut self, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
+                Effect::Picked(selection)=>{if let Err(error)=feather_ui::picker::write_selection(&selection){eprintln!("{error}");}self.exit=true;},
+                Effect::CheckSave(path)=>{let tx=self.tx.clone();std::thread::spawn(move||{let result=match std::fs::metadata(&path){Ok(meta)=>Ok(Some(meta.is_dir())),Err(e)if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(e)=>Err(e.to_string())};let _=tx.send(Msg::SaveChecked(path,result));});},
                 Effect::List(dir, generation) => {
                     if self.watched.as_ref() != Some(&dir) {
                         if let Some(w) = self.watcher.as_mut() {
                             w.watch(&dir);
                         }
                         self.watched = Some(dir.clone());
-                        self.window.set_title(format!("{} — Файлы", self.app.title()));
+                        self.window.set_title(self.app.window_title());
                     }
                     let tx = self.tx.clone();
                     std::thread::spawn(move || {

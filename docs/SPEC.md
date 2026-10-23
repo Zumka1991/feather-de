@@ -77,7 +77,10 @@ calloop EventLoop (один поток)
 | `text.rs` | Шрифты (SF Pro → Inter → Noto через fontconfig), общий read-only mmap TTC, растеризация нужных глифов и ограниченный кэш масок |
 | `icons.rs` | Файловый поиск/SVG/PNG на worker; ограниченный кэш готовых иконок в главном потоке, preview при вытеснении |
 | `apps.rs` | Реестр приложений (.desktop), сопоставление окно → приложение, процедурные иконки |
-| `settings.rs` | `~/.config/feather-de/settings.conf` |
+| `settings.rs` | `~/.config/feather-de/settings.conf`, worker атомарного сохранения и компиляции XKB |
+| `system_settings.rs` | Страницы системных настроек, источники ввода, анимации, масштаб, подтверждение режимов DRM; CPU-кадр на raster worker |
+| `wallpaper.rs` | Встроенные/свои PNG/JPEG/WebP, Wayland picker worker, ограниченный процесс декодера; GPU-текстура без постоянной CPU-копии |
+| `system_preferences.rs` | Worker XDG-приложений по умолчанию и systemd-timedated (NTP/пояс/ручное время), launcher терминала для Files |
 
 ### Конвейер кадра
 
@@ -259,5 +262,8 @@ explicit sync, XWayland (X11-программы в DRM-сессии не зап�
   `feather-session-inner.sh` → `feather-de --standalone` в цикле.
 - `session/reload-binary.sh` пересобирает и перезапускает композитор. **Все окна закроются**,
   включая Claude Desktop, если вы работаете из этой же сессии.
-- Настройки: `~/.config/feather-de/settings.conf` (appearance, wallpaper, scale, dock_zoom).
+- Настройки: `~/.config/feather-de/settings.conf` (appearance, wallpaper, scale, dock_zoom,
+  animations, keyboard_layouts, keyboard_shortcut, display, wallpaper_image, default_browser,
+  default_terminal). Первая версия UI и границы
+  проверки — [SYSTEM_SETTINGS.md](SYSTEM_SETTINGS.md).
 - Масштаб: `--scale 1.5` или `FEATHER_SCALE`, иначе автоматически по разрешению.

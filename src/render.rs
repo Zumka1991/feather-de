@@ -453,13 +453,15 @@ pub(crate) fn build_scene(
         }
 
         if win.has_titlebar() {
+            let old=win.decoration_size();
+            let resized=win.app_id=="builtin.settings";
             if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 ((win.x as f64 * scale).round(), (win.y as f64 * scale).round()),
                 &win.decoration_buffer,
                 Some(visual.alpha),
-                None,
-                None,
+                resized.then(||smithay::utils::Rectangle::from_size((old.0 as f64,old.1 as f64).into())),
+                resized.then(||((win.width as f64*scale).round() as i32,(win.total_height() as f64*scale).round() as i32).into()),
                 Kind::Unspecified,
             ) {
                 out.push(visual.element(SceneElement::Memory(e), scale));
@@ -485,17 +487,9 @@ pub(crate) fn build_scene(
     let wp_size = (to_phys(shell.screen_w), to_phys(shell.screen_h));
     // The source rect must be the (low-res) buffer itself; by default Smithay would use the
     // destination size and sample outside the texture
-    let (bw, bh) = crate::shell::wallpaper_buffer_size(shell.screen_w, shell.screen_h);
-    if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
-        renderer,
-        (0.0, 0.0),
-        &shell.wallpaper_buffer,
-        None,
-        Some(smithay::utils::Rectangle::from_size((bw as f64, bh as f64).into())),
-        Some(wp_size.into()),
-        Kind::Unspecified,
-    ) {
-        out.push(SceneElement::Memory(e).into());
+    if let Some(texture)=&shell.wallpaper_texture{
+        let (w,h)=shell.wallpaper_texture_size;
+        out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer((0.0,0.0),texture,None,Some(smithay::utils::Rectangle::from_size((w as f64,h as f64).into())),Some(wp_size.into()),Kind::Unspecified)).into());
     }
     out
 }
@@ -596,18 +590,26 @@ impl FeatherCompositor {
         profile.step("overlay");
         let visible_count = self.windows.iter().filter(|w| w.is_visible()).count();
         let ctx = BuiltinContext {
+            settings: &self.system_settings,
+            settings_context: crate::system_settings::Context {system:self.system_preferences.clone(),keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref()},
             notes_text: &self.notes_buffer,
             rss_mb: self.shell.last_rss_mb,
             window_count: visible_count,
             wayland_socket: &self.wayland_socket_name,
             active_layout: &self.active_layout_name,
-            theme: self.shell.theme,
-            dock_zoom_enabled: self.shell.dock_zoom_enabled,
-            reload_count: self.shell.reload_count,
+            input_shortcut: self.keyboard_config.shortcut.label(),
             scale_factor: ui_scale(),
         };
         for win in &mut self.windows {
             if win.is_visible() {
+                if win.app_id=="builtin.settings"{
+                    if win.dirty {
+                        let ticket=std::sync::Arc::new(());
+                        let job=crate::system_settings::FrameJob::new(std::sync::Arc::downgrade(&ticket),&self.system_settings,&ctx.settings_context,win);
+                        if self.shell.raster.as_ref().is_some_and(|worker|worker.submit(crate::raster::Job::Settings(job))){win.settings_ticket=Some(ticket);win.dirty=false;}
+                    }
+                    continue;
+                }
                 let focused = win.activated;
                 win.ensure_rendered(&mut self.fonts, focused, &ctx);
             }
@@ -632,6 +634,7 @@ impl FeatherCompositor {
         let t_cpu = Instant::now();
         self.shell.release_closed_launchpad();
         self.update_cpu_buffers();
+        self.shell.upload_wallpaper(self.backend.renderer());
         self.shell.desktop.ensure_layout((self.shell.screen_w, self.shell.screen_h));
         self.shell.desktop.request_tiles(self.shell.raster.as_ref());
         if self.shell.desktop.upload(self.backend.renderer()) {

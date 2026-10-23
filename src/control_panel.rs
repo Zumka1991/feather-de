@@ -758,6 +758,7 @@ mod tests {
                 panel.page = page;
                 panel.selected = Some(network());
                 panel.password.push_str("example");
+                std::fs::create_dir_all("/tmp/feather-controls").unwrap();
                 let mut image = tiny_skia::Pixmap::new(648, 768).unwrap();
                 panel.paint(&mut image.as_mut(), &mut fonts, R::new(0., 0., 324., 384.));
                 image

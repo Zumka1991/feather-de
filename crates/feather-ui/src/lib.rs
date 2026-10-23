@@ -6,5 +6,6 @@ pub mod draw;
 pub mod file_icons;
 pub mod file_kind;
 pub mod fileops;
+pub mod picker;
 pub mod scale;
 pub mod text;

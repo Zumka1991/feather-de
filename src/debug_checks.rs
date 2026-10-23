@@ -22,6 +22,340 @@ fn at(
 }
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    if let Ok(root) = std::env::var("FEATHER_DEBUG_DEFAULTS_ROOT") {
+        use crate::system_settings::{Action as A, Page};
+        fn click(s: &mut FeatherCompositor, p: impl Fn(&A) -> bool) {
+            let w = s
+                .windows
+                .iter()
+                .find(|w| w.app_id == "builtin.settings")
+                .unwrap();
+            let (x, y) = s
+                .system_settings
+                .debug_point(w.width as f32, w.height as f32, &s.settings_context(), p)
+                .unwrap();
+            let point = (
+                w.x as f64 + x as f64,
+                w.y as f64 + w.titlebar_h() as f64 + y as f64,
+            );
+            s.debug_pointer_motion(point.0, point.1);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+        }
+        at(state, 900, |s| {
+            s.apply_system_setting(A::Page(Page::Defaults))
+        })?;
+        at(state, 1700, |s| {
+            click(s, |a| matches!(a, A::AppPicker(true)))
+        })?;
+        at(state, 2300, |s| {
+            click(
+                s,
+                |a| matches!(a,A::DefaultApp{browser:true,id} if id=="feather-check-browser.desktop"),
+            )
+        })?;
+        at(state, 3100, |s| {
+            assert_eq!(
+                s.system_preferences.browser.as_deref(),
+                Some("feather-check-browser.desktop")
+            );
+            click(s, |a| matches!(a, A::AppPicker(false)));
+        })?;
+        at(state, 4000, |s| {
+            click(
+                s,
+                |a| matches!(a,A::DefaultApp{browser:false,id} if id=="feather-check-terminal.desktop"),
+            )
+        })?;
+        at(state, 4800, |s| {
+            assert_eq!(
+                s.system_preferences.terminal,
+                "feather-check-terminal.desktop"
+            );
+            s.debug_keyboard_key(125, true);
+            s.debug_keyboard_key(20, true);
+            s.debug_keyboard_key(20, false);
+            s.debug_keyboard_key(125, false);
+        })?;
+        at(state, 6300, |s| {
+            assert!(s
+                .windows
+                .iter()
+                .any(|w| w.app_id == "feather-terminal" && w.mapped));
+        })?;
+        at(state, 7000, move |s| {
+            let exe = std::env::current_exe().unwrap();
+            let dir = std::path::Path::new(&root).join("working-dir");
+            let command = format!(
+                "\"{}\" --open-terminal \"{}\"",
+                exe.display(),
+                dir.display()
+            );
+            s.execute_shell_action(ShellClickAction::LaunchApp(
+                crate::apps::AppAction::Exec(command),
+                "Terminal helper check".into(),
+            ));
+        })?;
+        at(state, 9500, |s| {
+            assert_eq!(
+                s.windows
+                    .iter()
+                    .filter(|w| w.app_id == "feather-terminal" && w.mapped)
+                    .count(),
+                2
+            );
+            s.apply_system_setting(A::Page(
+                if std::env::var("FEATHER_DEBUG_DEFAULTS_PAGE").as_deref() == Ok("date") {
+                    Page::DateTime
+                } else {
+                    Page::Defaults
+                },
+            ));
+        })?;
+        at(state, 10800, |s| {
+            assert_eq!(
+                s.system_preferences.terminal,
+                "feather-check-terminal.desktop"
+            );
+            assert_eq!(
+                s.system_preferences.browser.as_deref(),
+                Some("feather-check-browser.desktop")
+            );
+            eprintln!("[feather-defaults-check] browser associations, terminal hotkey and folder helper passed");
+        })?;
+    }
+    if let Ok(file) = std::env::var("FEATHER_DEBUG_WALLPAPER_FILE") {
+        use crate::system_settings::{Action as A, Page};
+        at(state, 900, |s| {
+            s.apply_system_setting(A::Page(Page::Desktop))
+        })?;
+        for (ms, index) in [(1700, 0), (3100, 1), (4500, 2)] {
+            at(state, ms, move |s| {
+                s.apply_system_setting(A::WallpaperImage(Some(
+                    crate::wallpaper::ImageSource::Bundled(index),
+                )));
+            })?;
+        }
+        at(state, 6000, |s| {
+            assert_eq!(
+                s.shell.applied_wallpaper_image,
+                Some(crate::wallpaper::ImageSource::Bundled(2))
+            );
+            let w = s
+                .windows
+                .iter()
+                .find(|w| w.app_id == "builtin.settings")
+                .unwrap();
+            let (x, y) = s
+                .system_settings
+                .debug_point(
+                    w.width as f32,
+                    w.height as f32,
+                    &s.settings_context(),
+                    |a| matches!(a, A::ChooseWallpaper),
+                )
+                .unwrap();
+            let point = (
+                w.x as f64 + x as f64,
+                w.y as f64 + w.titlebar_h() as f64 + y as f64,
+            );
+            s.debug_pointer_motion(point.0, point.1);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+        })?;
+        let file_check = file.clone();
+        at(state, 8000, move |s| {
+            assert!(!s.system_settings.wallpaper_busy);
+            assert_eq!(
+                s.shell.applied_wallpaper_image,
+                Some(crate::wallpaper::ImageSource::File(
+                    file_check.clone().into()
+                ))
+            );
+            s.set_wallpaper_image(Some(crate::wallpaper::ImageSource::File(
+                "/missing-feather-wallpaper.png".into(),
+            )));
+        })?;
+        at(state, 10500, move |s| {
+            assert_eq!(
+                s.shell.applied_wallpaper_image,
+                Some(crate::wallpaper::ImageSource::File(file.clone().into()))
+            );
+            assert_eq!(s.shell.wallpaper_image, s.shell.applied_wallpaper_image);
+            assert!(s.system_settings.error.is_some());
+            assert!(s.shell.wallpaper_texture.is_some());
+            eprintln!("[feather-wallpaper-check] gallery, picker, custom image, failed file keeps wallpaper passed");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_SETTINGS_RESTORE").is_some() {
+        at(state, 1400, |s| {
+            assert_eq!(s.keyboard_config.layouts, ["us", "de"]);
+            assert_eq!(
+                s.keyboard_config.shortcut,
+                crate::settings::Shortcut::CtrlSpace
+            );
+            assert_eq!(s.scale_factor, 2.0);
+            assert!(s.animations.enabled());
+            s.debug_keyboard_key(29, true);
+            s.debug_keyboard_key(57, true);
+            s.debug_keyboard_key(57, false);
+            s.debug_keyboard_key(29, false);
+            assert_eq!(s.active_layout_name, "DE");
+            s.apply_system_setting(crate::system_settings::Action::Page(
+                crate::system_settings::Page::Keyboard,
+            ));
+            eprintln!(
+                "[feather-settings-check] restored preferences and XKB shortcut after restart"
+            );
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_SETTINGS").is_some() {
+        use crate::system_settings::{Action as A, Page};
+        fn click(state: &mut FeatherCompositor, predicate: impl Fn(&A) -> bool) {
+            let w = state
+                .windows
+                .iter()
+                .find(|w| w.app_id == "builtin.settings")
+                .unwrap();
+            let (x, y) = state
+                .system_settings
+                .debug_point(
+                    w.width as f32,
+                    w.height as f32,
+                    &state.settings_context(),
+                    predicate,
+                )
+                .expect("settings control");
+            let point = (
+                w.x as f64 + x as f64,
+                (w.y + w.titlebar_h()) as f64 + y as f64,
+            );
+            state.debug_pointer_motion(point.0, point.1);
+            state.debug_pointer_button(0x110, true);
+            state.debug_pointer_button(0x110, false);
+        }
+        at(state, 900, |s| {
+            s.apply_system_setting(A::Page(Page::Keyboard))
+        })?;
+        at(state, 1300, |s| {
+            click(s, |a| matches!(a, A::AddPicker(true)))
+        })?;
+        at(state, 1700, |s| {
+            click(s, |a| matches!(a,A::AddSource(id)if id=="de"))
+        })?;
+        at(state, 2200, |s| {
+            assert_eq!(s.keyboard_config.layouts, ["us", "ru", "de"]);
+            assert!(!s.system_settings.keyboard_busy);
+            click(s, |a| matches!(a, A::AddPicker(false)));
+        })?;
+        at(state, 2500, |s| {
+            click(s, |a| matches!(a, A::SelectSource(2)));
+            assert_eq!(s.active_layout_name, "DE");
+        })?;
+        at(state, 2800, |s| {
+            let x = (1..s.shell.screen_w)
+                .find(|x| s.shell.debug_input_hit(*x as f64))
+                .unwrap();
+            s.debug_pointer_motion(x as f64 + 2.0, 12.0);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+            assert_eq!(s.shell.open_menu, Some(crate::shell::TopMenu::Input));
+        })?;
+        at(state, 3300, |s| {
+            s.debug_keyboard_key(108, true);
+            s.debug_keyboard_key(108, false);
+            s.debug_keyboard_key(28, true);
+            s.debug_keyboard_key(28, false);
+            assert_eq!(s.active_layout_name, "EN");
+        })?;
+        at(state, 3500, |s| {
+            click(s, |a| matches!(a, A::SelectSource(1)))
+        })?;
+        at(state, 3700, |s| {
+            click(s, |a| matches!(a, A::RemoveSource(1)))
+        })?;
+        at(state, 4200, |s| {
+            assert_eq!(s.keyboard_config.layouts, ["us", "de"]);
+            click(s, |a| {
+                matches!(a, A::Shortcut(crate::settings::Shortcut::CtrlSpace))
+            });
+        })?;
+        at(state, 4800, |s| {
+            assert_eq!(
+                s.keyboard_config.shortcut,
+                crate::settings::Shortcut::CtrlSpace
+            );
+            s.debug_keyboard_key(29, true);
+            s.debug_keyboard_key(57, true);
+            s.debug_keyboard_key(57, false);
+            s.debug_keyboard_key(29, false);
+            assert_eq!(
+                s.active_layout_name, "DE",
+                "configured Ctrl+Space did not switch XKB"
+            );
+            s.apply_system_setting(A::Page(Page::Appearance));
+            click(s, |a| matches!(a, A::Animations));
+            assert!(!s.animations.enabled());
+        })?;
+        at(state, 5300, |s| {
+            s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::QuickNotes);
+            let w = s.windows.last().unwrap();
+            assert!(s.animations.window(w).identity());
+            assert!(!s.animations.active());
+        })?;
+        at(state, 5800, |s| {
+            s.windows.retain(|w| w.app_id != "builtin.notes");
+            s.apply_system_setting(A::Page(Page::Appearance));
+            click(s, |a| matches!(a, A::Animations));
+            assert!(s.animations.enabled());
+        })?;
+        at(state, 6300, |s| {
+            s.apply_system_setting(A::Page(Page::Desktop));
+            click(s, |a| matches!(a, A::DockZoom));
+            assert!(!s.shell.dock_zoom_enabled);
+        })?;
+        at(state, 6800, |s| {
+            click(s, |a| matches!(a, A::DockZoom));
+            assert!(s.shell.dock_zoom_enabled);
+        })?;
+        at(state, 7300, |s| {
+            s.apply_system_setting(A::Page(Page::Displays));
+            click(s, |a| matches!(a,A::Scale(v)if *v==1.25));
+            assert_eq!(s.scale_factor, 1.25);
+        })?;
+        at(state, 7900, |s| {
+            click(s, |a| matches!(a,A::Scale(v)if *v==2.0));
+            assert_eq!(s.scale_factor, 2.0);
+        })?;
+        at(state, 8500, |s| {
+            let page = match std::env::var("FEATHER_DEBUG_SETTINGS_PAGE").as_deref() {
+                Ok("keyboard") | Ok("input") => Page::Keyboard,
+                Ok("displays") => Page::Displays,
+                Ok("desktop") => Page::Desktop,
+                Ok("defaults") => Page::Defaults,
+                Ok("date") => Page::DateTime,
+                _ => Page::Appearance,
+            };
+            s.apply_system_setting(A::Page(page));
+            if std::env::var("FEATHER_DEBUG_SETTINGS_PAGE").as_deref() == Ok("input") {
+                let x = (1..s.shell.screen_w)
+                    .find(|x| s.shell.debug_input_hit(*x as f64))
+                    .unwrap();
+                s.debug_pointer_motion(x as f64 + 2.0, 12.0);
+                s.debug_pointer_button(0x110, true);
+                s.debug_pointer_button(0x110, false);
+            } else {
+                s.debug_pointer_motion(20.0, 60.0);
+            }
+        })?;
+        at(state, 9400, |s| {
+            assert_eq!(s.keyboard_config.layouts, ["us", "de"]);
+            assert_eq!(s.active_layout_name, "DE");
+            assert!(s.animations.enabled());
+            assert!(!s.system_settings.keyboard_busy);
+            eprintln!("[feather-settings-check] XKB add/remove/menu/Ctrl+Space, animations, Dock and scale passed");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_TRAY_CHECK").is_some() {
         at(state, 2500, |state| {
             assert_eq!(

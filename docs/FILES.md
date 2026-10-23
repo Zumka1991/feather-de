@@ -32,6 +32,32 @@ Ctrl+F — поиск, F2 или медленный второй клик по �
 Ctrl+Shift+N — новая папка, Ctrl+C/X/V — файлы, Delete — в Корзину, Ctrl+H — скрытые,
 Ctrl+1/2 — вид, F5/Ctrl+R — обновить, Ctrl+W — закрыть.
 
+## Режим выбора файла и портал (2026-10-24)
+
+`feather-files --file-picker` читает JSON-запрос из stdin (`feather_ui::picker::Config`:
+режим открыть/сохранить/папка, несколько файлов, фильтры glob/MIME, choices, стартовая
+папка и имя), пишет выбор в stdout; пустой вывод — отмена. Сохранение спрашивает
+подтверждение замены. Пути передаются байтами (Unicode/не-UTF8). Запрос ≤64 КБ,
+ответ ≤2 МБ, ≤64 путей.
+
+Им пользуются настройки обоев и backend XDG Desktop Portal `FileChooser`
+(`feather-de --file-portal`, `src/file_portal.rs`): отдельный D-Bus-активируемый
+процесс без Wayland/GL, OpenFile/SaveFile/SaveFiles, Request.Close только от владельца
+(завершает окно через pidfd), не больше 4 диалогов одновременно. SaveFiles не
+перезаписывает существующие файлы — добавляет « (N)». В DRM-сессии (`--standalone`)
+пишутся пользовательские `feather.portal`, `featherde-portals.conf` (только если его ещё
+нет, остальные порталы — gtk) и D-Bus service; глобальный `portals.conf` не меняется.
+Приложениям выставляются `GTK_USE_PORTAL=1`, `PLASMA_INTEGRATION_USE_PORTAL=1`
+и, если тема Qt не задана, `QT_QPA_PLATFORMTHEME=xdgdesktopportal`.
+
+Ограничения: работает только для программ, которые спрашивают портал. Программы со
+своим встроенным диалогом (часть Electron/Chromium без портала, старые GTK без
+`GTK_USE_PORTAL`) продолжат показывать свой. Уже запущенный `xdg-desktop-portal`
+подхватит backend только после перезапуска сессии.
+
+Проверка: `python3 bench/session-check.py portal` — приватная шина, настоящий
+`xdg-desktop-portal`, OpenFile с фильтром/choices, SaveFile без создания файла, Close.
+
 ## Замеры (2026-10-23)
 
 Вложенное Пёрышко ×2: первый кадр через ~123–132 мс после запуска (в основном поиск

@@ -26,11 +26,15 @@ pub struct TileJob {
 }
 
 pub enum Job {
+    Settings(crate::system_settings::FrameJob),
     Reclaim,
-    CcBackdrop { screen: (i32, i32) },
+    CcBackdrop {
+        screen: (i32, i32),
+    },
     Wallpaper {
         logical: (i32, i32),
         theme: WallpaperTheme,
+        image: Option<crate::wallpaper::ImageSource>,
     },
     Frosted(BackgroundKey),
     Icon(IconKey),
@@ -39,13 +43,17 @@ pub enum Job {
 }
 
 pub enum Asset {
+    Settings(std::sync::Weak<()>, crate::window::SettingsFrame),
     Retry,
     Reclaimed,
     CcBackdrop(crate::shell::CcBackdrop),
     Wallpaper {
-        buffer: MemoryRenderBuffer,
+        pixels: Vec<u8>,
+        size: (i32, i32),
+        image: Option<crate::wallpaper::ImageSource>,
         glass: tiny_skia::Pixmap,
     },
+    WallpaperError(String),
     Frosted(BackgroundKey, MemoryRenderBuffer),
     Icon(IconKey, Option<crate::icons::IconPixels>),
     Tile {
@@ -79,13 +87,44 @@ impl RasterSender {
         let epoch = Arc::new(AtomicU64::new(1));
         handle.insert_source(source, |event, _, state| {
             if let channel::Event::Msg((epoch, asset)) = event {
+                let settings_frame = matches!(&asset, Asset::Settings(..));
+                let wallpaper_ready = matches!(&asset, Asset::Wallpaper { .. });
                 if state
                     .shell
                     .raster
                     .as_ref()
                     .is_some_and(|r| r.current(epoch))
-                    && state.shell.install_asset(asset)
+                    && match asset {
+                        Asset::Settings(ticket, frame) => state
+                            .windows
+                            .iter_mut()
+                            .find(|w| w.app_id == "builtin.settings")
+                            .is_some_and(|w| w.install_settings_frame(&ticket, frame)),
+                        Asset::WallpaperError(error) => {
+                            state.shell.wallpaper_image = if state.shell.wallpaper_image
+                                == state.shell.applied_wallpaper_image
+                            {
+                                None
+                            } else {
+                                state.shell.applied_wallpaper_image.clone()
+                            };
+                            state.shell.wallpaper_dirty = true;
+                            state.system_settings.error = Some(error);
+                            state.mark_settings_dirty();
+                            true
+                        }
+                        asset => state.shell.install_asset(asset),
+                    }
                 {
+                    state.needs_redraw = true;
+                    if wallpaper_ready {
+                        state.save_settings();
+                    }
+                }
+                if settings_frame {
+                    // The temporary CPU frame and obsolete textures are gone after
+                    // the next submission. Return their free pages on the worker.
+                    state.shell.request_raster_reclaim();
                     state.needs_redraw = true;
                 }
             }
@@ -99,11 +138,18 @@ impl RasterSender {
                 let mut icons = IconLoader::new();
                 let mut file_icons = feather_ui::file_icons::IconCache::default();
                 let mut glass_background = None;
+                let mut settings_window = crate::window::ManagedWindow::new_builtin(
+                    0,
+                    crate::apps::BuiltinWindowKind::SystemSettings,
+                    0,
+                    0,
+                );
                 while let Ok(request) = jobs.recv() {
                     let valid = || {
                         request.epoch == latest.load(Ordering::Acquire)
                             && match &request.job {
                                 Job::Tile(t) => t.ticket.strong_count() > 0,
+                                Job::Settings(t) => t.ticket.strong_count() > 0,
                                 _ => true,
                             }
                     };
@@ -120,6 +166,7 @@ impl RasterSender {
                     }
                     let start = std::time::Instant::now();
                     let kind = match &request.job {
+                        Job::Settings(_) => "settings",
                         Job::Reclaim => "reclaim",
                         Job::CcBackdrop { .. } => "cc-backdrop",
                         Job::Wallpaper { .. } => "wallpaper",
@@ -132,6 +179,10 @@ impl RasterSender {
                         request.scale,
                         request.appearance,
                         || match &request.job {
+                            Job::Settings(job) => Asset::Settings(
+                                job.ticket.clone(),
+                                settings_window.raster_settings(&mut fonts, job),
+                            ),
                             Job::Reclaim => {
                                 // Closing Launchpad releases a burst of pixel/SVG allocations
                                 // across arenas. Return free pages, without allocator tuning or
@@ -145,29 +196,69 @@ impl RasterSender {
                             Job::Wallpaper {
                                 logical: (w, h),
                                 theme,
+                                image,
                             } => {
-                                let (pw, ph) = crate::shell::wallpaper_buffer_size(*w, *h);
-                                let mut data = vec![0; pw as usize * ph as usize * 4];
-                                crate::theme::render_wallpaper(&mut data, pw, ph, *theme);
-                                let buffer = buffer(&data, pw, ph, true);
+                                let (pw, ph) = if image.is_some() {
+                                    crate::wallpaper::image_size(
+                                        crate::theme::to_phys(*w),
+                                        crate::theme::to_phys(*h),
+                                    )
+                                } else {
+                                    crate::shell::wallpaper_buffer_size(*w, *h)
+                                };
+                                let data = if let Some(source) = image {
+                                    match crate::wallpaper::decode(source, pw, ph) {
+                                        Ok(pixels) => pixels,
+                                        Err(e) => return Asset::WallpaperError(e),
+                                    }
+                                } else {
+                                    let mut pixels = vec![0; pw as usize * ph as usize * 4];
+                                    crate::theme::render_wallpaper(&mut pixels, pw, ph, *theme);
+                                    pixels
+                                };
                                 let (gw, gh) = (
                                     (crate::theme::to_phys(*w) / 8).max(8),
                                     (crate::theme::to_phys(*h) / 8).max(8),
                                 );
-                                let data = crate::theme::render_frosted_wallpaper(
-                                    gw,
-                                    gh,
-                                    *theme,
-                                    if request.appearance == Appearance::Dark {
-                                        0.8
-                                    } else {
-                                        1.0
-                                    },
-                                );
-                                let glass = tiny_skia::Pixmap::from_vec(data,
-                                    tiny_skia::IntSize::from_wh(gw as u32, gh as u32).unwrap()).unwrap();
-                                glass_background = Some((std::rc::Rc::new(glass.clone()), *w as f32 / gw as f32, *h as f32 / gh as f32));
-                                Asset::Wallpaper { buffer, glass }
+                                let glass = if image.is_some() {
+                                    crate::wallpaper::glass(
+                                        &data,
+                                        (pw, ph),
+                                        (gw, gh),
+                                        if request.appearance == Appearance::Dark {
+                                            0.8
+                                        } else {
+                                            1.0
+                                        },
+                                    )
+                                } else {
+                                    let data = crate::theme::render_frosted_wallpaper(
+                                        gw,
+                                        gh,
+                                        *theme,
+                                        if request.appearance == Appearance::Dark {
+                                            0.8
+                                        } else {
+                                            1.0
+                                        },
+                                    );
+                                    tiny_skia::Pixmap::from_vec(
+                                        data,
+                                        tiny_skia::IntSize::from_wh(gw as u32, gh as u32).unwrap(),
+                                    )
+                                    .unwrap()
+                                };
+                                glass_background = Some((
+                                    std::rc::Rc::new(glass.clone()),
+                                    *w as f32 / gw as f32,
+                                    *h as f32 / gh as f32,
+                                ));
+                                Asset::Wallpaper {
+                                    pixels: data,
+                                    size: (pw, ph),
+                                    image: image.clone(),
+                                    glass,
+                                }
                             }
                             Job::CcBackdrop { screen } => {
                                 crate::theme::set_glass_background(glass_background.clone());
@@ -176,12 +267,22 @@ impl RasterSender {
                                 Asset::CcBackdrop(backdrop)
                             }
                             Job::Frosted(key) => {
-                                let data = crate::theme::render_frosted_wallpaper(
-                                    key.1,
-                                    key.2,
-                                    key.0,
-                                    if key.3 { 0.55 } else { 0.72 },
-                                );
+                                let data = if let Some((glass, _, _)) = &glass_background {
+                                    crate::wallpaper::glass(
+                                        glass.data(),
+                                        (glass.width() as i32, glass.height() as i32),
+                                        (key.1, key.2),
+                                        if key.3 { 0.55 } else { 0.72 },
+                                    )
+                                    .take()
+                                } else {
+                                    crate::theme::render_frosted_wallpaper(
+                                        key.1,
+                                        key.2,
+                                        key.0,
+                                        if key.3 { 0.55 } else { 0.72 },
+                                    )
+                                };
                                 Asset::Frosted(*key, buffer(&data, key.1, key.2, true))
                             }
                             Job::Icon(key) => Asset::Icon(
@@ -190,7 +291,9 @@ impl RasterSender {
                                     .load_app(key, &mut fonts)
                                     .map(crate::icons::IconPixels::new),
                             ),
-                            Job::DesktopTile(tile) => Asset::DesktopTile(crate::desktop::raster_tile(tile, &mut fonts, &mut file_icons)),
+                            Job::DesktopTile(tile) => Asset::DesktopTile(
+                                crate::desktop::raster_tile(tile, &mut fonts, &mut file_icons),
+                            ),
                             Job::Tile(tile) => Asset::Tile {
                                 ticket: tile.ticket.clone(),
                                 app: tile.app,
@@ -315,7 +418,10 @@ mod tests {
     fn whole_pixel_icons_are_copied_from_an_exact_size_without_a_second_job() {
         let (tx, rx) = mpsc::sync_channel(4);
         let mut cache = crate::icons::IconCache::new();
-        cache.attach(RasterSender { requests: tx, epoch: Arc::new(AtomicU64::new(1)) });
+        cache.attach(RasterSender {
+            requests: tx,
+            epoch: Arc::new(AtomicU64::new(1)),
+        });
         let mut fonts = crate::text::FontSystem::new();
         let solid = |px: u32, r: u8| {
             let mut pm = tiny_skia::Pixmap::new(px, px).unwrap();
@@ -325,36 +431,83 @@ mod tests {
         let pixel = |pm: &tiny_skia::Pixmap, x: u32, y: u32| pm.pixel(x, y).unwrap().red();
         crate::theme::with_render_settings(2.0, Appearance::Light, || {
             let icon = themed("exact", 1).icon;
-            let draw = |cache: &mut crate::icons::IconCache, fonts: &mut crate::text::FontSystem| {
+            let draw = |cache: &mut crate::icons::IconCache,
+                        fonts: &mut crate::text::FontSystem| {
                 let mut out = tiny_skia::Pixmap::new(140, 140).unwrap();
-                crate::shell::draw_any_icon(&mut out.as_mut(), fonts, cache, &icon, "exact", 10.2, 10.0, 50.0);
+                crate::shell::draw_any_icon(
+                    &mut out.as_mut(),
+                    fonts,
+                    cache,
+                    &icon,
+                    "exact",
+                    10.2,
+                    10.0,
+                    50.0,
+                );
                 out
             };
             // Before the exact image exists the cached bucket is resampled; only the
             // exact size is queued.
-            cache.install(themed("exact", 192), Some(crate::icons::IconPixels::new(solid(192, 90))));
+            cache.install(
+                themed("exact", 192),
+                Some(crate::icons::IconPixels::new(solid(192, 90))),
+            );
             let out = draw(&mut cache, &mut fonts);
             assert!(pixel(&out, 70, 70) > 80);
             let request = rx.try_recv().unwrap();
             assert!(matches!(request.job, Job::Icon(ref k) if k.px == 100));
             assert!(rx.try_recv().is_err());
             // 10.2 logical × 2 snaps to physical column 20; the copy is unscaled.
-            cache.install(themed("exact", 100), Some(crate::icons::IconPixels::new(solid(100, 200))));
+            cache.install(
+                themed("exact", 100),
+                Some(crate::icons::IconPixels::new(solid(100, 200))),
+            );
             let out = draw(&mut cache, &mut fonts);
-            assert_eq!((pixel(&out, 19, 50), pixel(&out, 20, 50), pixel(&out, 119, 50), pixel(&out, 120, 50)), (0, 200, 200, 0));
+            assert_eq!(
+                (
+                    pixel(&out, 19, 50),
+                    pixel(&out, 20, 50),
+                    pixel(&out, 119, 50),
+                    pixel(&out, 120, 50)
+                ),
+                (0, 200, 200, 0)
+            );
             assert!(rx.try_recv().is_err());
             // A preview left by eviction is still scaled to the requested size.
-            cache.install(themed("exact", 100), Some(crate::icons::IconPixels { full: None, preview: solid(64, 150) }));
+            cache.install(
+                themed("exact", 100),
+                Some(crate::icons::IconPixels {
+                    full: None,
+                    preview: solid(64, 150),
+                }),
+            );
             let out = draw(&mut cache, &mut fonts);
             assert!(pixel(&out, 115, 115) > 140);
             // Another surface size (Spotlight 30 → 60 px) scales a cached size meanwhile.
             let mut out = tiny_skia::Pixmap::new(140, 140).unwrap();
-            crate::shell::draw_any_icon(&mut out.as_mut(), &mut fonts, &mut cache, &icon, "exact", 0.0, 0.0, 30.0);
+            crate::shell::draw_any_icon(
+                &mut out.as_mut(),
+                &mut fonts,
+                &mut cache,
+                &icon,
+                "exact",
+                0.0,
+                0.0,
+                30.0,
+            );
             assert!(pixel(&out, 30, 30) > 80);
             assert!(matches!(rx.try_recv().unwrap().job, Job::Icon(ref k) if k.px == 60));
             // A magnified Dock icon that lands on a whole pixel resamples the cached bucket
             // and queues nothing for its transient size.
-            crate::shell::draw_resampled_icon(&mut out.as_mut(), &mut cache, &icon, "exact", 0.0, 0.0, 60.0);
+            crate::shell::draw_resampled_icon(
+                &mut out.as_mut(),
+                &mut cache,
+                &icon,
+                "exact",
+                0.0,
+                0.0,
+                60.0,
+            );
             assert!(pixel(&out, 60, 60) > 80);
             assert!(rx.try_recv().is_err() && !cache.pending(&themed("exact", 120)));
         });

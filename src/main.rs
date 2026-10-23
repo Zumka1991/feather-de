@@ -17,6 +17,10 @@ mod raster;
 mod rounded;
 mod screenshot;
 mod settings;
+mod system_settings;
+mod system_preferences;
+mod wallpaper;
+mod file_portal;
 mod shell;
 use feather_ui::text;
 mod theme;
@@ -206,6 +210,18 @@ pub struct FeatherCompositor {
     pub icon_drag: Option<IconDrag>,
 
     pub active_layout_name: String,
+    pub active_layout_index: usize,
+    pub keyboard_config: crate::settings::Keyboard,
+    pub preferences: Option<crate::settings::Worker>,
+    pub wallpaper_picker: Option<crate::wallpaper::Picker>,
+    pub system_settings: crate::system_settings::Panel,
+    pub system_preferences: crate::system_preferences::State,
+    pub system_worker: Option<crate::system_preferences::Worker>,
+    pub display_modes: Vec<crate::system_settings::Mode>,
+    pub display_name: String,
+    pub pending_display: Option<(usize,u64,f64)>,
+    pub display_generation: u64,
+    pub display_preference: Option<crate::settings::Display>,
     pub notes_buffer: String,
 }
 
@@ -304,6 +320,10 @@ impl FeatherCompositor {
                 win.resize_client(sw, sh);
             } else if win.maximized {
                 win.resize_client(sw, sh - TOP_BAR_HEIGHT - DOCK_RESERVED_HEIGHT - win.titlebar_h());
+            } else {
+                if win.is_builtin(){win.resize_client(win.width.min(sw-24),win.height.min(sh-TOP_BAR_HEIGHT-48));}
+                win.x=win.x.clamp(0,(sw-win.width).max(0));
+                win.y=win.y.clamp(TOP_BAR_HEIGHT,(sh-win.titlebar_h()-48).max(TOP_BAR_HEIGHT));
             }
         }
         self.needs_redraw = true;
@@ -328,6 +348,10 @@ impl FeatherCompositor {
             self.windows.push(ManagedWindow::new_builtin(id, kind, x, y));
         }
         self.shell.dock_dirty = true;
+        if let Some(win)=self.windows.last_mut(){
+            win.resize_client(win.width.min(self.shell.screen_w-32),win.height.min(self.shell.screen_h-TOP_BAR_HEIGHT-48));
+            win.x=win.x.clamp(0,(self.shell.screen_w-win.width).max(0));
+        }
         self.refresh_focus();
     }
 
@@ -573,14 +597,20 @@ impl FeatherCompositor {
     }
 
     pub fn save_settings(&self) {
-        crate::settings::Settings {
+        let settings=crate::settings::Settings {
             appearance: appearance(),
             wallpaper: self.shell.theme,
+            wallpaper_image: self.shell.wallpaper_image.clone(),
+            default_browser: self.system_preferences.browser.clone(),
+            default_terminal: Some(self.system_preferences.terminal.clone()),
             scale: self.explicit_scale,
             dock_zoom: self.shell.dock_zoom_enabled,
             dock: Some(self.dock_pins.clone()),
-        }
-        .save();
+            animations: self.animations.enabled(),
+            keyboard: self.keyboard_config.clone(),
+            display: self.display_preference.clone(),
+        };
+        if let Some(worker)=&self.preferences{worker.save(settings);}
     }
 
     /// Registry indices of pinned apps, in Dock order (unknown ids are skipped)
@@ -697,7 +727,7 @@ impl FeatherCompositor {
         let action = ShellClickAction::LaunchApp(app.action.clone(), app.name.clone());
         let builtin = app.is_builtin();
         self.execute_shell_action(action);
-        if !builtin {
+        if !builtin && self.animations.enabled() {
             let first = self.next_win_id;
             let launch = Instant::now();
             self.shell.pending_bounce = Some(launch);
@@ -709,7 +739,7 @@ impl FeatherCompositor {
                 if state.shell.pending_bounce == Some(launch) {
                     state.shell.pending_bounce = None;
                     let appeared = state.windows.iter().any(|w| w.mapped && w.id >= first && state.app_key(w) == AppKey::App(i));
-                    if !appeared {
+                    if !appeared && state.animations.enabled() {
                         state.shell.start_bounce(i, first, &mut state.fonts);
                         state.needs_redraw = true;
                     }
@@ -819,6 +849,7 @@ impl FeatherCompositor {
     pub fn execute_shell_action(&mut self, action: ShellClickAction) {
         self.needs_redraw = true;
         match action {
+            ShellClickAction::SystemSettings(action)=>self.apply_system_setting(action),
             ShellClickAction::None => {}
             ShellClickAction::Tray {key,action,x,y} => {
                 self.shell.close_menus();
@@ -958,18 +989,10 @@ impl FeatherCompositor {
                 }
             }
             ShellClickAction::ToggleLayout => {
-                let kbd = self.keyboard.clone();
-                let mut new_idx = 0;
-                kbd.with_xkb_state(self, |mut ctx| {
-                    ctx.cycle_next_layout();
-                    new_idx = ctx.xkb().lock().unwrap().active_layout().0;
-                });
-                self.active_layout_name = if new_idx == 1 { "RU" } else { "EN" }.to_string();
-                self.shell.topbar_dirty = true;
-                self.shell.overlay_dirty = true;
-                self.mark_builtin_windows_dirty();
+                self.select_input_source((self.active_layout_index+1)%self.keyboard_config.layouts.len());
             }
             ShellClickAction::CycleTheme => {
+                self.shell.wallpaper_image=None;
                 self.shell.theme = self.shell.theme.next();
                 self.shell.invalidate_all();
                 self.mark_builtin_windows_dirty();
@@ -1256,6 +1279,11 @@ fn setup_dmabuf(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args_os:Vec<_>=std::env::args_os().collect();
+    if args_os.get(1).is_some_and(|a|a=="--file-portal"){return file_portal::run();}
+    if args_os.get(1).is_some_and(|a|a=="--open-terminal"){return system_preferences::launch_terminal(std::path::Path::new(args_os.get(2).ok_or("missing directory")?));}
+    let args:Vec<_>=args_os.iter().map(|a|a.to_string_lossy().into_owned()).collect();
+    if args.get(1).is_some_and(|a|a=="--decode-wallpaper"){return wallpaper::helper(&args);}
     if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
         tracing_subscriber::fmt().with_env_filter(env_filter).init();
     } else {
@@ -1293,10 +1321,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let use_drm = args.iter().any(|a| a == "--drm") || (!nested && !is_windowed);
 
+    let saved = crate::settings::Settings::load();
     let mut winit_loop = None;
     let mut drm_info = None;
     let mut backend = if use_drm {
-        let d = crate::drm_backend::init(&event_loop.handle())?;
+        let d = crate::drm_backend::init(&event_loop.handle(),saved.display.as_ref())?;
         drm_info = Some((d.size, d.refresh, d.physical_mm, d.connector_name.clone(), d.render_node));
         crate::backend::Backend::Drm(Box::new(d))
     } else {
@@ -1329,7 +1358,6 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let phys_w = initial_size.w.max(640);
     let phys_h = initial_size.h.max(480);
 
-    let saved = crate::settings::Settings::load();
     set_appearance(saved.appearance);
     let explicit_scale = parse_explicit_scale().or(saved.scale);
     let init_scale =
@@ -1373,12 +1401,13 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         socket_name, init_scale, phys_w, phys_h
     );
 
+    let keyboard_layouts=saved.keyboard.layouts.join(",");
     let xkb_config = XkbConfig {
         rules: "",
         model: "pc105",
-        layout: "us,ru",
+        layout: &keyboard_layouts,
         variant: "",
-        options: Some("grp:alt_shift_toggle".to_string()),
+        options: Some(saved.keyboard.shortcut.option().to_string()),
     };
     let keyboard = seat.add_keyboard(xkb_config, 250, 35)?;
     let pointer = seat.add_pointer();
@@ -1416,6 +1445,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     handle.insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
         if state.shell.tick() {
             state.needs_redraw = true;
+            if state.system_settings.page==crate::system_settings::Page::DateTime{state.mark_settings_dirty();}
         }
         state.prune_dead_windows();
         TimeoutAction::ToDuration(Duration::from_secs(1))
@@ -1512,8 +1542,25 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         dock_pins: Vec::new(),
         icon_drag: None,
         active_layout_name: "EN".to_string(),
+        active_layout_index: 0,
+        keyboard_config: saved.keyboard.clone(),
+        preferences: None,
+        wallpaper_picker: None,
+        system_settings: crate::system_settings::Panel::default(),
+        system_preferences: crate::system_preferences::State{browser:saved.default_browser.clone(),terminal:saved.default_terminal.clone().unwrap_or_else(||"feather-terminal.desktop".into()),..Default::default()},
+        system_worker: None,
+        display_modes: Vec::new(),display_name: String::new(),pending_display: None,display_generation: 0,
+        display_preference: saved.display.clone(),
         notes_buffer: "Привет из Пёрышко DE!\nНажмите Alt + Shift для переключения языка (RU / EN).\nНажмите Super + Space для вызова Spotlight.\nНажмите Super + = для переключения HiDPI Retina масштаба!".to_string(),
     };
+
+    state.preferences=Some(crate::settings::Worker::new(&state.loop_handle)?);
+    state.wallpaper_picker=Some(crate::wallpaper::Picker::new(&state.loop_handle,state.wayland_socket_name.clone())?);
+    state.shell.wallpaper_image=saved.wallpaper_image.clone();
+    state.system_worker=Some(crate::system_preferences::Worker::new(&state.loop_handle,saved.default_browser.clone(),saved.default_terminal.clone())?);
+    state.refresh_input_source(0);
+    state.animations.set_enabled(saved.animations,&state.windows,&state.shell);
+    state.refresh_display_choices();
 
     let raster = crate::raster::RasterSender::new(&state.loop_handle, state.fonts.for_worker())?;
     state.shell.attach_raster(raster);
@@ -1746,6 +1793,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         if state.pointer_focus_dirty {
             state.refresh_pointer_focus();
         }
+        state.flush_display_mode();
         state.render_if_needed();
         if let Err(err) = state.display_handle.flush_clients() {
             tracing::warn!("Ошибка flush_clients: {err}");
