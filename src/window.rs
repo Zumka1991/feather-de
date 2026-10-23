@@ -249,6 +249,7 @@ pub struct BuiltinContext<'a> {
     pub active_layout: &'a str,
     pub input_shortcut: &'static str,
     pub scale_factor: f32,
+    pub show_about: bool,
 }
 
 /// What changed in a Wayland window after a client commit
@@ -307,6 +308,7 @@ impl ManagedWindow {
             active_layout: "",
             input_shortcut: "",
             scale_factor: job.scale as f32,
+            show_about: false,
         };
         self.ensure_rendered(fonts, job.focused, &ctx);
         let buffer = std::mem::replace(&mut self.decoration_buffer, empty_buffer());
@@ -1019,14 +1021,25 @@ impl ManagedWindow {
                     row(pm, fonts, cy + 190.0 + i as f32 * 21.0, k, v);
                 }
                 let (bw, bh) = (150.0, 26.0);
-                let bx = cx + cw * 0.5 - bw * 0.5;
+                let bx = cx + cw - bw - 20.0;
                 let by = cy + ch - 42.0;
+                // «Показывать при входе» checkbox, macOS style
+                let (kx, ky) = (cx + 20.0, by + 5.0);
+                if ctx.show_about {
+                    fill_rounded_rect(pm, kx, ky, 16.0, 16.0, 4.0, p.accent);
+                    stroke_line(pm, kx + 4.0, ky + 8.5, kx + 7.0, ky + 11.5, 1.8, p.on_accent);
+                    stroke_line(pm, kx + 7.0, ky + 11.5, kx + 12.5, ky + 4.5, 1.8, p.on_accent);
+                } else {
+                    fill_rounded_rect(pm, kx, ky, 16.0, 16.0, 4.0, p.window_bg);
+                    stroke_rounded_rect(pm, kx, ky, 16.0, 16.0, 4.0, 1.0, p.glass_outline);
+                }
+                fonts.draw_text(pm, "Показывать при входе", kx + 24.0, ky + 1.0, 13.0, p.text, false);
                 fill_rounded_rect(pm, bx, by, bw, bh, bh * 0.5, p.control_fill);
                 stroke_rounded_rect(pm, bx, by, bw, bh, bh * 0.5, 0.5, p.glass_outline);
                 fonts.draw_text_centered(
                     pm,
                     "Сменить обои…",
-                    cx + cw * 0.5,
+                    bx + bw * 0.5,
                     by + 5.5,
                     13.0,
                     p.text,
@@ -1165,6 +1178,8 @@ mod settings_tests {
         crate::theme::with_render_settings(1.25, Appearance::Light, || {
             let context = crate::system_settings::Context {
                 system: Default::default(),
+                pointer: Default::default(),
+                pointer_managed: true,
                 keyboard: &keyboard,
                 active: 0,
                 animations: true,
@@ -1189,6 +1204,7 @@ mod settings_tests {
                 active_layout: "",
                 input_shortcut: "",
                 scale_factor: 1.25,
+                show_about: false,
             };
             direct.ensure_rendered(&mut fonts, true, &ctx);
             let expected = bytes(&mut direct.decoration_buffer);

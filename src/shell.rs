@@ -311,6 +311,8 @@ enum CcItem {
 #[derive(Debug, Clone)]
 pub enum ShellClickAction {
     None,
+    /// «Об этом компьютере»: show it at login or not
+    ToggleShowAbout,
     SystemSettings(crate::system_settings::Action),
     Control(crate::controls::Control),
     NetworkSettings,
@@ -428,6 +430,7 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
             Separator,
             item("Системные настройки…", "", builtin(BuiltinWindowKind::SystemSettings, "Системные настройки")),
             item("Мониторинг системы", "", builtin(BuiltinWindowKind::ActivityMonitor, "Мониторинг системы")),
+            item("Программы", "⌘A", Some(ShellClickAction::LaunchApp(crate::apps::AppAction::OpenLaunchpad, "Программы".into()))),
             Separator,
             item("Перезагрузить оболочку", "⇧⌘R", Some(ShellClickAction::HotReloadShell)),
             item("Свернуть все окна", "", Some(ShellClickAction::MinimizeAllWindows)),
@@ -530,6 +533,8 @@ pub struct MacShell {
 
     pub spotlight_open: bool,
     pub spotlight_query: String,
+    /// Caret/selection of the Spotlight field; `spotlight_query` mirrors its text
+    pub spotlight_input: feather_ui::input::TextInput,
     pub spotlight_selected: usize,
 
     pub control_center_open: bool,
@@ -618,6 +623,7 @@ impl MacShell {
             dock_painted: Vec::new(),
             spotlight_open: false,
             spotlight_query: String::new(),
+            spotlight_input: Default::default(),
             spotlight_selected: 0,
             control_center_open: false,
             cc: crate::control_panel::Panel::default(),
@@ -1482,6 +1488,25 @@ impl MacShell {
     pub fn update_pointer_hover(&mut self, px: f64, py: f64) {
         let hover=if py>=0.0&&py<TOP_BAR_HEIGHT as f64{self.topbar_item_at(px as f32)}else{None};
         if hover!=self.status_hover{self.status_hover=hover;self.topbar_dirty=true;}
+        if self.control_center_open {
+            let (panel, items) = self.cc_layout();
+            let pos = (px as f32, py as f32);
+            let inside = panel.contains(pos.0, pos.1).then_some(pos);
+            let key = |cc: &crate::control_panel::Panel| {
+                if cc.page == crate::control_panel::Page::Main {
+                    cc.hover.and_then(|(x, y)| items.iter().position(|(r, _)| r.contains(x, y))).map(|i| i as u32 + 1000)
+                } else {
+                    cc.hover_target(panel).map(|(k, _)| k)
+                }
+            };
+            let before = key(&self.cc);
+            self.cc.hover = inside;
+            if key(&self.cc) != before {
+                self.overlay_dirty = true;
+            }
+        } else {
+            self.cc.hover = None;
+        }
         if self.open_menu.is_some() {
             // Like macOS: with a menu open, sliding along the menu bar switches menus
             if py < TOP_BAR_HEIGHT as f64 {
@@ -2057,6 +2082,7 @@ impl MacShell {
         let active_input_label=self.input_sources.get(self.input_selected).map_or("ABC",|s|s.label);
         let (cc_open, sp_open) = (self.control_center_open, self.spotlight_open);
         let query = self.spotlight_query.clone();
+        let spotlight_input = self.spotlight_input.clone();
         let selected = self.spotlight_selected;
         let (wifi, dnd, vol) = (self.wifi_enabled, self.dnd_enabled, self.cc.volume());
         let theme_name = self.theme.name();
@@ -2147,8 +2173,13 @@ impl MacShell {
                     draw_glass_panel(&mut pm, panel.x, panel.y, panel.w, panel.h, 22.0, false);
                 }
                 let card = if dark { rgba(255, 255, 255, 20) } else { rgba(255, 255, 255, 140) };
+                // Hover: global pointer → this buffer's local coordinates
+                let cc_hover = controls.hover.map(|(x, y)| (x - ox, y - oy));
                 for (r, item) in items {
                     if cc_backdrop.is_none() { fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 14.0, card); }
+                    if cc_hover.is_some_and(|(x, y)| r.contains(x, y)) {
+                        fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 14.0, if dark { rgba(255, 255, 255, 18) } else { rgba(255, 255, 255, 110) });
+                    }
                     let toggle = |pm: &mut PixmapMut, fonts: &mut FontSystem, on: bool, title: &str, sub: &str, icon:crate::control_panel::Icon| {
                         let (cx, cy) = (r.x + 25.0, r.y + r.h * 0.5);
                         fill_circle(pm, cx, cy, 14.0, if on { p.accent } else { p.control_fill });
@@ -2200,8 +2231,11 @@ impl MacShell {
                 if query.is_empty() {
                     fonts.draw_text(&mut pm, "Поиск Spotlight", bar.x + 50.0, bar.y + 14.0, 20.0, p.text_tertiary, false);
                 } else {
-                    let qw = fonts.draw_text(&mut pm, &query, bar.x + 50.0, bar.y + 14.0, 20.0, p.text, false);
-                    fill_rounded_rect(&mut pm, bar.x + 51.0 + qw, bar.y + 13.0, 2.0, 26.0, 1.0, p.accent);
+                    let mut field = spotlight_input.clone();
+                    if field.text() != query {
+                        field.set(&query);
+                    }
+                    field.draw(&mut pm, fonts, bar.x + 50.0, bar.y + 14.0, bar.w - 70.0, 20.0, false, p.text, true, p.accent);
                 }
                 if let Some(list) = list {
                     draw_glass_panel(&mut pm, list.x, list.y, list.w, list.h, 18.0, true);

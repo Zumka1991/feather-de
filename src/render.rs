@@ -592,7 +592,7 @@ impl FeatherCompositor {
         let visible_count = self.windows.iter().filter(|w| w.is_visible()).count();
         let ctx = BuiltinContext {
             settings: &self.system_settings,
-            settings_context: crate::system_settings::Context {system:self.system_preferences.clone(),keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref()},
+            settings_context: crate::system_settings::Context {system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref()},
             notes_text: &self.notes_buffer,
             rss_mb: self.shell.last_rss_mb,
             window_count: visible_count,
@@ -600,6 +600,7 @@ impl FeatherCompositor {
             active_layout: &self.active_layout_name,
             input_shortcut: self.keyboard_config.shortcut.label(),
             scale_factor: ui_scale(),
+            show_about: self.show_about,
         };
         for win in &mut self.windows {
             if win.is_visible() {

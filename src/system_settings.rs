@@ -12,15 +12,17 @@ pub enum Page {
     #[default]
     Appearance,
     Keyboard,
+    Pointer,
     Displays,
     Desktop,
     Defaults,
     DateTime,
 }
 impl Page {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Appearance,
         Self::Keyboard,
+        Self::Pointer,
         Self::Displays,
         Self::Desktop,
         Self::Defaults,
@@ -30,6 +32,7 @@ impl Page {
         match self {
             Self::Appearance => "Оформление",
             Self::Keyboard => "Клавиатура",
+            Self::Pointer => "Мышь и трекпад",
             Self::Displays => "Дисплеи",
             Self::Desktop => "Рабочий стол и Dock",
             Self::Defaults => "Приложения",
@@ -40,6 +43,7 @@ impl Page {
         match self {
             Self::Appearance => "Выберите внешний вид и поведение интерфейса.",
             Self::Keyboard => "Источники ввода и переключение языка.",
+            Self::Pointer => "Курсор, скорость, прокрутка и нажатие.",
             Self::Displays => "Размер интерфейса, разрешение и частота экрана.",
             Self::Desktop => "Настройте рабочее пространство под себя.",
             Self::Defaults => "Выберите приложения для повседневных задач.",
@@ -71,6 +75,15 @@ pub enum Action {
     RemoveSource(usize),
     SelectSource(usize),
     Shortcut(Shortcut),
+    CursorPicker,
+    CursorTheme(Option<String>),
+    CursorSize(u32),
+    /// Set from where the slider was clicked (-1…1)
+    PointerSpeed(f64),
+    NaturalMouse,
+    NaturalTouchpad,
+    TapToClick,
+    LeftHanded,
     Scale(f64),
     ModeStep(i32),
     ApplyMode,
@@ -97,6 +110,9 @@ impl Mode {
 pub struct Panel {
     pub app_count: usize,
     pub apps_picker: Option<bool>,
+    /// Pointer over the window (content coordinates), for hover highlights
+    pub pointer: Option<(f32, f32)>,
+    pub cursor_picker: bool,
     pub zone_picker: bool,
     pub zone_query: String,
     pub time_editing: bool,
@@ -114,6 +130,9 @@ pub struct Panel {
 }
 pub struct Context<'a> {
     pub system: crate::system_preferences::State,
+    pub pointer: crate::settings::Pointer,
+    /// Mouse settings reach the hardware (DRM or our labwc host), not a nested window
+    pub pointer_managed: bool,
     pub keyboard: &'a Keyboard,
     pub active: usize,
     pub animations: bool,
@@ -129,6 +148,8 @@ pub struct Context<'a> {
 
 pub struct FrameJob {
     pub system: crate::system_preferences::State,
+    pub pointer: crate::settings::Pointer,
+    pub pointer_managed: bool,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub shadow: bool,
     pub ticket: std::sync::Weak<()>,
@@ -158,6 +179,8 @@ impl FrameJob {
     ) -> Self {
         Self {
             system: c.system.clone(),
+            pointer: c.pointer.clone(),
+            pointer_managed: c.pointer_managed,
             wallpaper_image: c.wallpaper_image.cloned(),
             shadow: win.settings_needs_shadow(),
             ticket,
@@ -182,6 +205,8 @@ impl FrameJob {
     pub fn context(&self) -> Context<'_> {
         Context {
             system: self.system.clone(),
+            pointer: self.pointer.clone(),
+            pointer_managed: self.pointer_managed,
             keyboard: &self.keyboard,
             active: self.active,
             animations: self.animations,
@@ -201,7 +226,7 @@ const TOOLBAR_CLIP: f32 = 12.0;
 /// Sidebar groups, like the sections of macOS System Settings.
 const SIDEBAR: [&[Page]; 3] = [
     &[Page::Appearance, Page::Desktop, Page::Displays],
-    &[Page::Keyboard],
+    &[Page::Keyboard, Page::Pointer],
     &[Page::Defaults, Page::DateTime],
 ];
 fn side_width(w: f32) -> f32 {
@@ -224,6 +249,8 @@ enum Style {
     Toggle(bool),
     Track,
     Segment(bool),
+    /// Value 0…1; the click position decides the new value
+    Slider(f32),
     Push(bool),
     Popup,
     Mini,
@@ -322,10 +349,18 @@ impl Layout {
         c
     }
 }
+/// "breeze_cursors" → "Breeze", "Breeze_Light" → "Breeze Light".
+fn theme_label(dir: &str) -> String {
+    let name = dir.trim_end_matches("_cursors").trim_end_matches("-cursors").replace(['_', '-'], " ");
+    let mut chars = name.chars();
+    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
 fn page_color(page: Page) -> (tiny_skia::Color, tiny_skia::Color) {
     match page {
         Page::Appearance => (rgba(80, 80, 88, 255), rgba(28, 28, 32, 255)),
         Page::Keyboard => (rgba(160, 165, 175, 255), rgba(112, 117, 128, 255)),
+        Page::Pointer => (rgba(120, 128, 140, 255), rgba(74, 80, 92, 255)),
         Page::Displays => (rgba(70, 175, 255, 255), rgba(20, 115, 235, 255)),
         Page::Desktop => (rgba(80, 200, 245, 255), rgba(20, 140, 220, 255)),
         Page::Defaults => (rgba(150, 120, 255, 255), rgba(100, 70, 225, 255)),
@@ -366,6 +401,21 @@ fn draw_page_icon(pm: &mut PixmapMut, page: Page, x: f32, y: f32, size: f32) {
             }
             let (a, b) = pt(7.5, 13.4);
             stroke_line(pm, a, b, a + 5.0 * k, b, 1.0 * k, white);
+        }
+        Page::Pointer => {
+            // Arrow cursor
+            let mut b = tiny_skia::PathBuilder::new();
+            let pts = [(6.5, 3.5), (6.5, 15.0), (9.3, 12.4), (11.3, 16.6), (13.0, 15.8), (11.0, 11.7), (14.8, 11.7)];
+            let (sx, sy) = pt(pts[0].0, pts[0].1);
+            b.move_to(sx, sy);
+            for &(px, py) in &pts[1..] {
+                let (x, y) = pt(px, py);
+                b.line_to(x, y);
+            }
+            b.close();
+            if let Some(path) = b.finish() {
+                fill_path_gradient(pm, &path, y, y + size, white, white);
+            }
         }
         Page::Displays => {
             let (x0, y0) = pt(3.0, 4.0);
@@ -590,6 +640,79 @@ impl Panel {
                 }
                 l.end();
                 l.footer("Сменить язык можно также в меню источников ввода в строке меню.");
+            }
+            Page::Pointer => {
+                let p = &c.pointer;
+                l.hero(Page::Pointer);
+                if !c.pointer_managed {
+                    let r = R::new(x, l.y, cw, 58.0);
+                    l.push(r, "Мышью сейчас управляет внешний композитор", Style::Banner(false), None).detail =
+                        "Пёрышко запущено в окне. Настройки сохранятся и применятся при входе в сессию Пёрышка.".into();
+                    l.y += 58.0 + 16.0;
+                }
+                l.header("Курсор");
+                l.begin();
+                let r = l.row(48.0, "Тема", String::new(), Style::Row, None);
+                let anchor = right(r, (cw * 0.5).min(240.0), 26.0);
+                let theme = theme_label(&crate::cursor::theme_name(p.cursor_theme.as_deref()));
+                l.push(anchor, &theme, Style::Popup, Some(Action::CursorPicker));
+                let r = l.row(48.0, "Размер", String::new(), Style::Row, None);
+                let track = right(r, 4.0 * 64.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, size) in crate::settings::CURSOR_SIZES.into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * 64.0, track.y, 64.0, 28.0),
+                        &size.to_string(),
+                        Style::Segment(p.cursor_size == size),
+                        Some(Action::CursorSize(size)),
+                    );
+                }
+                l.end();
+                l.footer("Тема и размер применяются к курсору Пёрышка и к программам, открытым после изменения.");
+                l.header("Мышь и трекпад");
+                l.begin();
+                let r = l.row(86.0, "Скорость перемещения", String::new(), Style::Row, None);
+                l.push(
+                    R::new(r.x + 14.0, r.y + 40.0, r.w - 28.0, 34.0),
+                    "",
+                    Style::Slider(((p.speed + 1.0) / 2.0) as f32),
+                    Some(Action::PointerSpeed(p.speed)),
+                );
+                for (label, detail, on, action) in [
+                    ("Естественная прокрутка мыши", "Содержимое следует за колесом, как на трекпаде", p.natural_mouse, Action::NaturalMouse),
+                    ("Естественная прокрутка трекпада", "Содержимое следует за движением пальцев", p.natural_touchpad, Action::NaturalTouchpad),
+                    ("Касание вместо нажатия", "Лёгкое касание трекпада — щелчок", p.tap_to_click, Action::TapToClick),
+                    ("Основная кнопка справа", "Для левой руки", p.left_handed, Action::LeftHanded),
+                ] {
+                    l.row(52.0, label, detail.into(), Style::Toggle(on), Some(action));
+                }
+                l.end();
+
+                if self.cursor_picker {
+                    let themes = c.system.cursor_themes.clone();
+                    let mut items: Vec<(String, Option<String>, bool)> = vec![(
+                        "Как в системе".into(),
+                        None,
+                        p.cursor_theme.is_none(),
+                    )];
+                    items.extend(themes.iter().map(|t| (theme_label(t), Some(t.clone()), p.cursor_theme.as_deref() == Some(t.as_str()))));
+                    let mh = items.len().min(10) as f32 * 26.0 + 10.0;
+                    let mut my = anchor.y + anchor.h + 4.0 - self.scroll;
+                    if my + mh > h - 8.0 {
+                        my = (anchor.y - self.scroll - 4.0 - mh).max(TOOLBAR_CLIP);
+                    }
+                    l.fixed(R::new(0.0, -100.0, w, h + 200.0), "", Style::Scrim(false), Some(Action::CursorPicker));
+                    let menu = R::new(anchor.x, my, anchor.w, mh);
+                    l.fixed(menu, "", Style::Menu, None);
+                    for (i, (label, value, checked)) in items.into_iter().take(10).enumerate() {
+                        l.fixed(
+                            R::new(menu.x + 4.0, my + 5.0 + i as f32 * 26.0, menu.w - 8.0, 26.0),
+                            &label,
+                            Style::MenuItem(checked),
+                            Some(Action::CursorTheme(value)),
+                        );
+                    }
+                }
             }
             Page::Displays => {
                 let r = R::new(x, l.y, cw, 168.0);
@@ -926,12 +1049,35 @@ impl Panel {
         }
         controls
     }
+    /// The control a click at the pointer would reach, if it does anything.
+    fn hovered_index(&self, controls: &[Control], h: f32) -> Option<usize> {
+        let (x, y) = self.pointer?;
+        let i = controls
+            .iter()
+            .rposition(|i| i.rect.contains(x, y) && (i.fixed || (TOOLBAR_CLIP..h).contains(&y)))?;
+        (controls[i].action.is_some() && !matches!(controls[i].style, Style::Scrim(_))).then_some(i)
+    }
+
+    /// Hover identity: style kind plus position, compared before and after a move.
+    pub fn hover_key(&self, w: f32, h: f32, c: &Context<'_>) -> Option<(i32, i32)> {
+        let controls = self.controls(w, h, c);
+        self.hovered_index(&controls, h).map(|i| (controls[i].rect.x as i32, controls[i].rect.y as i32))
+    }
+
     pub fn hit(&self, x: f32, y: f32, w: f32, h: f32, c: &Context<'_>) -> Option<Action> {
-        self.controls(w, h, c)
+        let control = self
+            .controls(w, h, c)
             .into_iter()
             .rev()
-            .find(|i| i.rect.contains(x, y) && (i.fixed || (TOOLBAR_CLIP..h).contains(&y)))
-            .and_then(|i| i.action)
+            .find(|i| i.rect.contains(x, y) && (i.fixed || (TOOLBAR_CLIP..h).contains(&y)))?;
+        match (control.style, control.action) {
+            (Style::Slider(_), Some(Action::PointerSpeed(_))) => {
+                let t = ((x - control.rect.x - 10.0) / (control.rect.w - 20.0)).clamp(0.0, 1.0);
+                // Snap to tenths, like the tick marks.
+                Some(Action::PointerSpeed(((t as f64 * 2.0 - 1.0) * 10.0).round() / 10.0))
+            }
+            (_, action) => action,
+        }
     }
     pub fn debug_point(
         &self,
@@ -1000,10 +1146,11 @@ impl Panel {
             crate::wallpaper::release_thumbs();
         }
         let controls = self.controls(w, h, c);
-        for control in controls.iter().filter(|i| !i.fixed) {
+        let hovered = self.hovered_index(&controls, h);
+        for (i, control) in controls.iter().enumerate().filter(|(_, i)| !i.fixed) {
             let r = control.rect;
             if r.y + r.h > TOOLBAR_CLIP - 8.0 && r.y < h {
-                self.paint_control(pm, fonts, control, (ox, oy), c);
+                self.paint_control(pm, fonts, control, (ox, oy), c, hovered == Some(i));
             }
         }
         // Unified toolbar: scrolled content slides under it.
@@ -1016,14 +1163,14 @@ impl Panel {
         if self.keyboard_busy || c.system.busy {
             fonts.draw_text_right(pm, "Применение…", ox + w - 20.0, oy - top + 13.0, 12.0, p.text_secondary, false);
         }
-        for control in controls.iter().filter(|i| i.fixed) {
+        for (i, control) in controls.iter().enumerate().filter(|(_, i)| i.fixed) {
             if let Style::Scrim(dim) = control.style {
                 if dim {
                     fill_rounded_rect(pm, ox, oy - top, w, h + top, crate::theme::WINDOW_CORNER_RADIUS, rgba(0, 0, 0, if dark { 90 } else { 40 }));
                 }
                 continue;
             }
-            self.paint_control(pm, fonts, control, (ox, oy), c);
+            self.paint_control(pm, fonts, control, (ox, oy), c, hovered == Some(i));
         }
     }
     fn paint_control(
@@ -1033,9 +1180,11 @@ impl Panel {
         control: &Control,
         (ox, oy): (f32, f32),
         c: &Context<'_>,
+        hover: bool,
     ) {
         let p = palette();
         let dark = appearance() == Appearance::Dark;
+        let hover_fill = if dark { rgba(255, 255, 255, 18) } else { rgba(0, 0, 0, 12) };
         let group_fill = if dark {
             rgba(255, 255, 255, 13)
         } else {
@@ -1078,6 +1227,8 @@ impl Panel {
             Style::Sidebar(page, selected) => {
                 if selected {
                     fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 8.0, p.accent);
+                } else if hover {
+                    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 8.0, hover_fill);
                 }
                 draw_page_icon(pm, page, r.x + 6.0, r.y + 5.0, 20.0);
                 fonts.draw_text_clipped(
@@ -1139,6 +1290,9 @@ impl Panel {
                 }
             }
             Style::Toggle(on) => {
+                if hover && !disabled {
+                    fill_rounded_rect(pm, r.x + 4.0, r.y + 3.0, r.w - 8.0, r.h - 6.0, 9.0, hover_fill);
+                }
                 row_text(pm, fonts, 60.0);
                 let (tw, th) = (40.0, 24.0);
                 let tx = r.x + r.w - 14.0 - tw;
@@ -1158,6 +1312,9 @@ impl Panel {
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, if dark { rgba(255, 255, 255, 22) } else { rgba(0, 0, 0, 14) });
             }
             Style::Segment(selected) => {
+                if hover && !selected && !disabled {
+                    fill_rounded_rect(pm, r.x + 2.0, r.y + 2.0, r.w - 4.0, r.h - 4.0, (r.h - 4.0) / 2.0, hover_fill);
+                }
                 if selected {
                     fill_rounded_rect(pm, r.x + 2.0, r.y + 2.5, r.w - 4.0, r.h - 4.0, (r.h - 4.0) / 2.0, rgba(0, 0, 0, 18));
                     fill_rounded_rect(
@@ -1172,9 +1329,29 @@ impl Panel {
                 }
                 fonts.draw_text_clipped_centered(pm, &control.label, r.x + r.w / 2.0, r.y + (r.h - 12.0) / 2.0 - 1.0, r.w - 8.0, 12.0, fg, selected);
             }
+            Style::Slider(value) => {
+                let (tx, tw, cy) = (r.x + 10.0, r.w - 20.0, r.y + 10.0);
+                let rail = if dark { rgba(255, 255, 255, 40) } else { rgba(0, 0, 0, 24) };
+                for i in 0..=10 {
+                    let x = tx + tw * i as f32 / 10.0;
+                    fill_rounded_rect(pm, x - 0.75, cy + 7.0, 1.5, 4.0, 0.75, rail);
+                }
+                fill_rounded_rect(pm, tx, cy - 2.0, tw, 4.0, 2.0, rail);
+                fill_rounded_rect(pm, tx, cy - 2.0, tw * value, 4.0, 2.0, p.accent);
+                let kx = tx + tw * value;
+                fill_circle(pm, kx, cy + 0.5, 10.0, rgba(0, 0, 0, 30));
+                fill_circle(pm, kx, cy, 10.0, rgba(255, 255, 255, 255));
+                stroke_circle(pm, kx, cy, 10.0, 0.5, rgba(0, 0, 0, 40));
+                fonts.draw_text(pm, "Медленно", tx, r.y + 25.0, 11.0, p.text_secondary, false);
+                fonts.draw_text_right(pm, "Быстро", tx + tw, r.y + 25.0, 11.0, p.text_secondary, false);
+            }
             Style::Push(primary) => {
                 let fill = if primary { p.accent } else { push_fill };
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, if disabled { with_alpha(fill, 0.5) } else { fill });
+                if hover && !disabled {
+                    let over = if primary { rgba(255, 255, 255, 36) } else { hover_fill };
+                    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, over);
+                }
                 fonts.draw_text_clipped_centered(
                     pm,
                     &control.label,
@@ -1188,13 +1365,22 @@ impl Panel {
             }
             Style::Popup => {
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, push_fill);
+                if hover && !disabled {
+                    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, hover_fill);
+                }
                 fonts.draw_text_clipped(pm, &control.label, r.x + 12.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 36.0, 13.0, fg, false);
                 draw_chevrons(pm, r.x + r.w - 16.0, r.y + r.h / 2.0, if disabled { p.text_tertiary } else { p.text_secondary });
             }
             Style::Mini => {
+                if hover && !disabled {
+                    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 6.0, hover_fill);
+                }
                 fonts.draw_text_centered(pm, &control.label, r.x + r.w / 2.0, r.y + (r.h - 16.0) / 2.0 - 1.0, 16.0, fg, false);
             }
             Style::Source { badge, selected } => {
+                if hover && !selected && !disabled {
+                    fill_rounded_rect(pm, r.x + 6.0, r.y + 3.0, r.w - 12.0, r.h - 6.0, 8.0, hover_fill);
+                }
                 if selected {
                     fill_rounded_rect(pm, r.x + 6.0, r.y + 3.0, r.w - 12.0, r.h - 6.0, 8.0, with_alpha(p.accent, if dark { 0.28 } else { 0.13 }));
                 }
@@ -1206,6 +1392,9 @@ impl Panel {
             }
             Style::Preview(dark_tile, selected) => {
                 let t = R::new(r.x, r.y, r.w, r.h - 22.0);
+                if hover && !selected {
+                    stroke_rounded_rect(pm, t.x - 3.0, t.y - 3.0, t.w + 6.0, t.h + 6.0, 10.0, 2.5, if dark { rgba(255, 255, 255, 70) } else { rgba(0, 0, 0, 45) });
+                }
                 if selected {
                     stroke_rounded_rect(pm, t.x - 3.0, t.y - 3.0, t.w + 6.0, t.h + 6.0, 10.0, 2.5, p.accent);
                 }
@@ -1232,6 +1421,9 @@ impl Panel {
             }
             Style::Wallpaper(index, selected) => {
                 let t = R::new(r.x, r.y, r.w, r.h - 22.0);
+                if hover && !selected {
+                    stroke_rounded_rect(pm, t.x - 3.0, t.y - 3.0, t.w + 6.0, t.h + 6.0, 10.0, 2.5, if dark { rgba(255, 255, 255, 70) } else { rgba(0, 0, 0, 45) });
+                }
                 if selected {
                     stroke_rounded_rect(pm, t.x - 3.0, t.y - 3.0, t.w + 6.0, t.h + 6.0, 10.0, 2.5, p.accent);
                 }
@@ -1240,6 +1432,9 @@ impl Panel {
             }
             Style::Gradient(selected) => {
                 let t = R::new(r.x, r.y, r.w, r.h - 22.0);
+                if hover && !selected {
+                    stroke_rounded_rect(pm, t.x - 3.0, t.y - 3.0, t.w + 6.0, t.h + 6.0, 10.0, 2.5, if dark { rgba(255, 255, 255, 70) } else { rgba(0, 0, 0, 45) });
+                }
                 if selected {
                     stroke_rounded_rect(pm, t.x - 3.0, t.y - 3.0, t.w + 6.0, t.h + 6.0, 10.0, 2.5, p.accent);
                 }
@@ -1276,10 +1471,14 @@ impl Panel {
                 stroke_rounded_rect(pm, r.x, r.y, r.w, r.h, 9.0, 0.5, p.window_outline);
             }
             Style::MenuItem(checked) => {
-                if checked {
-                    fonts.draw_text(pm, "✓", r.x + 9.0, r.y + (r.h - 13.0) / 2.0 - 1.0, 13.0, p.accent, true);
+                let lit = hover && !disabled;
+                if lit {
+                    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 6.0, p.accent);
                 }
-                fonts.draw_text_clipped(pm, &control.label, r.x + 28.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 36.0, 13.0, fg, false);
+                if checked {
+                    fonts.draw_text(pm, "✓", r.x + 9.0, r.y + (r.h - 13.0) / 2.0 - 1.0, 13.0, if lit { p.on_accent } else { p.accent }, true);
+                }
+                fonts.draw_text_clipped(pm, &control.label, r.x + 28.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 36.0, 13.0, if lit { p.on_accent } else { fg }, false);
             }
             Style::Banner(error) => {
                 soft_shadow(pm, r, 12.0);
@@ -1288,8 +1487,10 @@ impl Panel {
                 if error {
                     fonts.draw_text_clipped(pm, &control.label, r.x + 14.0, r.y + (r.h - 12.0) / 2.0 - 1.0, r.w - 28.0, 12.0, rgba(220, 55, 55, 255), false);
                 } else {
-                    fonts.draw_text_clipped(pm, &control.label, r.x + 14.0, r.y + 9.0, r.w - 250.0, 13.0, p.text, true);
-                    fonts.draw_text_clipped(pm, &control.detail, r.x + 14.0, r.y + 29.0, r.w - 250.0, 11.0, p.text_secondary, false);
+                    // Fixed banners carry two buttons on the right
+                    let tw = if control.fixed { r.w - 250.0 } else { r.w - 28.0 };
+                    fonts.draw_text_clipped(pm, &control.label, r.x + 14.0, r.y + 10.0, tw, 13.0, p.text, true);
+                    fonts.draw_text_clipped(pm, &control.detail, r.x + 14.0, r.y + 32.0, tw, 11.0, p.text_secondary, false);
                 }
             }
         }
@@ -1300,6 +1501,8 @@ impl crate::FeatherCompositor {
     pub fn settings_context(&self) -> Context<'_> {
         Context {
             system: self.system_preferences.clone(),
+            pointer: self.pointer_config.clone(),
+            pointer_managed: self.pointer_managed,
             keyboard: &self.keyboard_config,
             active: self.active_layout_index,
             animations: self.animations.enabled(),
@@ -1390,13 +1593,14 @@ impl crate::FeatherCompositor {
         match action {
             Action::Page(page) => {
                 self.system_settings.apps_picker = None;
+                self.system_settings.cursor_picker = false;
                 self.system_settings.zone_picker = false;
                 self.system_settings.time_editing = false;
                 self.system_settings.page = page;
                 self.system_settings.adding = false;
                 self.system_settings.scroll = 0.0;
                 self.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
-                if matches!(page, Page::Defaults | Page::DateTime) {
+                if matches!(page, Page::Defaults | Page::DateTime | Page::Pointer) {
                     self.request_system_preference(crate::system_preferences::Command::Refresh);
                 }
             }
@@ -1522,6 +1726,43 @@ impl crate::FeatherCompositor {
                 config.shortcut = shortcut;
                 self.request_keyboard(config);
             }
+            Action::CursorPicker => {
+                self.system_settings.cursor_picker = !self.system_settings.cursor_picker;
+            }
+            Action::CursorTheme(theme) => {
+                self.system_settings.cursor_picker = false;
+                if theme.as_deref().is_none_or(crate::settings::valid_theme) {
+                    self.pointer_config.cursor_theme = theme;
+                    self.apply_pointer_config();
+                    self.save_settings();
+                }
+            }
+            Action::CursorSize(size) => {
+                if crate::settings::CURSOR_SIZES.contains(&size) {
+                    self.pointer_config.cursor_size = size;
+                    self.apply_pointer_config();
+                    self.save_settings();
+                }
+            }
+            Action::PointerSpeed(speed) => {
+                if speed.is_finite() {
+                    self.pointer_config.speed = speed.clamp(-1.0, 1.0);
+                    self.apply_pointer_config();
+                    self.save_settings();
+                }
+            }
+            Action::NaturalMouse | Action::NaturalTouchpad | Action::TapToClick | Action::LeftHanded => {
+                let p = &mut self.pointer_config;
+                let flag = match action {
+                    Action::NaturalMouse => &mut p.natural_mouse,
+                    Action::NaturalTouchpad => &mut p.natural_touchpad,
+                    Action::TapToClick => &mut p.tap_to_click,
+                    _ => &mut p.left_handed,
+                };
+                *flag = !*flag;
+                self.apply_pointer_config();
+                self.save_settings();
+            }
             Action::Scale(scale) => {
                 if !scale.is_finite() || !(1.0..=2.5).contains(&scale) {
                     return;
@@ -1577,6 +1818,25 @@ impl crate::FeatherCompositor {
         self.mark_settings_dirty();
         self.needs_redraw = true;
     }
+    /// Pointer moved: repaint only when the control under it changes.
+    pub fn settings_pointer_moved(&mut self, x: f64, y: f64) {
+        let Some(win) = self.windows.iter().rev().find(|w| w.is_visible() && w.app_id == "builtin.settings") else {
+            return;
+        };
+        let inside = self.windows.iter().rev().find(|w| w.is_visible() && w.contains_point(x, y)).is_some_and(|w| w.id == win.id);
+        let (w, h) = (win.width as f32, win.height as f32);
+        let local = inside.then(|| (x as f32 - win.x as f32, y as f32 - (win.y + win.titlebar_h()) as f32));
+        if local == self.system_settings.pointer {
+            return;
+        }
+        let before = self.system_settings.hover_key(w, h, &self.settings_context());
+        self.system_settings.pointer = local;
+        if self.system_settings.hover_key(w, h, &self.settings_context()) != before {
+            self.mark_settings_dirty();
+            self.needs_redraw = true;
+        }
+    }
+
     pub fn mark_settings_dirty(&mut self) {
         for w in &mut self.windows {
             if w.app_id == "builtin.settings" {
@@ -1799,6 +2059,8 @@ mod tests {
         };
         let context = Context {
             system: Default::default(),
+            pointer: Default::default(),
+            pointer_managed: true,
             keyboard: &keyboard,
             active: 1,
             animations: true,
@@ -1826,6 +2088,8 @@ mod tests {
                             Panel { page: Page::Keyboard, adding: true, ..Default::default() },
                             Panel { page: Page::Defaults, apps_picker: Some(true), ..Default::default() },
                             Panel { page: Page::DateTime, zone_picker: true, ..Default::default() },
+                            // Hover: sidebar «Дисплеи» and, below, nothing else lit
+                            Panel { page: Page::Desktop, pointer: Some((100.0, 100.0)), ..Default::default() },
                         ];
                         for (n, panel) in Page::ALL
                             .into_iter()
@@ -1897,6 +2161,8 @@ mod tests {
         };
         let c = Context {
             system: Default::default(),
+            pointer: Default::default(),
+            pointer_managed: true,
             keyboard: &keyboard,
             active: 0,
             animations: false,

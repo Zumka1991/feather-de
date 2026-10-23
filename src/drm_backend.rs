@@ -226,12 +226,15 @@ pub fn init(
     handle.insert_source(
         LibinputInputBackend::new(libinput.clone()),
         |mut event, _, state| {
-            if let smithay::backend::input::InputEvent::DeviceAdded { device } = &mut event {
-                // Touchpads behave like on a Mac: tap to click, natural scrolling
-                if device.config_tap_finger_count() > 0 {
-                    let _ = device.config_tap_set_enabled(true);
-                    let _ = device.config_scroll_set_natural_scroll_enabled(true);
+            match &mut event {
+                smithay::backend::input::InputEvent::DeviceAdded { device } => {
+                    state.configure_input_device(device);
+                    state.input_devices.push(device.clone());
                 }
+                smithay::backend::input::InputEvent::DeviceRemoved { device } => {
+                    state.input_devices.retain(|d| d != device);
+                }
+                _ => {}
             }
             state.handle_input(event);
         },

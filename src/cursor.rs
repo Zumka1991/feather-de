@@ -15,24 +15,30 @@ use smithay::{
     wayland::compositor::with_states,
 };
 
-/// Nominal cursor size in logical points (macOS uses a slightly larger cursor than 24)
-const CURSOR_SIZE_PT: f64 = 24.0;
-
 pub struct CursorManager {
     theme: xcursor::CursorTheme,
+    /// Nominal size in logical points (System Settings → Мышь и трекпад)
+    size_pt: f64,
     /// (xcursor name, physical size) → buffer and physical hotspot
     cache: HashMap<(&'static str, u32), Option<(MemoryRenderBuffer, Point<i32, smithay::utils::Physical>)>>,
     pub status: CursorImageStatus,
 }
 
 impl CursorManager {
-    pub fn new() -> Self {
-        let theme_name = std::env::var("XCURSOR_THEME").unwrap_or_else(|_| "breeze_cursors".into());
+    pub fn new(theme: Option<&str>, size_pt: u32) -> Self {
         Self {
-            theme: xcursor::CursorTheme::load(&theme_name),
+            theme: xcursor::CursorTheme::load(&theme_name(theme)),
+            size_pt: size_pt as f64,
             cache: HashMap::new(),
             status: CursorImageStatus::default_named(),
         }
+    }
+
+    /// New theme or size: cursors reload on next use.
+    pub fn configure(&mut self, theme: Option<&str>, size_pt: u32) {
+        self.theme = xcursor::CursorTheme::load(&theme_name(theme));
+        self.size_pt = size_pt as f64;
+        self.cache.clear();
     }
 
     pub fn clear_cache(&mut self) {
@@ -41,7 +47,7 @@ impl CursorManager {
 
     /// Named cursor image for the current scale
     pub fn named(&mut self, icon: CursorIcon, scale: f64) -> Option<&(MemoryRenderBuffer, Point<i32, smithay::utils::Physical>)> {
-        let size = (CURSOR_SIZE_PT * scale).round() as u32;
+        let size = (self.size_pt * scale).round() as u32;
         let key = (icon.name(), size);
         if !self.cache.contains_key(&key) {
             let loaded = std::iter::once(icon.name())
@@ -71,6 +77,14 @@ impl CursorManager {
         );
         Some((buffer, Point::from((best.xhot as i32, best.yhot as i32))))
     }
+}
+
+/// The chosen theme, else the session's XCURSOR_THEME, else Breeze.
+pub fn theme_name(chosen: Option<&str>) -> String {
+    chosen
+        .map(str::to_owned)
+        .or_else(|| std::env::var("XCURSOR_THEME").ok())
+        .unwrap_or_else(|| "breeze_cursors".into())
 }
 
 /// Hotspot of a client cursor surface (logical)

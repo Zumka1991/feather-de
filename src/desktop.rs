@@ -489,6 +489,17 @@ pub fn raster_tile(job: &TileJob, fonts: &mut crate::text::FontSystem, icons: &m
             crate::theme::fill_rounded_rect(&mut m, ix - 6.0, 0.0, ICON + 12.0, ICON + 8.0, 8.0, rgba(0, 0, 0, 64));
         }
         icons.draw(&mut m, fonts, &job.icon, ix, 4.0, ICON);
+        if !selected {
+            // macOS-like soft drop shadow: the label as a mask, blurred, slightly lower
+            let mut shadow = tiny_skia::Pixmap::new(w as u32, h as u32).expect("tile size");
+            for (k, line) in lines.iter().enumerate() {
+                let y = ICON + 10.0 + k as f32 * 15.0;
+                let x = (CELL_W - fonts.measure_text(line, 12.0, false)) * 0.5;
+                fonts.draw_text(&mut shadow.as_mut(), line, x, y + 1.0, 12.0, rgba(0, 0, 0, 255), false);
+            }
+            soft_shadow(&mut shadow, (1.2 * s).round().max(1.0) as usize, 2.2);
+            m.draw_pixmap(0, 0, shadow.as_ref(), &tiny_skia::PixmapPaint::default(), tiny_skia::Transform::identity(), None);
+        }
         for (k, line) in lines.iter().enumerate() {
             let y = ICON + 10.0 + k as f32 * 15.0;
             let tw = fonts.measure_text(line, 12.0, false);
@@ -496,10 +507,8 @@ pub fn raster_tile(job: &TileJob, fonts: &mut crate::text::FontSystem, icons: &m
             if selected {
                 crate::theme::fill_rounded_rect(&mut m, x - 4.0, y - 1.0, tw + 8.0, 16.0, 4.0, rgba(10, 132, 255, 255));
             } else {
-                // Soft dark halo keeps white labels readable on light wallpapers
-                for (dx, dy, a) in [(0.0, 1.0, 150), (0.7, 0.4, 70), (-0.7, 0.4, 70), (0.0, -0.5, 45)] {
-                    fonts.draw_text(&mut m, line, x + dx, y + dy, 12.0, rgba(0, 0, 0, a), false);
-                }
+                // A faint tight outline under the blur keeps thin strokes crisp on light wallpapers
+                fonts.draw_text(&mut m, line, x, y + 0.5, 12.0, rgba(0, 0, 0, 70), false);
             }
             fonts.draw_text(&mut m, line, x, y, 12.0, rgba(255, 255, 255, 255), false);
         }
@@ -508,6 +517,36 @@ pub fn raster_tile(job: &TileJob, fonts: &mut crate::text::FontSystem, icons: &m
     let plain = draw(false, fonts, icons);
     let selected = draw(true, fonts, icons);
     TilePixels { path: job.path.clone(), name: job.name.clone(), size: (w, h), plain, selected }
+}
+
+/// One box-blur pass along lines of `n` samples (`stride` apart, lines `step` apart).
+fn box_pass(src: &[u16], dst: &mut [u16], n: usize, stride: usize, lines: usize, step: usize, radius: usize) {
+    let window = (2 * radius + 1) as u32;
+    for line in 0..lines {
+        let base = line * step;
+        let at = |i: isize| src[base + i.clamp(0, n as isize - 1) as usize * stride] as u32;
+        let mut sum: u32 = (-(radius as isize)..=radius as isize).map(at).sum();
+        for i in 0..n {
+            dst[base + i * stride] = (sum / window) as u16;
+            sum += at(i as isize + radius as isize + 1);
+            sum -= at(i as isize - radius as isize);
+        }
+    }
+}
+
+/// Three box blurs ≈ a Gaussian; black premultiplied pixels, so only alpha is blurred.
+/// `strength` scales the result (shadow opacity).
+fn soft_shadow(pm: &mut tiny_skia::Pixmap, radius: usize, strength: f32) {
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
+    let mut alpha: Vec<u16> = pm.data().chunks_exact(4).map(|p| p[3] as u16).collect();
+    let mut tmp = vec![0u16; alpha.len()];
+    for _ in 0..3 {
+        box_pass(&alpha, &mut tmp, w, 1, h, w, radius);
+        box_pass(&tmp, &mut alpha, h, w, w, 1, radius);
+    }
+    for (px, a) in pm.data_mut().chunks_exact_mut(4).zip(alpha) {
+        px.copy_from_slice(&[0, 0, 0, (a as f32 * strength).min(255.0) as u8]);
+    }
 }
 
 fn positions_path() -> Option<PathBuf> {

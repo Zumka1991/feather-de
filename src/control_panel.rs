@@ -29,6 +29,8 @@ pub struct Panel {
     password: crate::controls::Secret,
     selected: Option<Network>,
     drag: Option<(String, R, f32)>,
+    /// Pointer (global logical) while it is over the panel
+    pub hover: Option<(f32, f32)>,
 }
 impl Panel {
     pub fn close(&mut self) {
@@ -137,6 +139,45 @@ impl Panel {
             password: Some(password),
         }))
     }
+    /// Clickable region under the pointer, as `click` would decide it; with its rect.
+    pub fn hover_target(&self, p: R) -> Option<(u32, R)> {
+        let (gx, gy) = self.hover?;
+        let (x, y) = (gx - p.x, gy - p.y);
+        let row = |y0: f32, h: f32| R::new(p.x + 10.0, p.y + y0, p.w - 20.0, h);
+        if y < 48.0 && x < 55.0 {
+            return Some((1, R::new(p.x + 8.0, p.y + 9.0, 36.0, 32.0)));
+        }
+        match self.page {
+            Page::Password => (y > p.h - 65.0).then(|| (5, row(p.h - 60.0, 40.0))),
+            _ if y > p.h - 43.0 => (self.page == Page::Wifi).then(|| (4, row(p.h - 42.0, 34.0))),
+            Page::Wifi => {
+                if (50.0..85.0).contains(&y) && self.wifi.enabled {
+                    return Some((3, row(50.0, 34.0)));
+                }
+                if (88.0..278.0).contains(&y) && self.wifi.enabled {
+                    let i = ((y - 88.0) / 38.0) as usize;
+                    if self.wifi.networks.len() > i + self.scroll {
+                        return Some((100 + (i + self.scroll) as u32, row(88.0 + i as f32 * 38.0, 34.0)));
+                    }
+                }
+                None
+            }
+            Page::Sound => {
+                if (50.0..85.0).contains(&y) {
+                    return Some((3, row(50.0, 34.0)));
+                }
+                if (151.0..259.0).contains(&y) {
+                    let i = ((y - 151.0) / 36.0) as usize;
+                    if self.audio.sinks.len() > i + self.scroll {
+                        return Some((200 + (i + self.scroll) as u32, row(149.0 + i as f32 * 36.0, 34.0)));
+                    }
+                }
+                None
+            }
+            Page::Main => None,
+        }
+    }
+
     pub fn click(&mut self, p: R, x: f32, y: f32) -> ShellClickAction {
         let x = x - p.x;
         let y = y - p.y;
@@ -209,6 +250,10 @@ impl Panel {
     pub fn paint(&self, pm: &mut PixmapMut, fonts: &mut FontSystem, p: R) {
         let pal = palette();
         draw_glass_panel(pm, p.x, p.y, p.w, p.h, 22.0, false);
+        if let Some((_, r)) = self.hover_target(p) {
+            let tint = if appearance() == Appearance::Dark { rgba(255, 255, 255, 22) } else { rgba(0, 0, 0, 16) };
+            fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 8.0, tint);
+        }
         fonts.draw_text(pm, "‹", p.x + 16.0, p.y + 10.0, 24.0, pal.text, false);
         let title = match self.page {
             Page::Wifi => "Wi‑Fi",

@@ -68,6 +68,7 @@ enum Msg {
     SaveChecked(PathBuf,Result<Option<bool>,String>),
     Listed(u64, Result<Vec<fsops::Entry>, String>),
     Done(usize, &'static str),
+    Props(app::Props),
     ExternalFiles(Vec<PathBuf>),
     /// Files of a drop, read from the offer; the offer is finished after the paste starts
     Dropped(Vec<PathBuf>, PathBuf, bool),
@@ -177,6 +178,10 @@ fn main() {
                         Vec::new()
                     }
                     Msg::Done(failed, what) => files.app.operation_done(failed, what),
+                    Msg::Props(props) => {
+                        files.app.props_ready(props);
+                        Vec::new()
+                    }
                     Msg::Dropped(paths, dir, move_allowed) => {
                         let effects = files.app.drop_files(paths, dir, move_allowed);
                         if let Some(offer) = files.drop_offer.take() {
@@ -355,6 +360,10 @@ impl Files {
                         let _ = tx.send(Msg::Done(failed, "Очистка Корзины"));
                     });
                 }
+                Effect::Inspect(path) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || inspect(path, &tx));
+                }
                 Effect::Clipboard(paths) => self.offer_files(paths),
                 Effect::StartDrag(paths) => self.start_drag(paths),
             }
@@ -486,6 +495,60 @@ impl Files {
             let _ = p.set_cursor(&self.conn, icon);
         }
     }
+}
+
+/// «Свойства»: stat first (shown at once), then the size of a folder. The walk is bounded so
+/// a huge tree cannot keep a thread busy for minutes; it then reports "более …".
+fn inspect(path: PathBuf, tx: &channel::Sender<Msg>) {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = std::fs::symlink_metadata(&path) else { return };
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (kind, _) = fsops::kind_of(&name, meta.is_dir(), meta.mode() & 0o111 != 0);
+    let owner = {
+        let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut buf = vec![0 as libc::c_char; 4096];
+        let mut out = std::ptr::null_mut();
+        let ok = unsafe { libc::getpwuid_r(meta.uid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut out) } == 0 && !out.is_null();
+        if ok { unsafe { std::ffi::CStr::from_ptr(pw.pw_name) }.to_string_lossy().into_owned() } else { meta.uid().to_string() }
+    };
+    let mut props = app::Props {
+        path: path.clone(),
+        is_dir: meta.is_dir(),
+        kind: if meta.file_type().is_symlink() { "Ссылка".into() } else { kind.label().into() },
+        size: (!meta.is_dir()).then_some(meta.len()),
+        items: None,
+        partial: false,
+        modified: meta.modified().ok(),
+        created: meta.created().ok(),
+        accessed: meta.accessed().ok(),
+        mode: meta.mode(),
+        owner,
+    };
+    let _ = tx.send(Msg::Props(props.clone()));
+    if !meta.is_dir() {
+        return;
+    }
+    let started = Instant::now();
+    let (mut size, mut items) = (0u64, 0u64);
+    let mut stack = vec![path];
+    while let Some(dir) = stack.pop() {
+        if items > 1_000_000 || started.elapsed() > std::time::Duration::from_secs(20) {
+            props.partial = true;
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let Ok(m) = e.metadata() else { continue };
+            items += 1;
+            size += m.len();
+            if m.is_dir() {
+                stack.push(e.path());
+            }
+        }
+    }
+    props.size = Some(size);
+    props.items = Some(items);
+    let _ = tx.send(Msg::Props(props));
 }
 
 impl CompositorHandler for Files {

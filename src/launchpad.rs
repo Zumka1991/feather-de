@@ -91,6 +91,8 @@ pub enum LaunchpadHit {
 
 pub struct Launchpad {
     pub query: String,
+    /// The search field (caret, selection); `query` mirrors its text
+    pub input: feather_ui::input::TextInput,
     pub page: usize,
     pub apps: Vec<usize>,
     pub layout: LaunchpadLayout,
@@ -119,6 +121,7 @@ impl Launchpad {
         let layout = LaunchpadLayout::compute(screen_w, screen_h);
         Self {
             query: String::new(),
+            input: Default::default(),
             page: 0,
             apps: registry.launchpad_apps(""),
             layout,
@@ -161,6 +164,19 @@ impl Launchpad {
         self.cancel_pending();
     }
 
+    pub fn mark_search_dirty(&mut self) {
+        self.search_dirty = true;
+    }
+
+    /// A click in the search field places the caret (Shift extends the selection).
+    pub fn click_search(&mut self, fonts: &mut crate::text::FontSystem, px: f32, extend: bool) {
+        if !self.input.is_empty() {
+            let r = self.layout.search;
+            self.input.click(fonts, px - r.x - 30.0, r.w - 46.0, 14.0, false, extend);
+        }
+        self.search_dirty = true;
+    }
+
     pub fn focus_search(&mut self, focused: bool) {
         if focused != self.search_focused {
             self.search_focused = focused;
@@ -170,6 +186,9 @@ impl Launchpad {
 
     pub fn set_query(&mut self, registry: &AppRegistry, query: String) {
         self.cancel_pending();
+        if self.input.text() != query {
+            self.input.set(&query);
+        }
         self.query = query;
         self.apps = registry.launchpad_apps(&self.query);
         self.page = 0;
@@ -272,6 +291,7 @@ impl Launchpad {
             let (pw, ph) = (to_phys(r.w as i32), to_phys(r.h as i32));
             self.search_buffer = new_buffer(pw, ph);
             let query = self.query.clone();
+            let input = self.input.clone();
             let focused = self.search_focused || !query.is_empty();
             let mut ctx = self.search_buffer.render();
             let _ = ctx.draw(|data| {
@@ -295,9 +315,7 @@ impl Launchpad {
                         fonts.draw_text(&mut pm, "Поиск", x0 + 22.0, 6.5, 14.0, rgba(255, 255, 255, 170), false);
                     } else {
                         draw_search_icon(&mut pm, 16.0, r.h * 0.5, 5.0, white);
-                        let fitted = fonts.ellipsize(&query, r.w - 46.0, 14.0, false);
-                        let qw = fonts.draw_text(&mut pm, &fitted, 30.0, 6.5, 14.0, white, false);
-                        fill_rounded_rect(&mut pm, 31.0 + qw, 7.0, 1.5, 16.0, 0.75, white);
+                        input.draw(&mut pm, fonts, 30.0, 6.5, r.w - 46.0, 14.0, false, white, true, rgba(10, 132, 255, 255));
                     }
                 }
                 Result::<_, ()>::Ok(vec![Rectangle::from_size((pw, ph).into())])

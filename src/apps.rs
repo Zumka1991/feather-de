@@ -336,6 +336,11 @@ impl AppRegistry {
     }
 
     /// Default Dock contents (used until the user rearranges the Dock)
+    /// Feather's own apps, first in Launchpad in this order.
+    pub const CORE: [&'static str; 5] = ["dolphin", "konsole", "builtin.notes", "builtin.settings", "builtin.monitor"];
+    /// Always in the Dock, like Finder on macOS.
+    pub const PERMANENT: &'static str = "dolphin";
+
     pub fn default_pins(&self) -> Vec<String> {
         self.apps
             .iter()
@@ -363,7 +368,8 @@ impl AppRegistry {
             })
             .map(|(i, _)| i)
             .collect();
-        list.sort_by_cached_key(|&i| self.apps[i].name.to_lowercase());
+        let rank = |i: usize| Self::CORE.iter().position(|c| *c == self.apps[i].id).unwrap_or(Self::CORE.len());
+        list.sort_by_cached_key(|&i| (rank(i), self.apps[i].name.to_lowercase()));
         list
     }
 
@@ -395,6 +401,13 @@ impl AppRegistry {
     }
 }
 
+/// Cursor theme/size handed to programs started from now on (XCURSOR_THEME/XCURSOR_SIZE).
+static CURSOR_ENV: std::sync::Mutex<Option<(String, u32)>> = std::sync::Mutex::new(None);
+
+pub fn set_cursor_env(theme: String, size: u32) {
+    *CURSOR_ENV.lock().unwrap() = Some((theme, size));
+}
+
 /// Spawns an external command connected to our compositor's Wayland socket
 pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
     let trimmed = cmd_line.trim();
@@ -406,7 +419,11 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/zumka".into());
     let enriched_path = format!("{home}/.cargo/bin:{home}/.local/bin:/usr/local/bin:{current_path}");
 
-    Command::new("sh")
+    let mut command = Command::new("sh");
+    if let Some((theme, size)) = CURSOR_ENV.lock().unwrap().clone() {
+        command.env("XCURSOR_THEME", theme).env("XCURSOR_SIZE", size.to_string());
+    }
+    command
         .arg("-c")
         .arg(trimmed)
         .env("PATH", enriched_path)
@@ -589,6 +606,66 @@ pub fn eval_spotlight_math(expr: &str) -> Option<String> {
 
 /// Draws a procedural macOS-style squircle icon (for built-in apps and as a fallback)
 #[allow(clippy::too_many_arguments)]
+/// Closed gear outline: `teeth` trapezoid teeth between radii `inner` and `outer`.
+fn gear_path(cx: f32, cy: f32, inner: f32, outer: f32, teeth: usize) -> Option<tiny_skia::Path> {
+    let mut b = tiny_skia::PathBuilder::new();
+    let step = std::f32::consts::TAU / teeth as f32;
+    for i in 0..teeth {
+        let a = i as f32 * step - std::f32::consts::FRAC_PI_2;
+        // root → flank up → tip → flank down (tips narrower than roots)
+        let pts = [(a, inner), (a + step * 0.16, outer), (a + step * 0.44, outer), (a + step * 0.60, inner)];
+        for (k, (ang, r)) in pts.into_iter().enumerate() {
+            let (px, py) = (cx + ang.cos() * r, cy + ang.sin() * r);
+            if i == 0 && k == 0 {
+                b.move_to(px, py);
+            } else {
+                b.line_to(px, py);
+            }
+        }
+        // Root arc to the next tooth
+        let next = a + step;
+        let mid = a + step * 0.80;
+        b.quad_to(cx + mid.cos() * inner * 1.02, cy + mid.sin() * inner * 1.02, cx + next.cos() * inner, cy + next.sin() * inner);
+    }
+    b.close();
+    b.finish()
+}
+
+/// System Settings: brushed-metal tile, graphite gear with a recessed ring and an inner gear.
+fn draw_settings_icon(pm: &mut PixmapMut, x: f32, y: f32, size: f32) {
+    let k = size;
+    fill_squircle_gradient(pm, x, y, size, rgba(236, 237, 241, 255), rgba(168, 171, 180, 255));
+    let (cx, cy) = (x + k * 0.5, y + k * 0.5);
+    let circle = |r: f32| tiny_skia::PathBuilder::from_circle(cx, cy, k * r);
+    let grad = |pm: &mut PixmapMut, path: Option<tiny_skia::Path>, r: f32, top: Color, bottom: Color| {
+        if let Some(path) = path {
+            fill_path_gradient(pm, &path, cy - k * r, cy + k * r, top, bottom);
+        }
+    };
+    // Soft shadow of the big gear on the tile
+    for (d, a) in [(0.012, 40u8), (0.024, 22)] {
+        if let Some(path) = gear_path(cx, cy + k * d, k * 0.335, k * 0.425, 18) {
+            fill_path_gradient(pm, &path, y, y + k, rgba(30, 32, 40, a), rgba(30, 32, 40, a));
+        }
+    }
+    grad(pm, gear_path(cx, cy, k * 0.335, k * 0.425, 18), 0.43, rgba(118, 121, 130, 255), rgba(52, 54, 62, 255));
+    // Bevel: light top rim of the gear body
+    if let Some(path) = circle(0.33) {
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(rgba(255, 255, 255, 60));
+        paint.anti_alias = true;
+        pm.stroke_path(&path, &paint, &tiny_skia::Stroke { width: k * 0.012, ..Default::default() }, crate::theme::scale_transform(), None);
+    }
+    // Recessed ring
+    grad(pm, circle(0.29), 0.29, rgba(150, 153, 162, 255), rgba(222, 224, 230, 255));
+    grad(pm, circle(0.255), 0.255, rgba(205, 208, 215, 255), rgba(150, 153, 161, 255));
+    // Inner gear
+    grad(pm, gear_path(cx, cy, k * 0.15, k * 0.205, 10), 0.21, rgba(104, 107, 116, 255), rgba(46, 48, 56, 255));
+    // Hub
+    grad(pm, circle(0.105), 0.105, rgba(246, 247, 250, 255), rgba(170, 173, 182, 255));
+    grad(pm, circle(0.045), 0.045, rgba(70, 72, 80, 255), rgba(120, 123, 132, 255));
+}
+
 /// The Dock trash, macOS-like: a perforated glass bin in perspective, sized to carry the
 /// same visual weight as the tiles next to it; crumpled paper when full.
 fn draw_trash(pm: &mut PixmapMut, x: f32, y: f32, size: f32, full: bool) {
@@ -809,24 +886,7 @@ pub fn draw_app_icon(
             stroke_line(pixmap, x + size * 0.57, y + size * 0.74, x + size * 0.68, cy, w, c);
             stroke_line(pixmap, x + size * 0.68, cy, x + size * 0.86, cy, w, c);
         }
-        IconKind::Settings => {
-            tile(pixmap, rgba(170, 172, 180, 255), rgba(110, 112, 120, 255));
-            let (cx, cy) = (x + size * 0.5, y + size * 0.5);
-            for k in 0..12 {
-                let a = k as f32 / 12.0 * std::f32::consts::TAU;
-                stroke_line(
-                    pixmap,
-                    cx + a.cos() * size * 0.22,
-                    cy + a.sin() * size * 0.22,
-                    cx + a.cos() * size * 0.34,
-                    cy + a.sin() * size * 0.34,
-                    size * 0.06,
-                    rgba(60, 62, 70, 255),
-                );
-            }
-            fill_circle(pixmap, cx, cy, size * 0.25, rgba(60, 62, 70, 255));
-            fill_circle(pixmap, cx, cy, size * 0.11, rgba(200, 202, 210, 255));
-        }
+        IconKind::Settings => draw_settings_icon(pixmap, x, y, size),
         IconKind::Launchpad => {
             tile(pixmap, rgba(245, 245, 247, 255), rgba(222, 222, 228, 255));
             let colors = [

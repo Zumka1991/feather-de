@@ -31,6 +31,8 @@ pub struct State {
     pub terminal: String,
     pub time: TimeState,
     pub zones: Arc<Vec<String>>,
+    /// Installed xcursor themes (directory names), sorted
+    pub cursor_themes: Arc<Vec<String>>,
     pub busy: bool,
     pub error: Option<String>,
 }
@@ -42,6 +44,7 @@ impl Default for State {
             terminal: "feather-terminal.desktop".into(),
             time: TimeState::default(),
             zones: Arc::new(Vec::new()),
+            cursor_themes: Arc::new(Vec::new()),
             busy: false,
             error: None,
         }
@@ -74,6 +77,27 @@ pub enum Command {
     SetTime(String),
 }
 pub struct Worker(async_channel::Sender<Command>);
+
+/// Icon themes that ship cursors: `<icons dir>/<name>/cursors`.
+pub fn scan_cursor_themes() -> Vec<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
+    let mut dirs = vec![data.join("icons"), home.join(".icons")];
+    let system = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    dirs.extend(system.split(':').filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join("icons")));
+    let mut themes: Vec<String> = dirs
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|d| d.flatten())
+        .filter(|e| e.path().join("cursors").is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| crate::settings::valid_theme(n))
+        .collect();
+    themes.sort_by_key(|t| t.to_lowercase());
+    themes.dedup();
+    themes.truncate(64);
+    themes
+}
 const SERVICE: &str = "org.freedesktop.timedate1";
 const OBJECT: &str = "/org/freedesktop/timedate1";
 fn config_home() -> PathBuf {
@@ -470,6 +494,7 @@ impl Worker {
                             }
                             Command::Refresh => {
                                 state.apps = Arc::new(scan_apps());
+                                state.cursor_themes = Arc::new(scan_cursor_themes());
                                 state.browser = default_browser().or(state.browser);
                                 Ok(())
                             }

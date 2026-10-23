@@ -52,4 +52,9 @@ export XCURSOR_THEME="${XCURSOR_THEME:-breeze_cursors}"
 
 # 2. Standalone session mode (from SDDM / Display Manager / TTY):
 # Boot full hardware DRM/KMS + libinput + XWayland host in borderless kiosk mode
-exec labwc -C "$KIOSK_CFG" -S "$INNER_SCRIPT"
+# labwc reads a per-user copy: Пёрышко rewrites it (mouse, touchpad, cursor from System
+# Settings) and asks labwc to reload. The repository template is only the starting point.
+RUNTIME_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/feather-de/labwc"
+mkdir -p "$RUNTIME_CFG"
+[[ -f "$RUNTIME_CFG/rc.xml" ]] || cp "$KIOSK_CFG/rc.xml" "$RUNTIME_CFG/rc.xml"
+exec labwc -C "$RUNTIME_CFG" -S "$INNER_SCRIPT"

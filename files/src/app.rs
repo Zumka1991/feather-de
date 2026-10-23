@@ -51,6 +51,8 @@ pub enum Effect {
     Restore(Vec<PathBuf>),
     DeleteForever(Vec<PathBuf>),
     EmptyTrash,
+    /// Gather «Свойства» of a path on a worker thread
+    Inspect(PathBuf),
     /// Offer these files to other programs (text/uri-list)
     Clipboard(Vec<PathBuf>),
     /// Drag these files out (Wayland DnD: other programs, the desktop, our own folders)
@@ -89,6 +91,8 @@ enum Hit {
     Toolbar,
     Menu(usize),
     EmptyTrash,
+    Title,
+    PropsClose,
     ConfirmOk,
     ConfirmCancel,
     Nothing,
@@ -107,10 +111,28 @@ enum MenuAction {
     Restore,
     DeleteForever,
     EmptyTrash,
+    Properties,
     NewFolder,
     ToggleHidden,
     ShowIcons,
     ShowList,
+}
+
+/// «Свойства»: filled on a worker; the size of a folder arrives later.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Props {
+    pub path: PathBuf,
+    pub is_dir: bool,
+    pub kind: String,
+    pub size: Option<u64>,
+    pub items: Option<u64>,
+    /// The walk stopped early (very large folder)
+    pub partial: bool,
+    pub modified: Option<std::time::SystemTime>,
+    pub created: Option<std::time::SystemTime>,
+    pub accessed: Option<std::time::SystemTime>,
+    pub mode: u32,
+    pub owner: String,
 }
 
 /// Finder-style sheet before deleting anything for good.
@@ -169,6 +191,9 @@ pub struct App {
     rubber_base: HashSet<PathBuf>,
     menu: Option<Menu>,
     confirm: Option<Confirm>,
+    /// «Перейти к папке»: the path field over the title (Ctrl+L, ⇧⌘G, click on the title)
+    path_edit: Option<feather_ui::input::TextInput>,
+    props: Option<Props>,
     menu_hover: Option<usize>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
     places: Vec<Place>,
@@ -223,6 +248,8 @@ impl App {
             rubber_base: HashSet::new(),
             menu: None,
             confirm: None,
+            path_edit: None,
+            props: None,
             menu_hover: None,
             clipboard: None,
             places: Vec::new(),
@@ -581,6 +608,51 @@ impl App {
         })
     }
 
+    fn title_rect(&self) -> (f32, f32, f32, f32) {
+        let x = SIDEBAR_W + 86.0;
+        (x, 12.0, (self.w - 196.0 - 84.0 - x - 10.0).max(80.0), 28.0)
+    }
+
+    fn open_path_edit(&mut self) {
+        let mut input = feather_ui::input::TextInput::new(&self.dir.to_string_lossy());
+        input.select_all();
+        self.path_edit = Some(input);
+        self.search_focus = false;
+        self.dirty = true;
+    }
+
+    /// Enter in the path field: `~`, relative paths; a file opens its folder.
+    fn commit_path(&mut self) -> Vec<Effect> {
+        let Some(input) = self.path_edit.take() else { return Vec::new() };
+        let text = input.text().trim();
+        let path = match text.strip_prefix('~') {
+            Some(rest) => fsops::home().join(rest.trim_start_matches('/')),
+            None if text.starts_with('/') => PathBuf::from(text),
+            None => self.dir.join(text),
+        };
+        if path.is_dir() {
+            self.navigate(path, true)
+        } else if let Some(parent) = path.parent().filter(|_| path.exists()) {
+            self.navigate(parent.to_path_buf(), true)
+        } else {
+            self.flash(format!("Папка «{text}» не найдена"));
+            Vec::new()
+        }
+    }
+
+    /// Finished stat of «Свойства» (and later the measured size of a folder).
+    pub fn props_ready(&mut self, props: Props) {
+        if self.props.as_ref().is_none_or(|p| p.path == props.path) {
+            self.props = Some(props);
+            self.dirty = true;
+        }
+    }
+
+    fn props_rect(&self) -> (f32, f32, f32, f32) {
+        let (w, h) = (380.0, 330.0);
+        (SIDEBAR_W + ((self.w - SIDEBAR_W - w) / 2.0).max(8.0), TOOLBAR_H + 12.0, w, h)
+    }
+
     fn confirm_rects(&self) -> ((f32, f32, f32, f32), (f32, f32, f32, f32), (f32, f32, f32, f32)) {
         let (w, h) = (360.0, 150.0);
         let x = SIDEBAR_W + ((self.w - SIDEBAR_W - w) / 2.0).max(8.0);
@@ -699,6 +771,13 @@ impl App {
 
     fn hit(&self, x: f32, y: f32) -> Hit {
         let inside = |(rx, ry, rw, rh): (f32, f32, f32, f32)| x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+        if self.props.is_some() {
+            let (px, py, pw, ph) = self.props_rect();
+            return if inside((px + pw - 116.0, py + ph - 46.0, 96.0, 30.0)) { Hit::PropsClose } else { Hit::Nothing };
+        }
+        if self.picker.is_none() && inside(self.title_rect()) {
+            return Hit::Title;
+        }
         if self.confirm.is_some() {
             let (_, cancel, ok) = self.confirm_rects();
             return if inside(ok) { Hit::ConfirmOk } else if inside(cancel) { Hit::ConfirmCancel } else { Hit::Nothing };
@@ -909,6 +988,24 @@ impl App {
         if self.confirm.is_some() && button != BTN_LEFT {
             return Vec::new();
         }
+        if self.props.is_some() {
+            if hit == Hit::PropsClose && button == BTN_LEFT {
+                self.props = None;
+            }
+            return Vec::new();
+        }
+        if hit == Hit::Title && button == BTN_LEFT {
+            if self.path_edit.is_none() {
+                self.open_path_edit();
+            } else {
+                let (tx, _, tw, _) = self.title_rect();
+                if let Some(input) = self.path_edit.as_mut() {
+                    input.click(&mut self.fonts, x - tx - 10.0, tw - 20.0, 13.0, false, mods.shift);
+                }
+            }
+            return Vec::new();
+        }
+        self.path_edit = None;
         if button==BTN_LEFT && !matches!(hit,Hit::PickerName|Hit::PickerAccept|Hit::PickerCancel) {
             if let Some(p)=self.picker.as_mut(){p.name_focus=false;}
         }
@@ -991,7 +1088,7 @@ impl App {
                     self.cursor = None;
                 }
             }
-            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::Nothing => {}
+            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::Title | Hit::PropsClose | Hit::Nothing => {}
         }
         effects
     }
@@ -1139,7 +1236,7 @@ impl App {
                 self.cursor = Some(i);
                 let mut items = vec![item("Открыть", MenuAction::Open)];
                 if self.in_trash() {
-                    items.extend([sep(), item("Вернуть", MenuAction::Restore), item("Скопировать", MenuAction::Copy), sep(), item("Удалить навсегда…", MenuAction::DeleteForever)]);
+                    items.extend([sep(), item("Вернуть", MenuAction::Restore), item("Скопировать", MenuAction::Copy), item("Свойства", MenuAction::Properties), sep(), item("Удалить навсегда…", MenuAction::DeleteForever)]);
                     self.menu = Some(Menu { x, y, items });
                     self.menu_hover = None;
                     return;
@@ -1147,7 +1244,7 @@ impl App {
                 if self.entry(i).is_dir {
                     items.push(item("Открыть в терминале", MenuAction::Terminal));
                 }
-                items.extend([sep(), item("Переименовать", MenuAction::Rename), item("Скопировать", MenuAction::Copy), item("Вырезать", MenuAction::Cut)]);
+                items.extend([sep(), item("Переименовать", MenuAction::Rename), item("Скопировать", MenuAction::Copy), item("Вырезать", MenuAction::Cut), item("Свойства", MenuAction::Properties)]);
                 if !self.dir.starts_with(fsops::trash_files_dir()) {
                     items.extend([sep(), item("Переместить в Корзину", MenuAction::Trash)]);
                 }
@@ -1161,6 +1258,7 @@ impl App {
                 }
                 items.extend([
                     item("Открыть в терминале", MenuAction::Terminal),
+                    item("Свойства папки", MenuAction::Properties),
                     sep(),
                     item(if self.show_hidden { "✓ Скрытые файлы" } else { "Скрытые файлы" }, MenuAction::ToggleHidden),
                     item(if self.view == View::Icons { "✓ Значки" } else { "Значки" }, MenuAction::ShowIcons),
@@ -1221,6 +1319,11 @@ impl App {
                 self.confirm = Some(Confirm::Empty);
                 Vec::new()
             }
+            MenuAction::Properties => {
+                let path = self.cursor.filter(|_| !self.selected.is_empty()).map(|c| self.entry(c).path.clone()).unwrap_or_else(|| self.dir.clone());
+                self.props = Some(Props { path: path.clone(), ..Default::default() });
+                vec![Effect::Inspect(path)]
+            }
             MenuAction::NewFolder => self.new_folder(),
             MenuAction::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
@@ -1242,7 +1345,28 @@ impl App {
     pub fn key(&mut self, sym: u32, text: Option<&str>, mods: Mods) -> Vec<Effect> {
         use smithay_client_toolkit::seat::keyboard::Keysym as K;
         self.dirty = true;
+        let raw = sym;
         let sym = K::new(sym);
+        if self.props.is_some() {
+            if matches!(sym, K::Escape | K::Return | K::KP_Enter | K::space) {
+                self.props = None;
+            }
+            return Vec::new();
+        }
+        if let Some(input) = self.path_edit.as_mut() {
+            match sym {
+                K::Escape => self.path_edit = None,
+                K::Return | K::KP_Enter => return self.commit_path(),
+                _ => {
+                    input.key(raw, text, mods.ctrl, mods.shift);
+                }
+            }
+            return Vec::new();
+        }
+        if self.picker.is_none() && mods.ctrl && (matches!(sym, K::l | K::L) || (mods.shift && matches!(sym, K::g | K::G))) {
+            self.open_path_edit();
+            return Vec::new();
+        }
         if self.confirm.is_some() {
             return match sym {
                 K::Return | K::KP_Enter => self.confirm_ok(),
@@ -1423,6 +1547,7 @@ impl App {
         self.paint_sidebar(pm);
         self.paint_menu(pm);
         self.paint_confirm(pm);
+        self.paint_props(pm);
         self.paint_picker(pm);
     }
 
@@ -1493,9 +1618,17 @@ impl App {
             let cx = bx + 16.0;
             theme::polyline(pm, &[(cx - 2.5 * dir, 21.0), (cx + 2.5 * dir, 26.0), (cx - 2.5 * dir, 31.0)], 1.8, ink);
         }
-        let title_w = self.w - 196.0 - 84.0 - (x + 86.0) - 10.0;
-        let title = self.fonts.ellipsize(&self.title(), title_w, 15.0, true);
-        self.fonts.draw_text(pm, &title, x + 86.0, 16.5, 15.0, colors::text(), true);
+        if let Some(input) = self.path_edit.clone() {
+            let (tx, ty, tw, th) = self.title_rect();
+            theme::fill_rrect(pm, tx, ty, tw, th, 8.0, colors::window());
+            theme::stroke_rrect(pm, tx - 1.0, ty - 1.0, tw + 2.0, th + 2.0, 9.0, 2.5, rgba(10, 132, 255, 110));
+            theme::stroke_rrect(pm, tx, ty, tw, th, 8.0, 0.6, colors::separator());
+            input.draw(pm, &mut self.fonts, tx + 10.0, ty + 7.0, tw - 20.0, 13.0, false, colors::text(), true, colors::accent());
+        } else {
+            let title_w = self.w - 196.0 - 84.0 - (x + 86.0) - 10.0;
+            let title = self.fonts.ellipsize(&self.title(), title_w, 15.0, true);
+            self.fonts.draw_text(pm, &title, x + 86.0, 16.5, 15.0, colors::text(), true);
+        }
         // View switch
         let [(_, (vx, vy, _, _)), _] = self.view_rects();
         theme::fill_rrect(pm, vx, vy, 72.0, 28.0, 14.0, colors::control());
@@ -1754,6 +1887,59 @@ impl App {
         self.fonts.draw_text_right(pm, &info, right, y + 7.5, 11.5, colors::secondary(), false);
     }
 
+    fn paint_props(&mut self, pm: &mut PixmapMut) {
+        let Some(p) = self.props.clone() else { return };
+        theme::fill_rect(pm, 0.0, 0.0, self.w, self.h, rgba(0, 0, 0, 40));
+        let (x, y, w, h) = self.props_rect();
+        for i in 1..=6 {
+            let e = i as f32 * 2.0;
+            theme::fill_rrect(pm, x - e, y - e + 6.0, w + 2.0 * e, h + 2.0 * e, 14.0 + e, rgba(0, 0, 0, 7));
+        }
+        theme::fill_rrect(pm, x, y, w, h, 14.0, colors::glass());
+        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, rgba(0, 0, 0, 30));
+        let name = p.path.file_name().map_or_else(|| p.path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+        let glyph = if p.is_dir { Glyph::Folder } else { Glyph::Documents };
+        draw_glyph(pm, glyph, x + 20.0, y + 20.0, 32.0, rgba(76, 155, 228, 255));
+        let title = self.fonts.ellipsize(&name, w - 84.0, 15.0, true);
+        self.fonts.draw_text(pm, &title, x + 64.0, y + 20.0, 15.0, colors::text(), true);
+        let size_text = match p.size {
+            Some(bytes) => {
+                let human = human_size(bytes);
+                let exact = format!("{bytes} байт").chars().rev().collect::<Vec<_>>().chunks(3).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join(" ").chars().rev().collect::<String>();
+                format!("{}{human} ({exact})", if p.partial { "более " } else { "" })
+            }
+            None => "Подсчёт…".into(),
+        };
+        self.fonts.draw_text(pm, &size_text, x + 64.0, y + 40.0, 12.0, colors::secondary(), false);
+        theme::fill_rect(pm, x + 20.0, y + 70.0, w - 40.0, 1.0, colors::separator());
+        let date = |t: Option<std::time::SystemTime>| t.map_or("—".into(), |t| chrono::DateTime::<chrono::Local>::from(t).format("%d.%m.%Y, %H:%M").to_string());
+        let mode = p.mode;
+        let bits: String = (0..9).map(|i| if mode & (0o400 >> i) != 0 { b"rwxrwxrwx"[i] as char } else { '-' }).collect();
+        let mut rows = vec![("Тип", p.kind.clone())];
+        if p.is_dir {
+            rows.push(("Содержит", p.items.map_or("Подсчёт…".into(), |n| format!("{}{}", if p.partial { "более " } else { "" }, objects(n as usize)))));
+        }
+        rows.extend([
+            ("Расположение", p.path.parent().map_or("/".into(), |d| d.to_string_lossy().into_owned())),
+            ("Создан", date(p.created)),
+            ("Изменён", date(p.modified)),
+            ("Открыт", date(p.accessed)),
+            ("Права", format!("{bits}  ·  {}", p.owner)),
+        ]);
+        for (i, (k, v)) in rows.iter().enumerate() {
+            let ry = y + 84.0 + i as f32 * 24.0;
+            self.fonts.draw_text_right(pm, k, x + 128.0, ry, 12.0, colors::secondary(), false);
+            let v = self.fonts.ellipsize(v, w - 160.0, 12.0, false);
+            self.fonts.draw_text(pm, &v, x + 140.0, ry, 12.0, colors::text(), false);
+        }
+        let (bx, by) = (x + w - 116.0, y + h - 46.0);
+        theme::fill_rrect(pm, bx, by, 96.0, 30.0, 15.0, colors::accent());
+        if self.hover == Hit::PropsClose {
+            theme::fill_rrect(pm, bx, by, 96.0, 30.0, 15.0, rgba(255, 255, 255, 36));
+        }
+        self.fonts.draw_text_centered(pm, "Готово", bx + 48.0, by + 7.5, 13.0, rgba(255, 255, 255, 255), false);
+    }
+
     fn paint_confirm(&mut self, pm: &mut PixmapMut) {
         let Some(confirm) = self.confirm.clone() else { return };
         theme::fill_rect(pm, 0.0, 0.0, self.w, self.h, rgba(0, 0, 0, 40));
@@ -1836,6 +2022,18 @@ fn latin(sym: smithay_client_toolkit::seat::keyboard::Keysym) -> Option<&'static
         K::_2 => "2",
         _ => return None,
     })
+}
+
+/// 1536 → "1,5 КБ"
+pub fn human_size(bytes: u64) -> String {
+    let units = ["байт", "КБ", "МБ", "ГБ", "ТБ"];
+    let mut v = bytes as f64;
+    let mut u = 0;
+    while v >= 1000.0 && u < units.len() - 1 {
+        v /= 1000.0;
+        u += 1;
+    }
+    if u == 0 { format!("{bytes} байт") } else { format!("{:.1} {}", v, units[u]).replace('.', ",") }
 }
 
 /// "1 объект", "3 объекта", "12 объектов"
@@ -2046,6 +2244,31 @@ mod tests {
         assert!(labels.iter().any(|l| l == "Вернуть") && !labels.iter().any(|l| l == "Переместить в Корзину"));
         app.menu = None;
         assert_eq!(app.menu_action(MenuAction::Restore), vec![Effect::Restore(vec![trash.join("старое.txt")])]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn path_field_and_properties() {
+        let root = fixture("path");
+        let mut app = app_in(&root);
+        let ctrl = Mods { ctrl: true, ..Default::default() };
+        assert!(app.key(0x6c, Some("l"), ctrl).is_empty());
+        assert_eq!(app.path_edit.as_ref().unwrap().selected_text(), Some(root.to_str().unwrap()));
+        // Typing replaces the selected path; a relative name opens inside the current folder
+        for ch in ["А", "л", "ь", "ф", "а"] {
+            app.key(0, Some(ch), Mods::default());
+        }
+        let effects = app.key(0xff0d, None, Mods::default());
+        assert!(effects.iter().any(|e| matches!(e, Effect::List(p, _) if *p == root.join("Альфа"))));
+        assert!(app.path_edit.is_none());
+        app.key(0x6c, Some("l"), ctrl);
+        app.key(0, Some("/нет/такой"), Mods::default());
+        assert!(app.key(0xff0d, None, Mods::default()).is_empty());
+        assert_eq!(app.dir, root.join("Альфа"));
+        assert_eq!(app.menu_action(MenuAction::Properties), vec![Effect::Inspect(root.join("Альфа"))]);
+        assert!(app.props.is_some());
+        app.key(0xff1b, None, Mods::default());
+        assert!(app.props.is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

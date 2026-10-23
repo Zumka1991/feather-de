@@ -24,6 +24,7 @@ mod file_portal;
 mod polkit_agent;
 mod auth_dialog;
 mod trash;
+mod labwc;
 mod shell;
 use feather_ui::text;
 mod theme;
@@ -144,6 +145,12 @@ pub struct FeatherCompositor {
     pub auth: crate::auth_dialog::AuthUi,
     pub polkit: Option<crate::polkit_agent::Agent>,
     pub trash_full: bool,
+    pub pointer_config: crate::settings::Pointer,
+    pub show_about: bool,
+    /// Pointer settings reach the hardware (DRM, or our labwc kiosk host)
+    pub pointer_managed: bool,
+    /// libinput devices (DRM session), to re-apply pointer settings
+    pub input_devices: Vec<smithay::reexports::input::Device>,
     trash_watcher: Option<feather_ui::fileops::Watcher>,
     trash_tx: Option<smithay::reexports::calloop::channel::Sender<crate::trash::Msg>>,
     pub pending_autostart: Option<String>,
@@ -554,6 +561,7 @@ impl FeatherCompositor {
             .map(|w| (w.id, w.title.clone(), w.id == top.id, w.minimized))
             .collect();
         let pinned = match key {
+            AppKey::App(i) if self.app_registry.apps[i].id == crate::apps::AppRegistry::PERMANENT => None,
             AppKey::App(i) => Some(self.is_pinned(i)),
             AppKey::Window(_) => None,
         };
@@ -616,6 +624,8 @@ impl FeatherCompositor {
 
     pub fn save_settings(&self) {
         let settings=crate::settings::Settings {
+            show_about: self.show_about,
+            pointer: self.pointer_config.clone(),
             appearance: appearance(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.clone(),
@@ -633,15 +643,22 @@ impl FeatherCompositor {
 
     /// Registry indices of pinned apps, in Dock order (unknown ids are skipped)
     pub fn pinned_indices(&self) -> Vec<usize> {
-        self.dock_pins
-            .iter()
-            .filter_map(|id| self.app_registry.index_of(id))
+        let permanent = self.app_registry.index_of(crate::apps::AppRegistry::PERMANENT);
+        // Files first and always present, even if an older config removed it
+        permanent
+            .into_iter()
+            .chain(
+                self.dock_pins
+                    .iter()
+                    .filter_map(|id| self.app_registry.index_of(id))
+                    .filter(|&i| Some(i) != permanent),
+            )
             .collect()
     }
 
     pub fn is_pinned(&self, app: usize) -> bool {
         let id = &self.app_registry.apps[app].id;
-        self.dock_pins.iter().any(|p| p == id)
+        id == crate::apps::AppRegistry::PERMANENT || self.dock_pins.iter().any(|p| p == id)
     }
 
     pub fn pin_app(&mut self, id: &str, at: Option<usize>) {
@@ -653,6 +670,9 @@ impl FeatherCompositor {
     }
 
     pub fn unpin_app(&mut self, id: &str) {
+        if id == crate::apps::AppRegistry::PERMANENT {
+            return;
+        }
         self.dock_pins.retain(|p| p != id);
         self.dock_model_dirty = true;
         self.save_settings();
@@ -818,7 +838,9 @@ impl FeatherCompositor {
             }
         }
         if let DockTarget::App(i) = target {
-            if self.is_pinned(i) {
+            if self.app_registry.apps[i].id == crate::apps::AppRegistry::PERMANENT {
+                // Files stays in the Dock, as Finder does
+            } else if self.is_pinned(i) {
                 items.push(("Удалить из Dock".to_string(), DockMenuAction::RemoveFromDock));
             } else {
                 items.push(("Оставить в Dock".to_string(), DockMenuAction::KeepInDock));
@@ -1123,6 +1145,12 @@ impl FeatherCompositor {
                     self.windows.push(w);
                     self.refresh_focus();
                 }
+            }
+            ShellClickAction::ToggleShowAbout => {
+                self.show_about = !self.show_about;
+                self.mark_builtin_windows_dirty();
+                self.needs_redraw = true;
+                self.save_settings();
             }
             ShellClickAction::TogglePinFocused => {
                 if let Some(AppKey::App(i)) = self.focused_app() {
@@ -1514,7 +1542,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         loop_handle: handle,
         loop_signal: event_loop.get_signal(),
         backend,
-        cursor: crate::cursor::CursorManager::new(),
+        cursor: crate::cursor::CursorManager::new(saved.pointer.cursor_theme.as_deref(), saved.pointer.cursor_size),
+        pointer_config: saved.pointer.clone(),
+        show_about: saved.show_about,
+        pointer_managed: false,
+        input_devices: Vec::new(),
         refresh_mhz,
         rounded_program,
         damage_tracker,
@@ -1605,6 +1637,13 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.shell.attach_raster(raster);
     state.start_desktop()?;
     state.start_trash()?;
+    crate::apps::set_cursor_env(
+        crate::cursor::theme_name(state.pointer_config.cursor_theme.as_deref()),
+        state.pointer_config.cursor_size,
+    );
+    if is_standalone && !state.backend.is_drm() {
+        crate::labwc::apply(state.pointer_config.clone(), state.scale_factor);
+    }
     state.controls=Some(crate::controls::Controls::new(&state.loop_handle)?);
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_TRAY").is_some() {
         state.tray=Some(crate::tray::Tray::new(&state.loop_handle)?);
@@ -1630,7 +1669,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
 
     state.dock_pins = saved.dock.clone().unwrap_or_else(|| state.app_registry.default_pins());
 
-    state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather);
+    state.pointer_managed = state.backend.is_drm() || crate::labwc::host_pid().is_some();
+    if state.show_about {
+        state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather);
+    }
     if std::env::var_os("FEATHER_DEBUG_ANIMATIONS").is_some() {
         // Deterministic lifecycle exercise in our own compositor; no synthetic host input.
         for step in 0..8u64 {

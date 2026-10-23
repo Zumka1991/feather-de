@@ -76,6 +76,7 @@ pub struct AuthUi {
     phys: (i32, i32),
     dirty: bool,
     hits: Vec<(R, Hit)>,
+    hover: Option<Hit>,
     shake: Option<Instant>,
     caps: bool,
 }
@@ -104,6 +105,7 @@ impl Default for AuthUi {
             phys: (0, 0),
             dirty: true,
             hits: Vec::new(),
+            hover: None,
             shake: None,
             caps: false,
         }
@@ -158,13 +160,19 @@ fn paint_panel(pm: &mut PixmapMut, ox: f32, oy: f32, h: f32, dark: bool) -> tiny
 
 /// "Отменить" + the default (accent) button.
 #[allow(clippy::too_many_arguments)]
-fn paint_buttons(pm: &mut PixmapMut, fonts: &mut FontSystem, x: f32, y: f32, bw: f32, ok: &str, busy: bool, dark: bool) {
+fn paint_buttons(pm: &mut PixmapMut, fonts: &mut FontSystem, x: f32, y: f32, bw: f32, ok: &str, busy: bool, dark: bool, hover: Option<Hit>) {
     let p = palette();
     let push = if dark { rgba(255, 255, 255, 30) } else { rgba(0, 0, 0, 16) };
     fill_rounded_rect(pm, x, y, bw, 30.0, 15.0, push);
+    if hover == Some(Hit::Cancel) {
+        fill_rounded_rect(pm, x, y, bw, 30.0, 15.0, if dark { rgba(255, 255, 255, 22) } else { rgba(0, 0, 0, 14) });
+    }
     fonts.draw_text_centered(pm, "Отменить", x + bw / 2.0, y + 7.5, 13.0, p.text, false);
     let ax = x + bw + 10.0;
     fill_rounded_rect(pm, ax, y, bw, 30.0, 15.0, if busy { with_alpha(p.accent, 0.5) } else { p.accent });
+    if hover == Some(Hit::Allow) && !busy {
+        fill_rounded_rect(pm, ax, y, bw, 30.0, 15.0, rgba(255, 255, 255, 36));
+    }
     fonts.draw_text_clipped_centered(pm, ok, ax + bw / 2.0, y + 7.5, bw - 12.0, 13.0, p.on_accent, false);
 }
 
@@ -313,6 +321,22 @@ impl AuthUi {
         }
     }
 
+    /// Hover over the dialog's buttons; true when a repaint is needed.
+    pub fn motion(&mut self, pos: (f64, f64), screen: (i32, i32)) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        let (px, py) = self.panel_origin(screen);
+        let (x, y) = (pos.0 as f32 - px, pos.1 as f32 - py);
+        let hover = self.hits.iter().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h);
+        if hover == self.hover {
+            return false;
+        }
+        self.hover = hover;
+        self.dirty = true;
+        true
+    }
+
     fn panel_origin(&self, (sw, sh): (i32, i32)) -> (f32, f32) {
         let x = ((sw as f32 - W) / 2.0).round();
         let y = (sh as f32 * 0.22).max(TOP_BAR_HEIGHT as f32 + 24.0).min((sh as f32 - self.height - 12.0).max(0.0)).round();
@@ -392,6 +416,7 @@ impl AuthUi {
         }
         let shake_failed = a.message.as_ref().is_some_and(|(_, e)| *e);
         let caps = self.caps;
+        let hover = self.hover;
         let a = self.active.as_ref().unwrap();
         let mut ctx = self.buffer.render();
         let _ = ctx.draw(|buf| {
@@ -413,7 +438,13 @@ impl AuthUi {
             let field_edge = if dark { rgba(255, 255, 255, 34) } else { rgba(0, 0, 0, 40) };
             if show_user {
                 let r = R::new(ox + 24.0, oy + user_y, inner, 30.0);
-                fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 8.0, if dark { rgba(255, 255, 255, 8) } else { rgba(0, 0, 0, 10) });
+                let lit = hover == Some(Hit::User);
+                fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 8.0, match (dark, lit) {
+                    (true, false) => rgba(255, 255, 255, 8),
+                    (true, true) => rgba(255, 255, 255, 20),
+                    (false, false) => rgba(0, 0, 0, 10),
+                    (false, true) => rgba(0, 0, 0, 20),
+                });
                 let user = &a.req.users[a.user];
                 fonts.draw_text_clipped(pm, user.display(), r.x + 10.0, r.y + 8.0, r.w - 40.0, 13.0, p.text, false);
                 if a.req.users.len() > 1 {
@@ -464,7 +495,11 @@ impl AuthUi {
                 let color = if *error { rgba(230, 60, 50, 255) } else { p.text_secondary };
                 fonts.draw_text_clipped_centered(pm, text, ox + W / 2.0, oy + message_y, inner, 11.0, color, false);
             }
-            fonts.draw_text(pm, if a.details { "Скрыть подробности" } else { "Подробнее…" }, ox + 24.0, oy + details_y, 11.0, p.accent, false);
+            let link = if a.details { "Скрыть подробности" } else { "Подробнее…" };
+            let lw = fonts.draw_text(pm, link, ox + 24.0, oy + details_y, 11.0, p.accent, false);
+            if hover == Some(Hit::Details) {
+                fill_rounded_rect(pm, ox + 24.0, oy + details_y + 13.5, lw, 1.0, 0.5, p.accent);
+            }
             for (i, line) in detail_lines.iter().enumerate() {
                 fonts.draw_text(pm, line, ox + 24.0, oy + details_text_y + i as f32 * 15.0, 11.0, p.text_secondary, false);
             }
@@ -475,7 +510,7 @@ impl AuthUi {
             } else {
                 "Разрешить"
             };
-            paint_buttons(pm, fonts, ox + 24.0, oy + buttons_y, bw, label, a.verifying, dark);
+            paint_buttons(pm, fonts, ox + 24.0, oy + buttons_y, bw, label, a.verifying, dark, hover);
             Result::<_, ()>::Ok(vec![Rectangle::from_size(phys.into())])
         });
     }
@@ -518,7 +553,7 @@ impl AuthUi {
             for (i, line) in body_lines.iter().enumerate() {
                 fonts.draw_text_centered(pm, line, ox + W / 2.0, oy + body_y + i as f32 * 16.0, 12.0, p.text_secondary, false);
             }
-            paint_buttons(pm, fonts, ox + 24.0, oy + buttons_y, bw, &c.ok, false, dark);
+            paint_buttons(pm, fonts, ox + 24.0, oy + buttons_y, bw, &c.ok, false, dark, self.hover);
             Result::<_, ()>::Ok(vec![Rectangle::from_size(phys.into())])
         });
     }

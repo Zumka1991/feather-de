@@ -317,24 +317,29 @@ impl FeatherCompositor {
                 let lp = st.shell.launchpad.as_mut().unwrap();
                 match sym.raw() {
                     keysyms::KEY_Escape => st.shell.launchpad = None,
-                    keysyms::KEY_BackSpace => {
-                        let mut q = lp.query.clone();
-                        q.pop();
-                        lp.set_query(registry, q);
+                    keysyms::KEY_Left | keysyms::KEY_Right if lp.input.is_empty() => {
+                        if sym.raw() == keysyms::KEY_Left {
+                            lp.set_page(lp.page.saturating_sub(1));
+                        } else {
+                            lp.set_page(lp.page + 1);
+                        }
                     }
-                    keysyms::KEY_Left => lp.set_page(lp.page.saturating_sub(1)),
-                    keysyms::KEY_Right => lp.set_page(lp.page + 1),
                     keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
                         if let Some(&app) = lp.apps.first() {
                             deferred = Some(KeyAction::Shell(ShellClickAction::LaunchpadLaunch(app)));
                         }
                         st.shell.launchpad = None;
                     }
-                    _ => {
-                        if let Some(ch) = sym.key_char().filter(|c| !c.is_control()) {
-                            let mut q = lp.query.clone();
-                            q.push(ch);
-                            lp.set_query(registry, q);
+                    raw => {
+                        let utf8 = sym.key_char().map(String::from);
+                        let key = if mods.ctrl { latin_sym.raw() } else { raw };
+                        match lp.input.key(key, utf8.as_deref(), mods.ctrl, mods.shift) {
+                            feather_ui::input::Edit::Changed => {
+                                let q = lp.input.text().to_owned();
+                                lp.set_query(registry, q);
+                            }
+                            feather_ui::input::Edit::Moved => lp.mark_search_dirty(),
+                            feather_ui::input::Edit::Ignored => {}
                         }
                     }
                 }
@@ -347,11 +352,6 @@ impl FeatherCompositor {
                         st.shell.spotlight_open = false;
                         st.shell.overlay_dirty = true;
                         st.shell.topbar_dirty = true;
-                    }
-                    keysyms::KEY_BackSpace => {
-                        st.shell.spotlight_query.pop();
-                        st.shell.spotlight_selected = 0;
-                        st.shell.overlay_dirty = true;
                     }
                     keysyms::KEY_Up => {
                         st.shell.spotlight_selected = st.shell.spotlight_selected.saturating_sub(1);
@@ -378,13 +378,22 @@ impl FeatherCompositor {
                         st.shell.overlay_dirty = true;
                         st.shell.topbar_dirty = true;
                     }
-                    _ => {
-                        if let Some(ch) = sym.key_char() {
-                            if !ch.is_control() {
-                                st.shell.spotlight_query.push(ch);
-                                st.shell.spotlight_selected = 0;
-                                st.shell.overlay_dirty = true;
+                    raw => {
+                        // Field keys: caret, Shift-selection, Ctrl+A, words, Backspace/Delete
+                        let utf8 = sym.key_char().map(String::from);
+                        let key = if mods.ctrl { latin_sym.raw() } else { raw };
+                        let sh = &mut st.shell;
+                        if sh.spotlight_input.text() != sh.spotlight_query {
+                            sh.spotlight_input.set(&sh.spotlight_query);
+                        }
+                        match sh.spotlight_input.key(key, utf8.as_deref(), mods.ctrl, mods.shift) {
+                            feather_ui::input::Edit::Changed => {
+                                sh.spotlight_query = sh.spotlight_input.text().to_owned();
+                                sh.spotlight_selected = 0;
+                                sh.overlay_dirty = true;
                             }
+                            feather_ui::input::Edit::Moved => sh.overlay_dirty = true,
+                            feather_ui::input::Edit::Ignored => {}
                         }
                     }
                 }
@@ -581,6 +590,10 @@ impl FeatherCompositor {
             if win.is_visible() {
                 win.update_hover(pos.x, pos.y);
             }
+        }
+        self.settings_pointer_moved(pos.x, pos.y);
+        if self.auth.motion((pos.x, pos.y), (self.shell.screen_w, self.shell.screen_h)) {
+            self.needs_redraw = true;
         }
 
         let under = self.surface_under_pointer(pos.x, pos.y);
@@ -845,8 +858,10 @@ impl FeatherCompositor {
                     }
                 }
                 Some(LaunchpadHit::Search) => {
+                    let shift = self.keyboard.modifier_state().shift;
                     if let Some(l) = self.shell.launchpad.as_mut() {
                         l.focus_search(true);
+                        l.click_search(&mut self.fonts, pos.x as f32, shift);
                     }
                 }
                 _ => {
@@ -956,7 +971,11 @@ impl FeatherCompositor {
             match kind {
                 BuiltinWindowKind::AboutFeather => {
                     if ly >= win.height as f32 - 50.0 {
-                        builtin_action = Some(ShellClickAction::CycleTheme);
+                        builtin_action = Some(if lx < win.width as f32 - 175.0 {
+                            ShellClickAction::ToggleShowAbout
+                        } else {
+                            ShellClickAction::CycleTheme
+                        });
                     }
                 }
                 BuiltinWindowKind::SystemSettings => {

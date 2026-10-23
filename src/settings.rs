@@ -172,8 +172,44 @@ pub struct Display {
     pub name: String,
     pub mode: crate::system_settings::Mode,
 }
+/// Mouse, touchpad and cursor (libinput values; the cursor also goes to new clients).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pointer {
+    /// None: XCURSOR_THEME of the session, else breeze_cursors
+    pub cursor_theme: Option<String>,
+    /// Logical cursor size
+    pub cursor_size: u32,
+    /// libinput acceleration speed, -1…1
+    pub speed: f64,
+    pub natural_mouse: bool,
+    pub natural_touchpad: bool,
+    pub tap_to_click: bool,
+    pub left_handed: bool,
+}
+impl Default for Pointer {
+    fn default() -> Self {
+        Self {
+            cursor_theme: None,
+            cursor_size: 24,
+            speed: 0.0,
+            natural_mouse: false,
+            natural_touchpad: true,
+            tap_to_click: true,
+            left_handed: false,
+        }
+    }
+}
+pub const CURSOR_SIZES: [u32; 4] = [24, 32, 48, 64];
+/// A theme name is one directory name under an icons directory.
+pub fn valid_theme(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 128 && name != "." && name != ".." && !name.contains(['/', '\0', '\n'])
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
+    /// Open «Об этом компьютере» at login
+    pub show_about: bool,
+    pub pointer: Pointer,
     pub appearance: Appearance,
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
@@ -189,6 +225,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            show_about: true,
+            pointer: Pointer::default(),
             appearance: Appearance::Light,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
@@ -234,6 +272,32 @@ impl Settings {
                     }
                 }
                 "wallpaper_image" => s.wallpaper_image = crate::wallpaper::ImageSource::parse(v),
+                "show_about" => {
+                    if let Ok(b) = v.parse() {
+                        s.show_about = b;
+                    }
+                }
+                "cursor_theme" if valid_theme(v) => s.pointer.cursor_theme = Some(v.to_string()),
+                "cursor_size" => {
+                    if let Some(v) = v.parse().ok().filter(|v| CURSOR_SIZES.contains(v)) {
+                        s.pointer.cursor_size = v;
+                    }
+                }
+                "pointer_speed" => {
+                    if let Some(v) = v.parse::<f64>().ok().filter(|v| v.is_finite()) {
+                        s.pointer.speed = v.clamp(-1.0, 1.0);
+                    }
+                }
+                "natural_mouse" | "natural_touchpad" | "tap_to_click" | "left_handed" => {
+                    if let Ok(b) = v.parse::<bool>() {
+                        match k.trim() {
+                            "natural_mouse" => s.pointer.natural_mouse = b,
+                            "natural_touchpad" => s.pointer.natural_touchpad = b,
+                            "tap_to_click" => s.pointer.tap_to_click = b,
+                            _ => s.pointer.left_handed = b,
+                        }
+                    }
+                }
                 "default_browser" => s.default_browser = Some(v.to_string()),
                 "default_terminal" => s.default_terminal = Some(v.to_string()),
                 "scale" => {
@@ -309,6 +373,15 @@ impl Settings {
             if self.appearance==Appearance::Dark{"dark"}else{"light"},self.wallpaper.id(),self.scale.map(|v|format!("scale={v}\n")).unwrap_or_default(),
             self.dock_zoom,self.dock.as_ref().map(|d|format!("dock={}\n",d.join(","))).unwrap_or_default(),self.animations,self.keyboard.layouts.join(","),self.keyboard.shortcut.option(),
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
+        text.push_str(&format!("show_about={}\n", self.show_about));
+        let pt = &self.pointer;
+        if let Some(theme) = pt.cursor_theme.as_deref().filter(|t| valid_theme(t)) {
+            text.push_str(&format!("cursor_theme={theme}\n"));
+        }
+        text.push_str(&format!(
+            "cursor_size={}\npointer_speed={:.2}\nnatural_mouse={}\nnatural_touchpad={}\ntap_to_click={}\nleft_handed={}\n",
+            pt.cursor_size, pt.speed, pt.natural_mouse, pt.natural_touchpad, pt.tap_to_click, pt.left_handed
+        ));
         if let Some(image) = &self.wallpaper_image {
             text.push_str(&format!("wallpaper_image={}\n", image.id()));
         }
@@ -418,6 +491,23 @@ impl Worker {
 mod tests {
     use super::*;
     #[test]
+    fn pointer_settings_round_trip_and_reject_bad_values() {
+        let mut settings = Settings::default();
+        settings.pointer = Pointer {
+            cursor_theme: Some("Breeze_Light".into()),
+            cursor_size: 48,
+            speed: -0.4,
+            natural_mouse: true,
+            natural_touchpad: false,
+            tap_to_click: false,
+            left_handed: true,
+        };
+        assert_eq!(Settings::parse(&settings.text()).pointer, settings.pointer);
+        let bad = Settings::parse("cursor_theme=../../etc\ncursor_size=13\npointer_speed=NaN\nleft_handed=maybe\n");
+        assert_eq!(bad.pointer, Pointer::default());
+        assert_eq!(Settings::parse("pointer_speed=7").pointer.speed, 1.0);
+    }
+    #[test]
     fn preferences_roundtrip_and_invalid_layouts_never_remove_all_input_sources() {
         let mut s=Settings::parse("keyboard_layouts=ru,ru,bogus,de,fr,us,es\nkeyboard_shortcut=grp:ctrl_space_toggle\nanimations=false\nscale=NaN\n");
         assert_eq!(s.keyboard.layouts, ["ru", "de", "fr", "us"]);
@@ -449,5 +539,42 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+impl crate::FeatherCompositor {
+    /// Mouse/touchpad settings for one libinput device (System Settings → Мышь и трекпад).
+    pub fn configure_input_device(&self, device: &mut smithay::reexports::input::Device) {
+        let p = &self.pointer_config;
+        let touchpad = device.config_tap_finger_count() > 0;
+        if touchpad {
+            let _ = device.config_tap_set_enabled(p.tap_to_click);
+        }
+        if device.config_scroll_has_natural_scroll() {
+            let _ = device.config_scroll_set_natural_scroll_enabled(if touchpad { p.natural_touchpad } else { p.natural_mouse });
+        }
+        if device.config_accel_is_available() {
+            let _ = device.config_accel_set_speed(p.speed);
+        }
+        if device.config_left_handed_is_available() {
+            let _ = device.config_left_handed_set(p.left_handed);
+        }
+    }
+
+    /// After a change: every device, the compositor cursor and new clients' cursor.
+    pub fn apply_pointer_config(&mut self) {
+        let mut devices = std::mem::take(&mut self.input_devices);
+        for device in &mut devices {
+            self.configure_input_device(device);
+        }
+        self.input_devices = devices;
+        let p = self.pointer_config.clone();
+        self.cursor.configure(p.cursor_theme.as_deref(), p.cursor_size);
+        crate::apps::set_cursor_env(crate::cursor::theme_name(p.cursor_theme.as_deref()), p.cursor_size);
+        if !self.backend.is_drm() {
+            // Inside the labwc kiosk session labwc owns libinput and the cursor
+            crate::labwc::apply(p, self.scale_factor);
+        }
+        self.needs_redraw = true;
     }
 }
