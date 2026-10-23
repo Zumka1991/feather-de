@@ -1,0 +1,17 @@
+[package]
+name = "feather-files"
+version = "0.1.0"
+edition = "2021"
+description = "Файлы — сверхбыстрый файловый менеджер Пёрышка в стиле macOS Tahoe"
+
+[[bin]]
+name = "feather-files"
+path = "src/main.rs"
+
+[dependencies]
+smithay-client-toolkit = { version = "0.19.2", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
+tiny-skia = "0.12.0"
+feather-ui = { path = "../crates/feather-ui" }
+libc = "0.2"
+chrono = "0.4"

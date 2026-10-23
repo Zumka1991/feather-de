@@ -13,12 +13,12 @@ use smithay::{
 };
 use tiny_skia::{Color, PixmapMut};
 
-use crate::apps::{draw_app_icon, eval_spotlight_math, AppAction, AppEntry, AppRegistry, BuiltinWindowKind, IconKind};
+use crate::apps::{ eval_spotlight_math, AppAction, AppEntry, AppRegistry, BuiltinWindowKind, IconKind};
 use crate::icons::{draw_icon, IconCache};
 use crate::text::FontSystem;
 use crate::theme::{
     appearance, draw_control_center_icon, draw_feather_logo, draw_glass_panel, draw_search_icon,
-    draw_wifi_icon, fill_circle, fill_rounded_rect, palette, render_wallpaper, rgba,
+    draw_wifi_icon, fill_circle, fill_rounded_rect, palette, rgba,
     stroke_line, stroke_rounded_rect, to_phys, ui_scale, with_alpha, Appearance, WallpaperTheme,
     DOCK_BOTTOM_MARGIN, DOCK_ICON_BASE, DOCK_ICON_GAP, DOCK_PAD_X, DOCK_PAD_Y, DOCK_RADIUS,
     TOP_BAR_HEIGHT,
@@ -85,7 +85,7 @@ fn clear_rects(buf: &mut [u8], pw: i32, rects: &[Rectangle<i32, Buffer>]) {
 }
 
 /// Icon of an app: a themed icon if the app has one, else a procedural macOS-style one
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AppIcon {
     pub kind: IconKind,
     pub name: Option<String>,
@@ -104,7 +104,7 @@ impl AppIcon {
 #[allow(clippy::too_many_arguments)]
 pub fn draw_any_icon(
     pixmap: &mut PixmapMut,
-    fonts: &mut FontSystem,
+    _fonts: &mut FontSystem,
     icons: &mut IconCache,
     icon: &AppIcon,
     label: &str,
@@ -112,21 +112,41 @@ pub fn draw_any_icon(
     y: f32,
     size: f32,
 ) {
-    if let Some(name) = icon.name.as_deref() {
-        let needed = (size * ui_scale()).ceil() as u32;
-        // Few shared buckets: Dock, Alt+Tab and Launchpad reuse the same rasterized icon, so
-        // the switcher never waits for SVG rasterization on first use
-        let bucket = match needed {
-            0..=48 => 64,
-            49..=192 => 192,
-            _ => 512,
-        };
-        if let Some(pm) = icons.get(name, bucket) {
-            draw_icon(pixmap, pm, x, y, size);
-            return;
+    draw_cached_icon(pixmap, icons, icon, label, x, y, size, true);
+}
+
+/// Magnified Dock icons change size with every pointer move: never queue one exact
+/// raster per transient size, resample a bucket image instead.
+pub fn draw_resampled_icon(pixmap: &mut PixmapMut, icons: &mut IconCache, icon: &AppIcon, label: &str, x: f32, y: f32, size: f32) {
+    draw_cached_icon(pixmap, icons, icon, label, x, y, size, false);
+}
+
+fn draw_cached_icon(pixmap: &mut PixmapMut, icons: &mut IconCache, icon: &AppIcon, label: &str, x: f32, y: f32, size: f32, exact: bool) {
+    let phys = size * ui_scale();
+    // Whole-pixel sizes (resting Dock, Spotlight, switcher) get an icon rasterized at that
+    // exact size on the worker and are only copied here. Resampling a bucket image on the
+    // event loop cost ~0.5–1 ms per icon at 4K. Magnified/fractional sizes keep resampling.
+    let key = match crate::icons::exact_icon_px(phys).filter(|_| exact) {
+        Some(px) => {
+            let key = crate::icons::IconKey::new(icon, label, px);
+            if let Some(pm) = icons.get(&key) {
+                // An evicted entry keeps only its small preview, which still needs scaling.
+                if pm.width() == px { crate::icons::blit_icon(pixmap, pm, x, y); }
+                else { draw_icon(pixmap, pm, x, y, size); }
+                return;
+            }
+            key
         }
-    }
-    draw_app_icon(pixmap, fonts, icon.kind, label, x, y, size);
+        None => {
+            let key = crate::icons::IconKey::new(icon, label, crate::icons::icon_bucket(phys.ceil() as u32));
+            if let Some(pm) = icons.get(&key) { draw_icon(pixmap, pm, x, y, size); return; }
+            key
+        }
+    };
+    // Until it arrives (scale change, another surface's size), scale any cached size of
+    // the same icon rather than flashing a placeholder; only the request above is queued.
+    if let Some(pm) = icons.other_size(&key, phys.ceil() as u32) { draw_icon(pixmap, pm, x, y, size); }
+    else { fill_rounded_rect(pixmap, x, y, size, size, size * 0.22, palette().control_fill); }
 }
 
 #[derive(Debug, Clone)]
@@ -152,25 +172,71 @@ pub struct DockItem {
     pub target: DockTarget,
     pub label: String,
     pub icon: AppIcon,
-    pub running: bool,
+    /// Open windows of the app (dots under the icon, up to three)
+    pub windows: u8,
     /// Kept in the Dock by the user (left part, reorderable)
     pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockMenuAction {
+    Tray(usize),
     Open,
     KeepInDock,
     RemoveFromDock,
     Quit,
+    /// Raise this window of the app (window list in the menu)
+    Window(u64),
+    /// Start another copy of the app
+    NewWindow,
+    /// Desktop context menu (the menu's Dock target is unused)
+    Desktop(crate::desktop::MenuAction),
 }
 
 #[derive(Debug, Clone)]
 pub struct DockMenu {
     pub target: DockTarget,
+    follow_dock: bool,
     pub items: Vec<(String, DockMenuAction)>,
     pub rect: R,
     pub hovered: Option<usize>,
+}
+
+/// macOS-style launch bounce of a Dock icon. Only a GPU offset changes per frame; the Dock
+/// buffer is repainted twice (hide the icon, show it again).
+pub struct Bounce {
+    pub target: DockTarget,
+    pub app: usize,
+    pub started: Instant,
+    /// Windows with an id from here on count as the launched app's
+    pub first_new_window: u64,
+    /// The window appeared: finish the current jump, then stop
+    finish_at: Option<Instant>,
+    pub buffer: MemoryRenderBuffer,
+    pub px: i32,
+}
+
+pub const BOUNCE_PERIOD: f32 = 0.55;
+pub const BOUNCE_HEIGHT: f32 = 22.0;
+
+impl Bounce {
+    pub fn finish(&mut self, now: Instant) {
+        if self.finish_at.is_none() {
+            let period = BOUNCE_PERIOD as f64;
+            let cycle = (now.duration_since(self.started).as_secs_f64() / period).floor();
+            self.finish_at = Some(self.started + std::time::Duration::from_secs_f64((cycle + 1.0) * period));
+        }
+    }
+
+    /// Jump height (logical) and whether the animation is over
+    pub fn offset(&self, now: Instant) -> (f32, bool) {
+        let t = now.duration_since(self.started).as_secs_f32() / BOUNCE_PERIOD;
+        // A launch that never shows a window still stops after ~5 s
+        let cycles = t.floor();
+        let over = self.finish_at.is_some_and(|end| now >= end) || t >= 9.0;
+        let f = t - cycles;
+        (if over { 0.0 } else { BOUNCE_HEIGHT * 4.0 * f * (1.0 - f) }, over)
+    }
 }
 
 /// Icon following the pointer while an app is dragged (Dock / Launchpad)
@@ -221,6 +287,8 @@ enum TopbarItem {
     Spotlight,
     ControlCenter,
     Clock,
+    Tray(usize),
+    TrayOverflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,7 +307,15 @@ enum CcItem {
 #[derive(Debug, Clone)]
 pub enum ShellClickAction {
     None,
+    Control(crate::controls::Control),
+    NetworkSettings,
+    BluetoothSettings,
+    AppMenuActivate { generation: u64, id: i32 },
     LaunchApp(AppAction, String),
+    LaunchpadLaunch(usize),
+    Tray {key:String,action:crate::tray::Action,x:i32,y:i32},
+    TrayMenu {generation:u64,id:i32},
+    TrayOverflow,
     ActivateApp(usize),
     /// Press on a Dock icon: becomes a click or a drag depending on what the pointer does
     DockPress(DockTarget),
@@ -271,10 +347,21 @@ pub enum ShellClickAction {
 /// Menus of the menu bar
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TopMenu {
+    Client(i32),
+    Tray(i32),
     Feather,
     App,
     Window,
     Help,
+}
+
+/// Modal layer whose appearance has its own spring (content changes keep the same key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayKind {
+    Menu(TopMenu),
+    ControlCenter,
+    Spotlight,
+    DockMenu,
 }
 
 /// One row of a menu; `action == None` renders a disabled item
@@ -282,9 +369,11 @@ pub enum TopMenu {
 pub enum MenuRow {
     Item {
         label: String,
-        shortcut: &'static str,
+        shortcut: String,
         action: Option<ShellClickAction>,
         checked: bool,
+        radio: bool,
+        submenu: Option<i32>,
     },
     Separator,
 }
@@ -292,9 +381,11 @@ pub enum MenuRow {
 fn item(label: impl Into<String>, shortcut: &'static str, action: Option<ShellClickAction>) -> MenuRow {
     MenuRow::Item {
         label: label.into(),
-        shortcut,
+        shortcut: shortcut.into(),
         action,
         checked: false,
+        radio: false,
+        submenu: None,
     }
 }
 
@@ -325,6 +416,7 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
     let has_window = ctx.windows.iter().any(|w| w.2);
     let on = |cond: bool, a: ShellClickAction| cond.then_some(a);
     match menu {
+        TopMenu::Client(_) | TopMenu::Tray(_) => Vec::new(),
         TopMenu::Feather => vec![
             item("Об этом компьютере", "", builtin(BuiltinWindowKind::AboutFeather, "Об этом компьютере")),
             Separator,
@@ -368,9 +460,11 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
                     let label = if *minimized { format!("{title} (свёрнуто)") } else { title.clone() };
                     rows.push(MenuRow::Item {
                         label,
-                        shortcut: "",
+                        shortcut: String::new(),
                         action: Some(ShellClickAction::FocusWindow(*id)),
                         checked: *focused,
+                        radio: false,
+                        submenu: None,
                     });
                 }
             }
@@ -385,6 +479,11 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
     }
 }
 
+pub struct CcBackdrop {
+    bounds: Rectangle<i32, Buffer>,
+    pixels: tiny_skia::Pixmap,
+}
+
 pub struct MacShell {
     /// Logical desktop dimensions (in macOS points)
     pub screen_w: i32,
@@ -393,10 +492,14 @@ pub struct MacShell {
     pub theme: WallpaperTheme,
     pub wallpaper_buffer: MemoryRenderBuffer,
     pub wallpaper_dirty: bool,
+    cc_backdrop: Option<CcBackdrop>,
+    cc_backdrop_requested: bool,
 
     pub topbar_buffer: MemoryRenderBuffer,
     pub topbar_dirty: bool,
     topbar_hits: Vec<(f32, f32, TopbarItem)>,
+    pub tray_items: Vec<crate::tray::Item>,
+    tray_menu: Option<(String,u64,f32,Option<std::sync::Arc<crate::appmenu::MenuNode>>)>,
 
     pub dock_buffer: MemoryRenderBuffer,
     pub dock_buf_w: i32,
@@ -405,6 +508,8 @@ pub struct MacShell {
     pub dock_zoom_enabled: bool,
     dock_items: Vec<DockItem>,
     dock_cursor_x: Option<f32>,
+    /// Keep the icon under the pointer still when a minimized tile is added/removed.
+    dock_anchor: Option<(DockTarget, f32)>,
     dock_slots: Vec<DockSlot>,
     dock_bar: R,
     dock_painted: Vec<Rectangle<i32, Buffer>>,
@@ -414,15 +519,18 @@ pub struct MacShell {
     pub spotlight_selected: usize,
 
     pub control_center_open: bool,
+    pub cc: crate::control_panel::Panel,
     pub wifi_enabled: bool,
-    pub bt_enabled: bool,
     pub dnd_enabled: bool,
-    pub brightness_level: f32,
-    pub volume_level: f32,
 
     pub open_menu: Option<TopMenu>,
     pub menu_hovered: Option<usize>,
     pub menu_ctx: MenuContext,
+    pub client_menu: Option<std::sync::Arc<crate::appmenu::MenuNode>>,
+    pub client_generation: u64,
+    pub client_submenus: Vec<i32>,
+    client_hovered: Option<(usize, usize)>,
+    client_scroll: std::collections::HashMap<i32, usize>,
 
     pub toast: Option<NotificationToast>,
 
@@ -430,6 +538,7 @@ pub struct MacShell {
     pub overlay_dirty: bool,
     overlay_painted: Vec<Rectangle<i32, Buffer>>,
     overlay_allocated: bool,
+    overlay_geometry: Rectangle<i32, Buffer>,
 
     pub switcher: Option<Switcher>,
     pub switcher_buffer: MemoryRenderBuffer,
@@ -447,7 +556,14 @@ pub struct MacShell {
     /// Frosted wallpaper behind Launchpad, cached per wallpaper/size/appearance
     pub launchpad_bg: MemoryRenderBuffer,
     pub launchpad_bg_key: Option<(WallpaperTheme, i32, i32, bool)>,
-    glass_key: Option<(WallpaperTheme, i32, i32, bool)>,
+    launchpad_bg_requested: Option<crate::raster::BackgroundKey>,
+    pub raster: Option<crate::raster::RasterSender>,
+    pub desktop: crate::desktop::Desktop,
+    /// Launch feedback: the Dock icon jumps until the app's window appears
+    pub bounce: Option<Bounce>,
+    pub pending_bounce: Option<Instant>,
+    raster_launchpad_open: bool,
+    raster_reclaim_pending: bool,
 
     pub icons: IconCache,
     pub last_clock_str: String,
@@ -468,9 +584,13 @@ impl MacShell {
             theme: WallpaperTheme::for_appearance(appearance()),
             wallpaper_buffer: new_buffer(ww, wh),
             wallpaper_dirty: true,
+            cc_backdrop: None,
+            cc_backdrop_requested: false,
             topbar_buffer: new_buffer(to_phys(w), to_phys(TOP_BAR_HEIGHT)),
             topbar_dirty: true,
             topbar_hits: Vec::new(),
+            tray_items: Vec::new(),
+            tray_menu: None,
             dock_buffer: new_buffer(to_phys(w), to_phys(DOCK_BUF_H)),
             dock_buf_w: w,
             dock_buf_h: DOCK_BUF_H,
@@ -478,6 +598,7 @@ impl MacShell {
             dock_zoom_enabled: true,
             dock_items: Vec::new(),
             dock_cursor_x: None,
+            dock_anchor: None,
             dock_slots: Vec::new(),
             dock_bar: R::new(0.0, 0.0, 0.0, 0.0),
             dock_painted: Vec::new(),
@@ -485,19 +606,23 @@ impl MacShell {
             spotlight_query: String::new(),
             spotlight_selected: 0,
             control_center_open: false,
-            wifi_enabled: true,
-            bt_enabled: true,
+            cc: crate::control_panel::Panel::default(),
+            wifi_enabled: false,
             dnd_enabled: false,
-            brightness_level: 0.85,
-            volume_level: 0.72,
             open_menu: None,
             menu_hovered: None,
             menu_ctx: MenuContext::default(),
+            client_menu: None,
+            client_generation: 0,
+            client_submenus: Vec::new(),
+            client_hovered: None,
+            client_scroll: std::collections::HashMap::new(),
             toast: None,
             overlay_buffer: new_buffer(1, 1),
             overlay_dirty: true,
             overlay_painted: Vec::new(),
             overlay_allocated: false,
+            overlay_geometry: Rectangle::from_size((1, 1).into()),
             switcher: None,
             switcher_buffer: new_buffer(1, 1),
             switcher_rect: R::new(0.0, 0.0, 0.0, 0.0),
@@ -511,7 +636,13 @@ impl MacShell {
             launchpad: None,
             launchpad_bg: new_buffer(1, 1),
             launchpad_bg_key: None,
-            glass_key: None,
+            launchpad_bg_requested: None,
+            raster: None,
+            desktop: crate::desktop::Desktop::new(),
+            bounce: None,
+            pending_bounce: None,
+            raster_launchpad_open: false,
+            raster_reclaim_pending: false,
             icons: IconCache::new(),
             last_clock_str: String::new(),
             last_rss_mb: Self::read_process_rss_mb(),
@@ -556,6 +687,12 @@ impl MacShell {
 
     /// Everything must be redrawn (appearance, wallpaper or scale changed)
     pub fn invalidate_all(&mut self) {
+        if let Some(worker) = &self.raster { worker.invalidate(); }
+        self.launchpad_bg_key = None;
+        self.launchpad_bg_requested = None;
+        self.cc_backdrop = None;
+        self.cc_backdrop_requested = false;
+        crate::theme::set_glass_background(None);
         self.wallpaper_dirty = true;
         self.topbar_dirty = true;
         self.dock_dirty = true;
@@ -568,6 +705,7 @@ impl MacShell {
         self.dock_painted.clear();
         self.overlay_painted.clear();
         self.icons.clear_raster();
+        self.desktop.invalidate();
     }
 
     pub fn reallocate_buffers(&mut self, logical_w: i32, logical_h: i32) {
@@ -579,6 +717,7 @@ impl MacShell {
         self.wallpaper_buffer = new_buffer(ww, wh);
         self.topbar_buffer = new_buffer(to_phys(w), to_phys(TOP_BAR_HEIGHT));
         self.dock_buf_w = w;
+        self.dock_anchor = None;
         self.dock_buffer = new_buffer(to_phys(w), to_phys(self.dock_buf_h));
         self.overlay_buffer = new_buffer(1, 1);
         self.overlay_allocated = false;
@@ -631,12 +770,15 @@ impl MacShell {
     }
 
     pub fn close_menus(&mut self) {
+        self.tray_menu=None;
         if self.dock_menu.take().is_some() {
             self.overlay_dirty = true;
         }
         if self.open_menu.is_some() || self.control_center_open || self.spotlight_open {
             self.open_menu = None;
             self.menu_hovered = None;
+            self.client_submenus.clear();
+            self.client_hovered = None;
             self.control_center_open = false;
             self.spotlight_open = false;
             self.overlay_dirty = true;
@@ -648,9 +790,68 @@ impl MacShell {
 
     pub fn set_dock_items(&mut self, items: Vec<DockItem>) {
         if items != self.dock_items {
+            let layout_changed = !items.iter().map(|i| i.target).eq(self.dock_items.iter().map(|i| i.target));
+            if layout_changed && self.dock_anchor.is_none() {
+                self.dock_anchor = self.dock_cursor_x.and_then(|cx| {
+                    self.dock_slots.iter()
+                        .find(|s| cx >= s.x && cx < s.x + s.size && items.iter().any(|i| i.target == s.target))
+                        .map(|s| (s.target, s.x + s.size * 0.5))
+                });
+            }
+            if self.dock_anchor.is_some_and(|(target, _)| !items.iter().any(|i| i.target == target)) {
+                self.dock_anchor = None;
+            }
             self.dock_items = items;
             self.dock_dirty = true;
         }
+    }
+
+    pub fn anchor_dock_target(&mut self, target: DockTarget) {
+        if self.dock_cursor_x.is_some() {
+            self.dock_anchor = self.dock_slots.iter().find(|s|s.target==target)
+                .map(|s|(target,s.x+s.size*0.5));
+        }
+    }
+
+    fn dock_menu_rect(&self, anchor: R, w: f32, h: f32) -> R {
+        let x = (anchor.x + anchor.w * 0.5 - w * 0.5).clamp(6.0, (self.screen_w as f32 - w - 6.0).max(6.0));
+        let y = (anchor.y - h - 10.0).max(TOP_BAR_HEIGHT as f32 + 4.0);
+        R::new(x,y,w,h)
+    }
+
+    fn update_dock_menu_anchor(&mut self) {
+        let Some(menu) = self.dock_menu.as_ref().filter(|m|m.follow_dock) else {return};
+        let Some((x,y,size)) = self.dock_slot_global(menu.target) else {return};
+        let rect = self.dock_menu_rect(R::new(x,y,size,size),menu.rect.w,menu.rect.h);
+        if rect != menu.rect {
+            let menu=self.dock_menu.as_mut().unwrap();
+            menu.rect=rect;
+            menu.hovered=None;
+            self.overlay_dirty=true;
+        }
+    }
+
+    /// Global icon destination for minimizing; layout is updated before animation sampling.
+    pub fn minimized_target(&self, id: u64) -> R {
+        let (ox, oy) = self.dock_origin();
+        self.dock_slots.iter().find(|s| s.target == DockTarget::Minimized(id))
+            .map(|s| R::new(ox + s.x, oy + s.y, s.size, s.size))
+            .unwrap_or_else(|| R::new(self.screen_w as f32 * 0.5 - 24.0, self.screen_h as f32 - 64.0, 48.0, 48.0))
+    }
+
+    /// Crop cached transparent margins before GPU animation, limiting output damage.
+    pub fn overlay_region(&self) -> Option<Rectangle<i32, Buffer>> {
+        self.overlay_allocated.then_some(self.overlay_geometry)
+    }
+
+    /// Identity and pivot of the modal overlay. Hover/query changes do not restart motion.
+    pub fn animation_overlay(&self) -> Option<(OverlayKind, R)> {
+        if let Some(m) = self.open_menu { return Some((OverlayKind::Menu(m), self.menu_rect(m))); }
+        if self.control_center_open { return Some((OverlayKind::ControlCenter, self.cc_layout().0)); }
+        if self.spotlight_open {
+            return Some((OverlayKind::Spotlight, self.spotlight_bar_rect()));
+        }
+        self.dock_menu.as_ref().map(|m| (OverlayKind::DockMenu, m.rect))
     }
 
     /// Dock icon under a global point
@@ -702,63 +903,121 @@ impl MacShell {
             .fold(140.0f32, f32::max)
             + 28.0;
         let h = MENU_PAD * 2.0 + items.len() as f32 * MENU_ITEM_H;
-        let x = (anchor.x + anchor.w * 0.5 - w * 0.5).clamp(6.0, self.screen_w as f32 - w - 6.0);
-        let y = anchor.y - h - 10.0;
+        let rect = self.dock_menu_rect(anchor,w,h);
         self.close_menus();
         self.dock_menu = Some(DockMenu {
             target,
+            follow_dock: true,
             items,
-            rect: R::new(x, y, w, h),
+            rect,
             hovered: None,
         });
         self.overlay_dirty = true;
     }
 
-    /// Blurred wallpaper used under all glass panels (1/8 resolution, ~0.5 MB at 4K)
-    pub fn ensure_glass_bg(&mut self) {
-        let (w, h) = ((to_phys(self.screen_w) / 8).max(8), (to_phys(self.screen_h) / 8).max(8));
-        let dark = appearance() == Appearance::Dark;
-        let key = (self.theme, w, h, dark);
-        if self.glass_key == Some(key) {
-            return;
-        }
-        self.glass_key = Some(key);
-        let data = crate::theme::render_frosted_wallpaper(w, h, self.theme, if dark { 0.8 } else { 1.0 });
-        let pixmap = tiny_skia::IntSize::from_wh(w as u32, h as u32)
-            .and_then(|size| tiny_skia::Pixmap::from_vec(data, size));
-        crate::theme::set_glass_background(pixmap.map(|pm| {
-            (
-                std::rc::Rc::new(pm),
-                self.screen_w as f32 / w as f32,
-                self.screen_h as f32 / h as f32,
-            )
-        }));
-        // Everything glassy must pick up the new background
-        self.dock_dirty = true;
+    /// Context menu at the pointer (desktop), drawn like the Dock menu
+    pub fn open_context_menu(&mut self, items: Vec<(String, DockMenuAction)>, x: f32, y: f32, fonts: &mut FontSystem) {
+        let w = items.iter().map(|(l, _)| fonts.measure_text(l, 13.0, false)).fold(160.0f32, f32::max) + 28.0;
+        let h = MENU_PAD * 2.0 + items.len() as f32 * MENU_ITEM_H;
+        let x = x.min(self.screen_w as f32 - w - 6.0).max(6.0);
+        let y = if y + h > self.screen_h as f32 - 6.0 { (y - h).max(TOP_BAR_HEIGHT as f32 + 4.0) } else { y };
+        self.close_menus();
+        self.dock_menu = Some(DockMenu { target: DockTarget::Window(0), follow_dock: false, items, rect: R::new(x, y, w, h), hovered: None });
         self.overlay_dirty = true;
-        self.switcher_dirty = true;
-        self.dock_painted.clear();
-        self.overlay_painted.clear();
+    }
+
+    pub fn attach_raster(&mut self, worker: crate::raster::RasterSender) {
+        self.icons.attach(worker.clone());
+        self.raster = Some(worker);
+    }
+
+    pub fn install_controls(&mut self, update:crate::controls::Update) -> bool {
+        match update {
+            crate::controls::Update::Wifi(wifi) => {
+                if self.cc.wifi==wifi {return false;}
+                self.wifi_enabled=wifi.available&&wifi.enabled&&wifi.hardware;
+                self.cc.wifi=wifi;
+                self.topbar_dirty=true;
+            }
+            crate::controls::Update::Audio(audio) => {
+                if self.cc.audio==audio {return false;}
+                self.cc.audio=audio;
+            }
+            crate::controls::Update::Error(title,error) => {
+                if self.control_center_open {self.cc.open(if title=="Звук" {crate::control_panel::Page::Sound} else {crate::control_panel::Page::Wifi});}
+                self.cc.error=Some(error.clone());
+                if !self.control_center_open {self.notify(title,error);return true;}
+            }
+        }
+        if self.control_center_open {self.overlay_dirty=true;}
+        self.control_center_open||self.topbar_dirty
+    }
+
+    /// Install a CPU-only result. No rasterization, file lookup, or GPU access here.
+    pub fn install_asset(&mut self, asset: crate::raster::Asset) -> bool {
+        match asset {
+            crate::raster::Asset::Retry => {}
+            crate::raster::Asset::Reclaimed => return false,
+            crate::raster::Asset::CcBackdrop(backdrop) => {
+                self.cc_backdrop = Some(backdrop);
+                self.cc_backdrop_requested = false;
+                if !self.control_center_open { return false; }
+                self.overlay_dirty = true;
+            }
+            crate::raster::Asset::Wallpaper { buffer, glass } => {
+                let (w, h) = (glass.width(), glass.height());
+                self.wallpaper_buffer = buffer;
+                crate::theme::set_glass_background(Some((std::rc::Rc::new(glass), self.screen_w as f32 / w as f32, self.screen_h as f32 / h as f32)));
+                self.dock_painted.clear(); self.overlay_painted.clear();
+                self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true;
+            }
+            crate::raster::Asset::Frosted(key, buffer) => {
+                self.launchpad_bg_requested = None;
+                if self.launchpad.is_none() { return false; }
+                self.launchpad_bg_key = Some(key);
+                self.launchpad_bg = buffer;
+            }
+            crate::raster::Asset::Icon(key, pixmap) => {
+                if !self.tray_items.is_empty(){self.topbar_dirty=true;}
+                self.icons.install(key, pixmap);
+                self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true; self.ghost_dirty = true;
+            }
+            crate::raster::Asset::DesktopTile(pixels) => return self.desktop.install(pixels),
+            crate::raster::Asset::Tile { ticket, app, buffer } => {
+                return self.launchpad.as_mut().is_some_and(|lp| lp.install_tile(&ticket, app, buffer));
+            }
+        }
+        true
     }
 
     pub fn ensure_launchpad_bg(&mut self) {
+        self.raster_launchpad_open = true;
         let (w, h) = ((to_phys(self.screen_w) / 8).max(8), (to_phys(self.screen_h) / 8).max(8));
         let key = (self.theme, w, h, appearance() == Appearance::Dark);
-        if self.launchpad_bg_key == Some(key) {
-            return;
+        if self.launchpad_bg_key == Some(key) || self.launchpad_bg_requested == Some(key) { return; }
+        if self.raster.as_ref().is_some_and(|worker| worker.submit(crate::raster::Job::Frosted(key))) {
+            self.launchpad_bg_requested = Some(key);
         }
-        self.launchpad_bg_key = Some(key);
-        let darken = if key.3 { 0.55 } else { 0.72 };
-        let data = crate::theme::render_frosted_wallpaper(w, h, self.theme, darken);
-        // Opaque: lets the renderer skip everything underneath (all windows)
-        self.launchpad_bg = MemoryRenderBuffer::from_slice(
-            &data,
-            Fourcc::Abgr8888,
-            (w, h),
-            1,
-            Transform::Normal,
-            Some(vec![Rectangle::from_size((w, h).into())]),
-        );
+    }
+
+    /// Drop CPU/GPU references before scene construction, so this frame can release
+    /// old textures. Reclaim allocator pages only after that frame has been submitted.
+    pub fn release_closed_launchpad(&mut self) {
+        if self.raster_launchpad_open && self.launchpad.is_none() {
+            self.launchpad_bg = new_buffer(1, 1);
+            self.launchpad_bg_key = None;
+            self.launchpad_bg_requested = None;
+            self.raster_launchpad_open = false;
+            self.raster_reclaim_pending = true;
+        }
+    }
+
+    pub fn reclaim_after_frame(&mut self) {
+        if self.raster_reclaim_pending {
+            if self.raster.as_ref().is_some_and(|worker| worker.submit(crate::raster::Job::Reclaim)) {
+                self.raster_reclaim_pending = false;
+            }
+        }
     }
 
     pub fn ensure_ghost_rendered(&mut self, fonts: &mut FontSystem) {
@@ -778,6 +1037,24 @@ impl MacShell {
             }
             Result::<_, ()>::Ok(vec![Rectangle::from_size((px, px).into())])
         });
+    }
+
+    /// Starts the launch bounce of app `app` if it has a Dock icon
+    pub fn start_bounce(&mut self, app: usize, first_new_window: u64, fonts: &mut FontSystem) {
+        let target = DockTarget::App(app);
+        let Some(item) = self.dock_items.iter().find(|i| i.target == target).cloned() else { return };
+        let px = to_phys(DOCK_ICON_BASE as i32);
+        let Some(mut pm) = tiny_skia::Pixmap::new(px as u32, px as u32) else { return };
+        draw_any_icon(&mut pm.as_mut(), fonts, &mut self.icons, &item.icon, &item.label, 0.0, 0.0, DOCK_ICON_BASE);
+        let buffer = MemoryRenderBuffer::from_slice(pm.data(), smithay::backend::allocator::Fourcc::Abgr8888, (px, px), 1, smithay::utils::Transform::Normal, None);
+        self.bounce = Some(Bounce { target, app, started: Instant::now(), first_new_window, finish_at: None, buffer, px });
+        self.dock_dirty = true;
+    }
+
+    /// Global logical top-left and size of a Dock slot
+    pub fn dock_slot_global(&self, target: DockTarget) -> Option<(f32, f32, f32)> {
+        let (ox, oy) = self.dock_origin();
+        self.dock_slots.iter().find(|s| s.target == target).map(|s| (ox + s.x, oy + s.y, s.size))
     }
 
     fn dock_origin(&self) -> (f32, f32) {
@@ -801,35 +1078,254 @@ impl MacShell {
         }
     }
 
-    fn open_menu_rows(&self) -> Vec<MenuRow> {
-        self.open_menu.map(|m| menu_rows(m, &self.menu_ctx)).unwrap_or_default()
+    fn rows_for_menu(&self, menu: TopMenu) -> Vec<MenuRow> {
+        match menu {
+            TopMenu::Client(id) | TopMenu::Tray(id) => self.native_menu_root(menu).and_then(|root| root.find(id))
+                .map(|node| {
+                    let count = node.children.iter().filter(|n| n.visible).count();
+                    let capacity = self.client_row_capacity();
+                    let offset = self.client_scroll.get(&id).copied().unwrap_or(0).min(count.saturating_sub(capacity));
+                    let mut rows = Vec::new();
+                    if offset > 0 { rows.push(item("↑", "", None)); }
+                    rows.extend(node.children.iter().filter(|n| n.visible).skip(offset).take(capacity).map(|n| {
+                    if n.separator { MenuRow::Separator } else { MenuRow::Item {
+                        label: n.label.clone(), shortcut: n.shortcut.clone(), checked: n.checked,
+                        radio: n.radio, submenu: n.submenu.then_some(n.id),
+                        action: n.enabled.then(||if matches!(menu,TopMenu::Tray(_)) {
+                            ShellClickAction::TrayMenu{generation:self.tray_menu.as_ref().map_or(0,|m|m.1),id:n.id}
+                        }else{ShellClickAction::AppMenuActivate { generation: self.client_generation, id: n.id }}),
+                    }}
+                    }));
+                    if offset + capacity < count { rows.push(item("↓", "", None)); }
+                    if rows.is_empty() { rows.push(item("Нет пунктов", "", None)); }
+                    rows
+                }).unwrap_or_else(||if matches!(menu,TopMenu::Tray(_)){vec![item("Загрузка…","",None)]}else{Vec::new()}),
+            _ => menu_rows(menu, &self.menu_ctx),
+        }
+    }
+
+    pub fn set_client_menu(&mut self, generation: u64, root: Option<std::sync::Arc<crate::appmenu::MenuNode>>) -> bool {
+        if self.client_generation == generation && self.client_menu == root { return false; }
+        if generation != self.client_generation || root.is_none() {
+            if matches!(self.open_menu, Some(TopMenu::Client(_))) { self.close_menus(); }
+        }
+        self.client_generation = generation;
+        self.client_menu = root;
+        if let Some(TopMenu::Client(id)) = self.open_menu {
+            let mut parent = self.client_menu.as_ref().and_then(|root| root.find(id))
+                .filter(|node| node.enabled && node.visible);
+            if parent.is_none() { self.close_menus(); }
+            else {
+                let mut valid = 0;
+                for id in &self.client_submenus {
+                    parent = parent.and_then(|node| node.children.iter().find(|child| child.id == *id && child.enabled && child.visible && child.submenu));
+                    if parent.is_none() { break; }
+                    valid += 1;
+                }
+                self.client_submenus.truncate(valid);
+            }
+        }
+        self.topbar_dirty = true;
+        self.overlay_dirty = true;
+        true
+    }
+
+    pub fn client_open_ids(&self) -> Vec<i32> {
+        let Some(TopMenu::Client(id)) = self.open_menu else { return Vec::new() };
+        std::iter::once(id).chain(self.client_submenus.iter().copied()).collect()
+    }
+
+    fn native_menu_root(&self,menu:TopMenu)->Option<&crate::appmenu::MenuNode>{
+        if matches!(menu,TopMenu::Tray(_)){self.tray_menu.as_ref()?.3.as_deref()}else{self.client_menu.as_deref()}
+    }
+    pub fn tray_open_ids(&self)->Vec<i32>{
+        let Some(TopMenu::Tray(id))=self.open_menu else{return Vec::new()};
+        std::iter::once(id).chain(self.client_submenus.iter().copied()).collect()
+    }
+    pub fn set_tray_items(&mut self,items:Vec<crate::tray::Item>){
+        if self.tray_menu.as_ref().is_some_and(|m|!items.iter().any(|i|i.key==m.0)){self.close_menus();}
+        if self.tray_items!=items{
+            if self.dock_menu.as_ref().is_some_and(|m|m.items.iter().any(|(_,a)|matches!(a,DockMenuAction::Tray(_)))){self.close_menus();}
+            self.tray_items=items;self.topbar_dirty=true;
+        }
+    }
+    pub fn prepare_tray_menu(&mut self,key:String,generation:u64,x:f32){
+        self.tray_menu=Some((key,generation,x,None));self.open_menu=Some(TopMenu::Tray(0));self.overlay_dirty=true;
+    }
+    pub fn install_tray_menu(&mut self,key:&str,generation:u64,root:Option<std::sync::Arc<crate::appmenu::MenuNode>>)->bool {
+        let Some(menu)=self.tray_menu.as_mut() else{return false};
+        if menu.0!=key||menu.1!=generation{return false;}
+        let Some(root)=root else{self.close_menus();return true};
+        self.open_menu=Some(TopMenu::Tray(root.id));menu.3=Some(root);self.overlay_dirty=true;true
+    }
+    pub fn tray_hit(&self,x:f64,y:f64)->Option<(&crate::tray::Item,R)>{
+        if y<0.0||y>=TOP_BAR_HEIGHT as f64{return None;}
+        let (x0,x1,index)=self.topbar_hits.iter().find_map(|&(x0,x1,hit)|match hit{TopbarItem::Tray(i)if x>=x0 as f64&&x<x1 as f64=>Some((x0,x1,i)),_=>None})?;
+        Some((self.tray_items.get(index)?,R::new(x0,0.0,x1-x0,TOP_BAR_HEIGHT as f32)))
+    }
+    fn tray_visible_count(&self)->usize{self.tray_items.len().min(((self.screen_w as f32-500.0)/26.0).max(1.0) as usize).min(12)}
+
+    fn client_row_capacity(&self) -> usize {
+        (((self.screen_h - TOP_BAR_HEIGHT - 16) as f32 / MENU_ITEM_H) as usize).saturating_sub(2).max(1)
+    }
+
+    /// Consume scrolling while a native menu is open, even outside its panel.
+    pub fn scroll_client_menu(&mut self, px: f32, py: f32, delta: f64) -> bool {
+        let Some(menu @ (TopMenu::Client(root)|TopMenu::Tray(root))) = self.open_menu else { return false };
+        if delta == 0.0 { return true; }
+        let panels = self.menu_panels();
+        if let Some(depth) = panels.iter().rposition(|(r, _, _)| r.contains(px, py)) {
+            let id = if depth == 0 { root } else { self.client_submenus[depth - 1] };
+            let count = self.native_menu_root(menu).and_then(|r| r.find(id)).map_or(0, |n| n.children.iter().filter(|n| n.visible).count());
+            let maximum = count.saturating_sub(self.client_row_capacity());
+            let offset = self.client_scroll.entry(id).or_default();
+            let next = if delta > 0.0 { (*offset + 3).min(maximum) } else { offset.saturating_sub(3) };
+            if next != *offset {
+                *offset = next;
+                self.client_submenus.truncate(depth);
+                self.client_hovered = None;
+                self.overlay_dirty = true;
+            }
+        }
+        true
+    }
+
+    /// Menu navigation changes only shell state. The caller defers returned actions until
+    /// after KeyboardHandle::input has released its lock.
+    pub fn client_menu_key(&mut self, direction: i32) -> Option<ShellClickAction> {
+        let panels = self.menu_panels();
+        let depth = self.client_hovered.map_or(panels.len().saturating_sub(1), |(d, _)| d.min(panels.len().saturating_sub(1)));
+        let panel = panels.get(depth)?;
+        if direction == -2 { // left: close one submenu
+            if self.client_submenus.pop().is_none() { self.close_menus(); }
+            self.client_hovered = None;
+        } else if direction.abs() == 1 {
+            let enabled: Vec<_> = panel.1.iter().enumerate().filter_map(|(i, r)| matches!(r, MenuRow::Item { action: Some(_), .. }).then_some(i)).collect();
+            if enabled.is_empty() { return None; }
+            let current = self.client_hovered.filter(|(d, _)| *d == depth).and_then(|(_, row)| enabled.iter().position(|i| *i == row));
+            let next = match (current, direction) {
+                (Some(i), 1) => (i + 1) % enabled.len(),
+                (Some(i), _) => (i + enabled.len() - 1) % enabled.len(),
+                (None, 1) => 0,
+                _ => enabled.len() - 1,
+            };
+            self.client_hovered = Some((depth, enabled[next]));
+        } else if let Some((d, row)) = self.client_hovered {
+            if let Some(MenuRow::Item { submenu, action, .. }) = panels.get(d).and_then(|p| p.1.get(row)) {
+                if let Some(id) = submenu {
+                    self.client_submenus.truncate(d);
+                    self.client_submenus.push(*id);
+                    self.client_hovered = None;
+                } else if direction == 0 {
+                    let action = action.clone(); self.close_menus(); return action;
+                }
+            }
+        }
+        self.overlay_dirty = true;
+        None
+    }
+
+    /// Exercise our own menu hit testing in screenshot/integration runs, without host input.
+    pub fn debug_client_menu_path(&mut self, path: &str, activate: bool, registry: &AppRegistry) -> Option<ShellClickAction> {
+        let parts: Vec<_> = path.split('/').collect();
+        let root = self.client_menu.as_ref()?;
+        let label = *parts.first()?;
+        let node = root.children.iter().find(|n| n.label == label)?;
+        let menu = TopMenu::Client(node.id);
+        let (x0, x1, _) = *self.topbar_hits.iter().find(|(_, _, hit)| *hit == TopbarItem::Menu(menu))?;
+        self.handle_pointer_click(((x0 + x1) * 0.5) as f64, 12.0, registry);
+        for (depth, label) in parts.iter().skip(1).enumerate() {
+            let panels = self.menu_panels();
+            let panel = panels.get(depth)?;
+            let row = panel.1.iter().position(|r| matches!(r, MenuRow::Item { label: text, .. } if text == label))?;
+            let x = panel.0.x + 40.0;
+            let y = panel.0.y + MENU_PAD + panel.1.iter().take(row).map(Self::row_height).sum::<f32>() + MENU_ITEM_H * 0.5;
+            self.update_pointer_hover(x as f64, y as f64);
+            if activate && depth + 2 == parts.len() {
+                return self.handle_pointer_click(x as f64, y as f64, registry);
+            }
+        }
+        Some(ShellClickAction::None)
+    }
+
+    fn row_height(row: &MenuRow) -> f32 {
+        if matches!(row, MenuRow::Separator) { MENU_SEP_H } else { MENU_ITEM_H }
+    }
+
+    fn menu_size(rows: &[MenuRow]) -> (f32, f32) {
+        let h = MENU_PAD * 2.0 + rows.iter().map(Self::row_height).sum::<f32>();
+        let w = rows.iter().filter_map(|r| match r {
+            MenuRow::Item { label, shortcut, .. } => Some(label.chars().count() as f32 * 7.3 + shortcut.chars().count() as f32 * 9.0 + 64.0),
+            _ => None,
+        }).fold(MENU_MIN_W, f32::max).min(420.0);
+        (w, h)
+    }
+
+    /// Root menu plus cascaded submenus, in back-to-front order.
+    fn menu_panels(&self) -> Vec<(R, Vec<MenuRow>, Option<usize>)> {
+        let Some(menu) = self.open_menu else { return Vec::new() };
+        let root = (self.menu_rect(menu), self.rows_for_menu(menu), self.menu_hovered);
+        if !matches!(menu, TopMenu::Client(_)|TopMenu::Tray(_)) { return vec![root]; }
+        let mut panels = vec![root];
+        for (depth, id) in self.client_submenus.iter().enumerate() {
+            let (parent, rows, _) = &panels[depth];
+            let Some(row_index) = rows.iter().position(|r| matches!(r, MenuRow::Item { submenu: Some(child), action: Some(_), .. } if child == id)) else { break };
+            let rows = self.rows_for_menu(if matches!(menu,TopMenu::Tray(_)){TopMenu::Tray(*id)}else{TopMenu::Client(*id)});
+            let (w, h) = Self::menu_size(&rows);
+            let w = w.min((self.screen_w as f32 - 8.0).max(1.0));
+            let x = if parent.x + parent.w + w <= self.screen_w as f32 - 4.0 { parent.x + parent.w - 2.0 } else { (parent.x - w + 2.0).max(4.0) };
+            let y = parent.y + MENU_PAD + panels[depth].1.iter().take(row_index).map(Self::row_height).sum::<f32>();
+            let y = y.min((self.screen_h as f32 - h - 4.0).max(TOP_BAR_HEIGHT as f32 + 3.0));
+            panels[depth].2 = Some(row_index);
+            panels.push((R::new(x, y, w, h), rows, None));
+        }
+        if let Some((depth, row)) = self.client_hovered {
+            if let Some(p) = panels.get_mut(depth) { p.2 = Some(row); }
+        }
+        panels
+    }
+
+    fn panel_item_at(&self, px: f32, py: f32) -> Option<(usize, usize)> {
+        for (depth, (rect, rows, _)) in self.menu_panels().iter().enumerate().rev() {
+            if !rect.contains(px, py) { continue; }
+            let mut y = rect.y + MENU_PAD;
+            for (i, row) in rows.iter().enumerate() {
+                let h = Self::row_height(row);
+                if py >= y && py < y + h {
+                    return matches!(row, MenuRow::Item { action: Some(_), .. }).then_some((depth, i));
+                }
+                y += h;
+            }
+            return None;
+        }
+        None
+    }
+
+    fn hover_client_menu(&mut self, px: f32, py: f32) {
+        let hovered = self.panel_item_at(px, py);
+        if self.client_hovered != hovered { self.client_hovered = hovered; self.overlay_dirty = true; }
+        if let Some((depth, row)) = hovered {
+            let panels = self.menu_panels();
+            let submenu = match &panels[depth].1[row] { MenuRow::Item { submenu, .. } => *submenu, _ => None };
+            let mut path = self.client_submenus.clone();
+            path.truncate(depth);
+            if let Some(id) = submenu { path.push(id); }
+            if path != self.client_submenus { self.client_submenus = path; self.overlay_dirty = true; }
+        }
     }
 
     fn menu_rect(&self, menu: TopMenu) -> R {
-        let rows = menu_rows(menu, &self.menu_ctx);
-        let h = MENU_PAD * 2.0
-            + rows
-                .iter()
-                .map(|r| if matches!(r, MenuRow::Separator) { MENU_SEP_H } else { MENU_ITEM_H })
-                .sum::<f32>();
-        // Width estimate from text length (exact text is clipped to it when drawn)
-        let w = rows
-            .iter()
-            .filter_map(|r| match r {
-                MenuRow::Item { label, shortcut, .. } => {
-                    Some(label.chars().count() as f32 * 7.3 + shortcut.chars().count() as f32 * 9.0 + 64.0)
-                }
-                MenuRow::Separator => None,
-            })
-            .fold(MENU_MIN_W, f32::max)
-            .min(420.0);
+        let rows = self.rows_for_menu(menu);
+        let (w, h) = Self::menu_size(&rows);
+        let w = w.min((self.screen_w as f32 - 8.0).max(1.0));
         let anchor = self
             .topbar_hits
             .iter()
             .find(|(_, _, it)| *it == TopbarItem::Menu(menu))
             .map(|(x0, _, _)| *x0)
             .unwrap_or(6.0);
-        let x = (anchor - 2.0).clamp(4.0, self.screen_w as f32 - w - 4.0);
+        let anchor=if matches!(menu,TopMenu::Tray(_)){self.tray_menu.as_ref().map_or(anchor,|m|m.2-w*0.5)}else{anchor};
+        let x = (anchor - 2.0).clamp(4.0, (self.screen_w as f32 - w - 4.0).max(4.0));
         R::new(x, TOP_BAR_HEIGHT as f32 + 3.0, w, h)
     }
 
@@ -841,7 +1337,7 @@ impl MacShell {
             return None;
         }
         let mut y = r.y + MENU_PAD;
-        for (i, row) in menu_rows(menu, &self.menu_ctx).iter().enumerate() {
+        for (i, row) in self.rows_for_menu(menu).iter().enumerate() {
             let h = if matches!(row, MenuRow::Separator) { MENU_SEP_H } else { MENU_ITEM_H };
             if py >= y && py < y + h {
                 return matches!(row, MenuRow::Item { action: Some(_), .. }).then_some(i);
@@ -859,8 +1355,12 @@ impl MacShell {
     }
 
     fn cc_layout(&self) -> (R, Vec<(R, CcItem)>) {
+        Self::cc_layout_for(self.screen_w)
+    }
+
+    fn cc_layout_for(screen_w: i32) -> (R, Vec<(R, CcItem)>) {
         let w = 324.0;
-        let x = self.screen_w as f32 - w - 8.0;
+        let x = screen_w as f32 - w - 8.0;
         let y = TOP_BAR_HEIGHT as f32 + 5.0;
         let p = 12.0;
         let col = (w - p * 3.0) * 0.5;
@@ -883,12 +1383,40 @@ impl MacShell {
         (R::new(x, y, w, cy - y), items)
     }
 
-    /// (search bar, results panel, app result count, has calculator row)
-    fn spotlight_layout(&self, registry: &AppRegistry) -> (R, Option<R>, usize, bool) {
+    pub fn ensure_cc_backdrop(&mut self) {
+        if self.cc_backdrop.is_none() && !self.cc_backdrop_requested && crate::theme::has_glass_background() {
+            if self.raster.as_ref().is_some_and(|r| r.submit(crate::raster::Job::CcBackdrop { screen: (self.screen_w, self.screen_h) })) {
+                self.cc_backdrop_requested = true;
+            }
+        }
+    }
+
+    /// Pure static plate: glass, borders and card surfaces. Text and controls
+    /// remain live. Toast is hidden while CC is open, so only one origin is needed.
+    pub fn raster_cc_backdrop(screen: (i32, i32)) -> CcBackdrop {
+        let (panel, items) = Self::cc_layout_for(screen.0);
+        let bounds = panel.grow(16.0).to_buffer(to_phys(screen.0), to_phys(screen.1)).unwrap();
+        let (ox, oy) = (bounds.loc.x as f32 / ui_scale(), bounds.loc.y as f32 / ui_scale());
+        crate::theme::set_glass_origin(ox, oy);
+        let mut pixels = tiny_skia::Pixmap::new(bounds.size.w as u32, bounds.size.h as u32).unwrap();
+        let mut pm = pixels.as_mut();
+        draw_glass_panel(&mut pm, panel.x - ox, panel.y - oy, panel.w, panel.h, 22.0, false);
+        let card = if appearance() == Appearance::Dark { rgba(255, 255, 255, 20) } else { rgba(255, 255, 255, 140) };
+        for (r, _) in items { fill_rounded_rect(&mut pm, r.x - ox, r.y - oy, r.w, r.h, 14.0, card); }
+        CcBackdrop { bounds, pixels }
+    }
+
+    fn spotlight_bar_rect(&self) -> R {
         let w = 640.0;
         let x = (self.screen_w as f32 - w) * 0.5;
         let y = (self.screen_h as f32 * 0.22).max(TOP_BAR_HEIGHT as f32 + 40.0);
-        let bar = R::new(x, y, w, 52.0);
+        R::new(x, y, w, 52.0)
+    }
+
+    /// (search bar, results panel, app result count, has calculator row)
+    fn spotlight_layout(&self, registry: &AppRegistry) -> (R, Option<R>, usize, bool) {
+        let bar = self.spotlight_bar_rect();
+        let (x, y, w) = (bar.x, bar.y, bar.w);
         let n = if self.spotlight_query.trim().is_empty() {
             0
         } else {
@@ -900,8 +1428,13 @@ impl MacShell {
         (bar, list, n, math)
     }
 
-    fn toast_rect(&self) -> R {
-        R::new(self.screen_w as f32 - 344.0 - 10.0, TOP_BAR_HEIGHT as f32 + 8.0, 344.0, 72.0)
+    fn toast_visible(&self)->bool {
+        self.toast.is_some()&&!self.control_center_open&&!matches!(self.open_menu,Some(TopMenu::Tray(_)))
+    }
+    fn toast_rect(&self) -> R { Self::toast_rect_for(self.screen_w) }
+
+    fn toast_rect_for(screen_w: i32) -> R {
+        R::new(screen_w as f32 - 344.0 - 10.0, TOP_BAR_HEIGHT as f32 + 8.0, 344.0, 72.0)
     }
 
     // ───────────────────────── Pointer ─────────────────────────
@@ -914,10 +1447,16 @@ impl MacShell {
                     if Some(m) != self.open_menu {
                         self.open_menu = Some(m);
                         self.menu_hovered = None;
+                        self.client_submenus.clear();
+                        self.client_hovered = None;
                         self.overlay_dirty = true;
                         self.topbar_dirty = true;
                     }
                 }
+            }
+            if matches!(self.open_menu, Some(TopMenu::Client(_)|TopMenu::Tray(_))) {
+                self.hover_client_menu(px as f32, py as f32);
+                return;
             }
             let hovered = self.menu_item_at(px as f32, py as f32);
             if hovered != self.menu_hovered {
@@ -957,6 +1496,9 @@ impl MacShell {
         };
         if changed {
             self.dock_cursor_x = new_cursor;
+            if new_cursor.is_none() {
+                self.dock_anchor = None;
+            }
             self.dock_dirty = true;
         }
     }
@@ -994,6 +1536,12 @@ impl MacShell {
                 }
                 Some(TopbarItem::Spotlight) => self.spotlight_open = !was.2,
                 Some(TopbarItem::Layout) => return Some(ShellClickAction::ToggleLayout),
+                Some(TopbarItem::Tray(index)) => {
+                    if let Some(item)=self.tray_items.get(index){return Some(ShellClickAction::Tray{key:item.key.clone(),action:crate::tray::Action::Activate,x:mx as i32,y:my as i32});}
+                }
+                Some(TopbarItem::TrayOverflow) => {
+                    return Some(ShellClickAction::TrayOverflow);
+                }
                 None => {}
             }
             self.overlay_dirty = true;
@@ -1001,9 +1549,20 @@ impl MacShell {
             return Some(ShellClickAction::None);
         }
 
+        if matches!(self.open_menu, Some(TopMenu::Client(_)|TopMenu::Tray(_))) {
+            if let Some((depth, row)) = self.panel_item_at(mx, my) {
+                if let Some(MenuRow::Item { submenu, action, .. }) = self.menu_panels().get(depth).and_then(|p| p.1.get(row)).cloned() {
+                    if submenu.is_some() { self.hover_client_menu(mx, my); }
+                    else { self.close_menus(); return action; }
+                    return Some(ShellClickAction::None);
+                }
+            }
+            self.close_menus();
+            return Some(ShellClickAction::None);
+        }
         if self.open_menu.is_some() {
             let idx = self.menu_item_at(mx, my);
-            let rows = self.open_menu_rows();
+            let rows = self.open_menu.map(|m| self.rows_for_menu(m)).unwrap_or_default();
             self.close_menus();
             if let Some(MenuRow::Item { action: Some(action), .. }) = idx.and_then(|i| rows.get(i)) {
                 return Some(action.clone());
@@ -1018,15 +1577,20 @@ impl MacShell {
                 return Some(ShellClickAction::None);
             }
             self.overlay_dirty = true;
+            if self.cc.page!=crate::control_panel::Page::Main {return Some(self.cc.click(panel,mx,my));}
             if let Some((r, item)) = items.iter().find(|(r, _)| r.contains(mx, my)) {
-                let slider = ((mx - r.x - 14.0) / (r.w - 28.0)).clamp(0.0, 1.0);
                 match item {
-                    CcItem::Wifi => self.wifi_enabled = !self.wifi_enabled,
-                    CcItem::Bluetooth => self.bt_enabled = !self.bt_enabled,
+                    CcItem::Wifi => { self.cc.open(crate::control_panel::Page::Wifi); return Some(ShellClickAction::Control(crate::controls::Control::Scan)); }
+                    CcItem::Bluetooth => return Some(ShellClickAction::BluetoothSettings),
                     CcItem::Focus => self.dnd_enabled = !self.dnd_enabled,
                     CcItem::DarkMode => return Some(ShellClickAction::ToggleAppearance),
-                    CcItem::Brightness => self.brightness_level = slider.max(0.1),
-                    CcItem::Volume => self.volume_level = slider,
+                    CcItem::Brightness => { self.cc.error=Some("Яркость этого дисплея недоступна".into()); }
+                    CcItem::Volume => {
+                        if my<r.y+28.0 {
+                            if mx<r.x+45.0 {return Some(self.cc.mute());}
+                            self.cc.open(crate::control_panel::Page::Sound);
+                        } else {self.cc.start_slider(R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),mx);}
+                    }
                     CcItem::Scale => return Some(ShellClickAction::CycleHiDpiScale),
                     CcItem::Wallpaper => return Some(ShellClickAction::CycleTheme),
                     CcItem::Layout => return Some(ShellClickAction::ToggleLayout),
@@ -1060,7 +1624,7 @@ impl MacShell {
             return Some(ShellClickAction::None);
         }
 
-        if self.toast.is_some() && self.toast_rect().contains(mx, my) {
+        if self.toast_visible() && self.toast_rect().contains(mx, my) {
             self.toast = None;
             self.overlay_dirty = true;
             return Some(ShellClickAction::None);
@@ -1094,14 +1658,9 @@ impl MacShell {
         if !self.wallpaper_dirty {
             return;
         }
-        self.wallpaper_dirty = false;
-        let (pw, ph) = wallpaper_buffer_size(self.screen_w, self.screen_h);
-        let theme = self.theme;
-        let mut ctx = self.wallpaper_buffer.render();
-        let _ = ctx.draw(|buf| {
-            render_wallpaper(buf, pw, ph, theme);
-            Result::<_, ()>::Ok(vec![Rectangle::from_size((pw, ph).into())])
-        });
+        if self.raster.as_ref().is_some_and(|worker| worker.submit(crate::raster::Job::Wallpaper {
+            logical: (self.screen_w, self.screen_h), theme: self.theme,
+        })) { self.wallpaper_dirty = false; }
     }
 
     pub fn ensure_topbar_rendered(&mut self, fonts: &mut FontSystem, active_app_title: &str, active_layout: &str) {
@@ -1121,8 +1680,17 @@ impl MacShell {
         let (open_menu, cc_open, sp_open, wifi) =
             (self.open_menu, self.control_center_open, self.spotlight_open, self.wifi_enabled);
         let p = palette();
-        let mut hits = Vec::with_capacity(8);
+        let mut hits = Vec::with_capacity(16);
+        let tray=self.tray_items.clone();let visible_tray=self.tray_visible_count();
+        let tray_width=visible_tray as f32*26.0+if tray.len()>visible_tray{30.0}else{0.0};
+        let mut menus = vec![(active_app_title.to_string(), TopMenu::App, true, true)];
+        if let Some(root) = self.client_menu.as_ref().filter(|root| root.children.iter().any(|n| n.visible)) {
+            menus.extend(root.children.iter().filter(|n| n.visible && !n.separator).map(|n| (n.label.clone(), TopMenu::Client(n.id), false, n.enabled)));
+        } else {
+            menus.extend([("Окно".into(), TopMenu::Window, false, true), ("Справка".into(), TopMenu::Help, false, true)]);
+        }
 
+        let icons=&mut self.icons;
         let mut ctx = self.topbar_buffer.render();
         let _ = ctx.draw(|buf| {
             buf.fill(0);
@@ -1140,23 +1708,18 @@ impl MacShell {
                 }
                 draw_feather_logo(&mut pm, 22.0, lh * 0.5, 0.95, p.menubar_text);
                 hits.push((0.0, 38.0, TopbarItem::Menu(TopMenu::Feather)));
-                let name = if active_app_title.chars().count() > 40 {
-                    active_app_title.chars().take(40).collect::<String>() + "…"
-                } else {
-                    active_app_title.to_string()
-                };
                 let mut x = 46.0;
-                for (label, menu, bold) in [
-                    (name.as_str(), TopMenu::App, true),
-                    ("Окно", TopMenu::Window, false),
-                    ("Справка", TopMenu::Help, false),
-                ] {
-                    let w = fonts.measure_text(label, 13.0, bold);
-                    if open_menu == Some(menu) {
-                        highlight(&mut pm, x - 8.0, x + w + 8.0);
-                    }
-                    fonts.draw_text(&mut pm, label, x, text_y, 13.0, p.menubar_text, bold);
-                    hits.push((x - 9.0, x + w + 9.0, TopbarItem::Menu(menu)));
+                let right_reserved = fonts.measure_text(&clock, 13.0, false) + 180.0+tray_width;
+                for (label, menu, bold, enabled) in &menus {
+                    let available = lw - right_reserved - x - 12.0;
+                    if available < 24.0 { break; }
+                    let max_width = if *bold { available.min(180.0) } else { available };
+                    let label = fonts.ellipsize(label, max_width, 13.0, *bold);
+                    let w = fonts.measure_text(&label, 13.0, *bold);
+                    if open_menu == Some(*menu) { highlight(&mut pm, x - 8.0, x + w + 8.0); }
+                    fonts.draw_text(&mut pm, &label, x, text_y, 13.0,
+                        if *enabled { p.menubar_text } else { p.text_tertiary }, *bold);
+                    if *enabled { hits.push((x - 9.0, x + w + 9.0, TopbarItem::Menu(*menu))); }
                     x += w + 20.0;
                 }
 
@@ -1191,6 +1754,31 @@ impl MacShell {
                 stroke_rounded_rect(&mut pm, rx - bw, 5.5, bw, lh - 11.0, 3.5, 1.2, p.menubar_text);
                 fonts.draw_text(&mut pm, active_layout, rx - bw + 5.0, 6.8, 10.5, p.menubar_text, true);
                 hits.push((rx - bw - 6.0, rx + 4.0, TopbarItem::Layout));
+                rx-=bw+14.0;
+                for (index,item) in tray.iter().take(visible_tray).enumerate(){
+                    let x=rx-22.0;let y=(lh-18.0)*0.5;
+                    // A client pixmap is authoritative; an unresolved theme name
+                    // must not replace it with the generic application fallback.
+                    let icon=if item.pixels.is_none()&&!item.icon_name.is_empty(){
+                        icons.get(&crate::icons::IconKey{icon:AppIcon{kind:crate::apps::IconKind::GenericApp,name:Some(item.icon_name.clone())},initial:String::new(),px:to_phys(18) as u32,dark:appearance()==Appearance::Dark})
+                    }else{None};
+                    if let Some(icon)=icon {crate::icons::blit_icon(&mut pm,icon,x,y);}
+                    else if let Some(image)=&item.pixels {
+                        let size=18.0*ui_scale();
+                        pm.draw_pixmap(0,0,image.as_ref().as_ref(),&tiny_skia::PixmapPaint{quality:tiny_skia::FilterQuality::Bilinear,..Default::default()},tiny_skia::Transform::from_scale(size/image.width() as f32,size/image.height() as f32).post_translate((x*ui_scale()).round(),(y*ui_scale()).round()),None);
+                    }else{
+                        crate::theme::stroke_circle(&mut pm,x+9.0,y+9.0,6.0,1.3,p.menubar_text);
+                        let label=item.title.chars().next().unwrap_or('•').to_string();
+                        fonts.draw_text_centered(&mut pm,&label,x+9.0,y+2.0,10.0,p.menubar_text,false);
+                    }
+                    if item.attention{fill_circle(&mut pm,x+17.0,y+2.0,2.0,p.accent);}
+                    hits.push((rx-26.0,rx,TopbarItem::Tray(index)));rx-=26.0;
+                }
+                if tray.len()>visible_tray {
+                    let label=format!("+{}",tray.len()-visible_tray);
+                    fonts.draw_text_centered(&mut pm,&label,rx-14.0,text_y,11.0,p.menubar_text,false);
+                    hits.push((rx-30.0,rx,TopbarItem::TrayOverflow));
+                }
             }
             Result::<_, ()>::Ok(vec![Rectangle::from_size((pw, ph).into())])
         });
@@ -1244,7 +1832,7 @@ impl MacShell {
             sizes.iter().sum::<f32>() + n.saturating_sub(1) as f32 * DOCK_ICON_GAP + sep_w + gap_w;
         let bar_h = DOCK_ICON_BASE + DOCK_PAD_Y * 2.0;
         let bar_w = content_w + DOCK_PAD_X * 2.0;
-        let bar = R::new((buf_w - bar_w) * 0.5, buf_h - bar_h - DOCK_BOTTOM_MARGIN as f32, bar_w, bar_h);
+        let mut bar = R::new((buf_w - bar_w) * 0.5, buf_h - bar_h - DOCK_BOTTOM_MARGIN as f32, bar_w, bar_h);
         let baseline = bar.y + bar.h - DOCK_PAD_Y;
 
         let mut slots = Vec::with_capacity(n);
@@ -1267,6 +1855,15 @@ impl MacShell {
             x += sizes[i] + DOCK_ICON_GAP;
         }
 
+        if let Some((target, center)) = self.dock_anchor {
+            if let Some(slot) = slots.iter().find(|s| s.target == target) {
+                let shift = center - (slot.x + slot.size * 0.5);
+                bar.x += shift;
+                for slot in &mut slots { slot.x += shift; }
+                sep_x = sep_x.map(|x| x + shift);
+            }
+        }
+
         let hovered = self.dock_cursor_x.and_then(|cx| {
             slots
                 .iter()
@@ -1286,6 +1883,7 @@ impl MacShell {
         self.dock_painted = current;
 
         let items = self.dock_items.clone();
+        let bouncing = self.bounce.as_ref().map(|b| b.target);
         let (dock_ox, dock_oy) = self.dock_origin();
         crate::theme::set_glass_origin(dock_ox, dock_oy);
         let icons = &mut self.icons;
@@ -1306,9 +1904,19 @@ impl MacShell {
                 }
 
                 for (slot, item) in slots.iter().zip(items.iter()) {
-                    draw_any_icon(&mut pm, fonts, icons, &item.icon, &item.label, slot.x, slot.y, slot.size);
-                    if item.running {
-                        fill_circle(&mut pm, slot.x + slot.size * 0.5, bar.y + bar.h - 3.0, 1.9, p.dock_dot);
+                    let n = item.windows.min(3) as f32;
+                    for k in 0..n as usize {
+                        let dx = (k as f32 - (n - 1.0) * 0.5) * 5.0;
+                        fill_circle(&mut pm, slot.x + slot.size * 0.5 + dx, bar.y + bar.h - 3.0, 1.9, p.dock_dot);
+                    }
+                    // The bouncing icon is drawn as its own GPU element above the Dock
+                    if bouncing == Some(item.target) {
+                        continue;
+                    }
+                    if slot.size == DOCK_ICON_BASE {
+                        draw_any_icon(&mut pm, fonts, icons, &item.icon, &item.label, slot.x, slot.y, slot.size);
+                    } else {
+                        draw_resampled_icon(&mut pm, icons, &item.icon, &item.label, slot.x, slot.y, slot.size);
                     }
                 }
 
@@ -1326,14 +1934,13 @@ impl MacShell {
         drop(ctx);
         self.dock_slots = slots;
         self.dock_bar = bar;
+        self.update_dock_menu_anchor();
     }
 
     /// Logical rectangles of all currently visible overlay panels
     fn overlay_panel_rects(&self, registry: &AppRegistry) -> Vec<R> {
         let mut rects = Vec::with_capacity(4);
-        if let Some(m) = self.open_menu {
-            rects.push(self.menu_rect(m));
-        }
+        rects.extend(self.menu_panels().into_iter().map(|(r, _, _)| r));
         if self.control_center_open {
             rects.push(self.cc_layout().0);
         }
@@ -1344,7 +1951,7 @@ impl MacShell {
                 rects.push(l);
             }
         }
-        if self.toast.is_some() {
+        if self.toast_visible() {
             rects.push(self.toast_rect());
         }
         if let Some(m) = &self.dock_menu {
@@ -1354,42 +1961,50 @@ impl MacShell {
     }
 
     pub fn ensure_overlay_rendered(&mut self, fonts: &mut FontSystem, registry: &AppRegistry, active_layout: &str) {
-        if !self.overlay_allocated {
-            self.overlay_buffer = new_buffer(to_phys(self.screen_w), to_phys(self.screen_h));
-            self.overlay_allocated = true;
-            self.overlay_painted.clear();
-            self.overlay_dirty = true;
-        }
-        if !self.overlay_dirty {
+        if self.overlay_allocated && !self.overlay_dirty {
             return;
         }
         self.overlay_dirty = false;
 
-        let pw = to_phys(self.screen_w);
-        let ph = to_phys(self.screen_h);
+        let screen_pw = to_phys(self.screen_w);
+        let screen_ph = to_phys(self.screen_h);
         let current: Vec<_> = self
             .overlay_panel_rects(registry)
             .into_iter()
-            .filter_map(|r| r.grow(16.0).to_buffer(pw, ph))
+            .filter_map(|r| r.grow(16.0).to_buffer(screen_pw, screen_ph))
             .collect();
+        let Some(bounds) = current.iter().copied().reduce(|a, b| a.merge(b)) else { return };
+        let fresh = !self.overlay_allocated || self.overlay_geometry != bounds;
+        if fresh {
+            // Cache only the painted panels, never a screen-sized transparent canvas.
+            self.overlay_buffer = new_buffer(bounds.size.w, bounds.size.h);
+            self.overlay_geometry = bounds;
+            self.overlay_allocated = true;
+            self.overlay_painted.clear();
+        }
+        let (pw, ph) = (bounds.size.w, bounds.size.h);
         let mut damage = std::mem::take(&mut self.overlay_painted);
         damage.extend(current.iter().copied());
         self.overlay_painted = current;
-        let clear = damage.clone();
+        for rect in &mut damage { rect.loc -= bounds.loc; }
+        // MemoryRenderBuffer::new is already transparent. Do not fault in and
+        // clear a second time the large menu+toast canvas on its first paint.
+        let clear = if fresh { Vec::new() } else { damage.clone() };
+        let (ox, oy) = (bounds.loc.x as f32 / ui_scale(), bounds.loc.y as f32 / ui_scale());
+        let local = |mut r: R| { r.x -= ox; r.y -= oy; r };
 
         let p = palette();
-        let menu_rect = self.open_menu.map(|m| self.menu_rect(m));
-        let menu_rows_now = self.open_menu_rows();
-        let hovered = self.menu_hovered;
-        let cc = self.cc_layout();
-        let sp = self.spotlight_layout(registry);
-        let toast_rect = self.toast_rect();
-        let toast = self.toast.clone();
+        let menu_panels: Vec<_> = self.menu_panels().into_iter().map(|(r, rows, hovered)| (local(r), rows, hovered)).collect();
+        let (panel, items) = self.cc_layout();
+        let cc = (local(panel), items.into_iter().map(|(r, item)| (local(r), item)).collect::<Vec<_>>());
+        let (bar, list, count, math) = self.spotlight_layout(registry);
+        let sp = (local(bar), list.map(local), count, math);
+        let toast_rect = local(self.toast_rect());
+        let toast = self.toast.clone().filter(|_| self.toast_visible());
         let (cc_open, sp_open) = (self.control_center_open, self.spotlight_open);
         let query = self.spotlight_query.clone();
         let selected = self.spotlight_selected;
-        let (wifi, bt, dnd, bright, vol) =
-            (self.wifi_enabled, self.bt_enabled, self.dnd_enabled, self.brightness_level, self.volume_level);
+        let (wifi, dnd, vol) = (self.wifi_enabled, self.dnd_enabled, self.cc.volume());
         let theme_name = self.theme.name();
         let dark = appearance() == Appearance::Dark;
         let scale_pct = format!("{}%", (ui_scale() * 100.0).round() as i32);
@@ -1402,9 +2017,12 @@ impl MacShell {
         } else {
             Vec::new()
         };
-        let dock_menu = self.dock_menu.clone();
+        let mut dock_menu = self.dock_menu.clone();
+        if let Some(m) = dock_menu.as_mut() { m.rect = local(m.rect); }
+        let cc_backdrop = self.cc_backdrop.as_ref().filter(|_| menu_panels.is_empty() && !sp_open && dock_menu.is_none());
         let icons = &mut self.icons;
-        crate::theme::set_glass_origin(0.0, 0.0);
+        let controls = &self.cc;
+        crate::theme::set_glass_origin(ox, oy);
 
         let mut ctx = self.overlay_buffer.render();
         let _ = ctx.draw(|buf| {
@@ -1413,7 +2031,7 @@ impl MacShell {
                 return Result::<_, ()>::Ok(damage);
             };
 
-            if let Some(r) = menu_rect {
+            for (r, menu_rows_now, hovered) in &menu_panels {
                 draw_glass_panel(&mut pm, r.x, r.y, r.w, r.h, 12.0, true);
                 let mut y = r.y + MENU_PAD;
                 for (i, row) in menu_rows_now.iter().enumerate() {
@@ -1423,9 +2041,9 @@ impl MacShell {
                             stroke_line(&mut pm, r.x + 14.0, sy, r.x + r.w - 14.0, sy, 1.0, p.separator);
                             y += MENU_SEP_H;
                         }
-                        MenuRow::Item { label, shortcut, action, checked } => {
+                        MenuRow::Item { label, shortcut, action, checked, radio, submenu } => {
                             let enabled = action.is_some();
-                            let hot = enabled && hovered == Some(i);
+                            let hot = enabled && *hovered == Some(i);
                             if hot {
                                 fill_rounded_rect(&mut pm, r.x + 5.0, y, r.w - 10.0, MENU_ITEM_H, 6.0, p.accent);
                             }
@@ -1437,7 +2055,10 @@ impl MacShell {
                                 p.text_tertiary
                             };
                             if *checked {
-                                fonts.draw_text(&mut pm, "✓", r.x + 10.0, y + 3.5, 13.0, col, false);
+                                fonts.draw_text(&mut pm, if *radio { "●" } else { "✓" }, r.x + 10.0, y + 3.5, 13.0, col, false);
+                            }
+                            if submenu.is_some() {
+                                fonts.draw_text_right(&mut pm, "›", r.x + r.w - 12.0, y + 2.0, 16.0, col, false);
                             }
                             let sw = if shortcut.is_empty() {
                                 0.0
@@ -1452,43 +2073,62 @@ impl MacShell {
                 }
             }
 
-            if cc_open {
+            if cc_open && controls.page!=crate::control_panel::Page::Main {
+                controls.paint(&mut pm,fonts,cc.0);
+            } else if cc_open {
                 let (panel, items) = &cc;
-                draw_glass_panel(&mut pm, panel.x, panel.y, panel.w, panel.h, 22.0, false);
+                if let Some(backdrop) = cc_backdrop {
+                    let stride = pw as usize * 4;
+                    let source_stride = backdrop.bounds.size.w as usize * 4;
+                    let x = (backdrop.bounds.loc.x - bounds.loc.x) as usize;
+                    let y = (backdrop.bounds.loc.y - bounds.loc.y) as usize;
+                    for (row, source) in backdrop.pixels.data().chunks_exact(source_stride).enumerate() {
+                        let start = (y + row) * stride + x * 4;
+                        pm.data_mut()[start..start + source_stride].copy_from_slice(source);
+                    }
+                } else {
+                    draw_glass_panel(&mut pm, panel.x, panel.y, panel.w, panel.h, 22.0, false);
+                }
                 let card = if dark { rgba(255, 255, 255, 20) } else { rgba(255, 255, 255, 140) };
                 for (r, item) in items {
-                    fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 14.0, card);
-                    let toggle = |pm: &mut PixmapMut, fonts: &mut FontSystem, on: bool, title: &str, sub: &str| {
+                    if cc_backdrop.is_none() { fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 14.0, card); }
+                    let toggle = |pm: &mut PixmapMut, fonts: &mut FontSystem, on: bool, title: &str, sub: &str, icon:crate::control_panel::Icon| {
                         let (cx, cy) = (r.x + 25.0, r.y + r.h * 0.5);
                         fill_circle(pm, cx, cy, 14.0, if on { p.accent } else { p.control_fill });
-                        fill_circle(pm, cx, cy, 4.0, if on { p.on_accent } else { p.text_secondary });
+                        crate::control_panel::icon(pm,icon,cx,cy,if on {p.on_accent} else {p.text_secondary},false);
                         fonts.draw_text_clipped(pm, title, r.x + 46.0, r.y + r.h * 0.5 - 15.0, r.w - 52.0, 13.0, p.text, true);
                         fonts.draw_text_clipped(pm, sub, r.x + 46.0, r.y + r.h * 0.5 + 1.0, r.w - 52.0, 11.5, p.text_secondary, false);
                     };
-                    let slider = |pm: &mut PixmapMut, fonts: &mut FontSystem, title: &str, v: f32| {
-                        fonts.draw_text(pm, title, r.x + 14.0, r.y + 8.0, 13.0, p.text, true);
-                        let (sx, sy, sw, sh) = (r.x + 14.0, r.y + 30.0, r.w - 28.0, 20.0);
-                        fill_rounded_rect(pm, sx, sy, sw, sh, sh * 0.5, p.control_fill);
-                        fill_rounded_rect(pm, sx, sy, (sw * v).max(sh), sh, sh * 0.5, rgba(255, 255, 255, 245));
-                        stroke_rounded_rect(pm, sx, sy, sw, sh, sh * 0.5, 0.5, p.glass_outline);
-                    };
                     match item {
-                        CcItem::Wifi => toggle(&mut pm, fonts, wifi, "Wi‑Fi", if wifi { "Подключено" } else { "Выкл." }),
-                        CcItem::Bluetooth => toggle(&mut pm, fonts, bt, "Bluetooth", if bt { "Вкл." } else { "Выкл." }),
-                        CcItem::Focus => toggle(&mut pm, fonts, dnd, "Не беспокоить", if dnd { "Вкл." } else { "Выкл." }),
-                        CcItem::DarkMode => toggle(&mut pm, fonts, dark, "Тёмный режим", if dark { "Вкл." } else { "Выкл." }),
-                        CcItem::Brightness => slider(&mut pm, fonts, "Дисплей", bright),
-                        CcItem::Volume => slider(&mut pm, fonts, "Звук", vol),
+                        CcItem::Wifi => toggle(&mut pm, fonts, wifi, "Wi‑Fi", controls.wifi.subtitle(),crate::control_panel::Icon::Wifi),
+                        CcItem::Bluetooth => toggle(&mut pm, fonts, false, "Bluetooth", "Настроить…",crate::control_panel::Icon::Bluetooth),
+                        CcItem::Focus => toggle(&mut pm, fonts, dnd, "Не беспокоить", if dnd { "Вкл." } else { "Выкл." },crate::control_panel::Icon::Moon),
+                        CcItem::DarkMode => toggle(&mut pm, fonts, dark, "Тёмный режим", if dark { "Вкл." } else { "Выкл." },crate::control_panel::Icon::Contrast),
+                        CcItem::Brightness => {
+                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Sun,r.x+25.0,r.y+27.0,p.text_secondary,false);
+                            fonts.draw_text(&mut pm,"Дисплей",r.x+46.0,r.y+10.0,13.0,p.text,true);
+                            fonts.draw_text_clipped(&mut pm,"Яркость недоступна",r.x+46.0,r.y+29.0,r.w-58.0,11.5,p.text_secondary,false);
+                        }
+                        CcItem::Volume => {
+                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Speaker,r.x+25.0,r.y+16.0,p.text,controls.audio.current().is_some_and(|s|s.muted));
+                            fonts.draw_text(&mut pm,"Звук",r.x+46.0,r.y+7.0,13.0,p.text,true);
+                            let sub=controls.audio.current().map(|s| if s.muted {"Без звука".into()} else {format!("{}% · Устройства ›",(vol*100.0).round() as u32)}).unwrap_or_else(||"Нет устройств ›".into());
+                            fonts.draw_text_right(&mut pm,&sub,r.x+r.w-14.0,r.y+8.0,11.0,p.text_secondary,false);
+                            crate::control_panel::slider(&mut pm,R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),vol,controls.audio.current().is_some());
+                        }
                         CcItem::Scale => {
-                            fonts.draw_text(&mut pm, "Масштаб", r.x + 14.0, r.y + 8.0, 13.0, p.text, true);
-                            fonts.draw_text(&mut pm, &scale_pct, r.x + 14.0, r.y + 26.0, 12.0, p.text_secondary, false);
+                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Scale,r.x+23.0,r.y+25.0,p.text_secondary,false);
+                            fonts.draw_text(&mut pm, "Масштаб", r.x + 42.0, r.y + 8.0, 13.0, p.text, true);
+                            fonts.draw_text(&mut pm, &scale_pct, r.x + 42.0, r.y + 26.0, 12.0, p.text_secondary, false);
                         }
                         CcItem::Wallpaper => {
-                            fonts.draw_text(&mut pm, "Обои", r.x + 14.0, r.y + 8.0, 13.0, p.text, true);
-                            fonts.draw_text_clipped(&mut pm, theme_name, r.x + 14.0, r.y + 26.0, r.w - 28.0, 12.0, p.text_secondary, false);
+                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Wallpaper,r.x+23.0,r.y+25.0,p.text_secondary,false);
+                            fonts.draw_text(&mut pm, "Обои", r.x + 42.0, r.y + 8.0, 13.0, p.text, true);
+                            fonts.draw_text_clipped(&mut pm, theme_name, r.x + 42.0, r.y + 26.0, r.w - 50.0, 12.0, p.text_secondary, false);
                         }
                         CcItem::Layout => {
-                            fonts.draw_text(&mut pm, "Источник ввода", r.x + 14.0, r.y + 11.5, 13.0, p.text, true);
+                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Keyboard,r.x+25.0,r.y+20.0,p.text_secondary,false);
+                            fonts.draw_text(&mut pm, "Источник ввода", r.x + 46.0, r.y + 11.5, 13.0, p.text, true);
                             let name = if active_layout == "RU" { "Русская" } else { "ABC" };
                             fonts.draw_text_right(&mut pm, name, r.x + r.w - 14.0, r.y + 11.5, 13.0, p.text_secondary, false);
                         }
@@ -1591,6 +2231,15 @@ impl MacShell {
         }
     }
 
+    pub fn switcher_hit(&self,x:f64,y:f64)->Option<usize>{
+        let sw=self.switcher.as_ref().filter(|s|s.visible)?;
+        let n=sw.items.len();if n==0{return None;}
+        let cell=((self.screen_w as f32-108.0)/n as f32).clamp(40.0,96.0);
+        let rect=self.switcher_rect;
+        let (x,y)=(x as f32-rect.x-14.0,y as f32-rect.y-14.0);
+        (x>=0.0&&x<cell*n as f32&&y>=0.0&&y<cell).then_some((x.max(0.0)/cell) as usize)
+    }
+
     pub fn ensure_switcher_rendered(&mut self, fonts: &mut FontSystem) {
         let Some(sw) = self.switcher.as_ref() else {
             return;
@@ -1639,5 +2288,246 @@ impl MacShell {
             }
             Result::<_, ()>::Ok(vec![Rectangle::from_size((pw, ph).into())])
         });
+    }
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn item(target: DockTarget) -> DockItem {
+        DockItem { target, label: "Test".into(), icon: AppIcon { kind: crate::apps::IconKind::Terminal, name: None }, windows: 1, pinned: true }
+    }
+
+    #[test]
+    fn minimizing_and_restoring_keep_the_hovered_app_under_the_same_point() {
+        let mut fonts = FontSystem::new();
+        for zoom in [false, true] {
+            let mut shell = MacShell::new(1440, 900);
+            shell.dock_zoom_enabled = zoom;
+            let items: Vec<_> = (0..9).map(|i| item(DockTarget::App(i))).collect();
+            shell.set_dock_items(items.clone());
+            shell.ensure_dock_rendered(&mut fonts);
+            let slot = shell.dock_slots[3].clone();
+            shell.dock_cursor_x = Some(slot.x + slot.size * 0.5);
+            shell.dock_dirty = true;
+            shell.ensure_dock_rendered(&mut fonts);
+            let slot = shell.dock_slots[3].clone();
+            let center = slot.x + slot.size * 0.5;
+            let (ox, oy) = shell.dock_origin();
+            let point = ((ox + center) as f64, (oy + slot.y + slot.size * 0.5) as f64);
+            for _ in 0..4 {
+                let mut minimized = items.clone();
+                minimized.push(item(DockTarget::Minimized(99)));
+                for model in [minimized, items.clone()] {
+                    shell.set_dock_items(model);
+                    shell.ensure_dock_rendered(&mut fonts);
+                    let slot = &shell.dock_slots[3];
+                    assert!((slot.x + slot.size * 0.5 - center).abs() < 0.01);
+                    assert_eq!(shell.dock_target_at(point.0, point.1).map(|(t, _)| t), Some(DockTarget::App(3)));
+                }
+            }
+        }
+    }
+
+    fn bounce(started: Instant) -> Bounce {
+        Bounce { target: DockTarget::App(0), app: 0, started, first_new_window: 1,
+            finish_at: None, buffer: new_buffer(1, 1), px: 1 }
+    }
+
+    #[test]
+    fn dock_menu_follows_the_icon_when_magnification_disappears() {
+        let mut fonts = FontSystem::new();
+        let mut shell = MacShell::new(1440,900);
+        shell.set_dock_items((0..9).map(|i|item(DockTarget::App(i))).collect());
+        shell.ensure_dock_rendered(&mut fonts);
+        let s=&shell.dock_slots[3];
+        let (ox,oy)=shell.dock_origin();
+        shell.update_pointer_hover((ox+s.x+s.size*0.5) as f64,(oy+s.y+s.size*0.5) as f64);
+        shell.ensure_dock_rendered(&mut fonts);
+        let (x,y,size)=shell.dock_slot_global(DockTarget::App(3)).unwrap();
+        shell.open_dock_menu(DockTarget::App(3),R::new(x,y,size,size),vec![("Open".into(),DockMenuAction::Open)],&mut fonts);
+        let before=shell.dock_menu.as_ref().unwrap().rect;
+        shell.update_pointer_hover(20.0,60.0);
+        shell.ensure_dock_rendered(&mut fonts);
+        let (x,y,size)=shell.dock_slot_global(DockTarget::App(3)).unwrap();
+        let rect=shell.dock_menu.as_ref().unwrap().rect;
+        assert_ne!(before,rect);
+        assert!((rect.y+rect.h+10.0-y).abs()<0.01);
+        assert!((rect.x+rect.w*0.5-x-size*0.5).abs()<0.01);
+        assert!(shell.overlay_dirty);
+        // A desktop context menu has a pointer anchor and must stay where it opened.
+        shell.open_context_menu(vec![("Open".into(),DockMenuAction::Open)],300.0,400.0,&mut fonts);
+        let rect=shell.dock_menu.as_ref().unwrap().rect;
+        shell.dock_dirty=true;
+        shell.ensure_dock_rendered(&mut fonts);
+        assert_eq!(rect,shell.dock_menu.as_ref().unwrap().rect);
+    }
+
+    #[test]
+    fn bounce_finishes_at_landing_even_when_frames_skip_the_landing() {
+        let start = Instant::now();
+        let mut b = bounce(start);
+        assert_eq!(b.offset(start), (0.0, false));
+        let peak = start + Duration::from_secs_f32(BOUNCE_PERIOD * 0.5);
+        assert!((b.offset(peak).0 - BOUNCE_HEIGHT).abs() < 0.01);
+        b.finish(peak);
+        b.finish(start + Duration::from_secs(1)); // Must not postpone the landing.
+        assert_eq!(b.offset(start + Duration::from_millis(630)), (0.0, true));
+        let b = bounce(start);
+        assert_eq!(b.offset(start + Duration::from_secs(6)), (0.0, true));
+    }
+}
+
+#[cfg(test)]
+mod appmenu_tests {
+    use super::*;
+    use crate::appmenu::MenuNode;
+    use std::sync::Arc;
+
+    fn node(id: i32, label: &str, children: Vec<MenuNode>) -> MenuNode {
+        MenuNode { id, label: label.into(), shortcut: String::new(), enabled: true, visible: true,
+            separator: false, checked: false, radio: false, submenu: !children.is_empty(), children }
+    }
+    fn shell() -> MacShell {
+        let mut shell = MacShell::new(1000, 700);
+        let mut disabled = node(3, "Disabled", vec![]); disabled.enabled = false;
+        let mut hidden = node(4, "Hidden", vec![]); hidden.visible = false;
+        let tree = node(0, "", vec![node(1, "File", vec![node(2, "Run", vec![]), disabled, hidden, node(5, "Nested", vec![node(6, "Child", vec![])])])]);
+        shell.set_client_menu(7, Some(Arc::new(tree)));
+        shell.topbar_hits.push((40.0, 90.0, TopbarItem::Menu(TopMenu::Client(1))));
+        shell
+    }
+
+    #[test]
+    fn client_menu_hit_testing_opens_cascade_and_dispatches_the_selected_leaf() {
+        let mut shell = shell();
+        let registry = AppRegistry::new();
+        assert!(shell.debug_client_menu_path("File/Nested", false, &registry).is_some());
+        assert_eq!(shell.client_open_ids(), vec![1, 5]);
+        let panels = shell.menu_panels();
+        assert_eq!(panels.len(), 2);
+        assert!(panels.iter().all(|(r, _, _)| r.x >= 0.0 && r.y >= TOP_BAR_HEIGHT as f32));
+        shell.close_menus();
+        let action = shell.debug_client_menu_path("File/Nested/Child", true, &registry);
+        assert!(matches!(action, Some(ShellClickAction::AppMenuActivate { generation: 7, id: 6 })));
+        assert!(shell.client_open_ids().is_empty());
+    }
+
+    #[test]
+    fn disabled_hidden_and_previous_window_items_cannot_activate() {
+        let mut shell = shell();
+        let rows = shell.rows_for_menu(TopMenu::Client(1));
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(&rows[1], MenuRow::Item { action: None, .. }));
+        shell.open_menu = Some(TopMenu::Client(1));
+        shell.client_submenus.push(5);
+        assert!(shell.set_client_menu(8, None));
+        assert!(shell.client_open_ids().is_empty());
+        assert!(shell.client_menu.is_none());
+        assert!(!shell.set_client_menu(8, None));
+    }
+
+    #[test]
+    fn tray_menu_uses_native_cascades_and_rejects_closed_or_stale_replies() {
+        let mut shell=shell();let root=shell.client_menu.as_ref().unwrap().children[0].clone();
+        shell.notify("Test","Toast must not cover the tray menu");assert!(shell.toast_visible());
+        shell.prepare_tray_menu("tray".into(),12,960.0);
+        assert!(!shell.toast_visible());
+        assert!(!shell.install_tray_menu("tray",11,Some(Arc::new(root.clone()))));
+        assert!(shell.install_tray_menu("tray",12,Some(Arc::new(root))));
+        assert_eq!(shell.tray_open_ids(),vec![1]);assert!(shell.client_open_ids().is_empty());
+        shell.client_menu_key(1); // Run
+        shell.client_menu_key(1); // Nested, skips disabled and hidden
+        shell.client_menu_key(2); // open submenu
+        assert_eq!(shell.tray_open_ids(),vec![1,5]);
+        shell.client_menu_key(1);
+        assert!(matches!(shell.client_menu_key(0),Some(ShellClickAction::TrayMenu{generation:12,id:6})));
+        assert!(!shell.install_tray_menu("tray",12,None));
+        assert!(shell.toast_visible());
+        assert!(shell.tray_open_ids().is_empty());
+    }
+
+    #[test]
+    fn tall_client_menu_is_bounded_and_scrolls_without_forwarding_to_client() {
+        let mut shell = shell();
+        shell.screen_h = 480;
+        shell.screen_w = 180; // narrower than MENU_MIN_W: must not panic in clamp()
+        let children = (10..90).map(|id| node(id, &format!("Item {id}"), vec![])).collect();
+        shell.set_client_menu(9, Some(Arc::new(node(0, "", vec![node(1, "File", children)]))));
+        shell.open_menu = Some(TopMenu::Client(1));
+        let (r, before, _) = shell.menu_panels().remove(0);
+        assert!(r.y + r.h < shell.screen_h as f32);
+        assert!(r.x >= 0.0 && r.x + r.w <= shell.screen_w as f32);
+        assert!(shell.scroll_client_menu(r.x + 5.0, r.y + 10.0, 1.0));
+        let after = shell.rows_for_menu(TopMenu::Client(1));
+        assert!(!matches!((&before[0], &after[0]), (MenuRow::Item { label: a, .. }, MenuRow::Item { label: b, .. }) if a == b));
+        assert!(shell.overlay_dirty);
+    }
+}
+
+#[cfg(test)]
+mod cc_backdrop_tests {
+    use super::*;
+
+    fn pixels(shell: &mut MacShell) -> Vec<u8> {
+        let mut result = Vec::new();
+        let mut ctx = shell.overlay_buffer.render();
+        let _ = ctx.draw(|data| {
+            result.extend_from_slice(data);
+            Ok::<_, ()>(Vec::new())
+        });
+        result
+    }
+
+    #[test]
+    fn prepared_cc_matches_live_paint_and_controls_stay_live() {
+        let registry = AppRegistry::new();
+        let mut fonts = FontSystem::new();
+        for scale in [1.0, 1.25, 2.0] {
+            for dark in [false, true] {
+                crate::theme::with_render_settings(scale,
+                    if dark { Appearance::Dark } else { Appearance::Light }, || {
+                    let mut bg = tiny_skia::Pixmap::new(32, 24).unwrap();
+                    for (i, p) in bg.pixels_mut().iter_mut().enumerate() {
+                        *p = rgba((i * 7) as u8, (i * 13) as u8, (i * 19) as u8, 255).premultiply().to_color_u8();
+                    }
+                    crate::theme::set_glass_background(Some((std::rc::Rc::new(bg), 40.0, 800.0 / 24.0)));
+                    let mut shell = MacShell::new(1280, 800);
+                    shell.cc.audio=crate::controls::Audio {default:"test".into(),sinks:vec![crate::controls::Sink {name:"test".into(),channels:vec![65536],..Default::default()}],error:None};
+                    shell.control_center_open = true;
+                    // Toast is present in the model but must not cover the controls.
+                    shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");
+                    let expected = pixels(&mut shell);
+                    shell.cc_backdrop = Some(MacShell::raster_cc_backdrop((1280, 800)));
+                    shell.overlay_dirty = true;
+                    shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");
+                    let prepared = pixels(&mut shell);
+                    assert_eq!(prepared.len(), expected.len());
+                    let difference = prepared.iter().zip(&expected).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
+                    assert!(difference <= 2, "prepared plate phase changed at scale {scale}, dark {dark}: {difference}");
+                    shell.cc.audio.sinks[0].channels=vec![8192];
+                    shell.overlay_dirty = true;
+                    shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");
+                    assert!(pixels(&mut shell) != prepared, "cached plate froze the slider");
+                    // Toast expiry must not change CC geometry or paint.
+                    shell.toast = None;
+                    let plates = shell.cc_backdrop.take();
+                    shell.overlay_dirty = true;
+                    shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");
+                    let alone = pixels(&mut shell);
+                    shell.cc_backdrop = plates;
+                    shell.overlay_dirty = true;
+                    shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");
+                    let difference = pixels(&mut shell).iter().zip(&alone).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                    assert!(difference <= 2, "CC alone phase changed at scale {scale}, dark {dark}: {difference}");
+                    shell.invalidate_all();
+                    assert!(shell.cc_backdrop.is_none());
+                    assert!(!shell.cc_backdrop_requested);
+                    assert!(!crate::theme::has_glass_background());
+                });
+            }
+        }
     }
 }

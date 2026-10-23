@@ -201,7 +201,12 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceElement {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
-        let rel = dst.loc - self.clip.geo.loc;
+        // Outer GPU transforms change dst. Work in the original element's local coordinates
+        // and apply its final scale to the clip too (translation cancels out).
+        let original = self.inner.geometry(Scale::from(1.0));
+        let rel = original.loc - self.clip.geo.loc;
+        let sx = dst.size.w as f32 / original.size.w.max(1) as f32;
+        let sy = dst.size.h as f32 / original.size.h.max(1) as f32;
         frame.override_default_tex_program(
             self.program.clone(),
             vec![
@@ -212,13 +217,13 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceElement {
                 ),
                 Uniform::new(
                     "dst_rect",
-                    (rel.x as f32, rel.y as f32, dst.size.w as f32, dst.size.h as f32),
+                    (rel.x as f32 * sx, rel.y as f32 * sy, dst.size.w as f32, dst.size.h as f32),
                 ),
                 Uniform::new(
                     "geo_size",
-                    (self.clip.geo.size.w as f32, self.clip.geo.size.h as f32),
+                    (self.clip.geo.size.w as f32 * sx, self.clip.geo.size.h as f32 * sy),
                 ),
-                Uniform::new("radius", self.clip.radius),
+                Uniform::new("radius", self.clip.radius * sx.min(sy)),
                 Uniform::new("all_corners", if self.clip.all_corners { 1.0f32 } else { 0.0 }),
             ],
         );

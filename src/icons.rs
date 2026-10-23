@@ -1,28 +1,218 @@
 //! Freedesktop icon lookup and rasterization for the Dock, Spotlight and the app switcher.
 //!
 //! Memory/latency conscious: no full theme index is built. Each lookup is a handful of
-//! `stat` calls in the few `apps` directories of the active themes, and only icons that are
-//! actually shown get rasterized, once, at the size they are needed.
+//! `stat` calls on a worker in the few `apps` directories of the active themes. The event
+//! loop only reads a bounded pixel cache and queues misses; a small preview survives eviction.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use tiny_skia::{FilterQuality, Pixmap, PixmapPaint, PixmapMut, Transform};
+use tiny_skia::{FilterQuality, Pixmap, PixmapMut, PixmapPaint, Transform};
 
 use crate::theme::{appearance, squircle_path, ui_scale, Appearance};
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct IconKey {
+    pub icon: crate::shell::AppIcon,
+    pub initial: String,
+    pub px: u32,
+    pub dark: bool,
+}
+impl IconKey {
+    pub fn new(icon: &crate::shell::AppIcon, label: &str, px: u32) -> Self {
+        Self {
+            icon: icon.clone(),
+            initial: label
+                .chars()
+                .next()
+                .unwrap_or('A')
+                .to_uppercase()
+                .to_string(),
+            px,
+            dark: appearance() == Appearance::Dark,
+        }
+    }
+}
+
+/// A small preview survives eviction, so cache pressure never turns an app into a
+/// blank icon or starts a decode/repaint loop. Both images are prepared on the worker.
+pub struct IconPixels {
+    pub full: Option<Pixmap>,
+    pub preview: Pixmap,
+}
+impl IconPixels {
+    pub fn new(full: Pixmap) -> Self {
+        if full.width() <= 64 {
+            return Self {
+                full: None,
+                preview: full,
+            };
+        }
+        let mut preview = Pixmap::new(64, 64).unwrap();
+        preview.draw_pixmap(
+            0,
+            0,
+            full.as_ref(),
+            &PixmapPaint {
+                quality: FilterQuality::Bilinear,
+                ..Default::default()
+            },
+            Transform::from_scale(64.0 / full.width() as f32, 64.0 / full.height() as f32),
+            None,
+        );
+        Self {
+            full: Some(full),
+            preview,
+        }
+    }
+    fn bytes(&self) -> usize {
+        self.preview.data().len() + self.full.as_ref().map_or(0, |p| p.data().len())
+    }
+    fn image(&self) -> &Pixmap {
+        self.full.as_ref().unwrap_or(&self.preview)
+    }
+}
+
+/// Event-loop cache: misses only enqueue work, never touch the filesystem.
 pub struct IconCache {
-    /// `apps` directories of the active icon themes, best first
+    raster: HashMap<IconKey, Option<IconPixels>>,
+    pending: HashSet<IconKey>,
+    recent: VecDeque<IconKey>,
+    worker: Option<crate::raster::RasterSender>,
+}
+
+pub fn icon_bucket(needed: u32) -> u32 {
+    match needed {
+        0..=48 => 64,
+        49..=192 => 192,
+        _ => 320,
+    }
+}
+
+/// Physical size for an exact-size icon, when `phys` is a whole pixel count the cache
+/// supports; otherwise the caller resamples a bucket image.
+pub fn exact_icon_px(phys: f32) -> Option<u32> {
+    let px = phys.round();
+    ((phys - px).abs() < 0.01 && (1.0..=320.0).contains(&px)).then_some(px as u32)
+}
+
+/// Unscaled copy of an exact-size icon, snapped to the physical pixel grid.
+pub fn blit_icon(target: &mut PixmapMut, icon: &Pixmap, x: f32, y: f32) {
+    let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Icon);
+    let s = ui_scale();
+    target.draw_pixmap(
+        (x * s).round() as i32,
+        (y * s).round() as i32,
+        icon.as_ref(),
+        &PixmapPaint {
+            quality: FilterQuality::Nearest,
+            ..Default::default()
+        },
+        Transform::identity(),
+        None,
+    );
+}
+
+impl IconCache {
+    pub fn new() -> Self {
+        Self {
+            raster: HashMap::new(),
+            pending: HashSet::new(),
+            recent: VecDeque::new(),
+            worker: None,
+        }
+    }
+    pub fn attach(&mut self, worker: crate::raster::RasterSender) {
+        self.worker = Some(worker);
+    }
+    pub fn get(&mut self, key: &IconKey) -> Option<&Pixmap> {
+        let key = key.clone();
+        if !self.raster.contains_key(&key) && !self.pending.contains(&key) {
+            if self
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.submit(crate::raster::Job::Icon(key.clone())))
+            {
+                self.pending.insert(key.clone());
+            }
+        }
+        if self.raster.contains_key(&key) {
+            self.recent.retain(|old| old != &key);
+            self.recent.push_back(key.clone());
+        }
+        self.raster
+            .get(&key)
+            .and_then(Option::as_ref)
+            .map(IconPixels::image)
+    }
+
+    /// Another cached size of the same icon (the smallest that covers `needed`, else the
+    /// largest) as a stand-in while `key` is rasterized. No job, eviction order unchanged.
+    pub fn other_size(&self, key: &IconKey, needed: u32) -> Option<&Pixmap> {
+        self.raster
+            .iter()
+            .filter(|(k, _)| k.icon == key.icon && k.initial == key.initial && k.dark == key.dark)
+            .filter_map(|(_, pixels)| pixels.as_ref().map(IconPixels::image))
+            .min_by_key(|pm| if pm.width() >= needed { (0, pm.width()) } else { (1, u32::MAX - pm.width()) })
+    }
+
+    #[cfg(test)]
+    pub fn pending(&self, key: &IconKey) -> bool {
+        self.pending.contains(key)
+    }
+    pub fn install(&mut self, key: IconKey, pixmap: Option<IconPixels>) {
+        self.pending.remove(&key);
+        self.recent.retain(|old| old != &key);
+        self.recent.push_back(key.clone());
+        self.raster.insert(key, pixmap);
+        // Cached app icons; Launchpad tile data has a separate, visible-page lifetime.
+        while self
+            .raster
+            .values()
+            .flatten()
+            .map(IconPixels::bytes)
+            .sum::<usize>()
+            > 4 * 1024 * 1024
+        {
+            let Some(old) = self.recent.pop_front() else {
+                break;
+            };
+            if let Some(Some(pixels)) = self.raster.get_mut(&old) {
+                pixels.full = None;
+            }
+        }
+        while self.raster.len() > 128 {
+            let old = self
+                .raster
+                .keys()
+                .find(|key| !self.recent.contains(key))
+                .cloned()
+                .or_else(|| self.recent.pop_front());
+            let Some(old) = old else { break };
+            self.raster.remove(&old);
+        }
+    }
+    pub fn clear_raster(&mut self) {
+        self.raster.clear();
+        self.pending.clear();
+        self.recent.clear();
+    }
+}
+
+/// Filesystem lookup and decoding owned exclusively by the raster worker.
+pub struct IconLoader {
     search_dirs: Option<Vec<PathBuf>>,
     paths: HashMap<String, Option<PathBuf>>,
-    raster: HashMap<(String, u32, bool), Option<Pixmap>>,
 }
 
 fn user_icon_theme() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     let candidates = [
         (format!("{home}/.config/kdeglobals"), "Theme="),
-        (format!("{home}/.config/gtk-3.0/settings.ini"), "gtk-icon-theme-name="),
+        (
+            format!("{home}/.config/gtk-3.0/settings.ini"),
+            "gtk-icon-theme-name=",
+        ),
         (format!("{home}/.config/lxqt/lxqt.conf"), "icon_theme="),
     ];
     candidates.iter().find_map(|(file, key)| {
@@ -42,7 +232,14 @@ fn dir_score(path: &Path) -> u32 {
         return 10_000;
     }
     s.split('/')
-        .filter_map(|part| part.split('x').next()?.split('@').next()?.parse::<u32>().ok())
+        .filter_map(|part| {
+            part.split('x')
+                .next()?
+                .split('@')
+                .next()?
+                .parse::<u32>()
+                .ok()
+        })
         .max()
         .unwrap_or(1)
 }
@@ -73,12 +270,11 @@ fn theme_app_dirs(theme_root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-impl IconCache {
+impl IconLoader {
     pub fn new() -> Self {
         Self {
             search_dirs: None,
             paths: HashMap::new(),
-            raster: HashMap::new(),
         }
     }
 
@@ -102,7 +298,10 @@ impl IconCache {
             }
             let mut dirs = Vec::new();
             for t in &themes {
-                for base in [format!("{home}/.local/share/icons"), "/usr/share/icons".to_string()] {
+                for base in [
+                    format!("{home}/.local/share/icons"),
+                    "/usr/share/icons".to_string(),
+                ] {
                     dirs.extend(theme_app_dirs(&Path::new(&base).join(t)));
                 }
             }
@@ -130,20 +329,35 @@ impl IconCache {
         found
     }
 
-    /// The icon `name` as a `px`×`px` premultiplied pixmap in the macOS Tahoe style
-    pub fn get(&mut self, name: &str, px: u32) -> Option<&Pixmap> {
-        let dark = appearance() == Appearance::Dark;
-        let key = (name.to_string(), px, dark);
-        if !self.raster.contains_key(&key) {
-            let pixmap = self.find(name).and_then(|p| rasterize(&p, px)).map(|raw| macify(raw, px, dark));
-            self.raster.insert(key.clone(), pixmap);
-        }
-        self.raster.get(&key).and_then(|p| p.as_ref())
+    pub fn load(&mut self, name: &str, px: u32, dark: bool) -> Option<Pixmap> {
+        self.find(name)
+            .and_then(|p| rasterize(&p, px))
+            .map(|raw| macify(raw, px, dark))
     }
-
-    /// Drop rasterized icons (e.g. after a scale or appearance change)
-    pub fn clear_raster(&mut self) {
-        self.raster.clear();
+    pub fn load_app(
+        &mut self,
+        key: &IconKey,
+        fonts: &mut crate::text::FontSystem,
+    ) -> Option<Pixmap> {
+        if let Some(pixmap) = key
+            .icon
+            .name
+            .as_deref()
+            .and_then(|name| self.load(name, key.px, key.dark))
+        {
+            return Some(pixmap);
+        }
+        let mut pixmap = Pixmap::new(key.px, key.px)?;
+        crate::apps::draw_app_icon(
+            &mut pixmap.as_mut(),
+            fonts,
+            key.icon.kind,
+            &key.initial,
+            0.0,
+            0.0,
+            key.px as f32 / ui_scale(),
+        );
+        Some(pixmap)
     }
 }
 
@@ -153,7 +367,8 @@ fn rasterize(path: &Path, px: u32) -> Option<Pixmap> {
     match ext.as_str() {
         "svg" => {
             let data = std::fs::read(path).ok()?;
-            let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
+            let tree =
+                resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
             let size = tree.size();
             let scale = px as f32 / size.width().max(size.height());
             let dx = (px as f32 - size.width() * scale) * 0.5;
@@ -239,7 +454,14 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
             0,
             raw.as_ref(),
             &paint,
-            Transform::from_row(scale, 0.0, 0.0, scale, -(x0 as f32) * scale, -(y0 as f32) * scale),
+            Transform::from_row(
+                scale,
+                0.0,
+                0.0,
+                scale,
+                -(x0 as f32) * scale,
+                -(y0 as f32) * scale,
+            ),
             None,
         );
         return out;
@@ -251,20 +473,35 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
             ..Default::default()
         };
         let (top, bottom) = if dark {
-            (tiny_skia::Color::from_rgba8(72, 72, 76, 255), tiny_skia::Color::from_rgba8(52, 52, 56, 255))
+            (
+                tiny_skia::Color::from_rgba8(72, 72, 76, 255),
+                tiny_skia::Color::from_rgba8(52, 52, 56, 255),
+            )
         } else {
-            (tiny_skia::Color::from_rgba8(255, 255, 255, 255), tiny_skia::Color::from_rgba8(234, 234, 238, 255))
+            (
+                tiny_skia::Color::from_rgba8(255, 255, 255, 255),
+                tiny_skia::Color::from_rgba8(234, 234, 238, 255),
+            )
         };
         if let Some(shader) = tiny_skia::LinearGradient::new(
             tiny_skia::Point::from_xy(0.0, 0.0),
             tiny_skia::Point::from_xy(0.0, size),
-            vec![tiny_skia::GradientStop::new(0.0, top), tiny_skia::GradientStop::new(1.0, bottom)],
+            vec![
+                tiny_skia::GradientStop::new(0.0, top),
+                tiny_skia::GradientStop::new(1.0, bottom),
+            ],
             tiny_skia::SpreadMode::Pad,
             Transform::identity(),
         ) {
             tile.shader = shader;
         }
-        out.fill_path(&path, &tile, tiny_skia::FillRule::Winding, Transform::identity(), None);
+        out.fill_path(
+            &path,
+            &tile,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
     }
     let inner = size * 0.72;
     let scale = inner / bw.max(bh);
@@ -283,6 +520,7 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
 
 /// Draws a cached icon pixmap at logical `(x, y)` with logical `size` (HiDPI aware)
 pub fn draw_icon(target: &mut PixmapMut, icon: &Pixmap, x: f32, y: f32, size: f32) {
+    let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Icon);
     let s = ui_scale();
     let scale = size * s / icon.width() as f32;
     target.draw_pixmap(

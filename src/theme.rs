@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tiny_skia::{
     Color, FillRule, LinearGradient, Paint, PathBuilder, Pixmap, PixmapMut, Point, Rect,
     SpreadMode, Stroke, Transform,
@@ -24,17 +23,7 @@ pub const DOCK_RESERVED_HEIGHT: i32 = 74;
 pub const TRAFFIC_RADIUS: f32 = 6.0;
 pub const TRAFFIC_CENTERS: [f32; 3] = [16.0, 36.0, 56.0];
 
-static UI_SCALE_BITS: AtomicU32 = AtomicU32::new(0x3f800000); // 1.0f32
-static DARK_MODE: AtomicBool = AtomicBool::new(false);
-
-pub fn ui_scale() -> f32 {
-    f32::from_bits(UI_SCALE_BITS.load(Ordering::Relaxed))
-}
-
-pub fn set_ui_scale(scale: f32) {
-    let clamped = scale.clamp(1.0, 3.0);
-    UI_SCALE_BITS.store(clamped.to_bits(), Ordering::Relaxed);
-}
+pub use feather_ui::scale::{appearance, set_appearance, set_ui_scale, ui_scale, with_render_settings, Appearance};
 
 pub fn to_phys(logical: i32) -> i32 {
     ((logical as f32) * ui_scale()).round().max(1.0) as i32
@@ -43,33 +32,6 @@ pub fn to_phys(logical: i32) -> i32 {
 pub fn scale_transform() -> Transform {
     let s = ui_scale();
     Transform::from_scale(s, s)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Appearance {
-    Light,
-    Dark,
-}
-
-impl Appearance {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Appearance::Light => "Светлое",
-            Appearance::Dark => "Тёмное",
-        }
-    }
-}
-
-pub fn appearance() -> Appearance {
-    if DARK_MODE.load(Ordering::Relaxed) {
-        Appearance::Dark
-    } else {
-        Appearance::Light
-    }
-}
-
-pub fn set_appearance(a: Appearance) {
-    DARK_MODE.store(a == Appearance::Dark, Ordering::Relaxed);
 }
 
 /// Semantic colours of the system UI (macOS Tahoe look)
@@ -313,6 +275,22 @@ pub fn fill_squircle_gradient(
     }
 }
 
+/// Vertical gradient fill of a logical-coordinate path
+pub fn fill_path_gradient(pixmap: &mut PixmapMut, path: &tiny_skia::Path, y0: f32, y1: f32, top: Color, bottom: Color) {
+    let mut paint = Paint { anti_alias: true, ..Default::default() };
+    match LinearGradient::new(
+        Point::from_xy(0.0, y0),
+        Point::from_xy(0.0, y1),
+        vec![tiny_skia::GradientStop::new(0.0, top), tiny_skia::GradientStop::new(1.0, bottom)],
+        SpreadMode::Pad,
+        Transform::identity(),
+    ) {
+        Some(shader) => paint.shader = shader,
+        None => paint.set_color(top),
+    }
+    pixmap.fill_path(path, &paint, FillRule::Winding, scale_transform(), None);
+}
+
 pub fn stroke_squircle(pixmap: &mut PixmapMut, x: f32, y: f32, size: f32, width: f32, color: Color) {
     if let Some(path) = squircle_path(x, y, size) {
         let mut paint = Paint::default();
@@ -335,8 +313,9 @@ pub fn fill_rounded_rect(
     r: f32,
     color: Color,
 ) {
+    let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Fill);
     if let Some(path) = rounded_rect_path(x, y, w, h, r) {
-        fill_path(pixmap, &path, color);
+        crate::ui_raster::solid(pixmap, &path, ui_scale(), color);
     }
 }
 
@@ -351,6 +330,7 @@ pub fn stroke_rounded_rect(
     width: f32,
     color: Color,
 ) {
+    let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Stroke);
     if let Some(path) = rounded_rect_path(x, y, w, h, r) {
         let mut paint = Paint::default();
         paint.set_color(color);
@@ -415,6 +395,10 @@ thread_local! {
     static GLASS_ORIGIN: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((0.0, 0.0)) };
 }
 
+pub fn has_glass_background() -> bool {
+    GLASS_BG.with(|g| g.borrow().is_some())
+}
+
 pub fn set_glass_background(bg: Option<(std::rc::Rc<Pixmap>, f32, f32)>) {
     GLASS_BG.with(|g| *g.borrow_mut() = bg);
 }
@@ -427,24 +411,12 @@ pub fn set_glass_origin(x: f32, y: f32) {
 /// Frosted glass: the blurred wallpaper that is "behind" this rounded rect. Like Hyprland's
 /// xray blur it shows the desktop, not windows, and costs nothing per frame.
 pub fn fill_frosted(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32) {
+    let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Frosted);
     let Some(path) = rounded_rect_path(x, y, w, h, r) else { return };
-    let (ox, oy) = GLASS_ORIGIN.with(|o| o.get());
+    let origin = GLASS_ORIGIN.with(|o| o.get());
     GLASS_BG.with(|g| {
         if let Some((bg, sx, sy)) = g.borrow().as_ref() {
-            let shader = tiny_skia::Pattern::new(
-                bg.as_ref().as_ref(),
-                SpreadMode::Pad,
-                tiny_skia::FilterQuality::Bilinear,
-                1.0,
-                // pattern px → logical screen → logical buffer coordinates
-                Transform::from_row(*sx, 0.0, 0.0, *sy, -ox, -oy),
-            );
-            let paint = Paint {
-                shader,
-                anti_alias: true,
-                ..Default::default()
-            };
-            pixmap.fill_path(&path, &paint, FillRule::Winding, scale_transform(), None);
+            crate::ui_raster::frosted(pixmap, &path, ui_scale(), bg.as_ref().as_ref(), (*sx, *sy), origin, None);
         }
     });
 }
@@ -452,17 +424,18 @@ pub fn fill_frosted(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f
 /// Glass panel used by menus, Spotlight, Control Center and notifications: frosted desktop,
 /// translucent fill, bright inner edge (Liquid Glass highlight) and a hairline outline.
 pub fn draw_glass_panel(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32, strong: bool) {
-    fill_frosted(pixmap, x, y, w, h, r);
     let p = palette();
-    fill_rounded_rect(
-        pixmap,
-        x,
-        y,
-        w,
-        h,
-        r,
-        if strong { p.glass_fill_strong } else { p.glass_fill },
-    );
+    let tint = if strong { p.glass_fill_strong } else { p.glass_fill };
+    let Some(path) = rounded_rect_path(x, y, w, h, r) else { return };
+    let origin = GLASS_ORIGIN.with(|o| o.get());
+    let painted = GLASS_BG.with(|g| {
+        if let Some((bg, sx, sy)) = g.borrow().as_ref() {
+            let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Frosted);
+            crate::ui_raster::frosted(pixmap, &path, ui_scale(), bg.as_ref().as_ref(), (*sx, *sy), origin, Some(tint));
+            true
+        } else { false }
+    });
+    if !painted { fill_rounded_rect(pixmap, x, y, w, h, r, tint); }
     stroke_rounded_rect(pixmap, x + 0.75, y + 0.75, w - 1.5, h - 1.5, r - 0.75, 1.0, p.glass_edge);
     stroke_rounded_rect(pixmap, x - 0.25, y - 0.25, w + 0.5, h + 0.5, r + 0.25, 0.5, p.glass_outline);
 }

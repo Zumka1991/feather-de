@@ -42,6 +42,8 @@ enum KeyAction {
     SwitcherCommit,
     SwitcherCancel,
     SwitchVt(i32),
+    /// Print: screen, Shift+Print: region/window selection, Alt+Print: active window
+    Screenshot { shift: bool, alt: bool },
 }
 
 /// Delay before the Alt+Tab panel appears: short enough to feel instant when Alt is held,
@@ -102,6 +104,15 @@ impl FeatherCompositor {
 
         let keyboard = self.keyboard.clone();
         keyboard.input::<(), _>(self, keycode, key_state, serial, time, |st, mods, keysym_handle| {
+            let system_chord=mods.ctrl&&mods.alt;
+            if st.shell.control_center_open && st.shell.cc.page==crate::control_panel::Page::Password && !system_chord {
+                if key_state==KeyState::Pressed {
+                    let sym=keysym_handle.modified_sym();
+                    if let Some(action)=st.shell.cc.key(sym.raw(),sym.key_char()) {deferred=Some(KeyAction::Shell(action));}
+                    st.shell.overlay_dirty=true;
+                }
+                return FilterResult::Intercept(());
+            }
             // App switcher: active while Alt (or Super) is held
             if st.shell.switcher.is_some() {
                 let sym = keysym_handle.modified_sym().raw();
@@ -152,6 +163,15 @@ impl FeatherCompositor {
                     deferred = Some(KeyAction::SwitchVt((raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32));
                     return FilterResult::Intercept(());
                 }
+                // Alt+Print arrives as Sys_Req on most layouts
+                if raw == keysyms::KEY_Print || raw == keysyms::KEY_Sys_Req {
+                    deferred = Some(KeyAction::Screenshot { shift: mods.shift, alt: mods.alt });
+                    return FilterResult::Intercept(());
+                }
+                if st.screenshot_select.is_some() && raw == keysyms::KEY_Escape {
+                    deferred = Some(KeyAction::Screenshot { shift: false, alt: false });
+                    return FilterResult::Intercept(());
+                }
                 if mods.ctrl && mods.alt && raw == keysyms::KEY_BackSpace {
                     deferred = Some(KeyAction::Shell(ShellClickAction::QuitCompositor));
                     return FilterResult::Intercept(());
@@ -182,6 +202,27 @@ impl FeatherCompositor {
 
             let sym = keysym_handle.modified_sym();
             let latin_sym = keysym_handle.raw_latin_sym_or_raw_current_sym().unwrap_or(sym);
+            // Keys for the desktop icons when no window has the keyboard
+            let shell_idle = st.shell.open_menu.is_none() && !st.shell.spotlight_open && st.shell.launchpad.is_none()
+                && !st.shell.control_center_open && st.shell.switcher.is_none();
+            if shell_idle && st.desktop_key(latin_sym.raw(), mods.ctrl) {
+                return FilterResult::Intercept(());
+            }
+            if st.shell.open_menu.is_some() && sym.raw() == keysyms::KEY_Escape {
+                st.shell.close_menus();
+                return FilterResult::Intercept(());
+            }
+            if matches!(st.shell.open_menu, Some(crate::shell::TopMenu::Client(_)|crate::shell::TopMenu::Tray(_))) {
+                let direction = match sym.raw() {
+                    keysyms::KEY_Down => Some(1), keysyms::KEY_Up => Some(-1),
+                    keysyms::KEY_Right => Some(2), keysyms::KEY_Left => Some(-2),
+                    keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(0), _ => None,
+                };
+                if let Some(direction) = direction {
+                    if let Some(action) = st.shell.client_menu_key(direction) { deferred = Some(KeyAction::Shell(action)); }
+                    return FilterResult::Intercept(());
+                }
+            }
 
             if mods.logo {
                 if mods.shift && matches!(latin_sym.raw(), keysyms::KEY_r | keysyms::KEY_R) {
@@ -264,11 +305,7 @@ impl FeatherCompositor {
                     keysyms::KEY_Right => lp.set_page(lp.page + 1),
                     keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
                         if let Some(&app) = lp.apps.first() {
-                            let entry = &registry.apps[app];
-                            deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
-                                entry.action.clone(),
-                                entry.name.clone(),
-                            )));
+                            deferred = Some(KeyAction::Shell(ShellClickAction::LaunchpadLaunch(app)));
                         }
                         st.shell.launchpad = None;
                     }
@@ -367,6 +404,14 @@ impl FeatherCompositor {
             Some(KeyAction::SwitcherStep { reverse }) => self.switcher_step(reverse),
             Some(KeyAction::SwitcherCommit) => self.switcher_commit(),
             Some(KeyAction::SwitchVt(vt)) => self.switch_vt(vt),
+            // Any shortcut while selecting (Esc too) ends the selection first
+            Some(KeyAction::Screenshot { .. }) if self.screenshot_select.is_some() => self.cancel_screenshot_selection(),
+            Some(KeyAction::Screenshot { shift: true, .. }) => self.start_screenshot_selection(),
+            Some(KeyAction::Screenshot { alt: true, .. }) => match self.window_target(|w| w.activated) {
+                Some(target) => self.take_screenshot(target),
+                None => self.take_screenshot(crate::screenshot::Target::Screen),
+            },
+            Some(KeyAction::Screenshot { .. }) => self.take_screenshot(crate::screenshot::Target::Screen),
             Some(KeyAction::SwitcherCancel) => {
                 self.shell.switcher = None;
             }
@@ -430,6 +475,7 @@ impl FeatherCompositor {
     }
 
     fn switcher_commit(&mut self) {
+        self.unfocus_desktop();
         if let Some(sw) = self.shell.switcher.take() {
             if let Some(item) = sw.items.get(sw.selected) {
                 self.activate_app(item.key);
@@ -452,6 +498,24 @@ impl FeatherCompositor {
         self.shell.dock_dirty = true;
     }
 
+    /// End-to-end tests inside our own nested compositor and test clients only
+    /// (FEATHER_DEBUG_DND); the host never receives these events
+    pub fn debug_pointer_motion(&mut self, x: f64, y: f64) {
+        let time = self.start_time.elapsed().as_millis() as u32;
+        self.needs_redraw = true;
+        self.on_pointer_motion((x, y).into(), time);
+    }
+
+    pub fn debug_pointer_button(&mut self, button: u32, pressed: bool) {
+        let time = self.start_time.elapsed().as_millis() as u32;
+        self.needs_redraw = true;
+        let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+        if pressed {
+            self.pressed_buttons.push(button);
+        }
+        self.on_pointer_button(button, state, time);
+    }
+
     fn set_compositor_cursor(&mut self, icon: CursorIcon) {
         if self.compositor_cursor != Some(icon) {
             self.compositor_cursor = Some(icon);
@@ -461,6 +525,19 @@ impl FeatherCompositor {
 
     fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer_location = pos;
+        if self.shell.switcher.as_ref().is_some_and(|s|s.visible){
+            if let Some(index)=self.shell.switcher_hit(pos.x,pos.y){
+                if let Some(sw)=self.shell.switcher.as_mut(){if sw.selected!=index{sw.selected=index;self.shell.switcher_dirty=true;self.needs_redraw=true;}}
+            }
+            self.pointer_focus_dirty=true;return;
+        }
+        if self.screenshot_motion() || self.desktop_motion() {
+            return;
+        }
+        if self.shell.control_center_open && self.shell.cc.motion(pos.x as f32) {
+            self.shell.overlay_dirty=true;
+            return;
+        }
 
         if let Some(drag) = self.active_drag {
             self.apply_drag(drag, pos);
@@ -614,6 +691,11 @@ impl FeatherCompositor {
     }
 
     fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
+        // A release of a press that started before the selection still belongs to the client
+        let earlier_press = btn_state == ButtonState::Released && self.pressed_buttons.contains(&button);
+        if !earlier_press && self.screenshot_button(button == BTN_LEFT, btn_state == ButtonState::Pressed) {
+            return;
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let pos = self.pointer_location;
         let pointer = self.pointer.clone();
@@ -625,6 +707,10 @@ impl FeatherCompositor {
         };
 
         if btn_state == ButtonState::Released {
+            if button==BTN_LEFT {
+                if let Some(action)=self.shell.cc.release() {self.shell.overlay_dirty=true;self.execute_shell_action(action);}
+                self.desktop_release();
+            }
             self.pressed_buttons.retain(|&b| b != button);
             let was_dragging = self.active_drag.take().is_some();
             // Don't send a release for a press the client never saw
@@ -650,6 +736,19 @@ impl FeatherCompositor {
             self.pressed_buttons.push(button);
         }
         self.user_interacted = true;
+        if self.shell.switcher.as_ref().is_some_and(|s|s.visible){
+            self.consumed_buttons.push(button);
+            if button==BTN_LEFT {
+                if let Some(index)=self.shell.switcher_hit(pos.x,pos.y){
+                    self.shell.switcher.as_mut().unwrap().selected=index;
+                    self.switcher_commit();return;
+                }
+            }
+            self.shell.switcher=None;self.pointer_focus_dirty=true;self.needs_redraw=true;return;
+        }
+        if button!=BTN_LEFT && self.shell.control_center_open {
+            self.consumed_buttons.push(button); return;
+        }
         if self.pressed_buttons.len() == 1 {
             // Make sure the press goes to the surface really under the cursor right now
             self.refresh_pointer_focus();
@@ -661,6 +760,26 @@ impl FeatherCompositor {
             .rev()
             .find(|w| w.is_visible())
             .is_some_and(|w| w.fullscreen);
+        if (!fullscreen_top || self.shell.has_visible_overlay()) && self.shell.launchpad.is_none() {
+            if let Some((item,_))=self.shell.tray_hit(pos.x,pos.y).map(|(i,r)|(i.clone(),r)) {
+                let action=match button {
+                    BTN_LEFT if !item.menu_only=>crate::tray::Action::Activate,
+                    0x112=>crate::tray::Action::Secondary,
+                    _=>crate::tray::Action::Context,
+                };
+                self.consumed_buttons.push(button);
+                self.execute_shell_action(ShellClickAction::Tray{key:item.key,action,x:pos.x as i32,y:pos.y as i32});
+                return;
+            }
+        }
+        // Middle click on a Dock app: another copy of it
+        if button == 0x112 && self.shell.dock_menu.is_none() {
+            if let Some((DockTarget::App(i), _)) = self.shell.dock_target_at(pos.x, pos.y) {
+                self.consumed_buttons.push(button);
+                self.launch_app_instance(i);
+                return;
+            }
+        }
         // Right click on a Dock icon: its context menu
         if button == BTN_RIGHT && self.shell.dock_menu.is_none() {
             if let Some((target, anchor)) = self.shell.dock_target_at(pos.x, pos.y) {
@@ -679,7 +798,7 @@ impl FeatherCompositor {
             match hit {
                 Some(LaunchpadHit::App(app)) if button == BTN_LEFT => {
                     let entry = &self.app_registry.apps[app];
-                    let click = ShellClickAction::LaunchApp(entry.action.clone(), entry.name.clone());
+                    let click = ShellClickAction::LaunchpadLaunch(app);
                     let (icon, label) = (AppIcon::of(entry), entry.name.clone());
                     self.begin_icon_press(DragSource::Launchpad { app }, icon, label, click);
                 }
@@ -708,6 +827,9 @@ impl FeatherCompositor {
             {
                 self.consumed_buttons.push(button);
                 self.dismiss_popups_except(None);
+                if matches!(action, ShellClickAction::DockPress(_)) {
+                    self.unfocus_desktop();
+                }
                 if let ShellClickAction::DockPress(target) = action {
                     if button == BTN_LEFT {
                         self.press_dock_icon(target);
@@ -734,13 +856,19 @@ impl FeatherCompositor {
         };
 
         let Some(idx) = hit_index else {
-            // Click on the bare desktop
+            // Click on the bare desktop: icons, rubber band, keyboard focus
+            let mods = self.keyboard.modifier_state();
+            if self.desktop_press(button == BTN_LEFT, mods.ctrl, mods.shift) {
+                self.consumed_buttons.push(button);
+                return;
+            }
             pointer.button(self, &event);
             pointer.frame(self);
             return;
         };
 
         // Raise and focus on every click: also repairs focus after a window was closed
+        self.unfocus_desktop();
         let win = self.windows.remove(idx);
         self.windows.push(win);
         self.refresh_focus();
@@ -834,23 +962,23 @@ impl FeatherCompositor {
                         id: app.id.clone(),
                         pinned: self.is_pinned(i),
                     },
-                    ShellClickAction::ActivateApp(i),
+                    ShellClickAction::DockPress(target),
                     AppIcon::of(app),
                     app.name.clone(),
                 )
             }
-            DockTarget::Window(id) => (
+            DockTarget::Window(_) => (
                 DragSource::DockOther,
-                ShellClickAction::ActivateWindow(id),
+                ShellClickAction::DockPress(target),
                 AppIcon {
                     kind: crate::apps::IconKind::GenericApp,
                     name: None,
                 },
                 String::new(),
             ),
-            DockTarget::Minimized(id) => (
+            DockTarget::Minimized(_) => (
                 DragSource::DockOther,
-                ShellClickAction::RestoreMinimizedWindow(id),
+                ShellClickAction::DockPress(target),
                 AppIcon {
                     kind: crate::apps::IconKind::GenericApp,
                     name: None,
@@ -924,6 +1052,24 @@ impl FeatherCompositor {
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
+        let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|w.fullscreen);
+        if !fullscreen&&self.shell.launchpad.is_none() {
+            if let Some(key)=self.shell.tray_hit(self.pointer_location.x,self.pointer_location.y).map(|(i,_)|i.key.clone()) {
+                for (axis,horizontal) in [(Axis::Vertical,false),(Axis::Horizontal,true)] {
+                    let delta=event.amount_v120(axis).unwrap_or_else(||event.amount(axis).unwrap_or(0.0)*8.0).round() as i32;
+                    if delta!=0 {self.execute_shell_action(ShellClickAction::Tray{key:key.clone(),action:crate::tray::Action::Scroll(-delta,horizontal),x:self.pointer_location.x as i32,y:self.pointer_location.y as i32});}
+                }
+                return;
+            }
+        }
+        let menu_delta = event.amount(Axis::Vertical).unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0));
+        if self.shell.control_center_open && self.shell.cc.page!=crate::control_panel::Page::Main {
+            self.shell.cc.scroll(menu_delta); self.shell.overlay_dirty=true; return;
+        }
+        if self.shell.scroll_client_menu(self.pointer_location.x as f32, self.pointer_location.y as f32, menu_delta) {
+            self.needs_redraw |= self.shell.overlay_dirty;
+            return;
+        }
         if let Some(lp) = self.shell.launchpad.as_mut() {
             // Wheel notch = one page; touchpad swipe = one page per gesture
             let discrete_v = event.amount_v120(Axis::Vertical).filter(|v| *v != 0.0);

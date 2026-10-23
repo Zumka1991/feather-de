@@ -6,7 +6,7 @@ use smithay::{
             memory::MemoryRenderBufferRenderElement,
             render_elements,
             surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
-            utils::RescaleRenderElement,
+            utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
             Element, Kind,
         },
         gles::GlesRenderer,
@@ -43,6 +43,17 @@ pub struct FrameStats {
     pub key_pressed_at: Option<Instant>,
     pub key_answered: bool,
     key_latency_ms: Vec<f64>,
+    animation: Option<AnimationStats>,
+}
+
+#[derive(Default)]
+struct AnimationStats {
+    frames: u32,
+    first_cpu_ms: f64,
+    cpu_ms: f64,
+    gpu_ms: f64,
+    worst_gpu_ms: f64,
+    start: Option<Instant>,
 }
 
 impl FrameStats {
@@ -56,6 +67,25 @@ impl FrameStats {
     pub fn record_key(&mut self) {
         self.key_pressed_at = Some(Instant::now());
         self.key_answered = false;
+    }
+
+    fn record_animation(&mut self, active: bool, cpu: Duration, gpu: Duration) {
+        if !active && self.animation.is_none() { return; }
+        let stats = self.animation.get_or_insert_with(AnimationStats::default);
+        stats.start.get_or_insert_with(Instant::now);
+        if stats.frames == 0 { stats.first_cpu_ms = cpu.as_secs_f64() * 1e3; }
+        else { stats.cpu_ms += cpu.as_secs_f64() * 1e3; }
+        stats.frames += 1;
+        stats.gpu_ms += gpu.as_secs_f64() * 1e3;
+        stats.worst_gpu_ms = stats.worst_gpu_ms.max(gpu.as_secs_f64() * 1e3);
+        if !active {
+            let stats = self.animation.take().unwrap();
+            let n = stats.frames as f64;
+            let elapsed = stats.start.unwrap().elapsed().as_secs_f64();
+            eprintln!("[feather-profile] анимация: {} кадров, {:.0}/с | CPU первый {:.2} мс, следующие {:.3} мс | сцена+GL {:.2} мс, худший {:.2} мс | пружины остановлены",
+                stats.frames, (n - 1.0) / elapsed.max(0.001), stats.first_cpu_ms,
+                stats.cpu_ms / (n - 1.0).max(1.0), stats.gpu_ms / n, stats.worst_gpu_ms);
+        }
     }
 
     fn record(&mut self, cpu: Duration, gpu: Duration, swap: Option<Duration>) {
@@ -97,19 +127,43 @@ impl FrameStats {
                     self.key_latency_ms.len()
                 );
             }
+            let animation = self.animation.take();
             *self = FrameStats::default();
+            self.animation = animation;
         }
     }
 }
 
 render_elements! {
-    pub FeatherElement<=GlesRenderer>;
+    pub SceneElement<=GlesRenderer>;
     Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
     Surface=RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Rounded=crate::rounded::RoundedSurfaceElement,
+    Texture=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
 }
 
-const CLEAR_COLOR: Color32F = Color32F::new(0.06, 0.07, 0.12, 1.0);
+render_elements! {
+    pub FeatherElement<=GlesRenderer>;
+    Animated=RelocateRenderElement<RescaleRenderElement<SceneElement>>,
+}
+
+impl crate::animation::Visual {
+    fn element(self, element: SceneElement, scale: f64) -> FeatherElement {
+        let pivot = ((self.center.0 * scale).round() as i32, (self.center.1 * scale).round() as i32).into();
+        let offset = ((self.offset.0 * scale).round() as i32, (self.offset.1 * scale).round() as i32);
+        FeatherElement::Animated(RelocateRenderElement::from_element(
+            RescaleRenderElement::from_element(element, pivot, self.scale), offset, Relocate::Relative,
+        ))
+    }
+}
+
+impl From<SceneElement> for FeatherElement {
+    fn from(element: SceneElement) -> Self {
+        crate::animation::Visual::default().element(element, 1.0)
+    }
+}
+
+pub(crate) const CLEAR_COLOR: Color32F = Color32F::new(0.06, 0.07, 0.12, 1.0);
 /// Frame callbacks of idle (no-damage) frames are paced to roughly 60 Hz
 const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// If the host stops sending frame events (window hidden), don't stall forever
@@ -124,8 +178,9 @@ fn push_surface_tree(
     surface: &WlSurface,
     location: Point<i32, Physical>,
     scale: f64,
+    visual: crate::animation::Visual,
 ) {
-    push_window_surfaces(out, renderer, surface, location, scale, None);
+    push_window_surfaces(out, renderer, surface, location, scale, None, visual);
 }
 
 /// Texture sizes (pixels) of every surface in a tree, keyed by render element id; surfaces
@@ -164,20 +219,22 @@ fn push_window_surfaces(
     location: Point<i32, Physical>,
     scale: f64,
     clip: Option<(crate::rounded::Clip, &smithay::backend::renderer::gles::GlesTexProgram)>,
+    visual: crate::animation::Visual,
 ) {
     let elems: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-        render_elements_from_surface_tree(renderer, surface, location, scale, 1.0, Kind::Unspecified);
+        render_elements_from_surface_tree(renderer, surface, location, scale, visual.alpha, Kind::Unspecified);
     let sizes = if clip.is_some() { surface_tex_sizes(surface) } else { Vec::new() };
     for elem in elems {
         let origin = elem.geometry(Scale::from(1.0)).loc;
         let tex = sizes.iter().find(|(id, _)| id == elem.id()).map(|(_, s)| *s);
         let rescaled = RescaleRenderElement::from_element(elem, origin, scale);
-        match (clip, tex) {
-            (Some((clip, program)), Some(tex)) => out.push(FeatherElement::Rounded(
+        let element = match (clip, tex) {
+            (Some((clip, program)), Some(tex)) => SceneElement::Rounded(
                 crate::rounded::RoundedSurfaceElement::new(rescaled, program.clone(), clip, tex),
-            )),
-            _ => out.push(FeatherElement::Surface(rescaled)),
-        }
+            ),
+            _ => SceneElement::Surface(rescaled),
+        };
+        out.push(visual.element(element, scale));
     }
 }
 
@@ -204,7 +261,7 @@ fn cursor_elements(
                     None,
                     Kind::Cursor,
                 ) {
-                    out.push(FeatherElement::Memory(e));
+                    out.push(SceneElement::Memory(e).into());
                 }
             }
         }
@@ -219,7 +276,7 @@ fn cursor_elements(
                     render_elements_from_surface_tree(renderer, &surface, loc, scale, 1.0, Kind::Cursor);
                 for elem in elems {
                     let origin = elem.geometry(Scale::from(1.0)).loc;
-                    out.push(FeatherElement::Surface(RescaleRenderElement::from_element(elem, origin, scale)));
+                    out.push(SceneElement::Surface(RescaleRenderElement::from_element(elem, origin, scale)).into());
                 }
             } else {
                 cursor.status = CursorImageStatus::default_named();
@@ -234,26 +291,27 @@ fn to_phys_point(x: i32, y: i32, scale: f64) -> Point<i32, Physical> {
 }
 
 /// Builds the scene front-to-back (first element is on top), as the damage tracker expects.
-fn build_scene(
+pub(crate) fn build_scene(
     renderer: &mut GlesRenderer,
     shell: &MacShell,
     windows: &[ManagedWindow],
     scale: f64,
     pointer: (f64, f64),
     rounded: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
+    animations: &crate::animation::Animations,
 ) -> Vec<FeatherElement> {
     let mut out: Vec<FeatherElement> = Vec::with_capacity(64);
-    let mut mem = |out: &mut Vec<FeatherElement>, loc: (f64, f64), buf, size| {
+    let mut mem = |out: &mut Vec<FeatherElement>, loc: (f64, f64), buf, src, visual: crate::animation::Visual| {
         if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             loc,
             buf,
+            Some(visual.alpha),
+            src,
             None,
-            None,
-            size,
             Kind::Unspecified,
         ) {
-            out.push(FeatherElement::Memory(e));
+            out.push(visual.element(SceneElement::Memory(e), scale));
         }
     };
 
@@ -261,7 +319,7 @@ fn build_scene(
         .iter()
         .rev()
         .find(|w| w.is_visible())
-        .is_some_and(|w| w.fullscreen);
+        .is_some_and(|w| w.fullscreen && animations.window(w).identity());
 
     if shell.ghost.is_some() {
         let half = crate::shell::GHOST_SIZE as f64 * 0.5;
@@ -270,6 +328,7 @@ fn build_scene(
             (((pointer.0 - half) * scale).round(), ((pointer.1 - half) * scale).round()),
             &shell.ghost_buffer,
             None,
+            crate::animation::Visual::default(),
         );
     }
     if shell.switcher.as_ref().is_some_and(|s| s.visible) {
@@ -279,19 +338,33 @@ fn build_scene(
             ((r.x as f64 * scale).round(), (r.y as f64 * scale).round()),
             &shell.switcher_buffer,
             None,
+            crate::animation::Visual::default(),
         );
     }
     if shell.has_visible_overlay() {
-        mem(&mut out, (0.0, 0.0), &shell.overlay_buffer, None);
+        if let Some(r) = shell.overlay_region() {
+            mem(&mut out, (r.loc.x as f64, r.loc.y as f64), &shell.overlay_buffer,
+                None, animations.overlay(shell));
+        }
     }
     let launchpad_open = shell.launchpad.is_some();
     if !fullscreen_top && !launchpad_open {
-        mem(&mut out, (0.0, 0.0), &shell.topbar_buffer, None);
+        mem(&mut out, (0.0, 0.0), &shell.topbar_buffer, None, crate::animation::Visual::default());
     }
     if !fullscreen_top || launchpad_open {
         let dock_x = (((shell.screen_w - shell.dock_buf_w) as f64) * 0.5 * scale).round();
         let dock_y = (((shell.screen_h - shell.dock_buf_h) as f64) * scale).round();
-        mem(&mut out, (dock_x, dock_y), &shell.dock_buffer, None);
+        if let Some(b) = shell.bounce.as_ref() {
+            if let Some((x, y, size)) = shell.dock_slot_global(b.target) {
+                let (lift, _) = b.offset(Instant::now());
+                // Centred on the slot, so a magnified slot still lines up
+                let inset = (size - crate::theme::DOCK_ICON_BASE) as f64 * 0.5;
+                let src = smithay::utils::Rectangle::new((0.0, 0.0).into(), (b.px as f64, b.px as f64).into());
+                let loc = (((x as f64 + inset) * scale).round(), ((y as f64 + inset * 2.0 - lift as f64) * scale).round());
+                mem(&mut out, loc, &b.buffer, Some(src), crate::animation::Visual::default());
+            }
+        }
+        mem(&mut out, (dock_x, dock_y), &shell.dock_buffer, None, crate::animation::Visual::default());
     }
     if let Some(lp) = shell.launchpad.as_ref() {
         for ((x, y), buf) in lp.elements() {
@@ -300,10 +373,12 @@ fn build_scene(
                 ((x as f64 * scale).round(), (y as f64 * scale).round()),
                 buf,
                 None,
+                animations.launchpad(shell),
             );
         }
     }
-    if launchpad_open {
+    drop(mem);
+    if launchpad_open && shell.launchpad_bg_key.is_some() {
         // Opaque frosted wallpaper hides every window: nothing below needs drawing
         let size = (to_phys(shell.screen_w), to_phys(shell.screen_h));
         let src = shell
@@ -313,21 +388,21 @@ fn build_scene(
             renderer,
             (0.0, 0.0),
             &shell.launchpad_bg,
-            None,
+            Some(animations.launchpad(shell).alpha),
             src,
             Some(size.into()),
             Kind::Unspecified,
         ) {
-            out.push(FeatherElement::Memory(e));
+            out.push(SceneElement::Memory(e).into());
         }
-        return out;
+        if animations.launchpad(shell).identity() { return out; }
     }
-    drop(mem);
 
     for win in windows.iter().rev() {
-        if !win.is_visible() {
+        if !animations.draws_window(win) {
             continue;
         }
+        let visual = animations.window(win);
 
         if let Some(surface) = win.wl_surface() {
             let origin = win.surface_origin();
@@ -340,6 +415,7 @@ fn build_scene(
                     popup.wl_surface(),
                     to_phys_point(loc.x, loc.y, scale),
                     scale,
+                    visual,
                 );
             }
             // macOS corners: bottom ones under our titlebar, all four for square CSD apps
@@ -372,6 +448,7 @@ fn build_scene(
                 to_phys_point(origin.x, origin.y, scale),
                 scale,
                 clip,
+                visual,
             );
         }
 
@@ -380,30 +457,31 @@ fn build_scene(
                 renderer,
                 ((win.x as f64 * scale).round(), (win.y as f64 * scale).round()),
                 &win.decoration_buffer,
-                None,
+                Some(visual.alpha),
                 None,
                 None,
                 Kind::Unspecified,
             ) {
-                out.push(FeatherElement::Memory(e));
+                out.push(visual.element(SceneElement::Memory(e), scale));
             }
         }
 
         if win.draws_shadow() {
             out.extend(
                 win.shadow
-                    .elements(renderer, win.frame_rect(), scale)
+                    .elements(renderer, win.frame_rect(), scale, visual.alpha)
                     .into_iter()
-                    .map(FeatherElement::Memory),
+                    .map(|e| visual.element(SceneElement::Memory(e), scale)),
             );
         }
 
-        if win.fullscreen {
+        if win.fullscreen && !win.minimized && visual.identity() {
             // Nothing below a fullscreen window is visible
             return out;
         }
     }
 
+    out.extend(shell.desktop.elements(renderer, (shell.screen_w, shell.screen_h), scale));
     let wp_size = (to_phys(shell.screen_w), to_phys(shell.screen_h));
     // The source rect must be the (low-res) buffer itself; by default Smithay would use the
     // destination size and sample outside the texture
@@ -417,9 +495,18 @@ fn build_scene(
         Some(wp_size.into()),
         Kind::Unspecified,
     ) {
-        out.push(FeatherElement::Memory(e));
+        out.push(SceneElement::Memory(e).into());
     }
     out
+}
+
+/// Above everything: dragged desktop icons, or the icon a program gave its drag
+fn drag_overlay(out: &mut Vec<FeatherElement>, renderer: &mut GlesRenderer, shell: &MacShell, pointer: (f64, f64), scale: f64) {
+    out.extend(shell.desktop.drag_elements((shell.screen_w, shell.screen_h), pointer, scale));
+    if let Some(icon) = shell.desktop.dnd_icon.as_ref().filter(|s| smithay::reexports::wayland_server::Resource::is_alive(*s)) {
+        let location = to_phys_point(pointer.0 as i32, pointer.1 as i32, scale);
+        push_surface_tree(out, renderer, icon, location, scale, crate::animation::Visual::default());
+    }
 }
 
 /// Reads back our own output (not the host screen) into a PNG for visual tests
@@ -474,11 +561,10 @@ pub fn send_frames_surface_tree(surface: &WlSurface, time: u32) {
 impl FeatherCompositor {
     /// Rasterizes dirty shell/decoration buffers on the CPU (only when something changed)
     fn update_cpu_buffers(&mut self) {
+        let mut profile = crate::cpu_profile::Batch::new();
         let active_title = self.active_window_title();
-        self.shell.ensure_glass_bg();
         self.shell.ensure_wallpaper_rendered();
-        self.shell
-            .ensure_topbar_rendered(&mut self.fonts, &active_title, &self.active_layout_name);
+        self.shell.ensure_cc_backdrop();
         if self.dock_model_dirty {
             self.dock_model_dirty = false;
             let items = self.build_dock_items();
@@ -486,24 +572,28 @@ impl FeatherCompositor {
             let ctx = self.build_menu_context();
             self.shell.set_menu_context(ctx);
         }
+        profile.step("model");
+        self.shell
+            .ensure_topbar_rendered(&mut self.fonts, &active_title, &self.active_layout_name);
+        profile.step("topbar");
         self.shell.ensure_dock_rendered(&mut self.fonts);
+        profile.step("dock");
         self.shell.ensure_switcher_rendered(&mut self.fonts);
         self.shell.ensure_ghost_rendered(&mut self.fonts);
+        profile.step("switcher/ghost");
         if self.shell.launchpad.is_some() {
             self.shell.ensure_launchpad_bg();
         }
         if let Some(lp) = self.shell.launchpad.as_mut() {
-            lp.ensure_rendered(&mut self.fonts, &mut self.shell.icons, &self.app_registry);
-            if !lp.prefetch_scheduled && !lp.missing_neighbour_tiles().is_empty() {
-                lp.prefetch_scheduled = true;
-                self.loop_handle.insert_idle(|state| state.launchpad_prefetch_step());
-            }
+            lp.ensure_rendered(&mut self.fonts, self.shell.raster.as_ref(), &self.app_registry);
         }
+        profile.step("launchpad");
         if self.shell.has_visible_overlay() {
             self.shell
                 .ensure_overlay_rendered(&mut self.fonts, &self.app_registry, &self.active_layout_name);
         }
 
+        profile.step("overlay");
         let visible_count = self.windows.iter().filter(|w| w.is_visible()).count();
         let ctx = BuiltinContext {
             notes_text: &self.notes_buffer,
@@ -522,18 +612,7 @@ impl FeatherCompositor {
                 win.ensure_rendered(&mut self.fonts, focused, &ctx);
             }
         }
-    }
-
-    /// Rasterizes a few Launchpad tiles of the neighbouring pages while the loop is idle, so
-    /// flipping pages never waits for icon rasterization
-    pub fn launchpad_prefetch_step(&mut self) {
-        let Some(lp) = self.shell.launchpad.as_mut() else { return };
-        let more = lp.prefetch(2, &mut self.fonts, &mut self.shell.icons, &self.app_registry);
-        if more {
-            self.loop_handle.insert_idle(|state| state.launchpad_prefetch_step());
-        } else {
-            lp.prefetch_scheduled = false;
-        }
+        profile.step("windows");
     }
 
     pub fn render_if_needed(&mut self) {
@@ -551,7 +630,17 @@ impl FeatherCompositor {
         }
         self.needs_redraw = false;
         let t_cpu = Instant::now();
+        self.shell.release_closed_launchpad();
         self.update_cpu_buffers();
+        self.shell.desktop.ensure_layout((self.shell.screen_w, self.shell.screen_h));
+        self.shell.desktop.request_tiles(self.shell.raster.as_ref());
+        if self.shell.desktop.upload(self.backend.renderer()) {
+            if let Some(worker) = self.shell.raster.as_ref() {
+                worker.submit(crate::raster::Job::Reclaim);
+            }
+        }
+        self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now());
+        self.advance_bounce();
         let cpu_time = t_cpu.elapsed();
         let t_gpu = Instant::now();
 
@@ -561,6 +650,7 @@ impl FeatherCompositor {
             self.render_winit()
         };
 
+        self.shell.reclaim_after_frame();
         let gpu_time = t_gpu.elapsed();
         let swap_time = match presented {
             Some(swap) => {
@@ -575,6 +665,7 @@ impl FeatherCompositor {
             }
         };
         if let Some(stats) = self.frame_stats.as_mut() {
+            stats.record_animation(self.needs_redraw, cpu_time, gpu_time);
             stats.record(cpu_time, gpu_time, swap_time);
         }
     }
@@ -585,7 +676,9 @@ impl FeatherCompositor {
             return None;
         };
         let scale = self.scale_factor;
-        let age = backend.buffer_age().unwrap_or(0);
+        // Smithay's target bind resizes the native window but leaves EGL surfaceless.
+        // Keep the handle only until submit (which may recreate the EGLSurface).
+        let surface = backend.egl_surface().get_surface_handle();
         let damage = {
             let (renderer, mut framebuffer) = match backend.bind() {
                 Ok(b) => b,
@@ -594,27 +687,50 @@ impl FeatherCompositor {
                     return None;
                 }
             };
-            if !self.swap_interval_disabled {
-                // Mesa defaults to interval 1, making eglSwapBuffers block the whole event
-                // loop until vblank. We pace frames ourselves via host frame callbacks.
-                let display = renderer.egl_context().display().get_display_handle();
-                unsafe {
-                    smithay::backend::egl::ffi::egl::SwapInterval(display.handle, 0);
-                }
-                self.swap_interval_disabled = true;
+            let display = renderer.egl_context().display().get_display_handle();
+            // SAFETY: the backend/context live on this event-loop thread. bind() has
+            // applied native resize, and no swap can replace the surface in this scope.
+            let current = unsafe {
+                smithay::backend::egl::ffi::egl::MakeCurrent(
+                    display.handle, surface, surface, renderer.egl_context().get_context_handle(),
+                ) == smithay::backend::egl::ffi::egl::TRUE
+            };
+            if !current {
+                tracing::warn!("Не удалось сделать поверхность вывода EGL текущей");
+                return None;
             }
+            if !self.swap_interval_disabled {
+                self.swap_interval_disabled = unsafe {
+                    smithay::backend::egl::ffi::egl::SwapInterval(display.handle, 0)
+                        == smithay::backend::egl::ffi::egl::TRUE
+                };
+            }
+            // Texture import/readback can unbind the output between frames. Mesa's
+            // BUFFER_AGE_EXT query requires the output to be current, even after bind().
+            let mut age = 0;
+            if renderer.egl_context().display().supports_damage() { unsafe {
+                if smithay::backend::egl::ffi::egl::QuerySurface(
+                    display.handle, surface, smithay::backend::egl::ffi::egl::BUFFER_AGE_EXT as i32,
+                    &mut age,
+                ) != smithay::backend::egl::ffi::egl::TRUE {
+                    age = 0;
+                }
+            } }
             let pointer = (self.pointer_location.x, self.pointer_location.y);
-            let elements = build_scene(
+            let mut elements = crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h));
+            drag_overlay(&mut elements, renderer, &self.shell, pointer, scale);
+            elements.extend(build_scene(
                 renderer,
                 &self.shell,
                 &self.windows,
                 scale,
                 pointer,
                 self.rounded_program.as_ref(),
-            );
+                &self.animations,
+            ));
             let result = match self
                 .damage_tracker
-                .render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR)
+                .render_output(renderer, &mut framebuffer, age.max(0) as usize, &elements, CLEAR_COLOR)
             {
                 Ok(res) => res.damage.cloned(),
                 Err(err) => {
@@ -624,6 +740,12 @@ impl FeatherCompositor {
             };
             if let Some(path) = self.screenshot_request.take() {
                 save_screenshot(renderer, &framebuffer, self.phys_w, self.phys_h, &path);
+                // Readback switches to a surfaceless context. Restore the output target before
+                // swapping; otherwise EGL can lose the window surface after a debug capture.
+                use smithay::backend::renderer::{Renderer, Frame};
+                if let Ok(frame) = renderer.render(&mut framebuffer, (self.phys_w, self.phys_h).into(), smithay::utils::Transform::Flipped180) {
+                    let _ = frame.finish();
+                }
             }
             result
         };
@@ -648,6 +770,8 @@ impl FeatherCompositor {
         let scale = self.scale_factor;
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let mut elements = cursor_elements(&mut d.renderer, &mut self.cursor, pointer, scale);
+        elements.extend(crate::screenshot::overlay(&mut d.renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
+        drag_overlay(&mut elements, &mut d.renderer, &self.shell, pointer, scale);
         elements.extend(build_scene(
             &mut d.renderer,
             &self.shell,
@@ -655,6 +779,7 @@ impl FeatherCompositor {
             scale,
             pointer,
             self.rounded_program.as_ref(),
+            &self.animations,
         ));
 
         let t = Instant::now();
@@ -743,7 +868,7 @@ impl FeatherCompositor {
         px: f64,
         py: f64,
     ) -> Option<(WlSurface, Point<f64, smithay::utils::Logical>)> {
-        if self.shell.launchpad.is_some() || self.icon_drag.as_ref().is_some_and(|d| d.active) {
+        if self.shell.launchpad.is_some() || self.shell.switcher.as_ref().is_some_and(|s|s.visible) || self.icon_drag.as_ref().is_some_and(|d| d.active) {
             // Launchpad covers all windows; while dragging an app nothing below gets the pointer
             return None;
         }

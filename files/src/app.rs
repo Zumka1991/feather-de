@@ -1,0 +1,1795 @@
+//! Window contents: Finder-like sidebar, unified toolbar, icon/list views, path bar.
+//! No Wayland types here: input comes in as plain events, side effects go out as `Effect`s,
+//! so the whole UI also runs headless in tests.
+
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+use tiny_skia::PixmapMut;
+
+use crate::fsops::{self, Entry, Kind};
+use crate::icons::{draw_glyph, Glyph, Icon, IconCache};
+use crate::text::FontSystem;
+use crate::theme::{self, colors, rgba};
+
+pub const SIDEBAR_W: f32 = 220.0;
+pub const TOOLBAR_H: f32 = 52.0;
+pub const PATHBAR_H: f32 = 28.0;
+const RESIZE_BAND: f32 = 5.0;
+const CELL_W: f32 = 104.0;
+const CELL_H: f32 = 104.0;
+const GRID_ICON: f32 = 64.0;
+const ROW_H: f32 = 26.0;
+const HEADER_H: f32 = 28.0;
+const PLACE_H: f32 = 28.0;
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+pub const BTN_LEFT: u32 = 0x110;
+pub const BTN_RIGHT: u32 = 0x111;
+pub const BTN_BACK: u32 = 0x113;
+pub const BTN_FORWARD: u32 = 0x114;
+
+/// Requests to the Wayland/OS side
+#[derive(Debug, PartialEq)]
+pub enum Effect {
+    List(PathBuf, u64),
+    Close,
+    Minimize,
+    ToggleMaximize,
+    Move,
+    /// xdg_toplevel resize edge bits: top 1, bottom 2, left 4, right 8
+    Resize(u32),
+    /// Copies/moves/trashes on a worker thread; the folder is re-read afterwards
+    Paste(Vec<PathBuf>, PathBuf, bool),
+    Trash(Vec<PathBuf>),
+    /// Offer these files to other programs (text/uri-list)
+    Clipboard(Vec<PathBuf>),
+    /// Drag these files out (Wayland DnD: other programs, the desktop, our own folders)
+    StartDrag(Vec<PathBuf>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum View {
+    Icons,
+    List,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cursor {
+    Default,
+    Text,
+    Resize(u32),
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum Hit {
+    Close,
+    Minimize,
+    Zoom,
+    Back,
+    Forward,
+    ViewIcons,
+    ViewList,
+    Search,
+    Place(usize),
+    Item(usize),
+    Crumb(PathBuf),
+    Content,
+    Toolbar,
+    Menu(usize),
+    Nothing,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum MenuAction {
+    Open,
+    Terminal,
+    Rename,
+    Copy,
+    Cut,
+    Paste,
+    Trash,
+    NewFolder,
+    ToggleHidden,
+    ShowIcons,
+    ShowList,
+}
+
+struct Menu {
+    x: f32,
+    y: f32,
+    items: Vec<(String, Option<MenuAction>)>,
+}
+
+struct Place {
+    name: String,
+    path: PathBuf,
+    glyph: Glyph,
+    section: &'static str,
+}
+
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Mods {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+pub struct App {
+    pub w: f32,
+    pub h: f32,
+    pub maximized: bool,
+    pub focused: bool,
+    dir: PathBuf,
+    history: Vec<PathBuf>,
+    hist_pos: usize,
+    entries: Vec<Entry>,
+    /// Indices into `entries` after the hidden-file and search filters
+    visible: Vec<usize>,
+    selected: HashSet<PathBuf>,
+    /// Keyboard cursor/shift-range anchor (index into `visible`)
+    cursor: Option<usize>,
+    anchor: Option<usize>,
+    view: View,
+    scroll: f32,
+    show_hidden: bool,
+    search: String,
+    search_focus: bool,
+    rename: Option<(PathBuf, String)>,
+    hover: Hit,
+    pointer: (f32, f32),
+    pressed: Option<(Hit, (f32, f32))>,
+    rubber: Option<((f32, f32), (f32, f32))>,
+    rubber_base: HashSet<PathBuf>,
+    menu: Option<Menu>,
+    menu_hover: Option<usize>,
+    clipboard: Option<(Vec<PathBuf>, bool)>,
+    places: Vec<Place>,
+    generation: u64,
+    loading: bool,
+    error: Option<String>,
+    status: Option<(String, Instant)>,
+    type_ahead: (String, Instant),
+    last_click: Option<(Instant, Hit)>,
+    /// Focus this name once the next listing arrives (new folder, paste)
+    reveal: Option<PathBuf>,
+    /// Start renaming the revealed item (`--rename`)
+    rename_on_reveal: bool,
+    /// Item pressed with the left button: moving far enough starts a drag
+    drag_origin: Option<(f32, f32)>,
+    /// Where a drag over the window would drop (folder, sidebar place, path segment or here)
+    drop_target: Option<PathBuf>,
+    /// Path bar segments (path, label, x, width) as last painted, for hit testing
+    crumb_layout: Vec<(PathBuf, String, f32, f32)>,
+    pub fonts: FontSystem,
+    icons: IconCache,
+    pub dirty: bool,
+}
+
+impl App {
+    /// `reveal` selects that item once the folder is read; `rename` then starts renaming it
+    pub fn new(fonts: FontSystem, start: PathBuf, reveal: Option<PathBuf>, rename: bool) -> (Self, Vec<Effect>) {
+        let mut app = Self {
+            w: 1000.0,
+            h: 640.0,
+            maximized: false,
+            focused: true,
+            dir: PathBuf::new(),
+            history: Vec::new(),
+            hist_pos: 0,
+            entries: Vec::new(),
+            visible: Vec::new(),
+            selected: HashSet::new(),
+            cursor: None,
+            anchor: None,
+            view: View::Icons,
+            scroll: 0.0,
+            show_hidden: false,
+            search: String::new(),
+            search_focus: false,
+            rename: None,
+            hover: Hit::Nothing,
+            pointer: (0.0, 0.0),
+            pressed: None,
+            rubber: None,
+            rubber_base: HashSet::new(),
+            menu: None,
+            menu_hover: None,
+            clipboard: None,
+            places: Vec::new(),
+            generation: 0,
+            loading: false,
+            error: None,
+            status: None,
+            type_ahead: (String::new(), Instant::now()),
+            last_click: None,
+            reveal: None,
+            rename_on_reveal: false,
+            drag_origin: None,
+            drop_target: None,
+            crumb_layout: Vec::new(),
+            fonts,
+            icons: IconCache::default(),
+            dirty: true,
+        };
+        app.refresh_places();
+        let effects = app.navigate(start, true);
+        if reveal.is_some() {
+            app.reveal = reveal;
+            app.rename_on_reveal = rename;
+        }
+        (app, effects)
+    }
+
+    pub fn title(&self) -> String {
+        self.dir_name(&self.dir)
+    }
+
+    fn dir_name(&self, path: &Path) -> String {
+        if path == fsops::home() {
+            return std::env::var("USER").unwrap_or_else(|_| "Домой".into());
+        }
+        if path == fsops::trash_files_dir() {
+            return "Корзина".into();
+        }
+        path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Компьютер".into())
+    }
+
+    pub fn refresh_places(&mut self) {
+        let mut places = vec![
+            ("Домой", fsops::home(), Glyph::Home),
+            ("Рабочий стол", fsops::user_dir("DESKTOP", "Desktop"), Glyph::Desktop),
+            ("Документы", fsops::user_dir("DOCUMENTS", "Documents"), Glyph::Documents),
+            ("Загрузки", fsops::user_dir("DOWNLOAD", "Downloads"), Glyph::Downloads),
+            ("Изображения", fsops::user_dir("PICTURES", "Pictures"), Glyph::Pictures),
+            ("Музыка", fsops::user_dir("MUSIC", "Music"), Glyph::Music),
+            ("Видео", fsops::user_dir("VIDEOS", "Videos"), Glyph::Videos),
+        ]
+        .into_iter()
+        .filter(|(_, p, g)| *g == Glyph::Home || p.is_dir())
+        .map(|(n, p, g)| Place { name: n.into(), path: p, glyph: g, section: "Избранное" })
+        .collect::<Vec<_>>();
+        places.push(Place { name: "Корзина".into(), path: fsops::trash_files_dir(), glyph: Glyph::Trash, section: "Избранное" });
+        places.push(Place { name: "Компьютер".into(), path: PathBuf::from("/"), glyph: Glyph::Computer, section: "Места" });
+        for (name, path) in fsops::volumes() {
+            places.push(Place { name, path, glyph: Glyph::Drive, section: "Места" });
+        }
+        self.places = places;
+    }
+
+    /// Glyph engraved on a folder icon if it is one of the user folders
+    fn special(&self, path: &Path) -> Option<Glyph> {
+        self.places.iter().find(|p| p.path == path && p.glyph != Glyph::Computer && p.glyph != Glyph::Drive && p.glyph != Glyph::Home).map(|p| p.glyph)
+    }
+
+    // ---------- navigation and model ----------
+
+    pub fn navigate(&mut self, dir: PathBuf, record: bool) -> Vec<Effect> {
+        if record {
+            self.history.truncate(self.hist_pos + usize::from(!self.history.is_empty()));
+            self.history.push(dir.clone());
+            self.hist_pos = self.history.len() - 1;
+        }
+        let previous = std::mem::replace(&mut self.dir, dir.clone());
+        self.selected.clear();
+        // Going up selects the folder we came from, as Finder does
+        if previous.parent() == Some(dir.as_path()) {
+            self.reveal = Some(previous);
+        }
+        self.cursor = None;
+        self.anchor = None;
+        self.scroll = 0.0;
+        self.search.clear();
+        self.search_focus = false;
+        self.rename = None;
+        self.menu = None;
+        self.error = None;
+        self.reload()
+    }
+
+    pub fn reload(&mut self) -> Vec<Effect> {
+        self.generation += 1;
+        self.loading = true;
+        self.dirty = true;
+        vec![Effect::List(self.dir.clone(), self.generation)]
+    }
+
+    #[cfg(test)]
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Result of a background listing; stale generations are dropped
+    pub fn listed(&mut self, generation: u64, result: Result<Vec<Entry>, String>) {
+        if generation != self.generation {
+            return;
+        }
+        self.loading = false;
+        match result {
+            Ok(entries) => {
+                self.entries = entries;
+                self.error = None;
+            }
+            Err(err) => {
+                self.entries.clear();
+                self.error = Some(err);
+            }
+        }
+        let existing: HashSet<&PathBuf> = self.entries.iter().map(|e| &e.path).collect();
+        self.selected.retain(|p| existing.contains(p));
+        self.refilter();
+        if let Some(path) = self.reveal.take() {
+            if let Some(i) = self.visible.iter().position(|&i| self.entries[i].path == path) {
+                self.selected = HashSet::from([path]);
+                self.cursor = Some(i);
+                self.anchor = Some(i);
+                self.scroll_to(i);
+                if std::mem::take(&mut self.rename_on_reveal) {
+                    self.start_rename();
+                }
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn refilter(&mut self) {
+        let query = self.search.to_lowercase();
+        self.visible = (0..self.entries.len())
+            .filter(|&i| {
+                let e = &self.entries[i];
+                (self.show_hidden || !e.hidden) && (query.is_empty() || e.name.to_lowercase().contains(&query))
+            })
+            .collect();
+        self.cursor = self.cursor.filter(|&c| c < self.visible.len());
+        self.clamp_scroll();
+    }
+
+    fn entry(&self, visible: usize) -> &Entry {
+        &self.entries[self.visible[visible]]
+    }
+
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        self.visible.iter().map(|&i| &self.entries[i].path).filter(|p| self.selected.contains(*p)).cloned().collect()
+    }
+
+    fn open(&mut self, visible: usize) -> Vec<Effect> {
+        let entry = self.entry(visible).clone();
+        if entry.is_dir {
+            self.navigate(entry.path, true)
+        } else {
+            fsops::open_external(&entry.path);
+            self.flash(format!("Открывается «{}»", entry.name));
+            Vec::new()
+        }
+    }
+
+    fn open_selection(&mut self) -> Vec<Effect> {
+        let chosen: Vec<usize> = (0..self.visible.len()).filter(|&i| self.selected.contains(&self.entry(i).path)).collect();
+        match chosen.as_slice() {
+            [] => Vec::new(),
+            [one] => self.open(*one),
+            many => {
+                // Several files open externally; a folder among them is entered last
+                let mut effects = Vec::new();
+                for &i in many {
+                    if !self.entry(i).is_dir {
+                        fsops::open_external(&self.entry(i).path);
+                    }
+                }
+                if let Some(&dir) = many.iter().find(|&&i| self.entry(i).is_dir) {
+                    effects = self.open(dir);
+                }
+                effects
+            }
+        }
+    }
+
+    fn go_back(&mut self) -> Vec<Effect> {
+        if self.hist_pos == 0 || self.history.is_empty() {
+            return Vec::new();
+        }
+        self.hist_pos -= 1;
+        self.navigate(self.history[self.hist_pos].clone(), false)
+    }
+
+    fn go_forward(&mut self) -> Vec<Effect> {
+        if self.hist_pos + 1 >= self.history.len() {
+            return Vec::new();
+        }
+        self.hist_pos += 1;
+        self.navigate(self.history[self.hist_pos].clone(), false)
+    }
+
+    fn go_up(&mut self) -> Vec<Effect> {
+        match self.dir.parent() {
+            Some(parent) => self.navigate(parent.to_path_buf(), true),
+            None => Vec::new(),
+        }
+    }
+
+    fn flash(&mut self, text: String) {
+        self.status = Some((text, Instant::now()));
+        self.dirty = true;
+    }
+
+    pub fn operation_done(&mut self, failed: usize, what: &str) -> Vec<Effect> {
+        if failed > 0 {
+            self.flash(format!("{what}: не удалось для {failed}"));
+        }
+        self.reload()
+    }
+
+    fn set_view(&mut self, view: View) {
+        self.view = view;
+        self.scroll = 0.0;
+        if let Some(c) = self.cursor {
+            self.scroll_to(c);
+        }
+        self.dirty = true;
+    }
+
+    fn start_rename(&mut self) {
+        if let Some(c) = self.cursor.filter(|_| self.selected.len() == 1) {
+            let e = self.entry(c);
+            self.rename = Some((e.path.clone(), e.name.clone()));
+            self.dirty = true;
+        }
+    }
+
+    fn commit_rename(&mut self) -> Vec<Effect> {
+        let Some((path, name)) = self.rename.take() else { return Vec::new() };
+        self.dirty = true;
+        let name = name.trim().to_string();
+        if name.is_empty() || name.contains('/') || path.file_name().is_some_and(|n| n.to_string_lossy() == name) {
+            return Vec::new();
+        }
+        let target = path.with_file_name(&name);
+        if target.exists() {
+            self.flash(format!("«{name}» уже существует"));
+            return Vec::new();
+        }
+        match std::fs::rename(&path, &target) {
+            Ok(()) => {
+                self.reveal = Some(target);
+                self.reload()
+            }
+            Err(err) => {
+                self.flash(format!("Не удалось переименовать: {err}"));
+                Vec::new()
+            }
+        }
+    }
+
+    fn new_folder(&mut self) -> Vec<Effect> {
+        let path = fsops::unique_name(&self.dir, "Новая папка");
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                // Insert now so rename starts immediately; the watcher re-read keeps it in place
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                self.entries.push(Entry { name: name.clone(), path: path.clone(), kind: Kind::Folder, is_dir: true, hidden: false, size: 0, modified: Some(std::time::SystemTime::now()), ext: String::new() });
+                fsops::sort_entries(&mut self.entries);
+                self.search.clear();
+                self.refilter();
+                let i = self.visible.iter().position(|&i| self.entries[i].path == path);
+                self.selected = HashSet::from([path.clone()]);
+                self.cursor = i;
+                self.anchor = i;
+                if let Some(i) = i {
+                    self.scroll_to(i);
+                }
+                self.rename = Some((path, name));
+                self.dirty = true;
+                Vec::new()
+            }
+            Err(err) => {
+                self.flash(format!("Не удалось создать папку: {err}"));
+                Vec::new()
+            }
+        }
+    }
+
+    fn copy_selection(&mut self, cut: bool) -> Vec<Effect> {
+        let paths = self.selected_paths();
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        let n = paths.len();
+        self.clipboard = Some((paths.clone(), cut));
+        self.flash(format!("{} {}", if cut { "Вырезано:" } else { "Скопировано:" }, objects(n)));
+        vec![Effect::Clipboard(paths)]
+    }
+
+    /// Files from another program's clipboard (text/uri-list) replace our own
+    pub fn external_clipboard(&mut self, paths: Vec<PathBuf>) {
+        if !paths.is_empty() {
+            self.clipboard = Some((paths, false));
+        }
+    }
+
+    fn paste(&mut self) -> Vec<Effect> {
+        let Some((paths, cut)) = self.clipboard.clone() else { return Vec::new() };
+        if cut {
+            self.clipboard = None;
+        }
+        self.flash(format!("{} {}…", if cut { "Перемещение" } else { "Копирование" }, objects(paths.len())));
+        vec![Effect::Paste(paths, self.dir.clone(), cut)]
+    }
+
+    fn trash_selection(&mut self) -> Vec<Effect> {
+        let paths = self.selected_paths();
+        if paths.is_empty() || self.dir.starts_with(fsops::trash_files_dir()) {
+            return Vec::new();
+        }
+        self.flash(format!("В Корзину: {}", objects(paths.len())));
+        vec![Effect::Trash(paths)]
+    }
+
+    // ---------- geometry ----------
+
+    fn content(&self) -> (f32, f32, f32, f32) {
+        (SIDEBAR_W, TOOLBAR_H, (self.w - SIDEBAR_W).max(0.0), (self.h - TOOLBAR_H - PATHBAR_H).max(0.0))
+    }
+
+    fn columns(&self) -> usize {
+        (((self.content().2 - 16.0) / CELL_W).floor() as usize).max(1)
+    }
+
+    /// Item rectangle in window coordinates (already scrolled)
+    fn item_rect(&self, i: usize) -> (f32, f32, f32, f32) {
+        let (cx, cy, cw, _) = self.content();
+        match self.view {
+            View::Icons => {
+                let cols = self.columns();
+                let spacing = (cw - 16.0) / cols as f32;
+                let (col, row) = (i % cols, i / cols);
+                (cx + 8.0 + col as f32 * spacing + (spacing - CELL_W) * 0.5, cy + 10.0 + row as f32 * CELL_H - self.scroll, CELL_W, CELL_H)
+            }
+            View::List => (cx, cy + HEADER_H + i as f32 * ROW_H - self.scroll, cw, ROW_H),
+        }
+    }
+
+    fn content_height(&self) -> f32 {
+        match self.view {
+            View::Icons => 20.0 + self.visible.len().div_ceil(self.columns()) as f32 * CELL_H,
+            View::List => HEADER_H + self.visible.len() as f32 * ROW_H + 8.0,
+        }
+    }
+
+    fn clamp_scroll(&mut self) {
+        let max = (self.content_height() - self.content().3).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, max);
+    }
+
+    fn scroll_to(&mut self, i: usize) {
+        let (_, cy, _, ch) = self.content();
+        let (_, y, _, h) = self.item_rect(i);
+        let top = cy + if self.view == View::List { HEADER_H } else { 0.0 };
+        if y < top {
+            self.scroll -= top - y;
+        } else if y + h > cy + ch {
+            self.scroll += y + h - (cy + ch);
+        }
+        self.clamp_scroll();
+    }
+
+    fn traffic(&self) -> [(Hit, f32); 3] {
+        [(Hit::Close, 26.0), (Hit::Minimize, 46.0), (Hit::Zoom, 66.0)]
+    }
+
+    fn search_rect(&self) -> (f32, f32, f32, f32) {
+        (self.w - 196.0, 12.0, 180.0, 28.0)
+    }
+
+    fn view_rects(&self) -> [(Hit, (f32, f32, f32, f32)); 2] {
+        let x = self.w - 196.0 - 84.0;
+        [(Hit::ViewIcons, (x, 12.0, 36.0, 28.0)), (Hit::ViewList, (x + 36.0, 12.0, 36.0, 28.0))]
+    }
+
+    fn place_rects(&self) -> Vec<(usize, f32)> {
+        let mut y = 56.0;
+        let mut section = "";
+        let mut out = Vec::new();
+        for (i, p) in self.places.iter().enumerate() {
+            if p.section != section {
+                section = p.section;
+                y += if i == 0 { 0.0 } else { 10.0 } + 22.0;
+            }
+            out.push((i, y));
+            y += PLACE_H;
+        }
+        out
+    }
+
+    fn layout_crumbs(&mut self) {
+        let mut parts: Vec<PathBuf> = self.dir.ancestors().map(Path::to_path_buf).collect();
+        parts.reverse();
+        let mut x = SIDEBAR_W + 12.0;
+        let last = parts.len().saturating_sub(1);
+        let mut out = Vec::new();
+        for (k, p) in parts.into_iter().enumerate() {
+            let name = self.dir_name(&p);
+            let w = 16.0 + self.fonts.measure_text(&name, 11.5, k == last);
+            out.push((p, name, x, w));
+            x += w + 14.0;
+        }
+        // Long paths keep their tail visible
+        let overflow = x - (self.w - 290.0);
+        if overflow > 0.0 {
+            for c in &mut out {
+                c.2 -= overflow;
+            }
+            out.retain(|c| c.2 >= SIDEBAR_W + 4.0);
+        }
+        self.crumb_layout = out;
+    }
+
+    fn hit(&self, x: f32, y: f32) -> Hit {
+        if let Some(menu) = &self.menu {
+            let (mx, my, mw, _) = self.menu_rect(menu);
+            if x >= mx && x < mx + mw {
+                let mut iy = my + 6.0;
+                for (i, (_, action)) in menu.items.iter().enumerate() {
+                    let ih = if action.is_some() { 24.0 } else { 9.0 };
+                    if y >= iy && y < iy + ih && action.is_some() {
+                        return Hit::Menu(i);
+                    }
+                    iy += ih;
+                }
+            }
+            return Hit::Nothing;
+        }
+        if y < TOOLBAR_H && x < 80.0 {
+            for (hit, cx) in self.traffic() {
+                if (x - cx).abs() <= 8.0 && (y - 26.0).abs() <= 8.0 {
+                    return hit;
+                }
+            }
+        }
+        if x < SIDEBAR_W {
+            for (i, py) in self.place_rects() {
+                if y >= py && y < py + PLACE_H && x > 16.0 && x < SIDEBAR_W - 16.0 {
+                    return Hit::Place(i);
+                }
+            }
+            return Hit::Toolbar;
+        }
+        if y < TOOLBAR_H {
+            let inside = |(rx, ry, rw, rh): (f32, f32, f32, f32)| x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+            if inside((SIDEBAR_W + 10.0, 12.0, 32.0, 28.0)) {
+                return Hit::Back;
+            }
+            if inside((SIDEBAR_W + 42.0, 12.0, 32.0, 28.0)) {
+                return Hit::Forward;
+            }
+            for (hit, r) in self.view_rects() {
+                if inside(r) {
+                    return hit;
+                }
+            }
+            if inside(self.search_rect()) {
+                return Hit::Search;
+            }
+            return Hit::Toolbar;
+        }
+        if y >= self.h - PATHBAR_H {
+            for (path, _, cx, cw) in &self.crumb_layout {
+                if x >= *cx && x < cx + cw {
+                    return Hit::Crumb(path.clone());
+                }
+            }
+            return Hit::Nothing;
+        }
+        let (_, cy, _, _) = self.content();
+        if self.view == View::List && y < cy + HEADER_H {
+            return Hit::Nothing;
+        }
+        if let Some(i) = self.item_at(x, y) {
+            return Hit::Item(i);
+        }
+        Hit::Content
+    }
+
+    fn item_at(&self, x: f32, y: f32) -> Option<usize> {
+        let (_, cy, _, _) = self.content();
+        let first = match self.view {
+            View::Icons => (((self.scroll + y - cy - 10.0) / CELL_H).floor().max(0.0) as usize) * self.columns(),
+            View::List => ((self.scroll + y - cy - HEADER_H) / ROW_H).floor().max(0.0) as usize,
+        };
+        let last = (first + self.columns() + 1).min(self.visible.len());
+        (first.min(self.visible.len())..last).find(|&i| {
+            let (rx, ry, rw, rh) = self.item_rect(i);
+            match self.view {
+                // Finder: the icon and the name are hot, not the whole cell
+                View::Icons => x >= rx + 12.0 && x < rx + rw - 12.0 && y >= ry + 2.0 && y < ry + rh - 4.0,
+                View::List => x >= rx && x < rx + rw && y >= ry && y < ry + rh,
+            }
+        })
+    }
+
+    pub fn resize_edges(&self, x: f32, y: f32) -> u32 {
+        if self.maximized {
+            return 0;
+        }
+        let mut edges = 0;
+        if y < RESIZE_BAND { edges |= 1 }
+        if y >= self.h - RESIZE_BAND { edges |= 2 }
+        if x < RESIZE_BAND { edges |= 4 }
+        if x >= self.w - RESIZE_BAND { edges |= 8 }
+        edges
+    }
+
+    pub fn cursor_at(&self, x: f32, y: f32) -> Cursor {
+        let edges = self.resize_edges(x, y);
+        if edges != 0 {
+            return Cursor::Resize(edges);
+        }
+        match self.hit(x, y) {
+            Hit::Search => Cursor::Text,
+            _ => Cursor::Default,
+        }
+    }
+
+    // ---------- input ----------
+
+    pub fn resize(&mut self, w: f32, h: f32) {
+        if (w, h) != (self.w, self.h) {
+            self.w = w.max(480.0);
+            self.h = h.max(320.0);
+            self.clamp_scroll();
+            self.menu = None;
+            self.dirty = true;
+        }
+    }
+
+    pub fn motion(&mut self, x: f32, y: f32) -> Vec<Effect> {
+        self.pointer = (x, y);
+        if let Some(origin) = self.drag_origin {
+            if (x - origin.0).hypot(y - origin.1) > 4.0 {
+                self.drag_origin = None;
+                self.pressed = None;
+                let paths = self.selected_paths();
+                if !paths.is_empty() {
+                    return vec![Effect::StartDrag(paths)];
+                }
+            }
+            return Vec::new();
+        }
+        if let Some((start, _)) = self.rubber {
+            self.rubber = Some((start, (x, y)));
+            self.update_rubber();
+            self.dirty = true;
+            return Vec::new();
+        }
+        if let Some((Hit::Content, origin)) = &self.pressed {
+            if (x - origin.0).hypot(y - origin.1) > 3.0 {
+                let origin = *origin;
+                self.rubber = Some(((origin.0, origin.1 + self.scroll), (x, y)));
+                self.update_rubber();
+                self.dirty = true;
+            }
+            return Vec::new();
+        }
+        let hover = self.hit(x, y);
+        let menu_hover = match hover {
+            Hit::Menu(i) => Some(i),
+            _ => None,
+        };
+        // Files and empty space have no hover look: moving over them repaints nothing
+        let visual = |h: &Hit| !matches!(h, Hit::Item(_) | Hit::Content | Hit::Toolbar | Hit::Nothing | Hit::Search);
+        if menu_hover != self.menu_hover || (hover != self.hover && (visual(&hover) || visual(&self.hover))) {
+            self.dirty = true;
+        }
+        self.hover = hover;
+        self.menu_hover = menu_hover;
+        Vec::new()
+    }
+
+    pub fn leave(&mut self) {
+        if !matches!(self.hover, Hit::Nothing | Hit::Item(_) | Hit::Content | Hit::Toolbar | Hit::Search) {
+            self.hover = Hit::Nothing;
+            self.dirty = true;
+        }
+    }
+
+    fn update_rubber(&mut self) {
+        let Some((start, end)) = self.rubber else { return };
+        // The anchor is stored in content coordinates so it scrolls with the items
+        let (x0, x1) = (start.0.min(end.0), start.0.max(end.0));
+        let (y0, y1) = ((start.1 - self.scroll).min(end.1), (start.1 - self.scroll).max(end.1));
+        let mut chosen = self.rubber_base.clone();
+        for i in 0..self.visible.len() {
+            let (rx, ry, rw, rh) = self.item_rect(i);
+            let (rx, rw) = if self.view == View::Icons { (rx + 12.0, rw - 24.0) } else { (rx, rw) };
+            if rx < x1 && rx + rw > x0 && ry < y1 && ry + rh > y0 {
+                chosen.insert(self.entry(i).path.clone());
+            }
+        }
+        self.selected = chosen;
+    }
+
+    pub fn press(&mut self, button: u32, x: f32, y: f32, mods: Mods) -> Vec<Effect> {
+        self.pointer = (x, y);
+        self.dirty = true;
+        let edges = self.resize_edges(x, y);
+        if button == BTN_LEFT && edges != 0 && self.menu.is_none() {
+            return vec![Effect::Resize(edges)];
+        }
+        match button {
+            BTN_BACK => return self.go_back(),
+            BTN_FORWARD => return self.go_forward(),
+            _ => {}
+        }
+        let hit = self.hit(x, y);
+        if self.menu.is_some() {
+            if let (Hit::Menu(i), BTN_LEFT) = (&hit, button) {
+                let action = self.menu.as_ref().and_then(|m| m.items[*i].1);
+                self.menu = None;
+                return action.map(|a| self.menu_action(a)).unwrap_or_default();
+            }
+            self.menu = None;
+            return Vec::new();
+        }
+        let mut effects = Vec::new();
+        if self.rename.is_some() && !matches!(&hit, Hit::Item(i) if self.rename.as_ref().is_some_and(|(p, _)| *p == self.entry(*i).path)) {
+            effects = self.commit_rename();
+        }
+        if !matches!(hit, Hit::Search) && self.search_focus {
+            self.search_focus = false;
+        }
+        let now = Instant::now();
+        let double = button == BTN_LEFT
+            && self.last_click.as_ref().is_some_and(|(t, h)| *h == hit && now.duration_since(*t) < DOUBLE_CLICK);
+        self.last_click = (button == BTN_LEFT).then(|| (now, hit.clone()));
+        if button == BTN_RIGHT {
+            self.open_menu(hit, x, y);
+            return effects;
+        }
+        if button != BTN_LEFT {
+            return effects;
+        }
+        match hit {
+            Hit::Close => effects.push(Effect::Close),
+            Hit::Minimize => effects.push(Effect::Minimize),
+            Hit::Zoom => effects.push(Effect::ToggleMaximize),
+            Hit::Back => effects.extend(self.go_back()),
+            Hit::Forward => effects.extend(self.go_forward()),
+            Hit::ViewIcons => self.set_view(View::Icons),
+            Hit::ViewList => self.set_view(View::List),
+            Hit::Search => self.search_focus = true,
+            Hit::Place(i) => {
+                let path = self.places[i].path.clone();
+                if path == fsops::trash_files_dir() {
+                    let _ = std::fs::create_dir_all(&path);
+                }
+                effects.extend(self.navigate(path, true));
+            }
+            Hit::Crumb(path) => effects.extend(self.navigate(path, true)),
+            Hit::Toolbar if double => effects.push(Effect::ToggleMaximize),
+            Hit::Toolbar => effects.push(Effect::Move),
+            Hit::Item(i) if double => {
+                self.last_click = None;
+                effects.extend(self.open(i));
+            }
+            Hit::Item(i) => self.click_item(i, mods),
+            Hit::Content => {
+                self.pressed = Some((Hit::Content, (x, y)));
+                self.rubber_base = if mods.ctrl || mods.shift { self.selected.clone() } else { HashSet::new() };
+                if !(mods.ctrl || mods.shift) {
+                    self.selected.clear();
+                    self.cursor = None;
+                }
+            }
+            Hit::Menu(_) | Hit::Nothing => {}
+        }
+        effects
+    }
+
+    fn click_item(&mut self, i: usize, mods: Mods) {
+        let path = self.entry(i).path.clone();
+        if mods.shift {
+            let a = self.anchor.unwrap_or(i);
+            if !mods.ctrl {
+                self.selected.clear();
+            }
+            for j in a.min(i)..=a.max(i) {
+                self.selected.insert(self.entry(j).path.clone());
+            }
+        } else if mods.ctrl {
+            if !self.selected.remove(&path) {
+                self.selected.insert(path);
+            }
+            self.anchor = Some(i);
+        } else {
+            if !self.selected.contains(&path) || self.selected.len() > 1 {
+                self.selected = HashSet::from([path]);
+            } else if self.cursor == Some(i) {
+                // A second slow click on the selected name renames, like Finder
+                self.pressed = Some((Hit::Item(i), self.pointer));
+            }
+            self.anchor = Some(i);
+        }
+        self.cursor = Some(i);
+        if self.selected.contains(&self.entry(i).path) {
+            self.drag_origin = Some(self.pointer);
+        }
+    }
+
+    pub fn release(&mut self, button: u32, x: f32, y: f32) -> Vec<Effect> {
+        if button != BTN_LEFT {
+            return Vec::new();
+        }
+        self.drag_origin = None;
+        if self.rubber.take().is_some() {
+            self.dirty = true;
+        }
+        if let Some((Hit::Item(i), _)) = self.pressed.take() {
+            let (_, ry, _, rh) = self.item_rect(i);
+            let on_name = match self.view {
+                View::Icons => y > ry + 10.0 + GRID_ICON,
+                View::List => y >= ry && y < ry + rh && x > SIDEBAR_W + 36.0,
+            };
+            let quick = self.last_click.as_ref().is_some_and(|(t, _)| t.elapsed() < DOUBLE_CLICK);
+            if on_name && !quick && self.selected.len() == 1 {
+                self.start_rename();
+            }
+        }
+        Vec::new()
+    }
+
+    pub fn scroll(&mut self, dy: f32) {
+        if self.menu.is_some() {
+            return;
+        }
+        let before = self.scroll;
+        self.scroll += dy;
+        self.clamp_scroll();
+        if self.rubber.is_some() {
+            self.update_rubber();
+        }
+        if self.scroll != before {
+            self.dirty = true;
+            let (x, y) = self.pointer;
+            self.hover = self.hit(x, y);
+        }
+    }
+
+    /// A drag with files is over the window: returns the folder a drop would go to
+    pub fn drag_over(&mut self, x: f32, y: f32) -> PathBuf {
+        self.pointer = (x, y);
+        let target = match self.hit(x, y) {
+            Hit::Item(i) if self.entry(i).is_dir => self.entry(i).path.clone(),
+            Hit::Place(i) => self.places[i].path.clone(),
+            Hit::Crumb(path) => path,
+            _ => self.dir.clone(),
+        };
+        if self.drop_target.as_ref() != Some(&target) {
+            self.drop_target = Some(target.clone());
+            self.dirty = true;
+        }
+        target
+    }
+
+    pub fn drag_leave(&mut self) {
+        if self.drop_target.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Files dropped into `dir`: same filesystem moves (unless the program chose copy),
+    /// elsewhere copies; dropping items back where they are does nothing
+    pub fn drop_files(&mut self, paths: Vec<PathBuf>, dir: PathBuf, move_allowed: bool) -> Vec<Effect> {
+        self.drag_leave();
+        let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.parent() != Some(dir.as_path()) && *p != dir).collect();
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        let cut = move_allowed && paths.iter().all(|p| p.parent().is_some_and(|parent| fsops::same_device(parent, &dir)));
+        self.flash(format!("{} {}…", if cut { "Перемещение" } else { "Копирование" }, objects(paths.len())));
+        vec![Effect::Paste(paths, dir, cut)]
+    }
+
+    /// Image shown under the pointer while dragging: the first icon, plus a count badge
+    pub fn drag_image(&mut self, paths: &[PathBuf], scale: f32) -> Option<(u32, Vec<u8>)> {
+        let first = paths.first()?;
+        let entry = self.entries.iter().find(|e| e.path == *first)?.clone();
+        let icon = self.icon_for(&entry);
+        let size = 72.0;
+        let px = (size * scale).ceil() as u32;
+        let mut pm = tiny_skia::Pixmap::new(px, px)?;
+        let before = theme::ui_scale();
+        theme::set_ui_scale(scale);
+        {
+            let mut m = pm.as_mut();
+            self.icons.draw(&mut m, &mut self.fonts, &icon, 4.0, 4.0, 64.0);
+            if paths.len() > 1 {
+                let label = paths.len().to_string();
+                let w = self.fonts.measure_text(&label, 11.0, true) + 10.0;
+                theme::fill_rrect(&mut m, size - w - 2.0, 2.0, w, 18.0, 9.0, rgba(255, 59, 48, 255));
+                self.fonts.draw_text_centered(&mut m, &label, size - w * 0.5 - 2.0, 4.5, 11.0, rgba(255, 255, 255, 255), true);
+            }
+        }
+        theme::set_ui_scale(before);
+        Some((px, pm.take()))
+    }
+
+    fn open_menu(&mut self, hit: Hit, x: f32, y: f32) {
+        let item = |s: &str, a: MenuAction| (s.to_string(), Some(a));
+        let sep = || (String::new(), None);
+        let items = match hit {
+            Hit::Item(i) => {
+                let path = self.entry(i).path.clone();
+                if !self.selected.contains(&path) {
+                    self.selected = HashSet::from([path]);
+                    self.anchor = Some(i);
+                }
+                self.cursor = Some(i);
+                let mut items = vec![item("Открыть", MenuAction::Open)];
+                if self.entry(i).is_dir {
+                    items.push(item("Открыть в терминале", MenuAction::Terminal));
+                }
+                items.extend([sep(), item("Переименовать", MenuAction::Rename), item("Скопировать", MenuAction::Copy), item("Вырезать", MenuAction::Cut)]);
+                if !self.dir.starts_with(fsops::trash_files_dir()) {
+                    items.extend([sep(), item("Переместить в Корзину", MenuAction::Trash)]);
+                }
+                items
+            }
+            Hit::Content | Hit::Nothing => {
+                self.selected.clear();
+                let mut items = vec![item("Новая папка", MenuAction::NewFolder)];
+                if self.clipboard.is_some() {
+                    items.push(item("Вставить", MenuAction::Paste));
+                }
+                items.extend([
+                    item("Открыть в терминале", MenuAction::Terminal),
+                    sep(),
+                    item(if self.show_hidden { "✓ Скрытые файлы" } else { "Скрытые файлы" }, MenuAction::ToggleHidden),
+                    item(if self.view == View::Icons { "✓ Значки" } else { "Значки" }, MenuAction::ShowIcons),
+                    item(if self.view == View::List { "✓ Список" } else { "Список" }, MenuAction::ShowList),
+                ]);
+                items
+            }
+            _ => return,
+        };
+        self.menu = Some(Menu { x, y, items });
+        self.menu_hover = None;
+    }
+
+    fn menu_rect(&self, menu: &Menu) -> (f32, f32, f32, f32) {
+        let w = 220.0;
+        let h = 12.0 + menu.items.iter().map(|(_, a)| if a.is_some() { 24.0 } else { 9.0 }).sum::<f32>();
+        let x = menu.x.min(self.w - w - 6.0).max(6.0);
+        let y = if menu.y + h > self.h - 6.0 { (menu.y - h).max(6.0) } else { menu.y };
+        (x, y, w, h)
+    }
+
+    fn menu_action(&mut self, action: MenuAction) -> Vec<Effect> {
+        self.dirty = true;
+        match action {
+            MenuAction::Open => self.open_selection(),
+            MenuAction::Terminal => {
+                let target = self.cursor.filter(|_| !self.selected.is_empty()).map(|c| self.entry(c).clone()).filter(|e| e.is_dir).map(|e| e.path).unwrap_or_else(|| self.dir.clone());
+                fsops::open_terminal(&target);
+                Vec::new()
+            }
+            MenuAction::Rename => {
+                self.start_rename();
+                Vec::new()
+            }
+            MenuAction::Copy => self.copy_selection(false),
+            MenuAction::Cut => self.copy_selection(true),
+            MenuAction::Paste => self.paste(),
+            MenuAction::Trash => self.trash_selection(),
+            MenuAction::NewFolder => self.new_folder(),
+            MenuAction::ToggleHidden => {
+                self.show_hidden = !self.show_hidden;
+                self.refilter();
+                Vec::new()
+            }
+            MenuAction::ShowIcons => {
+                self.set_view(View::Icons);
+                Vec::new()
+            }
+            MenuAction::ShowList => {
+                self.set_view(View::List);
+                Vec::new()
+            }
+        }
+    }
+
+    /// `sym` is an XKB keysym, `text` the produced characters
+    pub fn key(&mut self, sym: u32, text: Option<&str>, mods: Mods) -> Vec<Effect> {
+        use smithay_client_toolkit::seat::keyboard::Keysym as K;
+        self.dirty = true;
+        let sym = K::new(sym);
+        // Editing a name or the search field
+        if let Some((_, name)) = self.rename.as_mut() {
+            match sym {
+                K::Return | K::KP_Enter => return self.commit_rename(),
+                K::Escape => self.rename = None,
+                K::BackSpace => {
+                    name.pop();
+                }
+                _ => {
+                    if let Some(t) = text.filter(|t| !t.chars().any(char::is_control) && !mods.ctrl) {
+                        name.push_str(t);
+                    }
+                }
+            }
+            return Vec::new();
+        }
+        if self.menu.is_some() {
+            if sym == K::Escape {
+                self.menu = None;
+            }
+            return Vec::new();
+        }
+        if self.search_focus {
+            match sym {
+                K::Escape => {
+                    self.search.clear();
+                    self.search_focus = false;
+                }
+                K::Return | K::KP_Enter | K::Down => {
+                    self.search_focus = false;
+                    if !self.visible.is_empty() {
+                        self.select_only(0);
+                    }
+                }
+                K::BackSpace => {
+                    if mods.ctrl { self.search.clear() } else { self.search.pop(); }
+                }
+                _ => {
+                    if let Some(t) = text.filter(|t| !t.chars().any(char::is_control) && !mods.ctrl) {
+                        self.search.push_str(t);
+                    }
+                }
+            }
+            self.scroll = 0.0;
+            self.refilter();
+            return Vec::new();
+        }
+        let ctrl = mods.ctrl;
+        match sym {
+            K::Return | K::KP_Enter if mods.alt || self.selected.len() != 1 => return self.open_selection(),
+            K::Return | K::KP_Enter => return self.open_selection(),
+            K::F2 => self.start_rename(),
+            K::BackSpace => return self.go_up(),
+            K::Up if mods.alt => return self.go_up(),
+            K::Down if mods.alt || ctrl => return self.open_selection(),
+            K::Left if mods.alt => return self.go_back(),
+            K::Right if mods.alt => return self.go_forward(),
+            K::bracketleft if ctrl => return self.go_back(),
+            K::bracketright if ctrl => return self.go_forward(),
+            K::Delete => return self.trash_selection(),
+            K::F5 => return self.reload(),
+            K::Escape => {
+                self.selected.clear();
+                self.search.clear();
+                self.refilter();
+            }
+            K::Left | K::Right | K::Up | K::Down | K::Home | K::End | K::Page_Up | K::Page_Down => self.move_cursor(sym, mods.shift),
+            _ if ctrl => match text.map(str::to_lowercase).as_deref().or(latin(sym)) {
+                Some("a" | "ф") => {
+                    self.selected = self.visible.iter().map(|&i| self.entries[i].path.clone()).collect();
+                }
+                Some("c" | "с") => return self.copy_selection(false),
+                Some("x" | "ч") => return self.copy_selection(true),
+                Some("v" | "м") => return self.paste(),
+                Some("h" | "р") => {
+                    self.show_hidden = !self.show_hidden;
+                    self.refilter();
+                }
+                Some("f" | "а") => self.search_focus = true,
+                Some("l" | "д") => self.search_focus = true,
+                Some("1") => self.set_view(View::Icons),
+                Some("2") => self.set_view(View::List),
+                Some("n" | "т") if mods.shift => return self.new_folder(),
+                Some("w" | "ц" | "q" | "й") => return vec![Effect::Close],
+                Some("r" | "к") => return self.reload(),
+                _ => {}
+            },
+            _ => {
+                // Type-ahead: jump to the first name starting with the typed letters
+                if let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) {
+                    let (buffer, at) = &mut self.type_ahead;
+                    if at.elapsed() > Duration::from_millis(900) {
+                        buffer.clear();
+                    }
+                    buffer.push_str(&t.to_lowercase());
+                    *at = Instant::now();
+                    let prefix = buffer.clone();
+                    if let Some(i) = (0..self.visible.len()).find(|&i| self.entry(i).name.to_lowercase().starts_with(&prefix)) {
+                        self.select_only(i);
+                    }
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    fn select_only(&mut self, i: usize) {
+        self.selected = HashSet::from([self.entry(i).path.clone()]);
+        self.cursor = Some(i);
+        self.anchor = Some(i);
+        self.scroll_to(i);
+    }
+
+    fn move_cursor(&mut self, sym: smithay_client_toolkit::seat::keyboard::Keysym, extend: bool) {
+        use smithay_client_toolkit::seat::keyboard::Keysym as K;
+        let n = self.visible.len();
+        if n == 0 {
+            return;
+        }
+        let cols = if self.view == View::Icons { self.columns() } else { 1 };
+        let page = ((self.content().3 / if self.view == View::Icons { CELL_H } else { ROW_H }) as usize).max(1) * cols;
+        let next = match (self.cursor, sym) {
+            (None, K::End) => n - 1,
+            (None, _) => 0,
+            (Some(c), K::Left) if self.view == View::Icons => c.saturating_sub(1),
+            (Some(c), K::Right) if self.view == View::Icons => (c + 1).min(n - 1),
+            (Some(c), K::Up) => c.saturating_sub(cols),
+            (Some(c), K::Down) => (c + cols).min(n - 1),
+            (Some(c), K::Page_Up) => c.saturating_sub(page),
+            (Some(c), K::Page_Down) => (c + page).min(n - 1),
+            (Some(_), K::Home) => 0,
+            (Some(_), K::End) => n - 1,
+            (Some(c), _) => c,
+        };
+        if extend {
+            let a = *self.anchor.get_or_insert(self.cursor.unwrap_or(next));
+            self.selected = (a.min(next)..=a.max(next)).map(|j| self.entry(j).path.clone()).collect();
+            self.cursor = Some(next);
+            self.scroll_to(next);
+        } else {
+            self.select_only(next);
+        }
+    }
+
+    /// Clears an expired status message; true if a repaint is needed
+    pub fn tick(&mut self) -> bool {
+        if self.status.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(4)) {
+            self.status = None;
+            self.dirty = true;
+        }
+        self.dirty
+    }
+
+    pub fn status_deadline(&self) -> Option<Instant> {
+        self.status.as_ref().map(|(_, t)| *t + Duration::from_secs(4))
+    }
+
+    // ---------- painting ----------
+
+    pub fn paint(&mut self, pm: &mut PixmapMut) {
+        self.dirty = false;
+        pm.fill(colors::window());
+        self.paint_content(pm);
+        self.paint_toolbar(pm);
+        self.paint_pathbar(pm);
+        self.paint_sidebar(pm);
+        self.paint_menu(pm);
+    }
+
+    fn paint_sidebar(&mut self, pm: &mut PixmapMut) {
+        // Floating sidebar panel, as in Tahoe
+        theme::fill_rrect(pm, 8.0, 8.0, SIDEBAR_W - 16.0, self.h - 16.0, 14.0, colors::sidebar());
+        theme::stroke_rrect(pm, 8.5, 8.5, SIDEBAR_W - 17.0, self.h - 17.0, 13.5, 1.0, colors::sidebar_edge());
+        let hovered_traffic = matches!(self.hover, Hit::Close | Hit::Minimize | Hit::Zoom);
+        for (hit, cx) in self.traffic() {
+            let color = if !self.focused && !hovered_traffic {
+                rgba(205, 205, 210, 255)
+            } else {
+                match hit {
+                    Hit::Close => rgba(255, 95, 87, 255),
+                    Hit::Minimize => rgba(254, 188, 46, 255),
+                    _ => rgba(40, 200, 64, 255),
+                }
+            };
+            theme::fill_circle(pm, cx, 26.0, 6.0, color);
+            if hovered_traffic {
+                let ink = rgba(0, 0, 0, 140);
+                match hit {
+                    Hit::Close => {
+                        theme::line(pm, cx - 2.5, 23.5, cx + 2.5, 28.5, 1.2, ink);
+                        theme::line(pm, cx + 2.5, 23.5, cx - 2.5, 28.5, 1.2, ink);
+                    }
+                    Hit::Minimize => theme::line(pm, cx - 3.0, 26.0, cx + 3.0, 26.0, 1.2, ink),
+                    _ => {
+                        theme::line(pm, cx - 3.0, 26.0, cx + 3.0, 26.0, 1.2, ink);
+                        theme::line(pm, cx, 23.0, cx, 29.0, 1.2, ink);
+                    }
+                }
+            }
+        }
+        let mut section = "";
+        let rects = self.place_rects();
+        for (i, py) in rects {
+            let place = &self.places[i];
+            if place.section != section {
+                section = place.section;
+                self.fonts.draw_text(pm, section, 22.0, py - 19.0, 11.0, colors::tertiary(), true);
+            }
+            let active = self.dir == place.path || self.drop_target.as_ref() == Some(&place.path);
+            if active {
+                theme::fill_rrect(pm, 14.0, py, SIDEBAR_W - 28.0, PLACE_H - 2.0, 7.0, colors::selected_gray());
+            } else if self.hover == Hit::Place(i) {
+                theme::fill_rrect(pm, 14.0, py, SIDEBAR_W - 28.0, PLACE_H - 2.0, 7.0, colors::hover());
+            }
+            draw_glyph(pm, place.glyph, 24.0, py + 5.0, 16.0, colors::accent());
+            let name = self.fonts.ellipsize(&place.name, SIDEBAR_W - 84.0, 13.0, false);
+            self.fonts.draw_text(pm, &name, 48.0, py + 5.5, 13.0, colors::text(), false);
+        }
+    }
+
+    fn paint_toolbar(&mut self, pm: &mut PixmapMut) {
+        let x = SIDEBAR_W;
+        theme::fill_rect(pm, x, 0.0, self.w - x, TOOLBAR_H, colors::window());
+        // Back/forward capsule
+        theme::fill_rrect(pm, x + 10.0, 12.0, 64.0, 28.0, 14.0, colors::control());
+        for (hit, bx, enabled, dir) in [
+            (Hit::Back, x + 10.0, self.hist_pos > 0, -1.0),
+            (Hit::Forward, x + 42.0, self.hist_pos + 1 < self.history.len(), 1.0),
+        ] {
+            if enabled && self.hover == hit {
+                theme::fill_rrect(pm, bx + 2.0, 14.0, 28.0, 24.0, 12.0, colors::hover());
+            }
+            let ink = if enabled { colors::text() } else { colors::tertiary() };
+            let cx = bx + 16.0;
+            theme::polyline(pm, &[(cx - 2.5 * dir, 21.0), (cx + 2.5 * dir, 26.0), (cx - 2.5 * dir, 31.0)], 1.8, ink);
+        }
+        let title_w = self.w - 196.0 - 84.0 - (x + 86.0) - 10.0;
+        let title = self.fonts.ellipsize(&self.title(), title_w, 15.0, true);
+        self.fonts.draw_text(pm, &title, x + 86.0, 16.5, 15.0, colors::text(), true);
+        // View switch
+        let [(_, (vx, vy, _, _)), _] = self.view_rects();
+        theme::fill_rrect(pm, vx, vy, 72.0, 28.0, 14.0, colors::control());
+        for (hit, (rx, ry, rw, rh)) in self.view_rects() {
+            let active = (hit == Hit::ViewIcons) == (self.view == View::Icons);
+            if active {
+                theme::fill_rrect(pm, rx + 2.0, ry + 2.0, rw - 4.0, rh - 4.0, 12.0, rgba(255, 255, 255, 255));
+                theme::stroke_rrect(pm, rx + 2.0, ry + 2.0, rw - 4.0, rh - 4.0, 12.0, 0.6, colors::separator());
+            } else if self.hover == hit {
+                theme::fill_rrect(pm, rx + 2.0, ry + 2.0, rw - 4.0, rh - 4.0, 12.0, colors::hover());
+            }
+            let ink = colors::text();
+            let (cx, cy) = (rx + rw * 0.5, ry + rh * 0.5);
+            if hit == Hit::ViewIcons {
+                for (dx, dy) in [(-4.5, -4.5), (1.0, -4.5), (-4.5, 1.0), (1.0, 1.0)] {
+                    theme::fill_rrect(pm, cx + dx, cy + dy, 3.8, 3.8, 1.0, ink);
+                }
+            } else {
+                for dy in [-4.0, 0.0, 4.0] {
+                    theme::fill_circle(pm, cx - 5.0, cy + dy, 1.0, ink);
+                    theme::line(pm, cx - 2.5, cy + dy, cx + 5.5, cy + dy, 1.4, ink);
+                }
+            }
+        }
+        // Search field
+        let (sx, sy, sw, sh) = self.search_rect();
+        theme::fill_rrect(pm, sx, sy, sw, sh, 14.0, colors::control());
+        if self.search_focus {
+            theme::stroke_rrect(pm, sx - 1.0, sy - 1.0, sw + 2.0, sh + 2.0, 15.0, 2.5, rgba(10, 132, 255, 110));
+        }
+        let ink = colors::secondary();
+        theme::stroke_circle(pm, sx + 15.0, sy + 13.0, 4.5, 1.5, ink);
+        theme::line(pm, sx + 18.5, sy + 16.5, sx + 21.5, sy + 19.5, 1.6, ink);
+        if self.search.is_empty() && !self.search_focus {
+            self.fonts.draw_text(pm, "Поиск", sx + 28.0, sy + 6.5, 13.0, colors::tertiary(), false);
+        } else {
+            let shown = self.tail_fit(&self.search.clone(), sw - 40.0, 13.0);
+            let end = self.fonts.draw_text(pm, &shown, sx + 28.0, sy + 6.5, 13.0, colors::text(), false);
+            if self.search_focus {
+                let caret = (end / theme::ui_scale()).max(sx + 28.0);
+                theme::fill_rect(pm, caret + 1.0, sy + 6.0, 1.5, 16.0, colors::accent());
+            }
+        }
+        theme::fill_rect(pm, x, TOOLBAR_H - 1.0, self.w - x, 1.0, colors::separator());
+    }
+
+    /// The end of `text` that fits (fields show the caret end)
+    fn tail_fit(&mut self, text: &str, width: f32, size: f32) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        for start in 0..chars.len() {
+            let tail: String = chars[start..].iter().collect();
+            if self.fonts.measure_text(&tail, size, false) <= width {
+                return tail;
+            }
+        }
+        String::new()
+    }
+
+    fn paint_content(&mut self, pm: &mut PixmapMut) {
+        let (cx, cy, cw, ch) = self.content();
+        if let Some(err) = self.error.clone() {
+            self.fonts.draw_text_centered(pm, "Не удаётся открыть папку", cx + cw * 0.5, cy + ch * 0.4, 15.0, colors::secondary(), true);
+            let err = self.fonts.ellipsize(&err, cw - 40.0, 12.0, false);
+            self.fonts.draw_text_centered(pm, &err, cx + cw * 0.5, cy + ch * 0.4 + 24.0, 12.0, colors::tertiary(), false);
+            return;
+        }
+        if self.visible.is_empty() && !self.loading {
+            let text = if self.search.is_empty() { "Папка пуста" } else { "Ничего не найдено" };
+            self.fonts.draw_text_centered(pm, text, cx + cw * 0.5, cy + ch * 0.42, 14.0, colors::tertiary(), false);
+        }
+        match self.view {
+            View::Icons => self.paint_icons(pm),
+            View::List => self.paint_list(pm),
+        }
+        if let Some((start, end)) = self.rubber {
+            let (x0, x1) = (start.0.min(end.0), start.0.max(end.0));
+            let sy = start.1 - self.scroll;
+            let (y0, y1) = (sy.min(end.1).max(cy), sy.max(end.1).min(cy + ch));
+            if y1 > y0 {
+                theme::fill_rect(pm, x0, y0, x1 - x0, y1 - y0, rgba(10, 132, 255, 38));
+                theme::stroke_rrect(pm, x0 + 0.5, y0 + 0.5, x1 - x0 - 1.0, y1 - y0 - 1.0, 0.0, 1.0, rgba(10, 132, 255, 170));
+            }
+        }
+        if self.drop_target.as_ref() == Some(&self.dir) {
+            theme::stroke_rrect(pm, cx + 4.0, cy + 4.0, cw - 8.0, ch - 8.0, 10.0, 3.0, rgba(10, 132, 255, 150));
+        }
+        // Thin overlay scrollbar when the folder does not fit
+        let total = self.content_height();
+        if total > ch + 1.0 {
+            let track = ch - 8.0;
+            let thumb = (track * ch / total).max(28.0);
+            let y = cy + 4.0 + (track - thumb) * self.scroll / (total - ch);
+            theme::fill_rrect(pm, self.w - 9.0, y, 5.0, thumb, 2.5, rgba(0, 0, 0, 70));
+        }
+    }
+
+    fn visible_range(&self) -> std::ops::Range<usize> {
+        let (_, _, _, ch) = self.content();
+        match self.view {
+            View::Icons => {
+                let cols = self.columns();
+                let first = ((self.scroll - 10.0) / CELL_H).floor().max(0.0) as usize * cols;
+                let rows = (ch / CELL_H).ceil() as usize + 2;
+                first.min(self.visible.len())..(first + rows * cols).min(self.visible.len())
+            }
+            View::List => {
+                let first = (self.scroll / ROW_H).floor().max(0.0) as usize;
+                first.min(self.visible.len())..(first + (ch / ROW_H) as usize + 2).min(self.visible.len())
+            }
+        }
+    }
+
+    fn icon_for(&self, e: &Entry) -> Icon {
+        if e.is_dir {
+            Icon::Folder(self.special(&e.path))
+        } else {
+            Icon::File(e.kind, e.ext.clone())
+        }
+    }
+
+    fn paint_icons(&mut self, pm: &mut PixmapMut) {
+        let (_, cy, _, ch) = self.content();
+        for i in self.visible_range() {
+            let (x, y, w, _) = self.item_rect(i);
+            if y > cy + ch || y + CELL_H < cy {
+                continue;
+            }
+            let e = self.entry(i).clone();
+            let selected = self.selected.contains(&e.path) || self.drop_target.as_ref() == Some(&e.path);
+            let icon_x = x + (w - GRID_ICON) * 0.5;
+            if selected {
+                theme::fill_rrect(pm, icon_x - 6.0, y + 2.0, GRID_ICON + 12.0, GRID_ICON + 8.0, 8.0, colors::selected_gray());
+            }
+            let icon = self.icon_for(&e);
+            self.icons.draw(pm, &mut self.fonts, &icon, icon_x, y + 6.0, GRID_ICON);
+            let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
+            let name_y = y + 10.0 + GRID_ICON;
+            if let Some(name) = renaming {
+                let shown = self.tail_fit(&name, w - 12.0, 12.0);
+                let tw = self.fonts.measure_text(&shown, 12.0, false);
+                theme::fill_rrect(pm, x + (w - tw) * 0.5 - 5.0, name_y - 2.0, tw + 10.0, 19.0, 4.0, rgba(255, 255, 255, 255));
+                theme::stroke_rrect(pm, x + (w - tw) * 0.5 - 5.0, name_y - 2.0, tw + 10.0, 19.0, 4.0, 2.0, rgba(10, 132, 255, 160));
+                self.fonts.draw_text_centered(pm, &shown, x + w * 0.5, name_y, 12.0, colors::text(), false);
+                continue;
+            }
+            let lines = self.fonts.wrap_two_lines(&e.name, w - 10.0, 12.0, false);
+            for (k, line) in lines.iter().enumerate() {
+                let ly = name_y + k as f32 * 15.0;
+                let tw = self.fonts.measure_text(line, 12.0, false);
+                let ink = if selected {
+                    theme::fill_rrect(pm, x + (w - tw) * 0.5 - 4.0, ly - 1.0, tw + 8.0, 16.0, 4.0, if self.focused { colors::accent() } else { rgba(200, 200, 205, 255) });
+                    if self.focused { rgba(255, 255, 255, 255) } else { colors::text() }
+                } else if e.hidden {
+                    colors::secondary()
+                } else {
+                    colors::text()
+                };
+                self.fonts.draw_text_centered(pm, line, x + w * 0.5, ly, 12.0, ink, false);
+            }
+        }
+    }
+
+    fn paint_list(&mut self, pm: &mut PixmapMut) {
+        let (cx, cy, cw, ch) = self.content();
+        let date_w = 160.0;
+        let size_w = 90.0;
+        let kind_w = if cw > 640.0 { 130.0 } else { 0.0 };
+        let name_w = cw - date_w - size_w - kind_w - 40.0;
+        let col_date = cx + 20.0 + name_w;
+        let col_size = col_date + date_w;
+        let col_kind = col_size + size_w;
+        for i in self.visible_range() {
+            let (_, y, _, _) = self.item_rect(i);
+            if y + ROW_H < cy + HEADER_H || y > cy + ch {
+                continue;
+            }
+            let e = self.entry(i).clone();
+            let selected = self.selected.contains(&e.path) || self.drop_target.as_ref() == Some(&e.path);
+            if selected {
+                let fill = if self.focused { colors::accent() } else { rgba(220, 220, 224, 255) };
+                theme::fill_rrect(pm, cx + 8.0, y, cw - 16.0, ROW_H, 6.0, fill);
+            } else if i % 2 == 1 {
+                theme::fill_rrect(pm, cx + 8.0, y, cw - 16.0, ROW_H, 6.0, colors::stripe());
+            }
+            let (ink, sub) = if selected && self.focused {
+                (rgba(255, 255, 255, 255), rgba(255, 255, 255, 220))
+            } else {
+                (if e.hidden { colors::secondary() } else { colors::text() }, colors::secondary())
+            };
+            let icon = self.icon_for(&e);
+            self.icons.draw(pm, &mut self.fonts, &icon, cx + 18.0, y + 4.0, 18.0);
+            let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
+            if let Some(name) = renaming {
+                let shown = self.tail_fit(&name, name_w - 40.0, 13.0);
+                let tw = self.fonts.measure_text(&shown, 13.0, false);
+                theme::fill_rrect(pm, cx + 40.0, y + 3.0, tw + 10.0, ROW_H - 6.0, 4.0, rgba(255, 255, 255, 255));
+                theme::stroke_rrect(pm, cx + 40.0, y + 3.0, tw + 10.0, ROW_H - 6.0, 4.0, 2.0, rgba(10, 132, 255, 160));
+                self.fonts.draw_text(pm, &shown, cx + 45.0, y + 5.5, 13.0, colors::text(), false);
+            } else {
+                self.fonts.draw_text_clipped(pm, &e.name, cx + 44.0, y + 5.5, name_w - 30.0, 13.0, ink, false);
+            }
+            let date = fsops::human_date(e.modified);
+            self.fonts.draw_text_clipped(pm, &date, col_date, y + 5.5, date_w - 10.0, 12.0, sub, false);
+            let size = if e.is_dir { "—".to_string() } else { fsops::human_size(e.size) };
+            self.fonts.draw_text_right(pm, &size, col_size + size_w - 18.0, y + 5.5, 12.0, sub, false);
+            if kind_w > 0.0 {
+                self.fonts.draw_text_clipped(pm, e.kind.label(), col_kind, y + 5.5, kind_w - 10.0, 12.0, sub, false);
+            }
+        }
+        // Sticky header over the scrolled rows
+        theme::fill_rect(pm, cx, cy, cw, HEADER_H, colors::window());
+        for (label, x) in [("Имя", cx + 44.0), ("Дата изменения", col_date), ("Размер", col_size + 4.0), ("Тип", col_kind)] {
+            if label == "Тип" && kind_w == 0.0 {
+                continue;
+            }
+            self.fonts.draw_text(pm, label, x, cy + 7.0, 11.5, colors::secondary(), true);
+        }
+        theme::fill_rect(pm, cx + 8.0, cy + HEADER_H - 1.0, cw - 16.0, 1.0, colors::separator());
+    }
+
+    fn paint_pathbar(&mut self, pm: &mut PixmapMut) {
+        let y = self.h - PATHBAR_H;
+        theme::fill_rect(pm, SIDEBAR_W, y, self.w - SIDEBAR_W, PATHBAR_H, colors::window());
+        theme::fill_rect(pm, SIDEBAR_W, y, self.w - SIDEBAR_W, 1.0, colors::separator());
+        self.layout_crumbs();
+        let crumbs = self.crumb_layout.clone();
+        let last = crumbs.len().saturating_sub(1);
+        for (k, (path, name, x, _)) in crumbs.iter().enumerate() {
+            let glyph = if *path == fsops::home() { Glyph::Home } else if path.parent().is_none() { Glyph::Computer } else { Glyph::Folder };
+            let ink = if self.hover == Hit::Crumb(path.clone()) { colors::accent() } else if k == last { colors::text() } else { colors::secondary() };
+            draw_glyph(pm, glyph, *x, y + 8.0, 12.0, if glyph == Glyph::Folder { rgba(76, 155, 228, 255) } else { ink });
+            self.fonts.draw_text(pm, name, x + 16.0, y + 7.5, 11.5, ink, k == last);
+            if k < last {
+                let w = self.fonts.measure_text(name, 11.5, k == last);
+                let sx = x + 16.0 + w + 5.0;
+                theme::polyline(pm, &[(sx, y + 10.5), (sx + 3.0, y + 14.0), (sx, y + 17.5)], 1.2, colors::tertiary());
+            }
+        }
+        let info = if let Some((text, _)) = &self.status {
+            text.clone()
+        } else if self.loading {
+            "Загрузка…".into()
+        } else if !self.selected.is_empty() {
+            format!("Выбрано {} из {}", self.selected.len(), self.visible.len())
+        } else {
+            objects(self.visible.len())
+        };
+        let info = self.fonts.ellipsize(&info, 260.0, 11.5, false);
+        self.fonts.draw_text_right(pm, &info, self.w - 14.0, y + 7.5, 11.5, colors::secondary(), false);
+    }
+
+    fn paint_menu(&mut self, pm: &mut PixmapMut) {
+        let Some(menu) = self.menu.as_ref() else { return };
+        let (x, y, w, h) = self.menu_rect(menu);
+        let items = menu.items.clone();
+        theme::fill_rrect(pm, x, y + 3.0, w, h, 10.0, rgba(0, 0, 0, 30));
+        theme::fill_rrect(pm, x, y, w, h, 10.0, colors::glass());
+        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 9.5, 1.0, rgba(0, 0, 0, 30));
+        let mut iy = y + 6.0;
+        for (i, (label, action)) in items.iter().enumerate() {
+            if action.is_none() {
+                theme::fill_rect(pm, x + 12.0, iy + 4.0, w - 24.0, 1.0, colors::separator());
+                iy += 9.0;
+                continue;
+            }
+            let hovered = self.menu_hover == Some(i);
+            if hovered {
+                theme::fill_rrect(pm, x + 5.0, iy, w - 10.0, 24.0, 6.0, colors::accent());
+            }
+            let ink = if hovered { rgba(255, 255, 255, 255) } else { colors::text() };
+            self.fonts.draw_text(pm, label, x + 16.0, iy + 4.5, 13.0, ink, false);
+            iy += 24.0;
+        }
+    }
+}
+
+fn latin(sym: smithay_client_toolkit::seat::keyboard::Keysym) -> Option<&'static str> {
+    use smithay_client_toolkit::seat::keyboard::Keysym as K;
+    Some(match sym {
+        K::a | K::A => "a",
+        K::c | K::C => "c",
+        K::x | K::X => "x",
+        K::v | K::V => "v",
+        K::h | K::H => "h",
+        K::f | K::F => "f",
+        K::l | K::L => "l",
+        K::n | K::N => "n",
+        K::w | K::W => "w",
+        K::q | K::Q => "q",
+        K::r | K::R => "r",
+        K::_1 => "1",
+        K::_2 => "2",
+        _ => return None,
+    })
+}
+
+/// "1 объект", "3 объекта", "12 объектов"
+pub fn objects(n: usize) -> String {
+    let word = match (n % 10, n % 100) {
+        (1, r) if r != 11 => "объект",
+        (2..=4, r) if !(12..=14).contains(&r) => "объекта",
+        _ => "объектов",
+    };
+    format!("{n} {word}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app_in(dir: &Path) -> App {
+        let (mut app, effects) = App::new(FontSystem::new(), dir.to_path_buf(), None, false);
+        for e in effects {
+            if let Effect::List(path, generation) = e {
+                app.listed(generation, fsops::list(&path).map_err(|e| e.to_string()));
+            }
+        }
+        app
+    }
+
+    fn run(app: &mut App, effects: Vec<Effect>) {
+        for e in effects {
+            if let Effect::List(path, generation) = e {
+                app.listed(generation, fsops::list(&path).map_err(|e| e.to_string()));
+            }
+        }
+    }
+
+    fn fixture(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("feather-files-ui-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Альфа")).unwrap();
+        std::fs::create_dir_all(root.join("beta")).unwrap();
+        for name in ["file2.txt", "file10.txt", "photo.png", ".hidden"] {
+            std::fs::write(root.join(name), name).unwrap();
+        }
+        root
+    }
+
+    /// FEATHER_FILES_PREVIEW=/dir cargo test -p feather-files preview -- --ignored
+    #[test]
+    #[ignore = "writes preview PNGs"]
+    fn preview() {
+        let Some(out) = std::env::var_os("FEATHER_FILES_PREVIEW").map(PathBuf::from) else { return };
+        let mut app = app_in(&fsops::home());
+        app.resize(1000.0, 640.0);
+        theme::set_ui_scale(2.0);
+        let mut pm = tiny_skia::Pixmap::new(2000, 1280).unwrap();
+        app.select_only(2.min(app.visible.len().saturating_sub(1)));
+        app.hover = Hit::Place(3);
+        app.paint(&mut pm.as_mut());
+        pm.save_png(out.join("icons.png")).unwrap();
+        app.set_view(View::List);
+        app.paint(&mut pm.as_mut());
+        pm.save_png(out.join("list.png")).unwrap();
+        app.set_view(View::Icons);
+        app.open_menu(Hit::Item(1), 520.0, 200.0);
+        app.menu_hover = Some(3);
+        app.paint(&mut pm.as_mut());
+        pm.save_png(out.join("menu.png")).unwrap();
+        app.menu = None;
+        for view in [View::Icons, View::List] {
+            app.set_view(view);
+            app.paint(&mut pm.as_mut());
+            let t = Instant::now();
+            for _ in 0..50 {
+                app.paint(&mut pm.as_mut());
+            }
+            eprintln!("{view:?}: {:.2} мс на полный кадр 2000×1280", t.elapsed().as_secs_f64() * 1e3 / 50.0);
+        }
+        theme::set_ui_scale(1.0);
+    }
+
+    #[test]
+    fn plural_forms() {
+        assert_eq!([objects(1), objects(3), objects(5), objects(11), objects(22)], ["1 объект", "3 объекта", "5 объектов", "11 объектов", "22 объекта"]);
+    }
+
+    #[test]
+    fn listing_navigation_selection_and_paint() {
+        let root = fixture("nav");
+        let mut app = app_in(&root);
+        let names: Vec<_> = (0..app.visible.len()).map(|i| app.entry(i).name.clone()).collect();
+        assert_eq!(names, ["beta", "Альфа", "file2.txt", "file10.txt", "photo.png"]);
+        // Hidden files toggle and type-ahead
+        let e = app.key(0x0068, Some("h"), Mods { ctrl: true, ..Default::default() });
+        run(&mut app, e);
+        assert_eq!(app.visible.len(), 6);
+        let e = app.key(0x0062, Some("b"), Mods::default());
+        run(&mut app, e);
+        assert_eq!(app.selected_paths(), [root.join("beta")]);
+        // Enter opens the folder, Backspace returns and reselects it
+        let e = app.key(0xff0d, None, Mods::default());
+        run(&mut app, e);
+        assert_eq!(app.dir(), root.join("beta"));
+        let e = app.key(0xff08, None, Mods::default());
+        run(&mut app, e);
+        assert_eq!(app.dir(), root);
+        assert_eq!(app.selected_paths(), [root.join("beta")]);
+        // Rubber band over the first grid row selects what it crosses
+        app.resize(1000.0, 640.0);
+        let (x0, y0) = (SIDEBAR_W + 2.0, TOOLBAR_H + 4.0);
+        assert!(app.press(BTN_LEFT, x0, y0, Mods::default()).is_empty());
+        app.motion(SIDEBAR_W + 2.0 + CELL_W * 2.2, TOOLBAR_H + 50.0);
+        app.release(BTN_LEFT, 0.0, 0.0);
+        assert_eq!(app.selected.len(), 2, "{:?}", app.selected);
+        // Moving over files does not repaint; over the sidebar it does
+        app.dirty = false;
+        let (ix, iy, _, _) = app.item_rect(3);
+        app.motion(ix + 50.0, iy + 30.0);
+        assert!(!app.dirty);
+        app.motion(60.0, 200.0);
+        assert!(app.dirty);
+        // Search filters
+        app.search_focus = true;
+        for ch in ["f", "i", "l", "e"] {
+            app.key(0, Some(ch), Mods::default());
+        }
+        assert_eq!(app.visible.len(), 2);
+        // Paints at 2× without panicking, list view too
+        theme::set_ui_scale(2.0);
+        let mut pm = tiny_skia::Pixmap::new(2000, 1280).unwrap();
+        app.paint(&mut pm.as_mut());
+        app.set_view(View::List);
+        app.paint(&mut pm.as_mut());
+        theme::set_ui_scale(1.0);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn new_folder_rename_and_trash_effect() {
+        let root = fixture("edit");
+        let mut app = app_in(&root);
+        let mods = Mods { ctrl: true, shift: true, ..Default::default() };
+        assert!(app.key(0x004e, Some("N"), mods).is_empty());
+        assert!(root.join("Новая папка").is_dir());
+        for _ in 0.."Новая папка".chars().count() {
+            app.key(0xff08, None, Mods::default());
+        }
+        for ch in ["Г", "а", "м", "м", "а"] {
+            app.key(0, Some(ch), Mods::default());
+        }
+        let e = app.key(0xff0d, None, Mods::default());
+        run(&mut app, e);
+        assert!(root.join("Гамма").is_dir() && !root.join("Новая папка").exists());
+        assert_eq!(app.selected_paths(), [root.join("Гамма")]);
+        assert_eq!(app.key(0xffff, None, Mods::default()), vec![Effect::Trash(vec![root.join("Гамма")])]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

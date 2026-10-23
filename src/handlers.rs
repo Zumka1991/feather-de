@@ -117,6 +117,7 @@ impl FeatherCompositor {
         };
 
         if changes.newly_mapped || changes.unmapped {
+            tracing::debug!(id = self.windows[idx].id, mapped = self.windows[idx].mapped, "window mapping changed");
             self.pointer_focus_dirty = true;
         }
         if changes.newly_mapped {
@@ -260,12 +261,14 @@ impl XdgShellHandler for FeatherCompositor {
         // a buffer. The initial configure is sent from the commit handler, as xdg-shell requires.
         let id = self.next_win_id;
         self.next_win_id += 1;
+        tracing::debug!(id, "new toplevel");
         self.windows.push(ManagedWindow::new_wayland(id, surface));
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(idx) = self.window_index_for_toplevel(surface.wl_surface()) {
             let id = self.windows[idx].id;
+            tracing::debug!(id, "toplevel destroyed");
             self.windows.remove(idx);
             if matches!(self.active_drag, Some(DragOperation::MoveWindow { win_id, .. }) | Some(DragOperation::ResizeWindow { win_id, .. }) if win_id == id)
             {
@@ -416,7 +419,25 @@ impl FeatherCompositor {
 }
 
 impl SelectionHandler for FeatherCompositor {
-    type SelectionUserData = ();
+    /// Clipboard contents the compositor itself offers (screenshots)
+    type SelectionUserData = crate::screenshot::ClipboardData;
+
+    fn send_selection(
+        &mut self,
+        _ty: smithay::wayland::selection::SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        user_data: &Self::SelectionUserData,
+    ) {
+        crate::screenshot::serve(&mime_type, fd, user_data);
+    }
+
+    fn new_selection(&mut self, ty: smithay::wayland::selection::SelectionTarget, source: Option<smithay::wayland::selection::SelectionSource>, _seat: Seat<Self>) {
+        if ty == smithay::wayland::selection::SelectionTarget::Clipboard {
+            self.client_clipboard_mimes = source.map(|s| s.mime_types()).unwrap_or_default();
+        }
+    }
 }
 
 impl DataDeviceHandler for FeatherCompositor {
@@ -425,9 +446,29 @@ impl DataDeviceHandler for FeatherCompositor {
     }
 }
 
-impl ClientDndGrabHandler for FeatherCompositor {}
+impl ClientDndGrabHandler for FeatherCompositor {
+    fn started(&mut self, source: Option<smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+        self.client_drag_started(source, icon);
+    }
+    fn dropped(&mut self, target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.client_drag_dropped(target);
+    }
+}
+
+/// Desktop icons dragged into programs
 impl ServerDndGrabHandler for FeatherCompositor {
-    fn send(&mut self, _mime_type: String, _fd: OwnedFd, _seat: Seat<Self>) {}
+    fn send(&mut self, mime_type: String, fd: OwnedFd, _seat: Seat<Self>) {
+        self.desktop_dnd_send(&mime_type, fd);
+    }
+    fn dropped(&mut self, _seat: Seat<Self>) {
+        self.desktop_dnd_dropped();
+    }
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        self.desktop_dnd_cancelled();
+    }
+    fn finished(&mut self, _seat: Seat<Self>) {
+        self.desktop_dnd_finished();
+    }
 }
 
 impl PrimarySelectionHandler for FeatherCompositor {

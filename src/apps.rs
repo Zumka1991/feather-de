@@ -8,7 +8,7 @@ use crate::theme::{
     fill_circle, fill_rounded_rect, fill_squircle_gradient, rgba, stroke_line, stroke_squircle,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IconKind {
     Finder,
     Terminal,
@@ -57,6 +57,8 @@ pub struct AppEntry {
     pub aliases: Vec<String>,
     pub action: AppAction,
     pub pinned_in_dock: bool,
+    /// Always draw the procedural icon: a .desktop theme icon must not replace it
+    pub own_icon: bool,
 }
 
 impl AppEntry {
@@ -71,7 +73,13 @@ impl AppEntry {
             aliases: Vec::new(),
             action,
             pinned_in_dock: pinned,
+            own_icon: false,
         }
+    }
+
+    fn with_own_icon(mut self) -> Self {
+        self.own_icon = true;
+        self
     }
 
     fn with_aliases(mut self, aliases: &[&str]) -> Self {
@@ -94,10 +102,29 @@ impl AppEntry {
             AppAction::Exec(cmd) => cmd
                 .split_whitespace()
                 .find(|t| !t.contains('='))
-                .map(|t| t.trim_matches('"').rsplit('/').next().unwrap_or(t).to_lowercase()),
+                .map(|t| t.trim_matches(|c| c == '"' || c == '\'').rsplit('/').next().unwrap_or(t).to_lowercase()),
             _ => None,
         }
     }
+}
+
+/// One of Feather's own programs next to our executable, quoted for `sh -c`
+fn own_program(name: &str) -> Option<String> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .filter(|path| path.is_file())
+        .map(|path| format!("'{}'", path.display().to_string().replace('\'', "'\\''")))
+}
+
+/// Feather's file manager, else Dolphin
+pub fn files_command() -> String {
+    own_program("feather-files").unwrap_or_else(|| "dolphin".into())
+}
+
+/// Feather's terminal, else Konsole
+pub fn terminal_command() -> String {
+    own_program("feather-terminal").unwrap_or_else(|| "konsole".into())
 }
 
 pub struct AppRegistry {
@@ -116,13 +143,17 @@ impl AppRegistry {
                 OpenLaunchpad,
                 true,
             ),
-            AppEntry::new("dolphin", "Файлы", "Файловый менеджер Dolphin", IconKind::Finder, Exec("dolphin".into()), true)
-                .with_aliases(&["org.kde.dolphin"]),
+            // Id stays "dolphin" so saved Dock pins keep working; our own Files app is used
+            // when it sits next to the compositor binary
+            AppEntry::new("dolphin", "Файлы", "Файловый менеджер", IconKind::Finder, Exec(files_command()), true)
+                .with_aliases(&["org.kde.dolphin", "feather-files"])
+                .with_own_icon(),
             AppEntry::new("firefox", "Firefox", "Веб-браузер", IconKind::Browser, Exec("firefox".into()), true)
                 .with_aliases(&["org.mozilla.firefox", "firefox-esr"])
                 .with_icon("firefox"),
-            AppEntry::new("konsole", "Терминал", "Терминал Konsole", IconKind::Terminal, Exec("konsole".into()), true)
-                .with_aliases(&["org.kde.konsole"]),
+            // Id stays "konsole" for saved Dock pins; Feather's own Terminal when installed
+            AppEntry::new("konsole", "Терминал", "Терминал", IconKind::Terminal, Exec(terminal_command()), true)
+                .with_aliases(&["org.kde.konsole", "feather-terminal"]),
             AppEntry::new(
                 "antigravity",
                 "Antigravity",
@@ -247,6 +278,7 @@ impl AppRegistry {
                 aliases: Vec::new(),
                 action: AppAction::Exec(cmd),
                 pinned_in_dock: false,
+                own_icon: false,
             };
 
             // Same program as a pinned/known entry: enrich it (icon, WM class) instead of
@@ -257,7 +289,7 @@ impl AppRegistry {
                     || a.aliases.iter().any(|x| x.eq_ignore_ascii_case(&stem))
                     || (exe.is_some() && a.exec_basename() == exe)
             }) {
-                if existing.icon_name.is_none() {
+                if existing.icon_name.is_none() && !existing.own_icon {
                     existing.icon_name = candidate.icon_name.clone();
                 }
                 if existing.wm_class.is_none() {
@@ -560,41 +592,18 @@ pub fn draw_app_icon(
 
     match kind {
         IconKind::Finder => {
-            tile(pixmap, rgba(110, 200, 255, 255), rgba(20, 120, 240, 255));
-            // Right half lighter face
-            if let Some(path) = crate::theme::squircle_path(x, y, size) {
-                let mut paint = tiny_skia::Paint::default();
-                paint.set_color(rgba(235, 245, 255, 255));
-                paint.anti_alias = true;
-                let clip = tiny_skia::Rect::from_xywh(
-                    (x + size * 0.52) * crate::theme::ui_scale(),
-                    y * crate::theme::ui_scale(),
-                    size * crate::theme::ui_scale(),
-                    size * crate::theme::ui_scale(),
-                );
-                if let Some(clip) = clip {
-                    let mut mask = tiny_skia::Mask::new(pixmap.width(), pixmap.height());
-                    if let Some(mask) = mask.as_mut() {
-                        mask.fill_path(
-                            &tiny_skia::PathBuilder::from_rect(clip),
-                            tiny_skia::FillRule::Winding,
-                            true,
-                            tiny_skia::Transform::identity(),
-                        );
-                    }
-                    pixmap.fill_path(
-                        &path,
-                        &paint,
-                        tiny_skia::FillRule::Winding,
-                        crate::theme::scale_transform(),
-                        mask.as_ref(),
-                    );
-                }
+            // Files: a light folder on a deep-blue tile, in the same depth/gradient
+            // language as the other Tahoe tiles (own design, not Apple's Finder face).
+            tile(pixmap, rgba(92, 184, 255, 255), rgba(14, 104, 232, 255));
+            let (fx, fw) = (x + size * 0.17, size * 0.66);
+            fill_rounded_rect(pixmap, fx, y + size * 0.33, fw, size * 0.47, size * 0.07, rgba(0, 40, 110, 60));
+            let back = rgba(176, 218, 255, 255);
+            fill_rounded_rect(pixmap, fx, y + size * 0.235, size * 0.29, size * 0.14, size * 0.045, back);
+            fill_rounded_rect(pixmap, fx, y + size * 0.29, fw, size * 0.46, size * 0.065, back);
+            if let Some(front) = crate::theme::rounded_rect_path(fx, y + size * 0.37, fw, size * 0.39, size * 0.065) {
+                crate::theme::fill_path_gradient(pixmap, &front, y + size * 0.37, y + size * 0.76, rgba(255, 255, 255, 255), rgba(214, 235, 255, 255));
             }
-            let ink = rgba(20, 35, 65, 240);
-            fill_rounded_rect(pixmap, x + size * 0.31, y + size * 0.32, size * 0.06, size * 0.14, size * 0.03, ink);
-            fill_rounded_rect(pixmap, x + size * 0.63, y + size * 0.32, size * 0.06, size * 0.14, size * 0.03, ink);
-            stroke_line(pixmap, x + size * 0.28, y + size * 0.66, x + size * 0.72, y + size * 0.66, size * 0.05, ink);
+            stroke_line(pixmap, fx + size * 0.05, y + size * 0.383, fx + fw - size * 0.05, y + size * 0.383, size * 0.012, rgba(255, 255, 255, 230));
         }
         IconKind::Terminal => {
             tile(pixmap, rgba(70, 72, 78, 255), rgba(28, 28, 32, 255));

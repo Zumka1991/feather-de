@@ -145,6 +145,7 @@ impl ShadowSet {
         renderer: &mut R,
         frame: Rectangle<i32, Logical>,
         scale: f64,
+        alpha: f32,
     ) -> Vec<MemoryRenderBufferRenderElement<R>>
     where
         R: Renderer + ImportMem,
@@ -175,13 +176,17 @@ impl ShadowSet {
             (rx + rw - k, ry + k, k, mid_h),
         ];
         let mut out = Vec::with_capacity(8);
-        for (buf, (x, y, w, h)) in self.pieces.iter().zip(placements) {
+        for (index, (buf, (x, y, w, h))) in self.pieces.iter().zip(placements).enumerate() {
             if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 (x as f64, y as f64),
                 buf,
-                None,
-                None,
+                Some(alpha),
+                Some(Rectangle::from_size(match index {
+                    0..=3 => (k as f64, k as f64).into(),
+                    4..=5 => (1.0, k as f64).into(),
+                    _ => (k as f64, 1.0).into(),
+                })),
                 Some((w, h).into()),
                 Kind::Unspecified,
             ) {

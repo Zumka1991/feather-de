@@ -1,18 +1,29 @@
+mod animation;
+mod appmenu;
 mod apps;
 mod backend;
 mod cursor;
+mod desktop;
+mod tray;
+mod debug_checks;
+use feather_ui::cpu_profile;
 mod drm_backend;
 mod handlers;
 mod icons;
 mod input;
 mod launchpad;
 mod render;
+mod raster;
 mod rounded;
+mod screenshot;
 mod settings;
 mod shell;
-mod text;
+use feather_ui::text;
 mod theme;
+mod ui_raster;
 mod window;
+mod controls;
+mod control_panel;
 
 use std::{
     sync::Arc,
@@ -105,6 +116,8 @@ pub enum DragOperation {
 }
 
 pub struct FeatherCompositor {
+    /// Deterministic nested checks accept only their internal pointer events.
+    debug_input_only: bool,
     pub display_handle: DisplayHandle,
     pub loop_handle: LoopHandle<'static, FeatherCompositor>,
     pub loop_signal: LoopSignal,
@@ -116,6 +129,12 @@ pub struct FeatherCompositor {
     pub rounded_program: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     pub damage_tracker: OutputDamageTracker,
     pub needs_redraw: bool,
+    pub animations: crate::animation::Animations,
+    pub appmenus: crate::appmenu::AppMenus,
+    pub tray: Option<crate::tray::Tray>,
+    pub controls: Option<crate::controls::Controls>,
+    controls_password_focus: bool,
+    pub pending_autostart: Option<String>,
     pub idle_frame_timer_armed: bool,
     pub frame_pending: bool,
     pub frame_seq: u64,
@@ -165,6 +184,16 @@ pub struct FeatherCompositor {
     pub frame_stats: Option<crate::render::FrameStats>,
     /// FEATHER_DEBUG_SCREENSHOT: write the next full frame to this PNG (visual tests)
     pub screenshot_request: Option<std::path::PathBuf>,
+    /// Shift+Print region selection in progress
+    pub screenshot_select: Option<crate::screenshot::Selection>,
+    /// Desktop folder listings come back here
+    pub desktop_tx: Option<smithay::reexports::calloop::channel::Sender<crate::desktop::Msg>>,
+    /// Topmost window when the desktop took focus: raising another one ends desktop focus
+    pub desktop_focus_top: Option<u64>,
+    /// MIME types of a program's clipboard selection (empty when the compositor owns it)
+    pub client_clipboard_mimes: Vec<String>,
+    /// Finished screenshots (encoded off the event loop) come back here
+    pub screenshot_tx: smithay::reexports::calloop::channel::Sender<Option<crate::screenshot::Finished>>,
     /// Presses handled by the compositor whose release must not reach clients
     pub consumed_buttons: Vec<u32>,
     pub compositor_cursor: Option<CursorIcon>,
@@ -185,10 +214,16 @@ impl FeatherCompositor {
     /// The topmost visible window is active; only Wayland windows receive keyboard focus.
     pub fn refresh_focus(&mut self) {
         let top = self.windows.iter().rposition(|w| w.is_visible());
-        for (i, w) in self.windows.iter_mut().enumerate() {
-            w.set_activated(Some(i) == top);
+        // The desktop keeps the keyboard until another window comes to the front
+        if self.shell.desktop.focused && top.map(|i| self.windows[i].id) != self.desktop_focus_top {
+            self.shell.desktop.focused = false;
         }
-        let target = top.and_then(|i| self.windows[i].wl_surface().cloned());
+        let desktop = self.shell.desktop.focused;
+        for (i, w) in self.windows.iter_mut().enumerate() {
+            w.set_activated(!desktop && Some(i) == top);
+        }
+        let password = self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password;
+        let target = if password || desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus() != target {
             keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
@@ -197,6 +232,7 @@ impl FeatherCompositor {
         self.pointer_focus_dirty = true;
         self.dock_model_dirty = true;
         self.needs_redraw = true;
+        self.sync_appmenu_focus();
     }
 
     pub fn mark_builtin_windows_dirty(&mut self) {
@@ -369,7 +405,7 @@ impl FeatherCompositor {
                 target: DockTarget::App(i),
                 label: app.name.clone(),
                 icon: AppIcon::of(app),
-                running: keys.iter().any(|(k, _)| *k == AppKey::App(i)),
+                windows: keys.iter().filter(|(k, _)| *k == AppKey::App(i)).count().min(255) as u8,
                 pinned: true,
             });
         }
@@ -396,7 +432,7 @@ impl FeatherCompositor {
                 target,
                 label,
                 icon,
-                running: true,
+                windows: keys.iter().filter(|(k, _)| k == key).count().min(255) as u8,
                 pinned: false,
             });
         }
@@ -407,7 +443,7 @@ impl FeatherCompositor {
                 target: DockTarget::Minimized(w.id),
                 label: w.title.clone(),
                 icon,
-                running: false,
+                windows: 0,
                 pinned: false,
             });
         }
@@ -497,9 +533,7 @@ impl FeatherCompositor {
             .collect();
         if ids.is_empty() {
             if let AppKey::App(i) = key {
-                let app = &self.app_registry.apps[i];
-                let action = ShellClickAction::LaunchApp(app.action.clone(), app.name.clone());
-                self.execute_shell_action(action);
+                self.launch_app_instance(i);
             }
             return;
         }
@@ -657,16 +691,75 @@ impl FeatherCompositor {
         }
     }
 
-    /// Right click on a Dock icon
+    /// Fast launches stay still; only a launch without a window after 200 ms bounces.
+    pub fn launch_app_instance(&mut self, i: usize) {
+        let app = &self.app_registry.apps[i];
+        let action = ShellClickAction::LaunchApp(app.action.clone(), app.name.clone());
+        let builtin = app.is_builtin();
+        self.execute_shell_action(action);
+        if !builtin {
+            let first = self.next_win_id;
+            let launch = Instant::now();
+            self.shell.pending_bounce = Some(launch);
+            if self.shell.bounce.take().is_some() {
+                self.shell.dock_dirty = true;
+                self.needs_redraw = true;
+            }
+            let _ = self.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(200)), move |_, _, state| {
+                if state.shell.pending_bounce == Some(launch) {
+                    state.shell.pending_bounce = None;
+                    let appeared = state.windows.iter().any(|w| w.mapped && w.id >= first && state.app_key(w) == AppKey::App(i));
+                    if !appeared {
+                        state.shell.start_bounce(i, first, &mut state.fonts);
+                        state.needs_redraw = true;
+                    }
+                }
+                TimeoutAction::Drop
+            });
+        }
+    }
+
+    /// Stops the bounce once the launched app has a window (after the current jump)
+    pub fn advance_bounce(&mut self) {
+        let Some(b) = self.shell.bounce.as_ref() else { return };
+        let (app, first) = (b.app, b.first_new_window);
+        let now = Instant::now();
+        if self.windows.iter().any(|w| w.mapped && w.id >= first && self.app_key(w) == AppKey::App(app)) {
+            if let Some(b) = self.shell.bounce.as_mut() {
+                b.finish(now);
+            }
+        }
+        let over = self.shell.bounce.as_ref().is_some_and(|b| b.offset(now).1);
+        if over {
+            self.shell.bounce = None;
+            self.shell.dock_dirty = true;
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Right click on a Dock icon: the app's windows, a new window, pin, quit
     pub fn open_dock_menu_for(&mut self, target: DockTarget, anchor: R) {
+        let key = self.dock_target_key(target);
         let running = match target {
             DockTarget::App(i) => self.windows.iter().any(|w| w.mapped && self.app_key(w) == AppKey::App(i)),
             DockTarget::Window(_) | DockTarget::Minimized(_) => true,
         };
-        let mut items = vec![(
-            if running { "Показать".to_string() } else { "Открыть".to_string() },
-            DockMenuAction::Open,
-        )];
+        let mut items = Vec::new();
+        if let (true, Some(key)) = (running, key) {
+            let front = self.windows.iter().rev().find(|w| w.is_visible()).map(|w| w.id);
+            for w in self.windows.iter().filter(|w| w.mapped && self.app_key(w) == key) {
+                let mark = if Some(w.id) == front { "✓ " } else if w.minimized { "◇ " } else { "    " };
+                let title = if w.title.is_empty() { "Без названия".to_string() } else { w.title.chars().take(48).collect() };
+                items.push((format!("{mark}{title}"), DockMenuAction::Window(w.id)));
+            }
+        } else {
+            items.push(("Открыть".to_string(), DockMenuAction::Open));
+        }
+        if let DockTarget::App(i) = target {
+            if running && !self.app_registry.apps[i].is_builtin() {
+                items.push(("Новое окно".to_string(), DockMenuAction::NewWindow));
+            }
+        }
         if let DockTarget::App(i) = target {
             if self.is_pinned(i) {
                 items.push(("Удалить из Dock".to_string(), DockMenuAction::RemoveFromDock));
@@ -727,6 +820,44 @@ impl FeatherCompositor {
         self.needs_redraw = true;
         match action {
             ShellClickAction::None => {}
+            ShellClickAction::Tray {key,action,x,y} => {
+                self.shell.close_menus();
+                let token=if matches!(action,crate::tray::Action::Activate|crate::tray::Action::Secondary) {
+                    let token=self.xdg_activation_state.create_external_token(None).0.clone();
+                    let value=token.as_str().to_string();
+                    let _=self.loop_handle.insert_source(Timer::from_duration(Duration::from_secs(10)),move|_,_,state|{
+                        state.xdg_activation_state.remove_token(&token);TimeoutAction::Drop
+                    });
+                    Some(value)
+                }else{None};
+                if let Some(tray)=&mut self.tray {
+                    let context=matches!(action,crate::tray::Action::Context);
+                    let generation=tray.interact(key.clone(),action,x,y,token);
+                    if context {self.shell.prepare_tray_menu(key,generation,x as f32);}
+                }
+            }
+            ShellClickAction::TrayMenu {generation,id} => {
+                if let Some(tray)=&self.tray{tray.click(generation,id,self.start_time.elapsed().as_millis() as u32);}
+            }
+            ShellClickAction::TrayOverflow => {
+                let items=self.shell.tray_items.iter().enumerate().map(|(index,i)|((if i.title.is_empty(){&i.key}else{&i.title}).chars().take(48).collect(),DockMenuAction::Tray(index))).collect();
+                self.shell.open_context_menu(items,self.pointer_location.x as f32,TOP_BAR_HEIGHT as f32+4.0,&mut self.fonts);
+            }
+            ShellClickAction::LaunchpadLaunch(app) => {
+                self.shell.launchpad = None;
+                self.pointer_focus_dirty = true;
+                self.launch_app_instance(app);
+            }
+            ShellClickAction::Control(command) => {
+                if let Some(controls)=&self.controls {
+                    if let Err(e)=controls.send(command) { self.shell.cc.error=Some(e.into()); self.shell.overlay_dirty=true; }
+                }
+            }
+            ShellClickAction::NetworkSettings => self.execute_shell_action(ShellClickAction::LaunchApp(AppAction::Exec("nm-connection-editor".into()),"Настройки сети".into())),
+            ShellClickAction::BluetoothSettings => self.execute_shell_action(ShellClickAction::LaunchApp(AppAction::Exec("blueman-manager".into()),"Bluetooth".into())),
+            ShellClickAction::AppMenuActivate { generation, id } => {
+                self.appmenus.click(generation, id, self.start_time.elapsed().as_millis() as u32);
+            }
             ShellClickAction::LaunchApp(app_action, app_name) => match app_action {
                 AppAction::Exec(cmd) => {
                     if spawn_wayland_command(&cmd, &self.wayland_socket_name) {
@@ -746,7 +877,21 @@ impl FeatherCompositor {
                 AppAction::OpenLaunchpad => self.toggle_launchpad(),
             },
             ShellClickAction::DockPress(target) => {
-                // Only reached when a press is executed directly (no drag tracking)
+                self.shell.anchor_dock_target(target);
+                // Executed on release if the icon was not dragged, or as a direct click.
+                // Toggle only the frontmost window; activation from Alt+Tab/menus stays explicit.
+                if let Some(key) = self.dock_target_key(target).filter(|key| !matches!(target, DockTarget::Minimized(_)) && self.focused_app() == Some(*key)) {
+                    // Several windows: bring the next one forward; one window: minimize it
+                    let visible: Vec<usize> = (0..self.windows.len()).filter(|&i| self.windows[i].is_visible() && self.app_key(&self.windows[i]) == key).collect();
+                    if visible.len() > 1 {
+                        let w = self.windows.remove(visible[0]);
+                        self.windows.push(w);
+                    } else if let Some(win) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
+                        win.minimized = true;
+                    }
+                    self.refresh_focus();
+                    return;
+                }
                 let action = match target {
                     DockTarget::App(i) => ShellClickAction::ActivateApp(i),
                     DockTarget::Window(id) => ShellClickAction::ActivateWindow(id),
@@ -754,7 +899,13 @@ impl FeatherCompositor {
                 };
                 self.execute_shell_action(action);
             }
+            ShellClickAction::DockMenu(DockMenuAction::Desktop(action), _) => self.desktop_menu_action(action),
             ShellClickAction::DockMenu(action, target) => match action {
+                DockMenuAction::Tray(index) => {
+                    if let Some(item)=self.shell.tray_items.get(index){
+                        self.execute_shell_action(ShellClickAction::Tray{key:item.key.clone(),action:crate::tray::Action::Context,x:self.pointer_location.x as i32,y:TOP_BAR_HEIGHT});
+                    }
+                }
                 DockMenuAction::Open => {
                     if let Some(key) = self.dock_target_key(target) {
                         self.activate_app(key);
@@ -780,13 +931,20 @@ impl FeatherCompositor {
                         self.quit_app(key);
                     }
                 }
+                DockMenuAction::Window(id) => {
+                    let minimized = self.windows.iter().any(|w| w.id == id && w.minimized);
+                    self.execute_shell_action(if minimized { ShellClickAction::RestoreMinimizedWindow(id) } else { ShellClickAction::ActivateWindow(id) });
+                }
+                DockMenuAction::NewWindow => {
+                    if let DockTarget::App(i) = target {
+                        self.launch_app_instance(i);
+                    }
+                }
+                DockMenuAction::Desktop(_) => {}
             },
             ShellClickAction::ActivateApp(idx) => self.activate_app(AppKey::App(idx)),
             ShellClickAction::ActivateWindow(win_id) => {
-                if let Some(w) = self.windows.iter().find(|w| w.id == win_id) {
-                    let key = self.app_key(w);
-                    self.activate_app(key);
-                }
+                self.execute_shell_action(ShellClickAction::FocusWindow(win_id));
             }
             ShellClickAction::ToggleAppearance => self.toggle_appearance(),
             ShellClickAction::RestoreMinimizedWindow(win_id) => {
@@ -813,8 +971,7 @@ impl FeatherCompositor {
             }
             ShellClickAction::CycleTheme => {
                 self.shell.theme = self.shell.theme.next();
-                self.shell.wallpaper_dirty = true;
-                self.shell.overlay_dirty = true;
+                self.shell.invalidate_all();
                 self.mark_builtin_windows_dirty();
                 self.save_settings();
             }
@@ -986,13 +1143,14 @@ impl FeatherCompositor {
     pub fn handle_winit_event(&mut self, event: WinitEvent) {
         match event {
             WinitEvent::Resized { size, scale_factor } => self.on_resized(size, scale_factor),
-            WinitEvent::Input(event) => self.handle_input(event),
+            WinitEvent::Input(event) if !self.debug_input_only => self.handle_input(event),
+            WinitEvent::Input(_) => {},
             // Rendering is driven by our own damage; the host's redraw event only tells us
             // that the previous frame was presented and the next one may go out
             WinitEvent::Redraw => self.on_host_frame(),
             WinitEvent::CloseRequested => self.loop_signal.stop(),
-            WinitEvent::Focus(false) => self.release_all_input(),
-            WinitEvent::Focus(true) => {}
+            WinitEvent::Focus(false) if !self.debug_input_only => self.release_all_input(),
+            WinitEvent::Focus(_) => {}
         }
     }
 }
@@ -1116,7 +1274,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let xdg_shell_state = XdgShellState::new::<FeatherCompositor>(&dh);
     let xdg_decoration_state = XdgDecorationState::new::<FeatherCompositor>(&dh);
     let xdg_activation_state = XdgActivationState::new::<FeatherCompositor>(&dh);
-    let shm_state = ShmState::new::<FeatherCompositor>(&dh, vec![]);
+    // RGBA byte order (tiny-skia, Feather's own clients) uploads without a channel swap
+    let shm_state = ShmState::new::<FeatherCompositor>(&dh, vec![smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr8888, smithay::reexports::wayland_server::protocol::wl_shm::Format::Xbgr8888]);
     let mut seat_state = SeatState::new();
     let mut seat = seat_state.new_wl_seat(&dh, "feather-seat");
     let data_device_state = DataDeviceState::new::<FeatherCompositor>(&dh);
@@ -1262,10 +1421,26 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         TimeoutAction::ToDuration(Duration::from_secs(1))
     })?;
 
+    let (screenshot_tx, screenshot_rx) = crate::screenshot::channel_source();
+    event_loop.handle().insert_source(screenshot_rx, |event, _, state| {
+        if let smithay::reexports::calloop::channel::Event::Msg(finished) = event {
+            state.install_screenshot(finished);
+        }
+    })?;
+
     // Only used by the nested backend; DRM has its own damage tracking per output
     let damage_tracker = OutputDamageTracker::new(initial_size, 1.0, Transform::Flipped180);
 
+    let appmenus = crate::appmenu::AppMenus::new(
+        &dh, &handle, is_standalone || use_drm || std::env::var_os("FEATHER_APPMENU_REGISTRAR").is_some(),
+    )?;
+    let pending_autostart = args.iter().position(|a| a == "--autostart")
+        .and_then(|pos| args.get(pos + 1)).cloned();
+
     let mut state = FeatherCompositor {
+        debug_input_only: std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_some(),
+        controls: None,
+        controls_password_focus: false,
         display_handle: dh,
         loop_handle: handle,
         loop_signal: event_loop.get_signal(),
@@ -1275,6 +1450,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         rounded_program,
         damage_tracker,
         needs_redraw: true,
+        animations: crate::animation::Animations::default(),
+        appmenus,
+        tray: None,
+        pending_autostart,
         idle_frame_timer_armed: false,
         frame_pending: false,
         frame_seq: 0,
@@ -1321,6 +1500,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         pointer_focus_dirty: false,
         frame_stats: std::env::var_os("FEATHER_PROFILE").map(|_| crate::render::FrameStats::default()),
         screenshot_request: None,
+        screenshot_select: None,
+        desktop_tx: None,
+        desktop_focus_top: None,
+        client_clipboard_mimes: Vec::new(),
+        screenshot_tx,
         consumed_buttons: Vec::new(),
         compositor_cursor: None,
         user_interacted: false,
@@ -1331,16 +1515,202 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         notes_buffer: "Привет из Пёрышко DE!\nНажмите Alt + Shift для переключения языка (RU / EN).\nНажмите Super + Space для вызова Spotlight.\nНажмите Super + = для переключения HiDPI Retina масштаба!".to_string(),
     };
 
+    let raster = crate::raster::RasterSender::new(&state.loop_handle, state.fonts.for_worker())?;
+    state.shell.attach_raster(raster);
+    state.start_desktop()?;
+    state.controls=Some(crate::controls::Controls::new(&state.loop_handle)?);
+    if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_TRAY").is_some() {
+        state.tray=Some(crate::tray::Tray::new(&state.loop_handle)?);
+    }
+
     // Start Polkit Authentication Agent (for MouseVPN / pkexec password prompts) and D-Bus env
     spawn_session_services(&socket_name, is_standalone);
 
     state.dock_pins = saved.dock.clone().unwrap_or_else(|| state.app_registry.default_pins());
 
     state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather);
+    if std::env::var_os("FEATHER_DEBUG_ANIMATIONS").is_some() {
+        // Deterministic lifecycle exercise in our own compositor; no synthetic host input.
+        for step in 0..8u64 {
+            state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(1000 + step * 1000)), move |_, _, state| {
+                match step {
+                    0 | 1 => {
+                        if let Some(win) = state.windows.iter().rev().find(|w| w.mapped) {
+                            let target = match state.app_key(win) {
+                                AppKey::App(i) => DockTarget::App(i),
+                                AppKey::Window(id) => DockTarget::Window(id),
+                            };
+                            state.execute_shell_action(ShellClickAction::DockPress(target));
+                        }
+                    }
+                    2 => state.shell.open_menu = Some(crate::shell::TopMenu::App),
+                    3 => { state.shell.close_menus(); state.shell.control_center_open = true; }
+                    4 => { state.shell.close_menus(); state.shell.spotlight_open = true; }
+                    5 => { state.shell.close_menus(); state.toggle_launchpad(); }
+                    6 => state.toggle_launchpad(),
+                    _ => {},
+                }
+                state.shell.overlay_dirty = true;
+                state.needs_redraw = true;
+                TimeoutAction::Drop
+            })?;
+        }
+    }
+    if std::env::var_os("FEATHER_DEBUG_RASTER_STRESS").is_some() {
+        // Own-state stress only: change snapshots while jobs are queued, no host input.
+        for step in 0..18u64 {
+            state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(300 + step * 60)), move |_, _, state| {
+                if step == 17 {
+                    set_appearance(Appearance::Dark);
+                    state.shell.theme = WallpaperTheme::TahoeNight;
+                    state.apply_hidpi_scale(1.5);
+                    state.shell.launchpad = Some(crate::launchpad::Launchpad::new(&state.app_registry, state.shell.screen_w, state.shell.screen_h));
+                } else {
+                    match step % 3 {
+                        0 => { state.shell.theme = state.shell.theme.next(); state.shell.invalidate_all(); }
+                        1 => state.apply_hidpi_scale(if step % 2 == 0 { 2.0 } else { 1.25 }),
+                        _ => {
+                            if state.shell.launchpad.is_some() { state.toggle_launchpad(); }
+                            state.toggle_launchpad();
+                            if let Some(lp) = state.shell.launchpad.as_mut() {
+                                lp.set_query(&state.app_registry, if step % 2 == 0 { "term".into() } else { String::new() });
+                                lp.set_page(1);
+                            }
+                        }
+                    }
+                }
+                state.needs_redraw = true;
+                TimeoutAction::Drop
+            })?;
+        }
+    }
+    if let Ok(path) = std::env::var("FEATHER_DEBUG_APPMENU") {
+        let activate = std::env::var_os("FEATHER_DEBUG_APPMENU_ACTIVATE").is_some();
+        let delay = std::env::var("FEATHER_DEBUG_APPMENU_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(1500);
+        state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(delay)), move |_, _, state| {
+            let action = state.shell.debug_client_menu_path(&path, activate, &state.app_registry);
+            if let Some(action) = action { state.execute_shell_action(action); }
+            else { tracing::warn!("Отладочное меню не найдено: {path}"); }
+            state.needs_redraw = true;
+            TimeoutAction::Drop
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_DESKTOP").is_some() {
+        state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(1500)), |_, _, state| {
+            let screen = (state.shell.screen_w, state.shell.screen_h);
+            state.shell.desktop.debug_select(screen);
+            state.needs_redraw = true;
+            TimeoutAction::Drop
+        })?;
+    }
+    debug_checks::install(&mut state)?;
+    if std::env::var_os("FEATHER_DEBUG_DND").is_some() && std::env::var("FEATHER_DEBUG_DND").as_deref() != Ok("resize-all") {
+        // Desktop "drag-me.txt" → Files window, then Files' first item → empty desktop.
+        // Pointer events go only to our own nested compositor and its test client.
+        // FEATHER_DEBUG_DND=move: only drag the desktop icon to another place on the desktop
+        let mode = std::env::var("FEATHER_DEBUG_DND").unwrap_or_default();
+        let steps: Vec<(u64, &'static str)> = if mode == "resize" {
+            vec![(3000, "edge-press"), (3300, "drag-right"), (3700, "release"), (4500, "report")]
+        } else if mode == "menu" {
+            vec![(3000, "menu")]
+        } else if mode == "move" {
+            vec![(3000, "desk-press"), (3400, "move-left"), (3800, "release"), (5000, "report")]
+        } else {
+            vec![(4000, "desk-press"), (4600, "move-files"), (5200, "release"), (7000, "files-press"), (7600, "move-desk"), (8200, "release"), (9500, "report")]
+        };
+        for (at, step) in steps {
+            state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(at)), move |_, _, state| {
+                let files_win = state.windows.iter().find(|w| w.app_id == "feather-files" && w.is_visible()).map(|w| (w.x as f64, w.y as f64, w.width as f64, w.height as f64));
+                match step {
+                    "desk-press" => {
+                        let screen = (state.shell.screen_w, state.shell.screen_h);
+                        state.shell.desktop.ensure_layout(screen);
+                        if let Some(i) = state.shell.desktop.debug_index("drag-me.txt") {
+                            let (x, y) = state.shell.desktop.position(i, screen);
+                            state.debug_pointer_motion(x + 48.0, y + 30.0);
+                            state.debug_pointer_button(0x110, true);
+                        }
+                    }
+                    "files-press" => {
+                        if let Some((x, y, _, _)) = files_win {
+                            // First icon of the grid: sidebar 220 + padding, toolbar 52 + 10
+                            state.debug_pointer_motion(x + 220.0 + 8.0 + 55.0, y + 52.0 + 10.0 + 38.0);
+                            state.debug_pointer_button(0x110, true);
+                        }
+                    }
+                    "move-left" => {
+                        let from = (state.pointer_location.x, state.pointer_location.y);
+                        for k in 1..=10 {
+                            state.debug_pointer_motion(from.0 - 20.0 * k as f64, from.1 + 10.0 * k as f64);
+                        }
+                    }
+                    "move-files" | "move-desk" => {
+                        let from = (state.pointer_location.x, state.pointer_location.y);
+                        let to = match (step, files_win) {
+                            ("move-files", Some((x, y, w, h))) => (x + w * 0.6, y + h * 0.6),
+                            // Empty desktop above the Files window
+                            (_, Some((x, y, w, _))) => (x + w * 0.3, (y - 70.0).max(80.0)),
+                            _ => (300.0, 120.0),
+                        };
+                        for k in 1..=12 {
+                            let t = k as f64 / 12.0;
+                            state.debug_pointer_motion(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+                        }
+                    }
+                    "release" => state.debug_pointer_button(0x110, false),
+                    "edge-press" => {
+                        if let Some(w) = state.windows.iter().find(|w| w.app_id == "feather-terminal" && w.is_visible()) {
+                            let (x, y) = ((w.x + w.width) as f64 - 2.0, w.y as f64 + w.height as f64 * 0.5);
+                            state.debug_pointer_motion(x, y);
+                            state.debug_pointer_button(0x110, true);
+                        }
+                    }
+                    "drag-right" => {
+                        let from = (state.pointer_location.x, state.pointer_location.y);
+                        for k in 1..=10 {
+                            state.debug_pointer_motion(from.0 - 15.0 * k as f64, from.1 + 8.0 * k as f64);
+                        }
+                    }
+                    "menu" => {
+                        let screen = (state.shell.screen_w, state.shell.screen_h);
+                        state.shell.desktop.ensure_layout(screen);
+                        if let Some(i) = state.shell.desktop.debug_index("drag-me.txt") {
+                            let (x, y) = state.shell.desktop.position(i, screen);
+                            state.debug_pointer_motion(x + 48.0, y + 30.0);
+                            state.debug_pointer_button(0x111, true);
+                            state.debug_pointer_button(0x111, false);
+                        }
+                    }
+                    _ => eprintln!("[feather-dnd-test] done"),
+                }
+                TimeoutAction::Drop
+            })?;
+        }
+    }
+    // Screenshot pipeline test without synthetic input: FEATHER_DEBUG_CAPTURE=screen|window|area
+    if let Ok(kind) = std::env::var("FEATHER_DEBUG_CAPTURE") {
+        state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(2500)), move |_, _, state| {
+            if kind == "select" {
+                // Shows the selection UI with a fixed anchor; the pointer is where the host left it
+                state.start_screenshot_selection();
+                if let Some(sel) = state.screenshot_select.as_mut() { sel.debug_anchor((120.0, 90.0)); }
+                state.screenshot_motion();
+                return TimeoutAction::Drop;
+            }
+            let target = match kind.as_str() {
+                "window" => state.window_target(|_| true),
+                "area" => Some(crate::screenshot::Target::Area { x: 100.0, y: 50.0, w: 300.5, h: 200.0, radius: 0.0 }),
+                _ => None,
+            };
+            state.take_screenshot(target.unwrap_or(crate::screenshot::Target::Screen));
+            TimeoutAction::Drop
+        })?;
+    }
     // Visual tests: FEATHER_DEBUG_SCREENSHOT=/path.png captures our own output after 2.5 s
     if let Some(path) = std::env::var_os("FEATHER_DEBUG_SCREENSHOT") {
         let path = std::path::PathBuf::from(path);
-        state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(2500)), move |_, _, state| {
+        let delay = std::env::var("FEATHER_DEBUG_SCREENSHOT_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(2500);
+        state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(delay)), move |_, _, state| {
             state.screenshot_request = Some(path.clone());
             // Full redraw so the back buffer holds the complete frame
             state.damage_tracker =
@@ -1356,18 +1726,23 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("menu-app") => state.shell.open_menu = Some(crate::shell::TopMenu::App),
         Ok("menu-window") => state.shell.open_menu = Some(crate::shell::TopMenu::Window),
         Ok("cc") => state.shell.control_center_open = true,
+        Ok("cc-wifi") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Wifi);}
+        Ok("cc-sound") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Sound);}
         _ => {}
     }
 
-    if let Some(pos) = args.iter().position(|a| a == "--autostart") {
-        if let Some(cmd) = args.get(pos + 1) {
-            spawn_wayland_command(cmd, &socket_name);
-        }
-    }
 
     // Event-driven main loop: sleeps until input, a client request or a timer fires,
     // and only renders when something actually changed.
     event_loop.run(None, &mut state, |state| {
+        if let Some(controls)=&mut state.controls {
+            controls.sync(state.shell.control_center_open,state.shell.control_center_open && matches!(state.shell.cc.page,crate::control_panel::Page::Wifi|crate::control_panel::Page::Password));
+        }
+        if !state.shell.control_center_open {state.shell.cc.close();}
+        let password=state.shell.control_center_open && state.shell.cc.page==crate::control_panel::Page::Password;
+        if password!=state.controls_password_focus {state.controls_password_focus=password;state.refresh_focus();}
+        state.flush_appmenu_commands();
+        if let Some(tray)=&mut state.tray{tray.sync_menu(state.shell.tray_open_ids());}
         if state.pointer_focus_dirty {
             state.refresh_pointer_focus();
         }

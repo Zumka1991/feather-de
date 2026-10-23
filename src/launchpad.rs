@@ -1,10 +1,11 @@
 //! Launchpad: full-screen grid of all apps with pages and search.
 //!
-//! Cheap by construction: every app cell (icon + label) is a small tile rasterized once and
-//! cached; a page is just a set of GPU-placed tiles over a GPU solid-colour dim, so paging and
-//! re-opening cost no CPU rasterization. Everything is freed when Launchpad closes.
+//! Each visible app cell (icon + label) is built on the raster worker. Ready tiles are
+//! GPU-placed without rerasterization; page/search changes queue missing tiles and discard
+//! obsolete results. Only the visible page is cached; closing Launchpad releases it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use smithay::{
     backend::{
@@ -16,8 +17,8 @@ use smithay::{
 use tiny_skia::PixmapMut;
 
 use crate::apps::AppRegistry;
-use crate::icons::IconCache;
-use crate::shell::{draw_any_icon, AppIcon, R};
+use crate::icons::{IconLoader, draw_icon, icon_bucket};
+use crate::shell::{AppIcon, R};
 use crate::text::FontSystem;
 use crate::theme::{draw_search_icon, fill_circle, fill_rounded_rect, rgba, stroke_rounded_rect, to_phys, TOP_BAR_HEIGHT};
 
@@ -105,8 +106,8 @@ pub struct Launchpad {
     pub scroll_acc: f64,
     pub last_scroll: std::time::Instant,
     pub last_flip: std::time::Instant,
-    /// A background prefetch step is queued on the event loop
-    pub prefetch_scheduled: bool,
+    ticket: Arc<()>,
+    pending: HashSet<usize>,
 }
 
 fn new_buffer(w: i32, h: i32) -> MemoryRenderBuffer {
@@ -131,7 +132,8 @@ impl Launchpad {
             scroll_acc: 0.0,
             last_scroll: std::time::Instant::now(),
             last_flip: std::time::Instant::now() - std::time::Duration::from_secs(1),
-            prefetch_scheduled: false,
+            ticket: Arc::new(()),
+            pending: HashSet::new(),
         }
     }
 
@@ -143,6 +145,7 @@ impl Launchpad {
         let page = page.min(self.pages() - 1);
         if page != self.page {
             self.page = page;
+            self.cancel_pending();
             self.dots_dirty = true;
         }
     }
@@ -155,7 +158,7 @@ impl Launchpad {
         self.page = self.page.min(self.pages() - 1);
         self.search_dirty = true;
         self.dots_dirty = true;
-        self.prefetch_scheduled = false;
+        self.cancel_pending();
     }
 
     pub fn focus_search(&mut self, focused: bool) {
@@ -166,6 +169,7 @@ impl Launchpad {
     }
 
     pub fn set_query(&mut self, registry: &AppRegistry, query: String) {
+        self.cancel_pending();
         self.query = query;
         self.apps = registry.launchpad_apps(&self.query);
         self.page = 0;
@@ -206,34 +210,27 @@ impl Launchpad {
         LaunchpadHit::Background
     }
 
-    /// Tile buffer for an app, rasterizing it on first use
-    fn tile(&mut self, app: usize, fonts: &mut FontSystem, icons: &mut IconCache, registry: &AppRegistry) -> &MemoryRenderBuffer {
-        let layout = self.layout;
-        self.tiles.entry(app).or_insert_with(|| {
-            let (tw, th) = layout.tile_size();
-            let (pw, ph) = (to_phys(tw as i32), to_phys(th as i32));
-            let mut buf = new_buffer(pw, ph);
+    fn cancel_pending(&mut self) { self.ticket = Arc::new(()); self.pending.clear(); }
+
+    pub fn install_tile(&mut self, ticket: &std::sync::Weak<()>, app: usize, buffer: MemoryRenderBuffer) -> bool {
+        if !std::sync::Weak::ptr_eq(ticket, &Arc::downgrade(&self.ticket)) { return false; }
+        self.pending.remove(&app);
+        if !self.page_cells().iter().any(|(id, _)| *id == app) { return false; }
+        self.tiles.insert(app, buffer);
+        true
+    }
+
+    fn request_tiles(&mut self, worker: Option<&crate::raster::RasterSender>, registry: &AppRegistry) {
+        let cells = self.page_cells();
+        self.tiles.retain(|id, _| cells.iter().any(|(app, _)| id == app));
+        let Some(worker) = worker else { return };
+        for (app, _) in cells {
+            if self.tiles.contains_key(&app) || self.pending.contains(&app) { continue; }
             let entry = &registry.apps[app];
-            let icon = AppIcon::of(entry);
-            let name = entry.name.clone();
-            let mut ctx = buf.render();
-            let _ = ctx.draw(|data| {
-                if let Some(mut pm) = PixmapMut::from_bytes(data, pw as u32, ph as u32) {
-                    let ix = (tw - layout.icon) * 0.5;
-                    draw_any_icon(&mut pm, fonts, icons, &icon, &name, ix, 2.0, layout.icon);
-                    let label = fonts.ellipsize(&name, tw - 12.0, LABEL_SIZE, false);
-                    let lw = fonts.measure_text(&label, LABEL_SIZE, false);
-                    let lx = (tw - lw) * 0.5;
-                    let ly = layout.icon + 9.0;
-                    // Soft shadow under white labels, like Launchpad
-                    fonts.draw_text(&mut pm, &label, lx, ly + 1.0, LABEL_SIZE, rgba(0, 0, 0, 120), false);
-                    fonts.draw_text(&mut pm, &label, lx, ly, LABEL_SIZE, rgba(255, 255, 255, 250), false);
-                }
-                Result::<_, ()>::Ok(vec![Rectangle::from_size((pw, ph).into())])
-            });
-            drop(ctx);
-            buf
-        })
+            if worker.submit(crate::raster::Job::Tile(crate::raster::TileJob {
+                ticket: Arc::downgrade(&self.ticket), app, icon: AppIcon::of(entry), label: entry.name.clone(), layout: self.layout,
+            })) { self.pending.insert(app); }
+        }
     }
 
     /// Wheel/touchpad paging. A wheel notch flips one page; a touchpad swipe flips once per
@@ -265,35 +262,9 @@ impl Launchpad {
         false
     }
 
-    /// Apps of the neighbouring pages whose tiles are not rasterized yet
-    pub fn missing_neighbour_tiles(&self) -> Vec<usize> {
-        let per = self.layout.per_page();
-        let mut pages = vec![self.page + 1];
-        if self.page > 0 {
-            pages.push(self.page - 1);
-        }
-        pages
-            .into_iter()
-            .flat_map(|p| self.apps.iter().skip(p * per).take(per).copied())
-            .filter(|a| !self.tiles.contains_key(a))
-            .collect()
-    }
-
-    /// Rasterizes up to `budget` tiles of neighbouring pages (idle-time prefetch).
-    /// Returns true if more work remains.
-    pub fn prefetch(&mut self, budget: usize, fonts: &mut FontSystem, icons: &mut IconCache, registry: &AppRegistry) -> bool {
-        let missing = self.missing_neighbour_tiles();
-        for &app in missing.iter().take(budget) {
-            self.tile(app, fonts, icons, registry);
-        }
-        missing.len() > budget
-    }
-
-    /// Rasterizes whatever is missing for the current page, search field and page dots
-    pub fn ensure_rendered(&mut self, fonts: &mut FontSystem, icons: &mut IconCache, registry: &AppRegistry) {
-        for (app, _) in self.page_cells() {
-            self.tile(app, fonts, icons, registry);
-        }
+    /// Request visible tiles; only the small search/dots buffers are composed here.
+    pub fn ensure_rendered(&mut self, fonts: &mut FontSystem, worker: Option<&crate::raster::RasterSender>, registry: &AppRegistry) {
+        self.request_tiles(worker, registry);
 
         if self.search_dirty {
             self.search_dirty = false;
@@ -371,5 +342,51 @@ impl Launchpad {
             }
         }
         out
+    }
+}
+
+/// CPU-only tile, built on the asset worker. No live Launchpad or GPU state is borrowed.
+pub fn raster_tile(job: &crate::raster::TileJob, fonts: &mut FontSystem, icons: &mut IconLoader) -> MemoryRenderBuffer {
+    let (tw, th) = job.layout.tile_size();
+    let (pw, ph) = (to_phys(tw as i32), to_phys(th as i32));
+    let mut buf = new_buffer(pw, ph);
+    let icon = job.icon.name.as_deref().and_then(|name| icons.load(name, icon_bucket((job.layout.icon * crate::theme::ui_scale()).ceil() as u32), crate::theme::appearance() == crate::theme::Appearance::Dark));
+    let mut ctx = buf.render();
+    let _ = ctx.draw(|data| {
+        if let Some(mut pm) = PixmapMut::from_bytes(data, pw as u32, ph as u32) {
+            let ix = (tw - job.layout.icon) * 0.5;
+            if let Some(icon) = &icon { draw_icon(&mut pm, icon, ix, 2.0, job.layout.icon); }
+            else { crate::apps::draw_app_icon(&mut pm, fonts, job.icon.kind, &job.label, ix, 2.0, job.layout.icon); }
+            let label = fonts.ellipsize(&job.label, tw - 12.0, LABEL_SIZE, false);
+            let lw = fonts.measure_text(&label, LABEL_SIZE, false);
+            let lx = (tw - lw) * 0.5;
+            let ly = job.layout.icon + 9.0;
+            fonts.draw_text(&mut pm, &label, lx, ly + 1.0, LABEL_SIZE, rgba(0, 0, 0, 120), false);
+            fonts.draw_text(&mut pm, &label, lx, ly, LABEL_SIZE, rgba(255, 255, 255, 250), false);
+        }
+        Result::<_, ()>::Ok(vec![Rectangle::from_size((pw, ph).into())])
+    });
+    drop(ctx);
+    buf
+}
+
+#[cfg(test)]
+mod raster_tests {
+    use super::*;
+
+    #[test]
+    fn old_page_and_closed_launchpad_tickets_do_not_accept_tiles() {
+        let registry = AppRegistry::new();
+        let mut lp = Launchpad::new(&registry, 1280, 800);
+        let old = Arc::downgrade(&lp.ticket);
+        let app = lp.page_cells()[0].0;
+        lp.invalidate(1600, 1000);
+        assert_eq!(old.strong_count(), 0);
+        assert!(!lp.install_tile(&old, app, new_buffer(1, 1)));
+        let current = Arc::downgrade(&lp.ticket);
+        assert!(lp.install_tile(&current, app, new_buffer(1, 1)));
+        let closed = Arc::downgrade(&lp.ticket);
+        drop(lp);
+        assert_eq!(closed.strong_count(), 0);
     }
 }
