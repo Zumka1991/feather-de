@@ -21,7 +21,97 @@ fn at(
     Ok(())
 }
 
+/// Fake socket helper for the nested polkit check: accepts only "feather".
+fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    let _ = std::fs::remove_file(path);
+    let listener = std::os::unix::net::UnixListener::bind(path)?;
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let Ok(clone) = stream.try_clone() else { continue };
+            let mut reader = BufReader::new(clone);
+            let mut w = stream;
+            let mut line = String::new();
+            for _ in 0..2 {
+                line.clear();
+                let _ = reader.read_line(&mut line);
+            }
+            let _ = writeln!(w, "PAM_PROMPT_ECHO_OFF Password: ");
+            line.clear();
+            let _ = reader.read_line(&mut line);
+            let ok = line.trim_end() == "feather";
+            // PAM's failure delay, so the "checking" state is visible.
+            std::thread::sleep(Duration::from_millis(if ok { 200 } else { 700 }));
+            let _ = writeln!(w, "{}", if ok { "SUCCESS" } else { "FAILURE" });
+        }
+    });
+    Ok(())
+}
+
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("FEATHER_DEBUG_TRASH").is_some() {
+        // Empties a trash for real: only ever a throwaway XDG_DATA_HOME under /tmp.
+        let data = std::env::var("XDG_DATA_HOME").unwrap_or_default();
+        assert!(data.starts_with("/tmp/"), "FEATHER_DEBUG_TRASH needs XDG_DATA_HOME under /tmp");
+        at(state, 1500, |s| {
+            assert!(s.trash_full, "Dock trash should be full");
+            s.confirm_empty_trash();
+            assert!(s.keyboard.current_focus().is_none());
+        })?;
+        at(state, 2600, |s| {
+            s.debug_keyboard_key(28, true);
+            s.debug_keyboard_key(28, false);
+        })?;
+        at(state, 3600, |s| {
+            assert!(!s.auth.is_open());
+            assert!(!s.trash_full, "Dock trash should be empty after confirming");
+            assert!(feather_ui::fileops::trash_is_empty());
+            eprintln!("[feather-trash-check] full icon, confirmation, Enter empties, icon empty");
+        })?;
+    }
+    if let Ok(root) = std::env::var("FEATHER_DEBUG_POLKIT") {
+        let socket = std::path::Path::new(&root).join("helper.socket");
+        polkit_fake_helper(&socket)?;
+        std::env::set_var("FEATHER_POLKIT_HELPER_SOCKET", &socket);
+        let agent = crate::polkit_agent::Agent::detached(&state.loop_handle)?;
+        state.polkit = Some(agent.clone());
+        let me = unsafe { libc::getuid() };
+        at(state, 800, move |_| {
+            let user = |uid: u32, name: &str, real: &str| crate::polkit_agent::User { uid, name: name.into(), real_name: real.into() };
+            agent.inject(crate::polkit_agent::Request {
+                cookie: "debug-1".into(),
+                action_id: "org.freedesktop.policykit.exec".into(),
+                message: "Для запуска «/usr/bin/gparted» от имени суперпользователя требуется аутентификация.".into(),
+                details: vec![
+                    ("command_line".into(), "/usr/bin/gparted".into()),
+                    ("program".into(), "/usr/bin/gparted".into()),
+                ],
+                users: vec![user(me, "zumka", "Зумка"), user(me + 1, "admin", "")],
+                default_user: 0,
+            });
+        })?;
+        // "wrong" + Enter, then "feather" + Enter (evdev codes, US layout).
+        for (i, key) in [17u32, 19, 24, 49, 34, 28].into_iter().enumerate() {
+            at(state, 1500 + i as u64 * 60, move |s| {
+                s.debug_keyboard_key(key, true);
+                s.debug_keyboard_key(key, false);
+            })?;
+        }
+        at(state, 3200, |s| {
+            assert!(s.auth.is_open(), "dialog closed after a wrong password");
+            assert!(s.keyboard.current_focus().is_none(), "a client has keyboard focus under the dialog");
+        })?;
+        for (i, key) in [33u32, 18, 30, 20, 35, 18, 19, 28].into_iter().enumerate() {
+            at(state, 3600 + i as u64 * 60, move |s| {
+                s.debug_keyboard_key(key, true);
+                s.debug_keyboard_key(key, false);
+            })?;
+        }
+        at(state, 5000, |s| {
+            assert!(!s.auth.is_open(), "dialog still open after the right password");
+            eprintln!("[feather-polkit-check] wrong password shakes, right password closes, keyboard captured");
+        })?;
+    }
     if let Ok(root) = std::env::var("FEATHER_DEBUG_DEFAULTS_ROOT") {
         use crate::system_settings::{Action as A, Page};
         fn click(s: &mut FeatherCompositor, p: impl Fn(&A) -> bool) {

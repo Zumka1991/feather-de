@@ -587,6 +587,7 @@ impl FeatherCompositor {
                 .ensure_overlay_rendered(&mut self.fonts, &self.app_registry, &self.active_layout_name);
         }
 
+        self.auth.ensure_rendered(&mut self.fonts);
         profile.step("overlay");
         let visible_count = self.windows.iter().filter(|w| w.is_visible()).count();
         let ctx = BuiltinContext {
@@ -642,7 +643,7 @@ impl FeatherCompositor {
                 worker.submit(crate::raster::Job::Reclaim);
             }
         }
-        self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now());
+        self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now()) || self.auth.animating();
         self.advance_bounce();
         let cpu_time = t_cpu.elapsed();
         let t_gpu = Instant::now();
@@ -720,7 +721,8 @@ impl FeatherCompositor {
                 }
             } }
             let pointer = (self.pointer_location.x, self.pointer_location.y);
-            let mut elements = crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h));
+            let mut elements = self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h));
+            elements.extend(crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
             drag_overlay(&mut elements, renderer, &self.shell, pointer, scale);
             elements.extend(build_scene(
                 renderer,
@@ -773,6 +775,7 @@ impl FeatherCompositor {
         let scale = self.scale_factor;
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let mut elements = cursor_elements(&mut d.renderer, &mut self.cursor, pointer, scale);
+        elements.extend(self.auth.elements(&mut d.renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h)));
         elements.extend(crate::screenshot::overlay(&mut d.renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
         drag_overlay(&mut elements, &mut d.renderer, &self.shell, pointer, scale);
         elements.extend(build_scene(

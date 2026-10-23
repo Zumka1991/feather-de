@@ -7,6 +7,9 @@
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
 **Актуальная передача (от Claude ChatGPT/Codex):** [NEXT_STEPS.md](NEXT_STEPS.md).
+**Заметки и Super+E, 2026-10-24 (Claude):** `notes/` (feather-notes) в workspace; [NOTES.md](NOTES.md).
+**polkit-агент, 2026-10-24 (Claude):** окно пароля рисует композитор; проверка с настоящим PAM — за пользователем (`pkexec true` в DRM). [POLKIT.md](POLKIT.md).
+**Корзина, 2026-10-24 (Claude):** Dock, подтверждение, возврат/удаление в «Файлах»; перетаскивание на значок и DRM — проверить вручную. [TRASH.md](TRASH.md).
 **Настройки в стиле Tahoe, 2026-10-24 (Claude):** единая панель инструментов, формы, листы и меню; 97 тестов. [SYSTEM_SETTINGS.md](SYSTEM_SETTINGS.md).
 **Выбор файлов, 2026-10-24 (Codex, перепроверено Claude):** режим выбора в «Файлах»,
 обои через него, backend XDG Portal FileChooser. 97 тестов; устройство — [FILES.md](FILES.md).

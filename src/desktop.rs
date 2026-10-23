@@ -852,6 +852,10 @@ impl FeatherCompositor {
     pub fn desktop_dnd_cancelled(&mut self) {
         let Some(drag) = self.shell.desktop.dropped.take() else { return };
         let p = (self.pointer_location.x, self.pointer_location.y);
+        if self.over_dock_trash(p.0, p.1) {
+            self.trash_paths(drag.paths);
+            return;
+        }
         if !self.over_bare_desktop(p.0, p.1) {
             return;
         }
@@ -910,6 +914,13 @@ impl FeatherCompositor {
         self.shell.desktop.hover_folder = None;
         self.needs_redraw = true;
         let p = (self.pointer_location.x, self.pointer_location.y);
+        if target.is_none() && self.over_dock_trash(p.0, p.1) {
+            if let Some(client) = self.shell.desktop.client_drag.as_mut() {
+                client.drop_into = Some(fileops::trash_files_dir());
+            }
+            self.finish_client_drop();
+            return;
+        }
         if target.is_some() || !self.over_bare_desktop(p.0, p.1) {
             self.shell.desktop.client_drag = None;
             return;
@@ -931,7 +942,12 @@ impl FeatherCompositor {
             return;
         }
         let client = desktop.client_drag.take().unwrap();
-        drop_files(client.paths.unwrap(), client.drop_into.unwrap());
+        let (paths, dir) = (client.paths.unwrap(), client.drop_into.unwrap());
+        if dir == fileops::trash_files_dir() {
+            self.trash_paths(paths);
+        } else {
+            drop_files(paths, dir);
+        }
     }
 
     /// The desktop takes the keyboard: no window is active until one is clicked or raised

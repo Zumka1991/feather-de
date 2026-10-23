@@ -741,6 +741,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "feather-notes"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "feather-ui",
+ "libc",
+ "smithay-client-toolkit",
+ "tiny-skia",
+ "wayland-client",
+]
+
+[[package]]
 name = "feather-terminal"
 version = "0.1.0"
 dependencies = [

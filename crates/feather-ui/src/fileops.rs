@@ -214,28 +214,119 @@ pub fn uri_list(paths: &[PathBuf]) -> String {
 
 /// Local paths from a `text/uri-list` (comments and other schemes are skipped)
 pub fn parse_uri_list(text: &str) -> Vec<PathBuf> {
-    use std::os::unix::ffi::OsStringExt;
     text.lines()
         .filter_map(|line| line.trim().strip_prefix("file://"))
         .map(|rest| rest.find('/').map_or(rest, |i| &rest[i..]))
-        .map(|encoded| {
-            let bytes = encoded.as_bytes();
-            let mut out = Vec::with_capacity(bytes.len());
-            let mut i = 0;
-            while i < bytes.len() {
-                if bytes[i] == b'%' && i + 2 < bytes.len() {
-                    if let Ok(b) = u8::from_str_radix(&encoded[i + 1..i + 3], 16) {
-                        out.push(b);
-                        i += 3;
-                        continue;
-                    }
-                }
-                out.push(bytes[i]);
-                i += 1;
-            }
-            PathBuf::from(std::ffi::OsString::from_vec(out))
-        })
+        .map(percent_decode)
         .collect()
+}
+
+pub fn percent_decode(encoded: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let bytes = encoded.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&encoded[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
+fn trash_info_path(trashed: &Path) -> Option<PathBuf> {
+    let name = trashed.file_name()?;
+    let mut info = name.to_os_string();
+    info.push(".trashinfo");
+    Some(trash_files_dir().with_file_name("info").join(info))
+}
+
+/// Anything in the home trash? (One directory entry is read: cheap, but still I/O.)
+pub fn trash_is_empty() -> bool {
+    std::fs::read_dir(trash_files_dir()).map_or(true, |mut d| d.next().is_none())
+}
+
+/// Where a trashed item came from (its `.trashinfo` `Path=`).
+pub fn trash_origin(trashed: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(trash_info_path(trashed)?).ok()?;
+    let value = text.lines().find_map(|l| l.strip_prefix("Path="))?;
+    let path = percent_decode(value.trim());
+    path.is_absolute().then_some(path)
+}
+
+/// Puts items back where they were deleted from; an occupied name gets " 2", " 3"…
+/// Returns the failures.
+pub fn restore(trashed: &[PathBuf]) -> usize {
+    let files = trash_files_dir();
+    let mut failed = 0;
+    for item in trashed {
+        let ok = (|| {
+            if item.parent() != Some(files.as_path()) {
+                return None;
+            }
+            let origin = trash_origin(item)?;
+            let dir = origin.parent()?;
+            std::fs::create_dir_all(dir).ok()?;
+            let target = unique_name(dir, &origin.file_name()?.to_string_lossy());
+            let moved = std::fs::rename(item, &target).is_ok()
+                || (copy_recursive(item, &target).is_ok() && remove_recursive(item).is_ok());
+            moved.then(|| {
+                let _ = std::fs::remove_file(trash_info_path(item)?);
+                Some(())
+            })?
+        })();
+        if ok.is_none() {
+            failed += 1;
+        }
+    }
+    failed
+}
+
+/// Permanently removes items that are in the trash (never anything outside it).
+pub fn delete_from_trash(trashed: &[PathBuf]) -> usize {
+    let files = trash_files_dir();
+    trashed
+        .iter()
+        .filter(|item| {
+            let inside = item.parent() == Some(files.as_path());
+            let removed = inside && remove_recursive(item).is_ok();
+            if removed {
+                if let Some(info) = trash_info_path(item) {
+                    let _ = std::fs::remove_file(info);
+                }
+            }
+            !removed
+        })
+        .count()
+}
+
+/// Empties the home trash: files/, info/ and the size cache. Returns the failures.
+pub fn empty_trash() -> usize {
+    let files = trash_files_dir();
+    let items: Vec<PathBuf> = std::fs::read_dir(&files)
+        .map(|d| d.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    let failed = delete_from_trash(&items);
+    // Orphaned .trashinfo records (their file is already gone).
+    if let Ok(dir) = std::fs::read_dir(files.with_file_name("info")) {
+        for e in dir.flatten() {
+            let name = e.file_name();
+            let stem = name.to_string_lossy();
+            if let Some(stem) = stem.strip_suffix(".trashinfo") {
+                if std::fs::symlink_metadata(files.join(stem)).is_err() {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_file(files.with_file_name("directorysizes"));
+    failed
 }
 
 /// inotify on the open folder only; the fd is watched by the event loop (no polling)
@@ -285,3 +376,39 @@ impl Drop for Watcher {
     }
 }
 
+
+#[cfg(test)]
+mod trash_tests {
+    use super::*;
+    #[test]
+    fn trash_restore_delete_and_empty() {
+        let root = std::env::temp_dir().join(format!("feather-trash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let docs = root.join("Документы с пробелом");
+        std::fs::create_dir_all(&docs).unwrap();
+        // Tests in this crate do not otherwise read XDG_DATA_HOME.
+        std::env::set_var("XDG_DATA_HOME", root.join("data"));
+        assert!(trash_is_empty());
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(docs.join(name), name).unwrap();
+        }
+        assert_eq!(trash(&[docs.join("a.txt"), docs.join("b.txt"), docs.join("c.txt")]), 0);
+        assert!(!trash_is_empty());
+        let files = trash_files_dir();
+        assert_eq!(trash_origin(&files.join("a.txt")).unwrap(), docs.join("a.txt"));
+        // Occupied original name: restored next to it, nothing overwritten.
+        std::fs::write(docs.join("a.txt"), "new").unwrap();
+        assert_eq!(restore(&[files.join("a.txt")]), 0);
+        assert_eq!(std::fs::read_to_string(docs.join("a.txt 2")).unwrap(), "a.txt");
+        assert_eq!(std::fs::read_to_string(docs.join("a.txt")).unwrap(), "new");
+        assert!(!files.with_file_name("info").join("a.txt.trashinfo").exists());
+        // Nothing outside the trash can be deleted through it.
+        assert_eq!(delete_from_trash(&[docs.join("a.txt")]), 1);
+        assert!(docs.join("a.txt").exists());
+        assert_eq!(delete_from_trash(&[files.join("b.txt")]), 0);
+        assert_eq!(empty_trash(), 0);
+        assert!(trash_is_empty());
+        assert_eq!(std::fs::read_dir(files.with_file_name("info")).unwrap().count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

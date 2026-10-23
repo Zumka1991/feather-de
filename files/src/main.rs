@@ -334,6 +334,27 @@ impl Files {
                         let _ = tx.send(Msg::Done(failed, "Перемещение в Корзину"));
                     });
                 }
+                Effect::Restore(paths) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let failed = fsops::restore(&paths);
+                        let _ = tx.send(Msg::Done(failed, "Возврат из Корзины"));
+                    });
+                }
+                Effect::DeleteForever(paths) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let failed = fsops::delete_from_trash(&paths);
+                        let _ = tx.send(Msg::Done(failed, "Удаление"));
+                    });
+                }
+                Effect::EmptyTrash => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let failed = fsops::empty_trash();
+                        let _ = tx.send(Msg::Done(failed, "Очистка Корзины"));
+                    });
+                }
                 Effect::Clipboard(paths) => self.offer_files(paths),
                 Effect::StartDrag(paths) => self.start_drag(paths),
             }

@@ -165,6 +165,8 @@ pub enum DockTarget {
     Window(u64),
     /// A minimized window, shown right of the separator like on macOS
     Minimized(u64),
+    /// The Trash, always last
+    Trash,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +191,8 @@ pub enum DockMenuAction {
     Window(u64),
     /// Start another copy of the app
     NewWindow,
+    /// Dock Trash: asks before deleting everything in it
+    EmptyTrash,
     /// Desktop context menu (the menu's Dock target is unused)
     Desktop(crate::desktop::MenuAction),
 }
@@ -1837,13 +1841,18 @@ impl MacShell {
 
         let p = palette();
         let n = self.dock_items.len();
-        let minimized_start = self
-            .dock_items
-            .iter()
-            .position(|i| matches!(i.target, DockTarget::Minimized(_)))
-            .unwrap_or(n);
-        let has_sep = minimized_start > 0 && minimized_start < n;
-        let sep_w = if has_sep { 14.0 } else { 0.0 };
+        // Separators: apps | minimized windows | Trash (the Trash keeps its own section).
+        let first_min = self.dock_items.iter().position(|i| matches!(i.target, DockTarget::Minimized(_)));
+        let trash_at = self.dock_items.iter().position(|i| i.target == DockTarget::Trash);
+        let mut boundaries: Vec<usize> = Vec::with_capacity(2);
+        if let Some(start) = first_min.or(trash_at).filter(|&s| s > 0) {
+            boundaries.push(start);
+        }
+        if let (Some(_), Some(t)) = (first_min, trash_at) {
+            boundaries.push(t);
+        }
+        const SEP: f32 = 14.0;
+        let sep_w = SEP * boundaries.len() as f32;
         let buf_w = self.dock_buf_w as f32;
         let buf_h = self.dock_buf_h as f32;
 
@@ -1853,7 +1862,7 @@ impl MacShell {
         let base_center = |i: usize| {
             base_x0
                 + i as f32 * (DOCK_ICON_BASE + DOCK_ICON_GAP)
-                + if has_sep && i >= minimized_start { sep_w } else { 0.0 }
+                + SEP * boundaries.iter().filter(|&&b| i >= b).count() as f32
                 + DOCK_ICON_BASE * 0.5
         };
 
@@ -1880,14 +1889,14 @@ impl MacShell {
 
         let mut slots = Vec::with_capacity(n);
         let mut x = bar.x + DOCK_PAD_X;
-        let mut sep_x = None;
+        let mut sep_x: Vec<f32> = Vec::with_capacity(2);
         for (i, item) in self.dock_items.iter().enumerate() {
             if gap == Some(i) {
                 x += gap_w;
             }
-            if has_sep && i == minimized_start {
-                sep_x = Some(x + sep_w * 0.5 - DOCK_ICON_GAP * 0.5);
-                x += sep_w;
+            if boundaries.contains(&i) {
+                sep_x.push(x + SEP * 0.5 - DOCK_ICON_GAP * 0.5);
+                x += SEP;
             }
             slots.push(DockSlot {
                 target: item.target,
@@ -1903,7 +1912,7 @@ impl MacShell {
                 let shift = center - (slot.x + slot.size * 0.5);
                 bar.x += shift;
                 for slot in &mut slots { slot.x += shift; }
-                sep_x = sep_x.map(|x| x + shift);
+                for sx in &mut sep_x { *sx += shift; }
             }
         }
 
@@ -1942,7 +1951,7 @@ impl MacShell {
                 stroke_rounded_rect(&mut pm, bar.x + 0.75, bar.y + 0.75, bar.w - 1.5, bar.h - 1.5, DOCK_RADIUS - 0.75, 1.0, p.glass_edge);
                 stroke_rounded_rect(&mut pm, bar.x - 0.25, bar.y - 0.25, bar.w + 0.5, bar.h + 0.5, DOCK_RADIUS + 0.25, 0.5, p.glass_outline);
 
-                if let Some(sx) = sep_x {
+                for &sx in &sep_x {
                     stroke_line(&mut pm, sx, bar.y + 10.0, sx, bar.y + bar.h - 10.0, 1.0, p.separator);
                 }
 

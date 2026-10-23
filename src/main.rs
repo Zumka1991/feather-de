@@ -21,6 +21,9 @@ mod system_settings;
 mod system_preferences;
 mod wallpaper;
 mod file_portal;
+mod polkit_agent;
+mod auth_dialog;
+mod trash;
 mod shell;
 use feather_ui::text;
 mod theme;
@@ -138,6 +141,11 @@ pub struct FeatherCompositor {
     pub tray: Option<crate::tray::Tray>,
     pub controls: Option<crate::controls::Controls>,
     controls_password_focus: bool,
+    pub auth: crate::auth_dialog::AuthUi,
+    pub polkit: Option<crate::polkit_agent::Agent>,
+    pub trash_full: bool,
+    trash_watcher: Option<feather_ui::fileops::Watcher>,
+    trash_tx: Option<smithay::reexports::calloop::channel::Sender<crate::trash::Msg>>,
     pub pending_autostart: Option<String>,
     pub idle_frame_timer_armed: bool,
     pub frame_pending: bool,
@@ -238,7 +246,7 @@ impl FeatherCompositor {
         for (i, w) in self.windows.iter_mut().enumerate() {
             w.set_activated(!desktop && Some(i) == top);
         }
-        let password = self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password;
+        let password = self.auth.is_open() || (self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password);
         let target = if password || desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus() != target {
@@ -471,6 +479,16 @@ impl FeatherCompositor {
                 pinned: false,
             });
         }
+        items.push(DockItem {
+            target: DockTarget::Trash,
+            label: "Корзина".into(),
+            icon: AppIcon {
+                kind: if self.trash_full { crate::apps::IconKind::TrashFull } else { crate::apps::IconKind::TrashEmpty },
+                name: None,
+            },
+            windows: 0,
+            pinned: false,
+        });
         items
     }
 
@@ -769,10 +787,19 @@ impl FeatherCompositor {
 
     /// Right click on a Dock icon: the app's windows, a new window, pin, quit
     pub fn open_dock_menu_for(&mut self, target: DockTarget, anchor: R) {
+        if target == DockTarget::Trash {
+            let mut items = vec![("Открыть".to_string(), DockMenuAction::Open)];
+            if self.trash_full {
+                items.push(("Очистить Корзину…".to_string(), DockMenuAction::EmptyTrash));
+            }
+            self.shell.open_dock_menu(target, anchor, items, &mut self.fonts);
+            return;
+        }
         let key = self.dock_target_key(target);
         let running = match target {
             DockTarget::App(i) => self.windows.iter().any(|w| w.mapped && self.app_key(w) == AppKey::App(i)),
             DockTarget::Window(_) | DockTarget::Minimized(_) => true,
+            DockTarget::Trash => false,
         };
         let mut items = Vec::new();
         if let (true, Some(key)) = (running, key) {
@@ -809,6 +836,7 @@ impl FeatherCompositor {
             DockTarget::Window(id) | DockTarget::Minimized(id) => {
                 self.windows.iter().find(|w| w.id == id).map(|w| self.app_key(w))
             }
+            DockTarget::Trash => None,
         }
     }
 
@@ -927,6 +955,10 @@ impl FeatherCompositor {
                     DockTarget::App(i) => ShellClickAction::ActivateApp(i),
                     DockTarget::Window(id) => ShellClickAction::ActivateWindow(id),
                     DockTarget::Minimized(id) => ShellClickAction::RestoreMinimizedWindow(id),
+                    DockTarget::Trash => {
+                        self.open_trash();
+                        return;
+                    }
                 };
                 self.execute_shell_action(action);
             }
@@ -937,6 +969,8 @@ impl FeatherCompositor {
                         self.execute_shell_action(ShellClickAction::Tray{key:item.key.clone(),action:crate::tray::Action::Context,x:self.pointer_location.x as i32,y:TOP_BAR_HEIGHT});
                     }
                 }
+                DockMenuAction::Open if target == DockTarget::Trash => self.open_trash(),
+                DockMenuAction::EmptyTrash => self.confirm_empty_trash(),
                 DockMenuAction::Open => {
                     if let Some(key) = self.dock_target_key(target) {
                         self.activate_app(key);
@@ -1471,6 +1505,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         debug_input_only: std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_some(),
         controls: None,
         controls_password_focus: false,
+        auth: Default::default(),
+        polkit: None,
+        trash_full: false,
+        trash_watcher: None,
+        trash_tx: None,
         display_handle: dh,
         loop_handle: handle,
         loop_signal: event_loop.get_signal(),
@@ -1565,6 +1604,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let raster = crate::raster::RasterSender::new(&state.loop_handle, state.fonts.for_worker())?;
     state.shell.attach_raster(raster);
     state.start_desktop()?;
+    state.start_trash()?;
     state.controls=Some(crate::controls::Controls::new(&state.loop_handle)?);
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_TRAY").is_some() {
         state.tray=Some(crate::tray::Tray::new(&state.loop_handle)?);
@@ -1572,6 +1612,21 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start Polkit Authentication Agent (for MouseVPN / pkexec password prompts) and D-Bus env
     spawn_session_services(&socket_name, is_standalone);
+    // Own polkit agent in a real session; FEATHER_POLKIT_AGENT=1 forces it (tests),
+    // FEATHER_POLKIT=lxqt keeps the external agent.
+    let own_agent = std::env::var("FEATHER_POLKIT").as_deref() != Ok("lxqt")
+        && (is_standalone || std::env::var_os("FEATHER_POLKIT_AGENT").is_some());
+    if own_agent {
+        match crate::polkit_agent::Agent::start(&state.loop_handle, is_standalone) {
+            Ok(agent) => state.polkit = Some(agent),
+            Err(e) => {
+                tracing::warn!("polkit: {e}");
+                crate::apps::spawn_polkit_fallback(&socket_name);
+            }
+        }
+    } else if is_standalone {
+        crate::apps::spawn_polkit_fallback(&socket_name);
+    }
 
     state.dock_pins = saved.dock.clone().unwrap_or_else(|| state.app_registry.default_pins());
 
@@ -1773,6 +1828,13 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("menu-app") => state.shell.open_menu = Some(crate::shell::TopMenu::App),
         Ok("menu-window") => state.shell.open_menu = Some(crate::shell::TopMenu::Window),
         Ok("cc") => state.shell.control_center_open = true,
+        Ok("dock-minimized") => {
+            if let Some(w) = state.windows.last_mut() {
+                w.minimized = true;
+            }
+            state.dock_model_dirty = true;
+            state.refresh_focus();
+        }
         Ok("cc-wifi") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Wifi);}
         Ok("cc-sound") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Sound);}
         _ => {}

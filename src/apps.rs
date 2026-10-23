@@ -5,7 +5,8 @@ use tiny_skia::{Color, PixmapMut};
 
 use crate::text::FontSystem;
 use crate::theme::{
-    fill_circle, fill_rounded_rect, fill_squircle_gradient, rgba, stroke_line, stroke_squircle,
+    fill_circle, fill_path_gradient, fill_rounded_rect, fill_squircle_gradient, rgba,
+    stroke_line, stroke_squircle,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -20,6 +21,8 @@ pub enum IconKind {
     Settings,
     Launchpad,
     GenericApp,
+    TrashEmpty,
+    TrashFull,
 }
 
 #[derive(Debug, Clone)]
@@ -163,7 +166,12 @@ impl AppRegistry {
                 true,
             ),
             AppEntry::new("mousevpn", "MouseVPN", "VPN-клиент", IconKind::Vpn, Exec("mousevpn-linux-gui".into()), true),
-            AppEntry::new("builtin.notes", "Заметки", "Быстрые заметки (RU / EN)", IconKind::Notes, BuiltinWindow(BuiltinWindowKind::QuickNotes), true),
+            // Id stays "builtin.notes" for saved Dock pins; Feather's Notes app when installed
+            match own_program("feather-notes") {
+                Some(cmd) => AppEntry::new("builtin.notes", "Заметки", "Заметки в стиле macOS", IconKind::Notes, Exec(cmd), true)
+                    .with_aliases(&["feather-notes"]),
+                None => AppEntry::new("builtin.notes", "Заметки", "Быстрые заметки (RU / EN)", IconKind::Notes, BuiltinWindow(BuiltinWindowKind::QuickNotes), true),
+            },
             AppEntry::new(
                 "builtin.monitor",
                 "Мониторинг системы",
@@ -430,19 +438,24 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
         .is_ok()
 }
 
+/// External polkit agent, used when Feather's own agent cannot register.
+pub fn spawn_polkit_fallback(wayland_socket: &str) {
+    let polkit_cmd = "killall -q lxqt-policykit-agent polkit-kde-authentication-agent-1 2>/dev/null; \
+        sleep 0.15; \
+        if command -v lxqt-policykit-agent >/dev/null 2>&1; then \
+            exec lxqt-policykit-agent; \
+        elif [ -x /usr/lib/polkit-kde-authentication-agent-1 ]; then \
+            exec /usr/lib/polkit-kde-authentication-agent-1; \
+        fi";
+    spawn_wayland_command(polkit_cmd, wayland_socket);
+}
+
 /// Starts essential background session daemons (Polkit Authentication Agent for VPN/pkexec, D-Bus env)
 pub fn spawn_session_services(wayland_socket: &str, is_standalone: bool) {
     if is_standalone {
         crate::file_portal::session_start(wayland_socket.to_owned());
 
-        let polkit_cmd = "killall -q lxqt-policykit-agent polkit-kde-authentication-agent-1 2>/dev/null; \
-            sleep 0.15; \
-            if command -v lxqt-policykit-agent >/dev/null 2>&1; then \
-                exec lxqt-policykit-agent; \
-            elif [ -x /usr/lib/polkit-kde-authentication-agent-1 ]; then \
-                exec /usr/lib/polkit-kde-authentication-agent-1; \
-            fi";
-        spawn_wayland_command(polkit_cmd, wayland_socket);
+
     } else {
         // Even in nested mode, ensure a Polkit agent is running if none is active
         let polkit_fallback = "pgrep -u \"$(id -u)\" -f 'lxqt-policykit-agent|polkit-kde-authentication-agent-1' >/dev/null 2>&1 || \
@@ -576,6 +589,138 @@ pub fn eval_spotlight_math(expr: &str) -> Option<String> {
 
 /// Draws a procedural macOS-style squircle icon (for built-in apps and as a fallback)
 #[allow(clippy::too_many_arguments)]
+/// The Dock trash, macOS-like: a perforated glass bin in perspective, sized to carry the
+/// same visual weight as the tiles next to it; crumpled paper when full.
+fn draw_trash(pm: &mut PixmapMut, x: f32, y: f32, size: f32, full: bool) {
+    let k = size;
+    let at = |fx: f32, fy: f32| (x + k * fx, y + k * fy);
+    let oval = |cx: f32, cy: f32, rx: f32, ry: f32| {
+        tiny_skia::Rect::from_xywh(x + k * (cx - rx), y + k * (cy - ry), k * rx * 2.0, k * ry * 2.0)
+            .and_then(tiny_skia::PathBuilder::from_oval)
+    };
+    let fill = |pm: &mut PixmapMut, path: Option<tiny_skia::Path>, y0: f32, y1: f32, top: Color, bottom: Color| {
+        if let Some(path) = path {
+            fill_path_gradient(pm, &path, y + k * y0, y + k * y1, top, bottom);
+        }
+    };
+    // Soft contact shadow.
+    for (i, a) in [(0.0, 18u8), (0.02, 14), (0.04, 10)] {
+        fill(pm, oval(0.5, 0.955, 0.30 + i, 0.035 + i * 0.5), 0.9, 1.0, rgba(0, 0, 0, a), rgba(0, 0, 0, a));
+    }
+    // Rim: a metallic ring around the opening. The whole ring goes behind the paper,
+    // its front half again over the body, so paper sits *inside* the bin.
+    let rim = |pm: &mut PixmapMut, front_only: bool| {
+        let (cx, cy, rx, ry) = (x + k * 0.5, y + k * 0.17, k * 0.40, k * 0.09);
+        let ring = |rx: f32, ry: f32| {
+            let mut b = tiny_skia::PathBuilder::new();
+            let c = 0.5523;
+            b.move_to(cx - rx, cy);
+            b.cubic_to(cx - rx, cy + ry * c, cx - rx * c, cy + ry, cx, cy + ry);
+            b.cubic_to(cx + rx * c, cy + ry, cx + rx, cy + ry * c, cx + rx, cy);
+            if !front_only {
+                b.cubic_to(cx + rx, cy - ry * c, cx + rx * c, cy - ry, cx, cy - ry);
+                b.cubic_to(cx - rx * c, cy - ry, cx - rx, cy - ry * c, cx - rx, cy);
+            }
+            b.finish()
+        };
+        let mut paint = tiny_skia::Paint::default();
+        paint.anti_alias = true;
+        if let Some(shader) = tiny_skia::LinearGradient::new(
+            tiny_skia::Point::from_xy(0.0, y + k * 0.08),
+            tiny_skia::Point::from_xy(0.0, y + k * 0.26),
+            vec![
+                tiny_skia::GradientStop::new(0.0, rgba(250, 251, 253, 255)),
+                tiny_skia::GradientStop::new(1.0, rgba(150, 158, 172, 255)),
+            ],
+            tiny_skia::SpreadMode::Pad,
+            tiny_skia::Transform::identity(),
+        ) {
+            paint.shader = shader;
+        }
+        let t = crate::theme::scale_transform();
+        if let Some(path) = ring(rx, ry) {
+            pm.stroke_path(&path, &paint, &tiny_skia::Stroke { width: k * 0.035, ..Default::default() }, t, None);
+        }
+        paint.shader = tiny_skia::Shader::SolidColor(rgba(60, 68, 82, 110));
+        if let Some(path) = ring(rx + k * 0.018, ry + k * 0.018) {
+            pm.stroke_path(&path, &paint, &tiny_skia::Stroke { width: k * 0.008, ..Default::default() }, t, None);
+        }
+    };
+    // Inside of the bin, seen through the opening.
+    fill(pm, oval(0.5, 0.17, 0.39, 0.085), 0.09, 0.26, rgba(92, 98, 110, 255), rgba(150, 156, 168, 255));
+    rim(pm, false);
+    if full {
+        let papers = [(0.33, 0.10, 0.13, 0.10, 236u8), (0.58, 0.06, 0.16, 0.115, 250), (0.45, 0.14, 0.15, 0.10, 226), (0.72, 0.12, 0.12, 0.09, 214), (0.24, 0.16, 0.09, 0.07, 220)];
+        for (cx, cy, rx, ry, shade) in papers {
+            fill(pm, oval(cx, cy, rx, ry), cy - ry, cy + ry, rgba(shade, shade, shade, 255), rgba(shade - 18, shade - 18, shade - 14, 255));
+            if let Some(path) = oval(cx, cy, rx, ry) {
+                let mut paint = tiny_skia::Paint::default();
+                paint.set_color(rgba(0, 0, 0, 38));
+                paint.anti_alias = true;
+                let stroke = tiny_skia::Stroke { width: k * 0.008, ..Default::default() };
+                pm.stroke_path(&path, &paint, &stroke, crate::theme::scale_transform(), None);
+            }
+        }
+        // Creases.
+        let (cx, cy) = at(0.58, 0.03);
+        stroke_line(pm, cx - k * 0.06, cy + k * 0.02, cx + k * 0.02, cy + k * 0.07, k * 0.009, rgba(0, 0, 0, 40));
+        let (cx, cy) = at(0.40, 0.08);
+        stroke_line(pm, cx - k * 0.04, cy + k * 0.04, cx + k * 0.04, cy, k * 0.009, rgba(0, 0, 0, 34));
+    }
+    // Body: a tapered cylinder from the rim down to a rounded base.
+    let mut body = tiny_skia::PathBuilder::new();
+    let (l0, r0, top) = (0.11, 0.89, 0.17);
+    let (l1, r1, bottom) = (0.20, 0.80, 0.93);
+    body.move_to(x + k * l0, y + k * top);
+    body.line_to(x + k * r0, y + k * top);
+    body.line_to(x + k * r1, y + k * (bottom - 0.02));
+    body.quad_to(x + k * (r1 - 0.01), y + k * (bottom + 0.025), x + k * 0.5, y + k * (bottom + 0.03));
+    body.quad_to(x + k * (l1 + 0.01), y + k * (bottom + 0.025), x + k * l1, y + k * (bottom - 0.02));
+    body.close();
+    let body = body.finish();
+    fill(pm, body.clone(), top, bottom, rgba(246, 248, 252, 250), rgba(200, 206, 216, 252));
+    // Cylinder shading: highlight left, shade right.
+    let band = |pm: &mut PixmapMut, f0: f32, f1: f32, color: Color| {
+        let mut b = tiny_skia::PathBuilder::new();
+        let lerp = |l: f32, r: f32, f: f32| l + (r - l) * f;
+        b.move_to(x + k * lerp(l0, r0, f0), y + k * top);
+        b.line_to(x + k * lerp(l0, r0, f1), y + k * top);
+        b.line_to(x + k * lerp(l1, r1, f1), y + k * bottom);
+        b.line_to(x + k * lerp(l1, r1, f0), y + k * bottom);
+        b.close();
+        if let Some(path) = b.finish() {
+            fill_path_gradient(pm, &path, y + k * top, y + k * bottom, color, color);
+        }
+    };
+    band(pm, 0.08, 0.22, rgba(255, 255, 255, 120));
+    band(pm, 0.80, 0.97, rgba(40, 50, 70, 26));
+    // Perforated mesh following the taper.
+    let rows = 10;
+    let cols = 8;
+    for r in 0..rows {
+        let fy = top + 0.08 + (bottom - top - 0.13) * r as f32 / (rows - 1) as f32;
+        let t = (fy - top) / (bottom - top);
+        let (left, right) = (l0 + (l1 - l0) * t, r0 + (r1 - r0) * t);
+        for c in 0..cols {
+            let fx = left + (right - left) * (c as f32 + 0.75) / (cols as f32 + 0.5);
+            let (hx, hy) = at(fx, fy);
+            // Holes foreshorten towards the sides of the cylinder.
+            let edge = ((fx - 0.5) / ((right - left) * 0.5)).abs().min(1.0);
+            let hw = k * 0.034 * (1.0 - edge * 0.45);
+            fill_rounded_rect(pm, hx - hw / 2.0, hy - k * 0.017, hw, k * 0.034, k * 0.012, rgba(96, 106, 124, 96));
+        }
+    }
+    if let Some(path) = body {
+        let mut paint = tiny_skia::Paint::default();
+        paint.set_color(rgba(70, 78, 92, 120));
+        paint.anti_alias = true;
+        let stroke = tiny_skia::Stroke { width: k * 0.01, ..Default::default() };
+        pm.stroke_path(&path, &paint, &stroke, crate::theme::scale_transform(), None);
+    }
+    rim(pm, true);
+
+}
+
 pub fn draw_app_icon(
     pixmap: &mut PixmapMut,
     fonts: &mut FontSystem,
@@ -589,6 +734,10 @@ pub fn draw_app_icon(
         fill_squircle_gradient(pm, x, y, size, top, bottom);
     };
 
+    if matches!(kind, IconKind::TrashEmpty | IconKind::TrashFull) {
+        draw_trash(pixmap, x, y, size, kind == IconKind::TrashFull);
+        return;
+    }
     match kind {
         IconKind::Finder => {
             // Files: a light folder on a deep-blue tile, in the same depth/gradient
@@ -705,8 +854,28 @@ pub fn draw_app_icon(
             let first = label.chars().next().unwrap_or('A').to_uppercase().to_string();
             fonts.draw_text_centered(pixmap, &first, x + size * 0.5, y + size * 0.24, size * 0.44, Color::WHITE, true);
         }
+        IconKind::TrashEmpty | IconKind::TrashFull => {}
     }
 
     // Subtle rim, as on macOS icons
     stroke_squircle(pixmap, x + 0.25, y + 0.25, size - 0.5, 0.5, rgba(0, 0, 0, 30));
+}
+#[cfg(test)]
+mod trash_icon_preview {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn preview() {
+        let dir = std::env::var("FEATHER_ICON_PREVIEW").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+        let mut fonts = FontSystem::new();
+        for dark in [false, true] {
+            let mut pm = tiny_skia::Pixmap::new(5 * 150, 170).unwrap();
+            pm.fill(if dark { rgba(60, 50, 70, 255) } else { rgba(235, 215, 210, 255) });
+            let kinds = [IconKind::Terminal, IconKind::Settings, IconKind::GenericApp, IconKind::TrashEmpty, IconKind::TrashFull];
+            for (i, k) in kinds.into_iter().enumerate() {
+                draw_app_icon(&mut pm.as_mut(), &mut fonts, k, "Okno", 11.0 + i as f32 * 150.0, 21.0, 128.0);
+            }
+            pm.save_png(format!("{dir}/icons-{dark}.png")).unwrap();
+        }
+    }
 }

@@ -47,6 +47,10 @@ pub enum Effect {
     /// Copies/moves/trashes on a worker thread; the folder is re-read afterwards
     Paste(Vec<PathBuf>, PathBuf, bool),
     Trash(Vec<PathBuf>),
+    /// Trash folder: put back (from .trashinfo), delete for good, empty it all
+    Restore(Vec<PathBuf>),
+    DeleteForever(Vec<PathBuf>),
+    EmptyTrash,
     /// Offer these files to other programs (text/uri-list)
     Clipboard(Vec<PathBuf>),
     /// Drag these files out (Wayland DnD: other programs, the desktop, our own folders)
@@ -84,6 +88,9 @@ enum Hit {
     Content,
     Toolbar,
     Menu(usize),
+    EmptyTrash,
+    ConfirmOk,
+    ConfirmCancel,
     Nothing,
     PickerAccept,PickerCancel,PickerName,PickerFilter,PickerChoice(usize),
 }
@@ -97,10 +104,20 @@ enum MenuAction {
     Cut,
     Paste,
     Trash,
+    Restore,
+    DeleteForever,
+    EmptyTrash,
     NewFolder,
     ToggleHidden,
     ShowIcons,
     ShowList,
+}
+
+/// Finder-style sheet before deleting anything for good.
+#[derive(Clone, Debug, PartialEq)]
+enum Confirm {
+    Delete(Vec<PathBuf>),
+    Empty,
 }
 
 struct Menu {
@@ -151,6 +168,7 @@ pub struct App {
     rubber: Option<((f32, f32), (f32, f32))>,
     rubber_base: HashSet<PathBuf>,
     menu: Option<Menu>,
+    confirm: Option<Confirm>,
     menu_hover: Option<usize>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
     places: Vec<Place>,
@@ -204,6 +222,7 @@ impl App {
             rubber: None,
             rubber_base: HashSet::new(),
             menu: None,
+            confirm: None,
             menu_hover: None,
             clipboard: None,
             places: Vec::new(),
@@ -534,6 +553,42 @@ impl App {
         vec![Effect::Paste(paths, self.dir.clone(), cut)]
     }
 
+    /// The home trash folder itself (restore/delete act on its direct items).
+    fn in_trash(&self) -> bool {
+        self.picker.is_none() && self.dir == fsops::trash_files_dir()
+    }
+
+    fn confirm_ok(&mut self) -> Vec<Effect> {
+        match self.confirm.take() {
+            Some(Confirm::Delete(paths)) => {
+                self.flash(format!("Удалено: {}", objects(paths.len())));
+                self.selected.clear();
+                vec![Effect::DeleteForever(paths)]
+            }
+            Some(Confirm::Empty) => {
+                self.flash("Корзина очищается…".into());
+                self.selected.clear();
+                vec![Effect::EmptyTrash]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn empty_button(&self) -> Option<(f32, f32, f32, f32)> {
+        (self.in_trash() && !self.entries.is_empty() && self.confirm.is_none()).then(|| {
+            let y = self.h - PATHBAR_H - self.picker_height();
+            (self.w - 14.0 - 84.0, y + 4.0, 84.0, PATHBAR_H - 8.0)
+        })
+    }
+
+    fn confirm_rects(&self) -> ((f32, f32, f32, f32), (f32, f32, f32, f32), (f32, f32, f32, f32)) {
+        let (w, h) = (360.0, 150.0);
+        let x = SIDEBAR_W + ((self.w - SIDEBAR_W - w) / 2.0).max(8.0);
+        let y = TOOLBAR_H + 12.0;
+        let bw = 140.0;
+        ((x, y, w, h), (x + w - 20.0 - bw * 2.0 - 10.0, y + h - 46.0, bw, 30.0), (x + w - 20.0 - bw, y + h - 46.0, bw, 30.0))
+    }
+
     fn trash_selection(&mut self) -> Vec<Effect> {
         let paths = self.selected_paths();
         if paths.is_empty() || self.dir.starts_with(fsops::trash_files_dir()) {
@@ -643,6 +698,14 @@ impl App {
     }
 
     fn hit(&self, x: f32, y: f32) -> Hit {
+        let inside = |(rx, ry, rw, rh): (f32, f32, f32, f32)| x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+        if self.confirm.is_some() {
+            let (_, cancel, ok) = self.confirm_rects();
+            return if inside(ok) { Hit::ConfirmOk } else if inside(cancel) { Hit::ConfirmCancel } else { Hit::Nothing };
+        }
+        if self.empty_button().is_some_and(inside) {
+            return Hit::EmptyTrash;
+        }
         if let Some(menu) = &self.menu {
             let (mx, my, mw, _) = self.menu_rect(menu);
             if x >= mx && x < mx + mw {
@@ -843,6 +906,9 @@ impl App {
             _ => {}
         }
         let hit = self.hit(x, y);
+        if self.confirm.is_some() && button != BTN_LEFT {
+            return Vec::new();
+        }
         if button==BTN_LEFT && !matches!(hit,Hit::PickerName|Hit::PickerAccept|Hit::PickerCancel) {
             if let Some(p)=self.picker.as_mut(){p.name_focus=false;}
         }
@@ -873,7 +939,21 @@ impl App {
         if button != BTN_LEFT {
             return effects;
         }
+        if self.confirm.is_some() {
+            return match hit {
+                Hit::ConfirmOk => self.confirm_ok(),
+                Hit::ConfirmCancel => {
+                    self.confirm = None;
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
+        }
         match hit {
+            Hit::EmptyTrash => {
+                self.confirm = Some(Confirm::Empty);
+                return effects;
+            }
             Hit::PickerAccept=>return self.picker_accept(),
             Hit::PickerCancel=>return vec![Effect::Close],
             Hit::PickerName=>{if let Some(p)=self.picker.as_mut(){p.name_focus=true;}},
@@ -911,7 +991,7 @@ impl App {
                     self.cursor = None;
                 }
             }
-            Hit::Menu(_) | Hit::Nothing => {}
+            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::Nothing => {}
         }
         effects
     }
@@ -1058,6 +1138,12 @@ impl App {
                 }
                 self.cursor = Some(i);
                 let mut items = vec![item("Открыть", MenuAction::Open)];
+                if self.in_trash() {
+                    items.extend([sep(), item("Вернуть", MenuAction::Restore), item("Скопировать", MenuAction::Copy), sep(), item("Удалить навсегда…", MenuAction::DeleteForever)]);
+                    self.menu = Some(Menu { x, y, items });
+                    self.menu_hover = None;
+                    return;
+                }
                 if self.entry(i).is_dir {
                     items.push(item("Открыть в терминале", MenuAction::Terminal));
                 }
@@ -1080,6 +1166,9 @@ impl App {
                     item(if self.view == View::Icons { "✓ Значки" } else { "Значки" }, MenuAction::ShowIcons),
                     item(if self.view == View::List { "✓ Список" } else { "Список" }, MenuAction::ShowList),
                 ]);
+                if self.in_trash() && !self.entries.is_empty() {
+                    items.extend([sep(), item("Очистить Корзину…", MenuAction::EmptyTrash)]);
+                }
                 items
             }
             _ => return,
@@ -1113,6 +1202,25 @@ impl App {
             MenuAction::Cut => self.copy_selection(true),
             MenuAction::Paste => self.paste(),
             MenuAction::Trash => self.trash_selection(),
+            MenuAction::Restore => {
+                let paths = self.selected_paths();
+                if paths.is_empty() {
+                    return Vec::new();
+                }
+                self.flash(format!("Возвращено: {}", objects(paths.len())));
+                vec![Effect::Restore(paths)]
+            }
+            MenuAction::DeleteForever => {
+                let paths = self.selected_paths();
+                if !paths.is_empty() {
+                    self.confirm = Some(Confirm::Delete(paths));
+                }
+                Vec::new()
+            }
+            MenuAction::EmptyTrash => {
+                self.confirm = Some(Confirm::Empty);
+                Vec::new()
+            }
             MenuAction::NewFolder => self.new_folder(),
             MenuAction::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
@@ -1135,6 +1243,16 @@ impl App {
         use smithay_client_toolkit::seat::keyboard::Keysym as K;
         self.dirty = true;
         let sym = K::new(sym);
+        if self.confirm.is_some() {
+            return match sym {
+                K::Return | K::KP_Enter => self.confirm_ok(),
+                K::Escape => {
+                    self.confirm = None;
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
+        }
         if let Some(effects)=self.picker_key(sym,text,mods){return effects;}
         // Editing a name or the search field
         if let Some((_, name)) = self.rename.as_mut() {
@@ -1195,6 +1313,7 @@ impl App {
             K::Right if mods.alt => return self.go_forward(),
             K::bracketleft if ctrl => return self.go_back(),
             K::bracketright if ctrl => return self.go_forward(),
+            K::Delete if self.in_trash() => return self.menu_action(MenuAction::DeleteForever),
             K::Delete => return self.trash_selection(),
             K::F5 => return self.reload(),
             K::Escape => {
@@ -1303,6 +1422,7 @@ impl App {
         self.paint_pathbar(pm);
         self.paint_sidebar(pm);
         self.paint_menu(pm);
+        self.paint_confirm(pm);
         self.paint_picker(pm);
     }
 
@@ -1624,7 +1744,53 @@ impl App {
             objects(self.visible.len())
         };
         let info = self.fonts.ellipsize(&info, 260.0, 11.5, false);
-        self.fonts.draw_text_right(pm, &info, self.w - 14.0, y + 7.5, 11.5, colors::secondary(), false);
+        let mut right = self.w - 14.0;
+        if let Some((bx, by, bw, bh)) = self.empty_button() {
+            let hover = self.hover == Hit::EmptyTrash;
+            theme::fill_rrect(pm, bx, by, bw, bh, bh / 2.0, if hover { rgba(0, 0, 0, 26) } else { rgba(0, 0, 0, 14) });
+            self.fonts.draw_text_centered(pm, "Очистить", bx + bw / 2.0, by + (bh - 11.5) / 2.0 - 1.0, 11.5, colors::text(), false);
+            right = bx - 10.0;
+        }
+        self.fonts.draw_text_right(pm, &info, right, y + 7.5, 11.5, colors::secondary(), false);
+    }
+
+    fn paint_confirm(&mut self, pm: &mut PixmapMut) {
+        let Some(confirm) = self.confirm.clone() else { return };
+        theme::fill_rect(pm, 0.0, 0.0, self.w, self.h, rgba(0, 0, 0, 40));
+        let ((x, y, w, h), cancel, ok) = self.confirm_rects();
+        for i in 1..=6 {
+            let e = i as f32 * 2.0;
+            theme::fill_rrect(pm, x - e, y - e + 6.0, w + 2.0 * e, h + 2.0 * e, 14.0 + e, rgba(0, 0, 0, 7));
+        }
+        theme::fill_rrect(pm, x, y, w, h, 14.0, colors::glass());
+        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, rgba(0, 0, 0, 30));
+        let (title, body, action) = match &confirm {
+            Confirm::Delete(paths) if paths.len() == 1 => (
+                format!("Удалить «{}» безвозвратно?", paths[0].file_name().unwrap_or_default().to_string_lossy()),
+                "Объект будет удалён сразу. Это действие нельзя отменить.".to_string(),
+                "Удалить",
+            ),
+            Confirm::Delete(paths) => (
+                format!("Удалить безвозвратно {}?", objects(paths.len())),
+                "Объекты будут удалены сразу. Это действие нельзя отменить.".to_string(),
+                "Удалить",
+            ),
+            Confirm::Empty => (
+                "Удалить объекты из Корзины безвозвратно?".to_string(),
+                format!("{} будут удалены. Это действие нельзя отменить.", objects(self.entries.len())),
+                "Очистить Корзину",
+            ),
+        };
+        self.fonts.draw_text_clipped(pm, &title, x + 20.0, y + 20.0, w - 40.0, 14.0, colors::text(), true);
+        for (i, line) in self.fonts.wrap_two_lines(&body, w - 40.0, 12.0, false).iter().enumerate() {
+            self.fonts.draw_text(pm, line, x + 20.0, y + 48.0 + i as f32 * 16.0, 12.0, colors::secondary(), false);
+        }
+        let (cx, cy, cw, ch) = cancel;
+        theme::fill_rrect(pm, cx, cy, cw, ch, ch / 2.0, rgba(0, 0, 0, 16));
+        self.fonts.draw_text_centered(pm, "Отменить", cx + cw / 2.0, cy + 7.5, 13.0, colors::text(), false);
+        let (ax, ay, aw, ah) = ok;
+        theme::fill_rrect(pm, ax, ay, aw, ah, ah / 2.0, colors::accent());
+        self.fonts.draw_text_centered(pm, action, ax + aw / 2.0, ay + 7.5, 13.0, rgba(255, 255, 255, 255), false);
     }
 
     fn paint_menu(&mut self, pm: &mut PixmapMut) {
@@ -1850,6 +2016,36 @@ mod tests {
         assert!(root.join("Гамма").is_dir() && !root.join("Новая папка").exists());
         assert_eq!(app.selected_paths(), [root.join("Гамма")]);
         assert_eq!(app.key(0xffff, None, Mods::default()), vec![Effect::Trash(vec![root.join("Гамма")])]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn trash_folder_asks_before_deleting_and_offers_restore() {
+        let root = std::env::temp_dir().join(format!("feather-files-trash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("XDG_DATA_HOME", root.join("data"));
+        let trash = fsops::trash_files_dir();
+        std::fs::create_dir_all(&trash).unwrap();
+        std::fs::write(trash.join("старое.txt"), "x").unwrap();
+        let mut app = app_in(&trash);
+        assert!(app.in_trash());
+        assert!(app.empty_button().is_some());
+        let ctrl = Mods { ctrl: true, ..Default::default() };
+        app.key(0x0061, Some("a"), ctrl);
+        assert_eq!(app.selected_paths(), [trash.join("старое.txt")]);
+        // Delete asks; Escape keeps everything.
+        assert!(app.key(0xffff, None, Mods::default()).is_empty());
+        assert!(app.confirm.is_some());
+        assert!(app.key(0xff1b, None, Mods::default()).is_empty());
+        assert!(app.confirm.is_none());
+        // Delete + Return deletes for good; the menu offers "Вернуть".
+        app.key(0xffff, None, Mods::default());
+        assert_eq!(app.key(0xff0d, None, Mods::default()), vec![Effect::DeleteForever(vec![trash.join("старое.txt")])]);
+        app.open_menu(Hit::Item(0), 10.0, 10.0);
+        let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|(l, _)| l.clone()).collect();
+        assert!(labels.iter().any(|l| l == "Вернуть") && !labels.iter().any(|l| l == "Переместить в Корзину"));
+        app.menu = None;
+        assert_eq!(app.menu_action(MenuAction::Restore), vec![Effect::Restore(vec![trash.join("старое.txt")])]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

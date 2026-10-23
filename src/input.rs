@@ -44,6 +44,7 @@ enum KeyAction {
     SwitchVt(i32),
     /// Print: screen, Shift+Print: region/window selection, Alt+Print: active window
     Screenshot { shift: bool, alt: bool },
+    Auth(crate::auth_dialog::Cmd),
 }
 
 /// Delay before the Alt+Tab panel appears: short enough to feel instant when Alt is held,
@@ -110,6 +111,15 @@ impl FeatherCompositor {
         let keyboard = self.keyboard.clone();
         keyboard.input::<(), _>(self, keycode, key_state, serial, time, |st, mods, keysym_handle| {
             let system_chord=mods.ctrl&&mods.alt;
+            // The password dialog owns the keyboard; only VT/system chords pass.
+            if st.auth.is_open() && !system_chord {
+                if key_state==KeyState::Pressed {
+                    let sym=keysym_handle.modified_sym();
+                    if let Some(cmd)=st.auth.key(sym.raw(),sym.key_char(),mods.ctrl,mods.caps_lock) {deferred=Some(KeyAction::Auth(cmd));}
+                    st.needs_redraw=true;
+                }
+                return FilterResult::Intercept(());
+            }
             if st.shell.control_center_open && st.shell.cc.page==crate::control_panel::Page::Password && !system_chord {
                 if key_state==KeyState::Pressed {
                     let sym=keysym_handle.modified_sym();
@@ -277,6 +287,14 @@ impl FeatherCompositor {
                         )));
                         return FilterResult::Intercept(());
                     }
+                    // Super+E: a new Files window at home (as Win+E opens Explorer)
+                    keysyms::KEY_e => {
+                        deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
+                            AppAction::Exec(crate::apps::files_command()),
+                            "Файлы".to_string(),
+                        )));
+                        return FilterResult::Intercept(());
+                    }
                     keysyms::KEY_n => {
                         st.shell.control_center_open = !st.shell.control_center_open;
                         st.shell.overlay_dirty = true;
@@ -408,6 +426,7 @@ impl FeatherCompositor {
         });
 
         match deferred {
+            Some(KeyAction::Auth(cmd)) => self.auth_command(cmd),
             Some(KeyAction::SwitcherStep { reverse }) => self.switcher_step(reverse),
             Some(KeyAction::SwitcherCommit) => self.switcher_commit(),
             Some(KeyAction::SwitchVt(vt)) => self.switch_vt(vt),
@@ -713,6 +732,17 @@ impl FeatherCompositor {
             time,
         };
 
+        // Modal password dialog: every press is swallowed; its release is consumed below.
+        if btn_state == ButtonState::Pressed && self.auth.is_open() {
+            if button == BTN_LEFT {
+                if let Some(cmd) = self.auth.click((pos.x, pos.y), (self.shell.screen_w, self.shell.screen_h)) {
+                    self.auth_command(cmd);
+                }
+            }
+            self.consumed_buttons.push(button);
+            self.needs_redraw = true;
+            return;
+        }
         if btn_state == ButtonState::Released {
             if button==BTN_LEFT {
                 if let Some(action)=self.shell.cc.release() {self.shell.overlay_dirty=true;self.execute_shell_action(action);}
@@ -981,6 +1011,15 @@ impl FeatherCompositor {
                     name: None,
                 },
                 String::new(),
+            ),
+            DockTarget::Trash => (
+                DragSource::DockOther,
+                ShellClickAction::DockPress(target),
+                AppIcon {
+                    kind: crate::apps::IconKind::TrashEmpty,
+                    name: None,
+                },
+                "Корзина".into(),
             ),
         };
         self.begin_icon_press(source, icon, label, click);
