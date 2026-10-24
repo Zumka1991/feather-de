@@ -1587,6 +1587,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Slow housekeeping: clock, RSS, toasts. Nothing else polls.
     handle.insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
         let ticked = state.shell.tick();
+        if state.lock.clock_stale() { state.needs_redraw = true; }
         state.flush_notification_events();
         if ticked {
             state.needs_redraw = true;

@@ -117,6 +117,8 @@ impl RasterSender {
                     }
                 {
                     state.needs_redraw = true;
+                    // New frosted wallpaper behind the lock panel
+                    state.lock.repaint();
                     if wallpaper_ready {
                         state.save_settings();
                     }

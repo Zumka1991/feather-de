@@ -772,12 +772,10 @@ impl FeatherCompositor {
                 let pointer=self.pointer.clone();
                 pointer.button(self,&ButtonEvent{button,state:btn_state,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);
             } else if button==BTN_LEFT && btn_state==ButtonState::Pressed {
-                let x=self.pointer_location.x-(self.shell.screen_w as f64-400.0)/2.0;
-                let y=self.pointer_location.y-(self.shell.screen_h as f64-260.0)/2.0;
-                if (34.0..366.0).contains(&x) && (119.0..157.0).contains(&y) {
-                    self.lock.click_field(&mut self.fonts,x as f32,self.keyboard.modifier_state().shift);self.needs_redraw=true;
-                }
-                if (115.0..285.0).contains(&x) && (204.0..236.0).contains(&y) {self.lock_submit();}
+                let (x,y)=(self.pointer_location.x,self.pointer_location.y);
+                let submit=self.lock.click(&mut self.fonts,x,y,(self.shell.screen_w,self.shell.screen_h),self.keyboard.modifier_state().shift);
+                self.needs_redraw=true;
+                if submit {self.lock_submit();}
             }
             return;
         }

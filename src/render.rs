@@ -556,7 +556,7 @@ impl FeatherCompositor {
     /// Rasterizes dirty shell/decoration buffers on the CPU (only when something changed)
     fn update_cpu_buffers(&mut self) {
         let mut profile = crate::cpu_profile::Batch::new();
-        if self.lock.active {self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name);profile.step("lock");return;}
+        if self.lock.active {self.shell.ensure_wallpaper_rendered();self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name,(self.shell.screen_w,self.shell.screen_h));profile.step("lock");return;}
         let active_title = self.active_window_title();
         self.shell.ensure_wallpaper_rendered();
         self.shell.ensure_cc_backdrop();
@@ -637,8 +637,9 @@ impl FeatherCompositor {
         let t_cpu = Instant::now();
         self.shell.release_closed_launchpad();
         self.update_cpu_buffers();
+        // The wallpaper is the lock screen's background too
+        self.shell.upload_wallpaper(self.backend.renderer());
         if !self.lock.active {
-            self.shell.upload_wallpaper(self.backend.renderer());
             self.shell.desktop.ensure_layout((self.shell.screen_w, self.shell.screen_h));
             self.shell.desktop.request_tiles(self.shell.raster.as_ref());
             if self.shell.desktop.upload(self.backend.renderer()) {
@@ -732,7 +733,7 @@ impl FeatherCompositor {
             } }
             let pointer = (self.pointer_location.x, self.pointer_location.y);
             let elements = if self.power.blanked {Vec::new()} else if self.lock.active {
-                self.lock.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h))
+                self.lock.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h),self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size)))
             } else {
                 let mut elements = self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h));
                 elements.extend(crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
@@ -792,7 +793,7 @@ impl FeatherCompositor {
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let mut elements = cursor_elements(&mut d.renderer, &mut self.cursor, pointer, scale);
         if self.lock.active {
-            elements.extend(self.lock.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));
+            elements.extend(self.lock.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h),self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size))));
         } else {
             elements.extend(self.auth.elements(&mut d.renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h)));
             elements.extend(crate::screenshot::overlay(&mut d.renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));

@@ -50,7 +50,13 @@ pub struct Lock {
     caps: bool,
     layout: String,
     dirty: bool,
+    /// Account panel at the bottom: avatar, name, password field
     buffer: MemoryRenderBuffer,
+    /// Date and large time at the top; repainted when the minute changes
+    clock_buffer: MemoryRenderBuffer,
+    clock: String,
+    /// 4×4 black, stretched over the wallpaper so white text reads on light ones
+    dim: MemoryRenderBuffer,
     scale: f64,
     phys: (i32, i32),
     pub protected_frame: bool,
@@ -74,6 +80,16 @@ impl Default for Lock {
             layout: String::new(),
             dirty: true,
             buffer: MemoryRenderBuffer::new(Fourcc::Abgr8888, (1, 1), 1, Transform::Normal, None),
+            clock_buffer: MemoryRenderBuffer::new(Fourcc::Abgr8888, (1, 1), 1, Transform::Normal, None),
+            clock: String::new(),
+            dim: {
+                let mut dim = MemoryRenderBuffer::new(Fourcc::Abgr8888, (4, 4), 1, Transform::Normal, None);
+                let _ = dim.render().draw(|buf| {
+                    buf.chunks_exact_mut(4).for_each(|px| px.copy_from_slice(&[0, 0, 0, 255]));
+                    Result::<_, ()>::Ok(vec![Rectangle::from_size((4, 4).into())])
+                });
+                dim
+            },
             scale: 0.0,
             phys: (1, 1),
             protected_frame: false,
@@ -121,14 +137,47 @@ impl Lock {
         zeroize::Zeroize::zeroize(&mut bytes);
         false
     }
-    pub fn click_field(&mut self, fonts: &mut FontSystem, x: f32, extend: bool) {
-        if !self.verifying {
-            self.input
-                .click_masked(fonts, x - 46.0, 308.0, 14.0, extend);
+    /// Account panel origin (logical): bottom centre, like the macOS login window
+    fn panel_origin(screen: (i32, i32)) -> (f32, f32) {
+        ((screen.0 as f32 - PANEL_W) * 0.5, (screen.1 as f32 - PANEL_H - (screen.1 as f32 * 0.08).max(40.0)).max(CLOCK_H + 20.0))
+    }
+    fn clock_origin(screen: (i32, i32)) -> (f32, f32) {
+        ((screen.0 as f32 - CLOCK_W) * 0.5, (screen.1 as f32 * 0.07).clamp(24.0, 90.0))
+    }
+
+    /// A click on the built-in panel; true when it asks to submit the password
+    pub fn click(&mut self, fonts: &mut FontSystem, x: f64, y: f64, screen: (i32, i32), extend: bool) -> bool {
+        if self.verifying || self.external() {
+            return false;
+        }
+        let (ox, oy) = Self::panel_origin(screen);
+        let (x, y) = (x as f32 - ox, y as f32 - oy);
+        let (fx, fy, fw, fh) = FIELD;
+        if !(fy..fy + fh).contains(&y) || !(fx..fx + fw).contains(&x) {
+            return false;
+        }
+        if x >= fx + fw - fh {
+            return !self.input.is_empty();
+        }
+        self.input.click_masked(fonts, x - (fx + 16.0), fw - 16.0 - fh, 14.0, extend);
+        self.dirty = true;
+        false
+    }
+
+    /// Wallpaper or glass changed under the built-in panel
+    pub fn repaint(&mut self) {
+        if self.active {
             self.dirty = true;
+            self.clock.clear();
         }
     }
-    pub fn paint(&mut self, fonts: &mut FontSystem, scale: f64, layout: &str) {
+
+    /// The clock shows a different minute: the next frame repaints it
+    pub fn clock_stale(&self) -> bool {
+        self.active && !self.external() && self.clock != clock_text().1
+    }
+
+    pub fn paint(&mut self, fonts: &mut FontSystem, scale: f64, layout: &str, screen: (i32, i32)) {
         if !self.active || self.external() {
             return;
         }
@@ -137,50 +186,61 @@ impl Lock {
             self.layout.push_str(layout);
             self.dirty = true;
         }
-        if !self.dirty && self.scale == scale {
+        let rescaled = self.scale != scale;
+        let (date, time) = clock_text();
+        if rescaled || self.clock != time {
+            self.paint_clock(fonts, scale, screen, &date, &time);
+            self.clock = time;
+        }
+        if !self.dirty && !rescaled {
             return;
         }
         self.scale = scale;
         self.dirty = false;
-        let size = (
-            (400.0 * scale).round() as i32,
-            (260.0 * scale).round() as i32,
-        );
+        let size = ((PANEL_W as f64 * scale).round() as i32, (PANEL_H as f64 * scale).round() as i32);
         if self.phys != size {
             self.phys = size;
-            self.buffer =
-                MemoryRenderBuffer::new(Fourcc::Abgr8888, size, 1, Transform::Normal, None);
+            self.buffer = MemoryRenderBuffer::new(Fourcc::Abgr8888, size, 1, Transform::Normal, None);
         }
+        let (ox, oy) = Self::panel_origin(screen);
+        set_glass_origin(ox, oy);
+        let name = account_name();
         let mut ctx = self.buffer.render();
         let _ = ctx.draw(|buf| {
-            let mut pm =
-                tiny_skia::PixmapMut::from_bytes(buf, size.0 as u32, size.1 as u32).unwrap();
-            pm.fill(rgba(15, 18, 31, 255));
-            let white = rgba(245, 247, 255, 255);
-            let dim = rgba(174, 184, 207, 255);
-            let accent = rgba(108, 162, 255, 255);
-            draw_feather_logo(&mut pm, 200.0, 35.0, 2.5, white);
-            fonts.draw_text_centered(
-                &mut pm,
-                "Экран заблокирован",
-                200.0,
-                76.0,
-                21.0,
-                white,
-                true,
-            );
-            fill_rounded_rect(
-                &mut pm,
-                34.0,
-                119.0,
-                332.0,
-                38.0,
-                10.0,
-                rgba(32, 39, 58, 255),
-            );
-            fonts.draw_text_centered(&mut pm, &self.layout, 345.0, 104.0, 10.0, dim, true);
-            self.input
-                .draw_masked(&mut pm, fonts, 46.0, 130.0, 308.0, 14.0, white, accent);
+            buf.fill(0);
+            let mut pm = tiny_skia::PixmapMut::from_bytes(buf, size.0 as u32, size.1 as u32).unwrap();
+            let white = rgba(255, 255, 255, 255);
+            let soft = rgba(255, 255, 255, 205);
+            let accent = rgba(255, 255, 255, 255);
+            let cx = PANEL_W * 0.5;
+            // Avatar: frosted disc with the initial
+            let r = 34.0;
+            fill_frosted(&mut pm, cx - r, 6.0, r * 2.0, r * 2.0, r);
+            fill_rounded_rect(&mut pm, cx - r, 6.0, r * 2.0, r * 2.0, r, rgba(255, 255, 255, 70));
+            stroke_rounded_rect(&mut pm, cx - r + 0.5, 6.5, r * 2.0 - 1.0, r * 2.0 - 1.0, r - 0.5, 1.0, rgba(255, 255, 255, 110));
+            let initial: String = name.chars().next().map(|c| c.to_uppercase().collect()).unwrap_or_default();
+            shadowed(&mut pm, fonts, &initial, cx, 6.0 + r - 17.0, 30.0, white, true);
+            shadowed(&mut pm, fonts, &name, cx, 86.0, 16.0, white, true);
+            // Password field: frosted pill with the arrow button inside
+            let (fx, fy, fw, fh) = FIELD;
+            fill_frosted(&mut pm, fx, fy, fw, fh, fh * 0.5);
+            fill_rounded_rect(&mut pm, fx, fy, fw, fh, fh * 0.5, rgba(255, 255, 255, 64));
+            stroke_rounded_rect(&mut pm, fx + 0.5, fy + 0.5, fw - 1.0, fh - 1.0, fh * 0.5 - 0.5, 1.0, rgba(255, 255, 255, 90));
+            let text_w = fw - 16.0 - fh;
+            if self.input.is_empty() && !self.verifying {
+                fonts.draw_text_clipped(&mut pm, "Введите пароль", fx + 19.0, fy + 8.5, text_w, 13.0, rgba(255, 255, 255, 150), false);
+            }
+            self.input.draw_masked(&mut pm, fonts, fx + 16.0, fy + 9.0, text_w, 14.0, white, accent);
+            let (bx, by, bd) = (fx + fw - fh + 4.0, fy + 4.0, fh - 8.0);
+            let ready = !self.input.is_empty() && !self.verifying;
+            fill_rounded_rect(&mut pm, bx, by, bd, bd, bd * 0.5, rgba(255, 255, 255, if ready { 200 } else { 70 }));
+            fonts.draw_text_centered(&mut pm, "→", bx + bd * 0.5, by + 3.5, 14.0, if ready { rgba(30, 30, 40, 255) } else { rgba(255, 255, 255, 170) }, true);
+            // Input source, like the menu at the top right of the macOS login window
+            if !self.layout.is_empty() {
+                let lx = fx + fw + 10.0;
+                stroke_rounded_rect(&mut pm, lx, fy + 8.0, 30.0, 18.0, 5.0, 1.0, soft);
+                fonts.draw_text_centered(&mut pm, &self.layout, lx + 15.0, fy + 10.5, 10.0, soft, true);
+            }
             let msg = if self.verifying {
                 "Проверка…"
             } else if self.caps {
@@ -188,25 +248,34 @@ impl Lock {
             } else {
                 self.message
             };
-            fonts.draw_text_clipped_centered(&mut pm, msg, 200.0, 173.0, 370.0, 11.0, dim, false);
-            fill_rounded_rect(&mut pm, 115.0, 204.0, 170.0, 32.0, 9.0, accent);
-            fonts.draw_text_centered(
-                &mut pm,
-                "Разблокировать ↵",
-                200.0,
-                214.0,
-                12.0,
-                rgba(10, 20, 40, 255),
-                true,
-            );
+            let w = PANEL_W - 20.0;
+            let fitted = fonts.ellipsize(msg, w, 12.0, false);
+            shadowed(&mut pm, fonts, &fitted, cx, fy + fh + 14.0, 12.0, soft, false);
             Result::<_, ()>::Ok(vec![Rectangle::from_size(size.into())])
         });
     }
+
+    fn paint_clock(&mut self, fonts: &mut FontSystem, scale: f64, screen: (i32, i32), date: &str, time: &str) {
+        let size = ((CLOCK_W as f64 * scale).round() as i32, (CLOCK_H as f64 * scale).round() as i32);
+        self.clock_buffer = MemoryRenderBuffer::new(Fourcc::Abgr8888, size, 1, Transform::Normal, None);
+        let (ox, oy) = Self::clock_origin(screen);
+        set_glass_origin(ox, oy);
+        let mut ctx = self.clock_buffer.render();
+        let _ = ctx.draw(|buf| {
+            let mut pm = tiny_skia::PixmapMut::from_bytes(buf, size.0 as u32, size.1 as u32).unwrap();
+            let cx = CLOCK_W * 0.5;
+            shadowed(&mut pm, fonts, date, cx, 6.0, 22.0, rgba(255, 255, 255, 235), true);
+            shadowed(&mut pm, fonts, time, cx, 34.0, 96.0, rgba(255, 255, 255, 245), true);
+            Result::<_, ()>::Ok(vec![Rectangle::from_size(size.into())])
+        });
+    }
+
     pub fn elements(
         &self,
         renderer: &mut GlesRenderer,
         scale: f64,
         screen: (i32, i32),
+        wallpaper: Option<(&smithay::backend::renderer::element::texture::TextureBuffer<smithay::backend::renderer::gles::GlesTexture>, (i32, i32))>,
     ) -> Vec<FeatherElement> {
         if self.external() {
             let mut out = Vec::new();
@@ -222,22 +291,72 @@ impl Lock {
             }
             return out;
         }
-        let loc = (
-            ((screen.0 as f64 - 400.0) * scale / 2.0).round(),
-            ((screen.1 as f64 - 260.0) * scale / 2.0).round(),
-        );
-        MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            loc,
-            &self.buffer,
-            None,
-            None,
-            None,
-            Kind::Unspecified,
-        )
-        .map(|e| vec![SceneElement::Memory(e).into()])
-        .unwrap_or_default()
+        let at = |(x, y): (f32, f32)| ((x as f64 * scale).round(), (y as f64 * scale).round());
+        let mut out: Vec<FeatherElement> = [(&self.buffer, Self::panel_origin(screen)), (&self.clock_buffer, Self::clock_origin(screen))]
+            .into_iter()
+            .filter_map(|(buffer, origin)| {
+                MemoryRenderBufferRenderElement::from_buffer(renderer, at(origin), buffer, None, None, None, Kind::Unspecified).ok()
+            })
+            .map(|e| SceneElement::Memory(e).into())
+            .collect();
+        // The desktop wallpaper only: no window content is ever drawn while locked
+        if let Some((texture, (w, h))) = wallpaper {
+            let full = (crate::theme::to_phys(screen.0), crate::theme::to_phys(screen.1));
+            if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer, (0.0, 0.0), &self.dim, Some(0.2), Some(Rectangle::from_size((4.0, 4.0).into())), Some(full.into()), Kind::Unspecified,
+            ) {
+                out.push(SceneElement::Memory(e).into());
+            }
+            out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer(
+                (0.0, 0.0), texture, None, Some(Rectangle::from_size((w as f64, h as f64).into())), Some(full.into()), Kind::Unspecified,
+            )).into());
+        }
+        out
     }
+}
+
+const PANEL_W: f32 = 380.0;
+const PANEL_H: f32 = 200.0;
+const CLOCK_W: f32 = 640.0;
+const CLOCK_H: f32 = 150.0;
+/// Password field in panel coordinates: x, y, width, height
+const FIELD: (f32, f32, f32, f32) = (70.0, 118.0, 240.0, 34.0);
+
+/// Centred white text with a soft shadow, readable on any wallpaper
+#[allow(clippy::too_many_arguments)]
+fn shadowed(pm: &mut tiny_skia::PixmapMut, fonts: &mut FontSystem, text: &str, cx: f32, y: f32, size: f32, color: tiny_skia::Color, bold: bool) {
+    // A wide, faint shadow: a few offsets approximate a blur without a blur pass
+    let spread = (size * 0.02).max(0.6);
+    for (dx, dy) in [(-spread, spread), (spread, spread), (0.0, spread * 2.0)] {
+        fonts.draw_text_centered(pm, text, cx + dx, y + dy, size, rgba(0, 0, 0, 22), bold);
+    }
+    fonts.draw_text_centered(pm, text, cx, y, size, color, bold);
+}
+
+/// («суббота, 24 октября», «8:36»)
+fn clock_text() -> (String, String) {
+    use chrono::{Datelike, Timelike};
+    let now = chrono::Local::now();
+    let weekday = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"][now.weekday().num_days_from_monday() as usize];
+    let month = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"][now.month0() as usize];
+    (format!("{weekday}, {} {month}", now.day()), format!("{}:{:02}", now.hour(), now.minute()))
+}
+
+/// Full name from the account (GECOS), else the login; read once
+fn account_name() -> String {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut result = std::ptr::null_mut();
+        let mut buf = vec![0u8; 16384];
+        if libc::getpwuid_r(libc::getuid(), &mut pwd, buf.as_mut_ptr().cast(), buf.len(), &mut result) != 0 || result.is_null() {
+            return String::new();
+        }
+        let text = |p: *const libc::c_char| if p.is_null() { String::new() } else { std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned() };
+        let gecos = text(pwd.pw_gecos);
+        let full = gecos.split(',').next().unwrap_or("").trim().to_string();
+        if full.is_empty() { text(pwd.pw_name) } else { full }
+    }).clone()
 }
 
 impl FeatherCompositor {
