@@ -89,6 +89,8 @@ pub struct Incoming {
     pub resident: bool,
     /// Not kept in the notification center
     pub transient: bool,
+    /// Resolved sound (hint or theme default); None with `suppress-sound`
+    pub sound: Option<std::path::PathBuf>,
 }
 
 pub enum Update {
@@ -105,6 +107,7 @@ pub enum Reason {
 }
 
 enum Command {
+    Sound(std::path::PathBuf),
     Closed(u32, Reason),
     Invoked { id: u32, key: String, token: Option<String> },
 }
@@ -137,6 +140,10 @@ impl Notifications {
 
     pub fn closed(&self, id: u32, reason: Reason) {
         let _ = self.tx.try_send(Command::Closed(id, reason));
+    }
+
+    pub fn play(&self, sound: std::path::PathBuf) {
+        let _ = self.tx.try_send(Command::Sound(sound));
     }
 
     pub fn invoked(&self, id: u32, key: String, token: Option<String>) {
@@ -175,7 +182,7 @@ impl Server {
     }
 
     fn get_capabilities(&self) -> Vec<&'static str> {
-        vec!["actions", "body", "body-markup", "icon-static", "persistence"]
+        vec!["actions", "body", "body-markup", "icon-static", "persistence", "sound"]
     }
 
     fn get_server_information(&self) -> (&'static str, &'static str, &'static str, &'static str) {
@@ -256,7 +263,56 @@ fn parse(
         critical,
         resident: flag("resident"),
         transient: flag("transient"),
+        sound: if flag("suppress-sound") { None } else { sound_path(&string("sound-file"), &string("sound-name")) },
     }
+}
+
+const SOUND_EXT: [&str; 4] = ["oga", "ogg", "wav", "flac"];
+
+/// `sound-file` if it is a readable sound, else `sound-name` or «message-new-instant»
+/// from the freedesktop theme. Runs on the worker (it touches the filesystem).
+fn sound_path(file: &str, name: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut dirs: Vec<PathBuf> = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .into_iter().collect();
+    dirs.extend(std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into()).split(':').map(PathBuf::from));
+    sound_in(file, name, &dirs)
+}
+
+fn sound_in(file: &str, name: &str, dirs: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    let file = file.strip_prefix("file://").unwrap_or(file);
+    let ok = |p: &Path| p.is_file() && p.extension().and_then(|e| e.to_str()).is_some_and(|e| SOUND_EXT.contains(&e));
+    if !file.is_empty() && Path::new(file).is_absolute() && ok(Path::new(file)) {
+        return Some(PathBuf::from(file));
+    }
+    let valid = |n: &str| !n.is_empty() && n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    [name, "message-new-instant"].into_iter().filter(|n| valid(n)).find_map(|n| {
+        dirs.iter().find_map(|d| SOUND_EXT.iter().map(|e| d.join(format!("sounds/freedesktop/stereo/{n}.{e}"))).find(|p| ok(p)))
+    })
+}
+
+/// One sound at a time on its own thread; sounds arriving meanwhile are dropped, so a
+/// burst of notifications never queues a minute of chimes or a pile of processes.
+fn sound_thread() -> Option<std::sync::mpsc::SyncSender<std::path::PathBuf>> {
+    let player = ["pw-play", "paplay", "canberra-gtk-play"].into_iter().find_map(|p| {
+        std::env::var_os("PATH")?.to_str()?.split(':').map(|d| std::path::Path::new(d).join(p)).find(|f| f.is_file())
+    })?;
+    player_thread(player)
+}
+
+fn player_thread(player: std::path::PathBuf) -> Option<std::sync::mpsc::SyncSender<std::path::PathBuf>> {
+    let canberra = player.ends_with("canberra-gtk-play");
+    let (tx, rx) = std::sync::mpsc::sync_channel::<std::path::PathBuf>(0);
+    std::thread::Builder::new().name("feather-sound".into()).stack_size(128 * 1024).spawn(move || {
+        while let Ok(file) = rx.recv() {
+            let mut cmd = std::process::Command::new(&player);
+            if canberra { cmd.arg("-f"); }
+            let _ = cmd.arg(file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        }
+    }).ok()?;
+    Some(tx)
 }
 
 /// The body-markup subset (b, i, u, a, img) is shown as plain text: tags are removed,
@@ -348,8 +404,13 @@ async fn serve(conn: &Connection, commands: async_channel::Receiver<Command>, up
         return Ok(());
     }
     let emitter = SignalEmitter::new(conn, PATH)?;
+    let mut sounds = None;
     while let Ok(command) = commands.recv().await {
         match command {
+            Command::Sound(file) => {
+                let tx = sounds.get_or_insert_with(sound_thread);
+                if let Some(tx) = tx { let _ = tx.try_send(file); }
+            }
             Command::Closed(id, reason) => {
                 let _ = Server::notification_closed(&emitter, id, reason as u32).await;
             }
@@ -376,6 +437,54 @@ mod tests {
         assert_eq!(strip_markup("a<br/>b"), "a b");
         assert_eq!(strip_markup("x < y"), "x < y");
         assert_eq!(strip_markup("&unknown; ok"), "&unknown; ok");
+    }
+
+    #[test]
+    fn sounds_come_from_valid_files_or_theme_names_only() {
+        let dir = std::env::temp_dir().join(format!("feather-sound-{}", std::process::id()));
+        let theme = dir.join("sounds/freedesktop/stereo");
+        std::fs::create_dir_all(&theme).unwrap();
+        std::fs::write(theme.join("message-new-instant.oga"), b"x").unwrap();
+        std::fs::write(theme.join("bell.oga"), b"x").unwrap();
+        std::fs::write(dir.join("ding.wav"), b"x").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+        let dirs = [dir.clone()];
+        let f = |file: &str, name: &str| sound_in(file, name, &dirs).map(|p| p.file_name().unwrap().to_string_lossy().into_owned());
+        assert_eq!(f(dir.join("ding.wav").to_str().unwrap(), ""), Some("ding.wav".into()));
+        assert_eq!(f(&format!("file://{}", dir.join("ding.wav").display()), ""), Some("ding.wav".into()));
+        assert_eq!(f(dir.join("notes.txt").to_str().unwrap(), "bell"), Some("bell.oga".into()), "not a sound file");
+        assert_eq!(f("relative.wav", "../bell"), Some("message-new-instant.oga".into()), "unsafe name falls back");
+        assert_eq!(f("", "missing"), Some("message-new-instant.oga".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn player_plays_one_sound_at_a_time_and_drops_the_burst() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("feather-player-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("played.log");
+        let player = dir.join("pw-play");
+        std::fs::write(&player, format!("#!/bin/sh\necho \"$1\" >> {}\nsleep 0.3\n", log.display())).unwrap();
+        std::fs::set_permissions(&player, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tx = player_thread(player).unwrap();
+        let send = |name: &str| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            // The thread may still be starting: wait until it takes the first sound
+            while tx.try_send(dir.join(name)).is_err() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        send("a.oga");
+        assert!(tx.try_send(dir.join("b.oga")).is_err(), "busy player drops the next sound");
+        std::thread::sleep(Duration::from_millis(500));
+        send("c.oga");
+        std::thread::sleep(Duration::from_millis(500));
+        let played = std::fs::read_to_string(&log).unwrap();
+        let names: Vec<_> = played.lines().map(|l| l.rsplit('/').next().unwrap()).collect();
+        assert_eq!(names, ["a.oga", "c.oga"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

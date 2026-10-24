@@ -1193,6 +1193,7 @@ mod settings_tests {
                 wallpaper: crate::theme::WallpaperTheme::for_appearance(Appearance::Light),
                 wallpaper_image: None,
                 dnd: false,
+                notify_sounds: true,
                 notify_apps: &[],
             };
             let mut direct = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 0, 0);

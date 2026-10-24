@@ -221,6 +221,7 @@ pub struct Settings {
     pub dock_locked: bool,
     pub do_not_disturb: bool,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
+    pub notify_sounds: bool,
     pub dock: Option<Vec<String>>,
     pub animations: bool,
     pub keyboard: Keyboard,
@@ -242,6 +243,7 @@ impl Default for Settings {
             dock_locked: false,
             do_not_disturb: false,
             notify_apps: Vec::new(),
+            notify_sounds: true,
             dock: None,
             animations: true,
             keyboard: Keyboard::default(),
@@ -340,6 +342,11 @@ impl Settings {
                         }
                     }
                 }
+                "notify_sounds" => {
+                    if let Ok(v) = v.parse() {
+                        s.notify_sounds = v;
+                    }
+                }
                 "do_not_disturb" => {
                     if let Ok(v) = v.parse() {
                         s.do_not_disturb = v;
@@ -410,6 +417,7 @@ impl Settings {
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
+        text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
         for a in &self.notify_apps {
             text.push_str(&format!("notify_app={}|{}|{}\n", a.key, a.label, a.delivery.id()));
         }
@@ -544,12 +552,14 @@ mod tests {
         let mut s = Settings::default();
         assert!(!s.do_not_disturb && s.notify_apps.is_empty());
         s.do_not_disturb = true;
+        assert!(s.notify_sounds);
+        s.notify_sounds = false;
         s.notify_apps = vec![
             AppPolicy { key: "org.telegram.desktop".into(), label: "Telegram".into(), delivery: Delivery::CenterOnly },
             AppPolicy { key: "firefox".into(), label: "Firefox".into(), delivery: Delivery::Off },
         ];
         let restored = Settings::parse(&s.text());
-        assert!(restored.do_not_disturb);
+        assert!(restored.do_not_disturb && !restored.notify_sounds);
         assert_eq!(restored.notify_apps, s.notify_apps);
         let bad = Settings::parse("notify_app=x|X|loud\nnotify_app=|Y|off\nnotify_app=a|A|off\nnotify_app=a|B|banners\nnotify_app=only\n");
         assert_eq!(bad.notify_apps, [AppPolicy { key: "a".into(), label: "A".into(), delivery: Delivery::Off }]);

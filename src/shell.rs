@@ -220,6 +220,7 @@ enum ToastPart {
 pub enum NotificationEvent {
     Closed(u32, crate::notifications::Reason),
     Invoked(u32, String),
+    Sound(std::path::PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,6 +631,7 @@ pub struct MacShell {
     /// Per-program delivery, in first-seen order; `notify_apps_changed` asks for a save
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub notify_apps_changed: bool,
+    pub notify_sounds: bool,
 
     pub overlay_buffer: MemoryRenderBuffer,
     pub overlay_dirty: bool,
@@ -724,6 +726,7 @@ impl MacShell {
             notification_events: Vec::new(),
             notify_apps: Vec::new(),
             notify_apps_changed: false,
+            notify_sounds: true,
             overlay_buffer: new_buffer(1, 1),
             overlay_dirty: true,
             overlay_painted: Vec::new(),
@@ -853,6 +856,10 @@ impl MacShell {
         if quiet && !n.critical {
             self.to_history(toast);
             return;
+        }
+        // Only a new banner chimes: updates (replaces_id) and silent routes do not
+        if let Some(sound) = n.sound.filter(|_| self.notify_sounds && !n.replaces) {
+            self.notification_events.push(NotificationEvent::Sound(sound));
         }
         self.push_toast(toast);
     }
@@ -3050,7 +3057,7 @@ mod appmenu_tests {
             id, replaces: false, app_name: "Test".into(), app_icon: String::new(), desktop_entry: String::new(),
             image: None, summary: format!("N{id}"), body: "Тело".into(),
             actions: actions.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
-            timeout: Some(crate::notifications::DEFAULT_TIMEOUT), critical: false, resident: false, transient: false,
+            timeout: Some(crate::notifications::DEFAULT_TIMEOUT), critical: false, resident: false, transient: false, sound: None,
         }
     }
 
@@ -3180,6 +3187,18 @@ mod appmenu_tests {
         for i in 0..100 { let mut n = incoming(100 + i, &[]); n.app_name = format!("App{i}"); shell.show_notification(n, &registry); }
         assert_eq!(shell.notify_apps.len(), crate::notifications::MAX_APPS);
         assert_eq!(Delivery::Off.next(), Delivery::Banners);
+        // Sounds: a new banner only, never for updates, quiet routes or with sounds off
+        let mut shell = MacShell::new(1000, 700);
+        shell.toasts.clear();
+        let chime = |id, replaces| { let mut n = incoming(id, &[]); n.sound = Some("/s.oga".into()); n.replaces = replaces; n };
+        shell.show_notification(chime(1, false), &registry);
+        shell.show_notification(chime(1, true), &registry);
+        shell.dnd_enabled = true;
+        shell.show_notification(chime(2, false), &registry);
+        shell.dnd_enabled = false;
+        shell.notify_sounds = false;
+        shell.show_notification(chime(3, false), &registry);
+        assert_eq!(shell.notification_events, [NotificationEvent::Sound("/s.oga".into())]);
     }
 
     #[test]

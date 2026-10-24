@@ -65,6 +65,7 @@ pub enum Action {
     LockNow,
     IdleTime(u8),
     DoNotDisturb,
+    NotifySounds,
     /// Next delivery mode of the program at this index
     NotifyDelivery(usize),
     Appearance(Appearance),
@@ -160,6 +161,7 @@ pub struct Context<'a> {
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<&'a crate::wallpaper::ImageSource>,
     pub dnd: bool,
+    pub notify_sounds: bool,
     pub notify_apps: &'a [crate::notifications::AppPolicy],
 }
 
@@ -184,6 +186,7 @@ pub struct FrameJob {
     pub direct: bool,
     pub wallpaper: WallpaperTheme,
     pub dnd: bool,
+    pub notify_sounds: bool,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub width: i32,
     pub height: i32,
@@ -218,6 +221,7 @@ impl FrameJob {
             direct: c.direct,
             wallpaper: c.wallpaper,
             dnd: c.dnd,
+            notify_sounds: c.notify_sounds,
             notify_apps: c.notify_apps.to_vec(),
             width: win.width,
             height: win.height,
@@ -244,6 +248,7 @@ impl FrameJob {
             wallpaper: self.wallpaper,
             wallpaper_image: self.wallpaper_image.as_ref(),
             dnd: self.dnd,
+            notify_sounds: self.notify_sounds,
             notify_apps: &self.notify_apps,
         }
     }
@@ -624,6 +629,7 @@ impl Panel {
                 l.hero(Page::Notifications);
                 l.begin();
                 l.row(52.0, "Не беспокоить", "Всё уходит в центр уведомлений, баннер только у срочных".into(), Style::Toggle(c.dnd), Some(Action::DoNotDisturb));
+                l.row(52.0, "Звук уведомлений", "Короткий сигнал при появлении баннера".into(), Style::Toggle(c.notify_sounds), Some(Action::NotifySounds));
                 l.end();
                 l.header("Уведомления программ");
                 if c.notify_apps.is_empty() {
@@ -1616,6 +1622,7 @@ impl crate::FeatherCompositor {
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.as_ref(),
             dnd: self.shell.dnd_enabled,
+            notify_sounds: self.shell.notify_sounds,
             notify_apps: &self.shell.notify_apps,
         }
     }
@@ -1695,6 +1702,10 @@ impl crate::FeatherCompositor {
                 self.shell.dnd_enabled = !self.shell.dnd_enabled;
                 self.shell.topbar_dirty = true;
                 self.shell.overlay_dirty = true;
+                self.save_settings();
+            }
+            Action::NotifySounds => {
+                self.shell.notify_sounds = !self.shell.notify_sounds;
                 self.save_settings();
             }
             Action::NotifyDelivery(index) => {
@@ -2192,6 +2203,7 @@ mod tests {
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             dnd: false,
+            notify_sounds: true,
             notify_apps: &apps,
         };
         let mut fonts = FontSystem::new();
@@ -2297,6 +2309,7 @@ mod tests {
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             dnd: false,
+            notify_sounds: true,
             notify_apps: &[],
         };
         let mut p = Panel {

@@ -648,6 +648,7 @@ impl FeatherCompositor {
             dock_locked: self.dock_locked,
             do_not_disturb: self.shell.dnd_enabled,
             notify_apps: self.shell.notify_apps.clone(),
+            notify_sounds: self.shell.notify_sounds,
             dock: Some(self.dock_pins.clone()),
             animations: self.animations.enabled(),
             keyboard: self.keyboard_config.clone(),
@@ -957,6 +958,7 @@ impl FeatherCompositor {
             let Some(server) = &self.notifications else { continue };
             match event {
                 crate::shell::NotificationEvent::Closed(id, reason) => server.closed(id, reason),
+                crate::shell::NotificationEvent::Sound(file) => server.play(file),
                 crate::shell::NotificationEvent::Invoked(id, key) => {
                     let token = self.xdg_activation_state.create_external_token(None).0.clone();
                     let value = token.as_str().to_string();
@@ -1681,6 +1683,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             shell.dock_zoom_enabled = saved.dock_zoom;
             shell.dnd_enabled = saved.do_not_disturb;
             shell.notify_apps = saved.notify_apps.clone();
+            shell.notify_sounds = saved.notify_sounds;
             shell
         },
         windows: Vec::new(),
