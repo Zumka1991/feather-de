@@ -20,7 +20,7 @@ Wi-Fi/звук/иконки CC реализованы, release собран, 31 
 
 - Сборка: `cargo build --release` (workspace: композитор и `files/` — файловый менеджер)
 - Вложенный запуск: `target/release/feather-de --windowed`. Проверять активный VT/сокет:
-  текущий Feather обычно wayland-2, Hyprland wayland-1; на неактивном хосте FPS не принимать.
+  номера сокетов меняются: 2026-10-24 wayland-1 оказался настоящей DRM-сессией пользователя. Перед запуском проверять `ss -xlp | grep wayland-` и всегда ставить `FEATHER_DEBUG_INPUT_ONLY=1`; на неактивном хосте FPS не принимать.
   Не фиксировать устаревший wayland-0/labwc. Методика в передаче.
 - Профайлер кадров: `FEATHER_PROFILE=1`
 - Эталон FPS: `bench/anim.html` в Chromium с `--ozone-platform=wayland --enable-logging=stderr`

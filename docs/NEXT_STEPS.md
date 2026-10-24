@@ -153,7 +153,7 @@ Dock сохраняет значок под указателем при свор
 ## Как проверять без участия пользователя
 
 - Вложенный запуск: `target/release/feather-de --windowed` (активный VT: /sys/class/tty/tty0/active;
-  Hyprland — wayland-1, Пёрышко пользователя — wayland-2). Снимки: FEATHER_DEBUG_SCREENSHOT.
+  номера сокетов меняются, владельца смотреть `ss -xlp | grep wayland-`; 2026-10-24 wayland-1 был DRM-сессией пользователя). Снимки: FEATHER_DEBUG_SCREENSHOT.
 - Отладочные сценарии без ввода хоста: FEATHER_DEBUG_CAPTURE, FEATHER_DEBUG_DESKTOP,
   FEATHER_DEBUG_DND=(пусто|move|menu|resize) — только внутри своего вложенного композитора.
 - Простой/память: `/proc/<pid>/stat` (тики), `voluntary_ctxt_switches`, RssAnon.
