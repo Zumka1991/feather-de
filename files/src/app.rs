@@ -974,6 +974,13 @@ impl App {
             }
             return Vec::new();
         }
+        if let Some((Hit::Title | Hit::Crumb(_), origin)) = &self.pressed {
+            if (x - origin.0).hypot(y - origin.1) > 4.0 {
+                self.pressed = None;
+                return vec![Effect::Move];
+            }
+            return Vec::new();
+        }
         if let Some((start, _)) = self.rubber {
             self.rubber = Some((start, (x, y)));
             self.update_rubber();
@@ -1066,7 +1073,9 @@ impl App {
         }
         if hit == Hit::Title && button == BTN_LEFT {
             if self.path_edit.is_none() {
-                self.open_path_edit();
+                // Like a macOS title: dragging it moves the window, a click (on release)
+                // edits the path
+                self.pressed = Some((Hit::Title, (x, y)));
             } else {
                 let (tx, _, tw, _) = self.title_rect();
                 if let Some(input) = self.path_edit.as_mut() {
@@ -1164,7 +1173,8 @@ impl App {
                 }
                 effects.extend(self.navigate(path, true));
             }
-            Hit::Crumb(path) => effects.extend(self.navigate(path, true)),
+            // Navigates on release; dragging a crumb moves the window instead
+            Hit::Crumb(path) => self.pressed = Some((Hit::Crumb(path), (x, y))),
             Hit::Toolbar if double => effects.push(Effect::ToggleMaximize),
             Hit::Toolbar => effects.push(Effect::Move),
             Hit::Item(i) if double => {
@@ -1224,6 +1234,23 @@ impl App {
         self.drag_origin = None;
         if self.rubber.take().is_some() {
             self.dirty = true;
+        }
+        match self.pressed.as_ref().map(|p| p.0.clone()) {
+            Some(Hit::Title) => {
+                self.pressed = None;
+                self.open_path_edit();
+                self.dirty = true;
+                return Vec::new();
+            }
+            // Released on the crumb it was pressed on
+            Some(Hit::Crumb(path)) => {
+                self.pressed = None;
+                if self.hit(x, y) == Hit::Crumb(path.clone()) {
+                    return self.navigate(path, true);
+                }
+                return Vec::new();
+            }
+            _ => {}
         }
         if let Some((Hit::Item(i), _)) = self.pressed.take() {
             let (_, ry, _, rh) = self.item_rect(i);
@@ -2531,6 +2558,34 @@ mod tests {
         assert!(app.props.is_some());
         app.key(0xff1b, None, Mods::default());
         assert!(app.props.is_none());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn title_and_crumbs_act_on_release_and_drag_the_window() {
+        let root = fixture("title");
+        let mut app = app_in(&root);
+        let (tx, ty, tw, th) = app.title_rect();
+        let (x, y) = (tx + tw * 0.5, ty + th * 0.5);
+        assert!(app.press(BTN_LEFT, x, y, Mods::default()).is_empty());
+        assert!(app.path_edit.is_none(), "a press alone edits nothing");
+        assert_eq!(app.motion(x + 30.0, y + 2.0), vec![Effect::Move], "a drag moves the window");
+        app.release(BTN_LEFT, x + 30.0, y + 2.0);
+        assert!(app.path_edit.is_none(), "a drag does not open the path field");
+        app.press(BTN_LEFT, x, y, Mods::default());
+        app.release(BTN_LEFT, x, y);
+        assert!(app.path_edit.is_some(), "a click opens it on release");
+        // A crumb: a drag moves the window, a click navigates on release
+        app.key(0xff1b, None, Mods::default());
+        app.layout_crumbs();
+        let (path, _, cx, cw) = app.crumb_layout.first().cloned().unwrap();
+        let cy = app.h - PATHBAR_H * 0.5 - app.picker_height();
+        assert!(app.press(BTN_LEFT, cx + cw * 0.5, cy, Mods::default()).is_empty());
+        assert_eq!(app.motion(cx + cw * 0.5 + 20.0, cy - 10.0), vec![Effect::Move]);
+        app.release(BTN_LEFT, cx + cw * 0.5 + 20.0, cy - 10.0);
+        app.press(BTN_LEFT, cx + cw * 0.5, cy, Mods::default());
+        let effects = app.release(BTN_LEFT, cx + cw * 0.5, cy);
+        assert!(effects.iter().any(|e| matches!(e, Effect::List(p, _) if *p == path)), "{effects:?}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
