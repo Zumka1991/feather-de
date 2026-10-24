@@ -58,6 +58,11 @@ fn black_buffer() -> MemoryRenderBuffer {
 pub struct MissionTile {
     pub label: String,
     pub rect: R,
+    /// Desktop index; None for «+»
+    pub space: Option<u32>,
+    /// The close button is shown (hovered tile, more than one desktop)
+    pub removable: bool,
+    pub remove_hover: bool,
     pub current: bool,
     pub hover: bool,
     pub add: bool,
@@ -75,8 +80,13 @@ impl MissionOverlay {
     fn title_rect(r: R) -> R {
         R::new(r.x + r.w * 0.5 - 130.0, r.y + r.h + 8.0, 260.0, 26.0)
     }
+    /// Tile, its label below and the close button corner
     fn rects(&self) -> Vec<R> {
-        self.tiles.iter().map(|t| t.rect).chain(self.title.iter().map(|(_, r)| Self::title_rect(*r))).collect()
+        self.tiles
+            .iter()
+            .map(|t| R::new(t.rect.x - 8.0, t.rect.y - 8.0, t.rect.w + 16.0, t.rect.h + 32.0))
+            .chain(self.title.iter().map(|(_, r)| Self::title_rect(*r)))
+            .collect()
     }
 }
 
@@ -2936,10 +2946,17 @@ impl MacShell {
                     crate::theme::fill_frosted(&mut pm, r.x, r.y, r.w, r.h, 10.0);
                     if t.hover { fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 10.0, rgba(255, 255, 255, 60)); }
                     stroke_rounded_rect(&mut pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, 9.5, if t.current { 2.5 } else { 1.0 }, if t.current { p.accent } else { rgba(255, 255, 255, 140) });
-                    let pill = R::new(r.x + 10.0, r.y + r.h - 30.0, r.w - 20.0, 22.0);
-                    fill_rounded_rect(&mut pm, pill.x, pill.y, pill.w, pill.h, 11.0, rgba(0, 0, 0, 90));
-                    fonts.draw_text_centered(&mut pm, &t.label, pill.x + pill.w * 0.5, pill.y + 4.0, 12.0, Color::WHITE, true);
-                    if t.windows > 0 {
+                    // Below the tile: window thumbnails cover its inside
+                    let pill = R::new(r.x + 14.0, r.y + r.h + 4.0, r.w - 28.0, 20.0);
+                    fill_rounded_rect(&mut pm, pill.x, pill.y, pill.w, pill.h, 10.0, rgba(0, 0, 0, 80));
+                    fonts.draw_text_centered(&mut pm, &t.label, pill.x + pill.w * 0.5, pill.y + 3.0, 11.5, Color::WHITE, true);
+                    if t.removable {
+                        let c = R::new(r.x - 7.0, r.y - 7.0, 22.0, 22.0);
+                        draw_glass_panel(&mut pm, c.x, c.y, c.w, c.h, c.w * 0.5, true);
+                        fonts.draw_text_centered(&mut pm, "×", c.x + c.w * 0.5, c.y + 2.0, 14.0, if t.remove_hover { p.text } else { p.text_secondary }, true);
+                    }
+                    // The current desktop's windows are large below; others get thumbnails
+                    if t.current && t.windows > 0 {
                         let n = t.windows.min(9);
                         for i in 0..n {
                             let x = r.x + r.w * 0.5 - (n as f32 - 1.0) * 6.0 + i as f32 * 12.0;

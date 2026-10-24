@@ -702,6 +702,8 @@ impl FeatherCompositor {
         self.pointer_location = pos;
         if self.mission_open() {
             self.mission_motion(pos.x, pos.y);
+            // The Dock stays usable (magnification follows the pointer)
+            self.shell.update_pointer_hover(pos.x, pos.y);
             self.pointer_focus_dirty = true;
             return;
         }
@@ -888,11 +890,16 @@ impl FeatherCompositor {
 
     fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
         if self.mission_open() && !self.lock.active {
-            if button == BTN_LEFT {
-                let (x, y) = (self.pointer_location.x, self.pointer_location.y);
-                self.mission_button(btn_state == ButtonState::Pressed, x, y);
+            let (x, y) = (self.pointer_location.x, self.pointer_location.y);
+            if btn_state == ButtonState::Pressed && self.shell.dock_contains(x, y) {
+                // A Dock click leaves Mission Control and works as usual
+                self.close_mission(None);
+            } else {
+                if button == BTN_LEFT {
+                    self.mission_button(btn_state == ButtonState::Pressed, x, y);
+                }
+                return;
             }
-            return;
         }
         if self.lock.active {
             if self.lock.external() {

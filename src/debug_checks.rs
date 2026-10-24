@@ -81,17 +81,27 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-mission-check] dragged a window to a new desktop");
         })?;
         at(state, 3600, |s| {
+            // × of the new desktop: its window comes back to the first one
             let tile = crate::mission::strip(s.spaces.count, s.shell.screen_w as f32)[1].1;
-            let (x, y) = ((tile.x + tile.w * 0.5) as f64, (tile.y + tile.h * 0.5) as f64);
+            s.mission_motion((tile.x + tile.w * 0.5) as f64, (tile.y + tile.h * 0.5) as f64);
+            let (x, y) = ((tile.x + 4.0) as f64, (tile.y + 4.0) as f64);
+            s.mission_motion(x, y);
             s.mission_button(true, x, y);
             s.mission_button(false, x, y);
-            assert_eq!(s.spaces.current, 1);
+            assert_eq!((s.spaces.current, s.spaces.count), (0, 1), "desktop removed");
+            assert!(s.windows.iter().filter(|w| w.mapped && !w.minimized).all(|w| w.space == 0 && w.is_visible()));
+            assert_eq!(s.mission.as_ref().unwrap().targets.len(), s.windows.iter().filter(|w| w.is_visible()).count(), "its window is back in the overview");
+            eprintln!("[feather-mission-check] removed a desktop with ×");
+        })?;
+        at(state, 4000, |s| {
+            let dock = (s.shell.screen_w as f64 * 0.5, s.shell.screen_h as f64 - 30.0);
+            assert!(s.shell.dock_contains(dock.0, dock.1));
+            s.close_mission(None);
             assert!(!s.mission_open());
         })?;
-        at(state, 4400, |s| {
+        at(state, 4800, |s| {
             assert!(s.mission.is_none(), "closed after the spring");
-            assert!(s.windows.iter().any(|w| w.is_visible() && w.space == 1));
-            eprintln!("[feather-mission-check] picked a desktop, closed: ok");
+            eprintln!("[feather-mission-check] closed: ok");
         })?;
     }
     if std::env::var_os("FEATHER_DEBUG_SPACES").is_some() {

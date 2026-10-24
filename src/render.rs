@@ -301,6 +301,7 @@ pub(crate) fn build_scene(
     animations: &crate::animation::Animations,
 ) -> Vec<FeatherElement> {
     let mut out: Vec<FeatherElement> = Vec::with_capacity(64);
+    push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations);
     let mut mem = |out: &mut Vec<FeatherElement>, loc: (f64, f64), buf, src, visual: crate::animation::Visual| {
         if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
@@ -403,79 +404,7 @@ pub(crate) fn build_scene(
             continue;
         }
         let visual = animations.window(win);
-
-        if let Some(surface) = win.wl_surface() {
-            let origin = win.surface_origin();
-            // Popups (menus, dropdowns, tooltips) sit above their toplevel
-            for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
-                let loc = origin + win.geo_loc + popup_offset - popup.geometry().loc;
-                push_surface_tree(
-                    &mut out,
-                    renderer,
-                    popup.wl_surface(),
-                    to_phys_point(loc.x, loc.y, scale),
-                    scale,
-                    visual,
-                );
-            }
-            // macOS corners: bottom ones under our titlebar, all four for square CSD apps
-            let clip = rounded.and_then(|program| {
-                let round = !win.maximized
-                    && !win.fullscreen
-                    && (win.has_titlebar() || !win.client_shadow);
-                round.then(|| {
-                    let (cx, cy) = win.client_origin();
-                    let geo = smithay::utils::Rectangle::new(
-                        to_phys_point(cx, cy, scale),
-                        (
-                            (win.width as f64 * scale).round() as i32,
-                            (win.height as f64 * scale).round() as i32,
-                        )
-                            .into(),
-                    );
-                    let clip = crate::rounded::Clip {
-                        geo,
-                        radius: crate::theme::WINDOW_CORNER_RADIUS * scale as f32,
-                        all_corners: !win.has_titlebar(),
-                    };
-                    (clip, program)
-                })
-            });
-            push_window_surfaces(
-                &mut out,
-                renderer,
-                surface,
-                to_phys_point(origin.x, origin.y, scale),
-                scale,
-                clip,
-                visual,
-            );
-        }
-
-        if win.has_titlebar() {
-            let old=win.decoration_size();
-            let resized=win.app_id=="builtin.settings";
-            if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                ((win.x as f64 * scale).round(), (win.y as f64 * scale).round()),
-                &win.decoration_buffer,
-                Some(visual.alpha),
-                resized.then(||smithay::utils::Rectangle::from_size((old.0 as f64,old.1 as f64).into())),
-                resized.then(||((win.width as f64*scale).round() as i32,(win.total_height() as f64*scale).round() as i32).into()),
-                Kind::Unspecified,
-            ) {
-                out.push(visual.element(SceneElement::Memory(e), scale));
-            }
-        }
-
-        if win.draws_shadow() {
-            out.extend(
-                win.shadow
-                    .elements(renderer, win.frame_rect(), scale, visual.alpha)
-                    .into_iter()
-                    .map(|e| visual.element(SceneElement::Memory(e), scale)),
-            );
-        }
+        push_window(&mut out, renderer, win, visual, scale, rounded, true);
 
         if win.fullscreen && !win.minimized && visual.identity() {
             // Nothing below a fullscreen window is visible
@@ -503,6 +432,125 @@ pub(crate) fn build_scene(
         out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer((0.0,0.0),texture,None,Some(smithay::utils::Rectangle::from_size((w as f64,h as f64).into())),Some(wp_size.into()),Kind::Unspecified)).into());
     }
     out
+}
+
+/// One window: popups, surfaces (rounded corners), our titlebar and, optionally, shadow
+fn push_window(
+    out: &mut Vec<FeatherElement>,
+    renderer: &mut GlesRenderer,
+    win: &ManagedWindow,
+    visual: crate::animation::Visual,
+    scale: f64,
+    rounded: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
+    with_shadow: bool,
+) {
+    let mut out = out;
+
+    if let Some(surface) = win.wl_surface() {
+        let origin = win.surface_origin();
+        // Popups (menus, dropdowns, tooltips) sit above their toplevel
+        for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
+            let loc = origin + win.geo_loc + popup_offset - popup.geometry().loc;
+            push_surface_tree(
+                &mut out,
+                renderer,
+                popup.wl_surface(),
+                to_phys_point(loc.x, loc.y, scale),
+                scale,
+                visual,
+            );
+        }
+        // macOS corners: bottom ones under our titlebar, all four for square CSD apps
+        let clip = rounded.and_then(|program| {
+            let round = !win.maximized
+                && !win.fullscreen
+                && (win.has_titlebar() || !win.client_shadow);
+            round.then(|| {
+                let (cx, cy) = win.client_origin();
+                let geo = smithay::utils::Rectangle::new(
+                    to_phys_point(cx, cy, scale),
+                    (
+                        (win.width as f64 * scale).round() as i32,
+                        (win.height as f64 * scale).round() as i32,
+                    )
+                        .into(),
+                );
+                let clip = crate::rounded::Clip {
+                    geo,
+                    radius: crate::theme::WINDOW_CORNER_RADIUS * scale as f32,
+                    all_corners: !win.has_titlebar(),
+                };
+                (clip, program)
+            })
+        });
+        push_window_surfaces(
+            &mut out,
+            renderer,
+            surface,
+            to_phys_point(origin.x, origin.y, scale),
+            scale,
+            clip,
+            visual,
+        );
+    }
+
+    if win.has_titlebar() {
+        let old=win.decoration_size();
+        let resized=win.app_id=="builtin.settings";
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            ((win.x as f64 * scale).round(), (win.y as f64 * scale).round()),
+            &win.decoration_buffer,
+            Some(visual.alpha),
+            resized.then(||smithay::utils::Rectangle::from_size((old.0 as f64,old.1 as f64).into())),
+            resized.then(||((win.width as f64*scale).round() as i32,(win.total_height() as f64*scale).round() as i32).into()),
+            Kind::Unspecified,
+        ) {
+            out.push(visual.element(SceneElement::Memory(e), scale));
+        }
+    }
+
+    if with_shadow && win.draws_shadow() {
+        out.extend(
+            win.shadow
+                .elements(renderer, win.frame_rect(), scale, visual.alpha)
+                .into_iter()
+                .map(|e| visual.element(SceneElement::Memory(e), scale)),
+        );
+    }
+
+}
+
+/// Mission Control: windows of the other desktops, scaled into their strip tiles. The
+/// current desktop's windows are already in the overview (drawing them twice would give
+/// one element id two places), and desktops in a slide are drawn by the scene itself.
+fn push_space_thumbnails(
+    out: &mut Vec<FeatherElement>,
+    renderer: &mut GlesRenderer,
+    shell: &MacShell,
+    windows: &[ManagedWindow],
+    scale: f64,
+    rounded: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
+    animations: &crate::animation::Animations,
+) {
+    let Some(m) = shell.mission.as_ref() else { return };
+    let (sw, sh) = (shell.screen_w as f64, shell.screen_h as f64);
+    for tile in m.tiles.iter().filter(|t| !t.current) {
+        let Some(space) = tile.space.filter(|s| !animations.in_slide(*s)) else { continue };
+        let r = tile.rect;
+        let k = ((r.w as f64 - 8.0) / sw).min((r.h as f64 - 8.0) / sh);
+        let (ox, oy) = (r.x as f64 + (r.w as f64 - sw * k) * 0.5, r.y as f64 + (r.h as f64 - sh * k) * 0.5);
+        for win in windows.iter().rev().filter(|w| w.mapped && !w.minimized && w.space == space) {
+            let center = (win.x as f64 + win.width as f64 * 0.5, win.y as f64 + win.total_height() as f64 * 0.5);
+            let visual = crate::animation::Visual {
+                scale: k,
+                alpha: animations.mission_progress() as f32,
+                center,
+                offset: (ox + center.0 * k - center.0, oy + center.1 * k - center.1),
+            };
+            push_window(out, renderer, win, visual, scale, rounded, false);
+        }
+    }
 }
 
 /// Above everything: dragged desktop icons, or the icon a program gave its drag

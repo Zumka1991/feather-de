@@ -180,6 +180,11 @@ impl Animations {
         self.mission.is_some()
     }
 
+    /// This desktop is sliding in or out right now
+    pub fn in_slide(&self, space: u32) -> bool {
+        self.slide.as_ref().is_some_and(|s| s.from == space || s.to == space)
+    }
+
     pub fn mission_progress(&self) -> f64 {
         self.mission.as_ref().map_or(0.0, |m| m.spring.value)
     }

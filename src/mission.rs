@@ -19,6 +19,8 @@ const DRAG_START: f64 = 6.0;
 pub enum Hit {
     Window(u64),
     Space(u32),
+    /// Close button of a desktop tile
+    Remove(u32),
     Add,
 }
 
@@ -89,7 +91,8 @@ pub fn strip(count: u32, screen_w: f32) -> Vec<(Hit, R)> {
 }
 
 fn windows_area(screen: (i32, i32)) -> R {
-    let top = crate::theme::TOP_BAR_HEIGHT as f32 + STRIP_TOP + TILE_H + 12.0;
+    // Tiles, their labels below, then the windows
+    let top = crate::theme::TOP_BAR_HEIGHT as f32 + STRIP_TOP + TILE_H + 36.0;
     R::new(24.0, top, screen.0 as f32 - 48.0, (screen.1 as f32 - top - DOCK_ROOM).max(120.0))
 }
 
@@ -169,6 +172,14 @@ impl FeatherCompositor {
     fn mission_hit(&self, x: f64, y: f64) -> Option<Hit> {
         let m = self.mission.as_ref()?;
         let (fx, fy) = (x as f32, y as f32);
+        // The close button of the hovered tile, which sticks out of its corner
+        if let Some(s) = m.hover.and_then(|h| match h { Hit::Space(s) | Hit::Remove(s) => Some(s), _ => None }).filter(|_| self.spaces.count > 1) {
+            if let Some((_, r)) = strip(self.spaces.count, self.shell.screen_w as f32).into_iter().find(|(h, _)| *h == Hit::Space(s)) {
+                if R::new(r.x - 7.0, r.y - 7.0, 22.0, 22.0).contains(fx, fy) {
+                    return Some(Hit::Remove(s));
+                }
+            }
+        }
         for (hit, r) in strip(self.spaces.count, self.shell.screen_w as f32) {
             if r.contains(fx, fy) {
                 return Some(hit);
@@ -233,7 +244,7 @@ impl FeatherCompositor {
                 .and_then(|(h, _)| match h {
                     Hit::Space(s) => Some(s),
                     Hit::Add => Some(self.spaces.count),
-                    Hit::Window(_) => None,
+                    Hit::Window(_) | Hit::Remove(_) => None,
                 });
             if let Some(space) = target_space.filter(|s| *s != self.spaces.current) {
                 if space >= self.spaces.count {
@@ -259,6 +270,10 @@ impl FeatherCompositor {
                 self.spaces.count = (self.spaces.count + 1).min(crate::spaces::MAX_SPACES);
                 self.sync_mission_overlay();
             }
+            Some(Hit::Remove(s)) => {
+                self.remove_space(s);
+                self.relayout_mission();
+            }
             Some(Hit::Window(_)) => {}
             None => self.close_mission(None),
         }
@@ -278,11 +293,24 @@ impl FeatherCompositor {
                     Hit::Space(s) => format!("Рабочий стол {}", s + 1),
                     _ => "+".into(),
                 };
+                let space = match hit { Hit::Space(s) => Some(s), _ => None };
+                let hovered_space = match m.hover { Some(Hit::Space(s) | Hit::Remove(s)) => Some(s), _ => None };
+                let removable = space.is_some() && space == hovered_space && self.spaces.count > 1;
                 let count = match hit {
                     Hit::Space(s) => self.windows.iter().filter(|w| w.mapped && !w.minimized && w.space == s).count(),
                     _ => 0,
                 };
-                crate::shell::MissionTile { label, rect: r, current: hit == Hit::Space(self.spaces.current), hover: m.hover == Some(hit), add: hit == Hit::Add, windows: count }
+                crate::shell::MissionTile {
+                    label,
+                    rect: r,
+                    space,
+                    removable,
+                    remove_hover: space.is_some_and(|s| m.hover == Some(Hit::Remove(s))),
+                    current: hit == Hit::Space(self.spaces.current),
+                    hover: m.hover == Some(hit),
+                    add: hit == Hit::Add,
+                    windows: count,
+                }
             })
             .collect();
         let title = match m.hover {

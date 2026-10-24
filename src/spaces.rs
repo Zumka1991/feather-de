@@ -33,6 +33,15 @@ pub fn step(s: Spaces, delta: i32, current_has_windows: bool) -> Option<Spaces> 
     (target == s.count && current_has_windows && s.count < MAX_SPACES).then_some(Spaces { current: target, count: s.count + 1 })
 }
 
+/// Desktops after removing `space`; the current one follows its content
+pub fn removed(s: Spaces, space: u32) -> Option<Spaces> {
+    if s.count <= 1 || space >= s.count {
+        return None;
+    }
+    let current = if s.current > space { s.current - 1 } else if s.current == space { space.saturating_sub(1) } else { s.current };
+    Some(Spaces { current, count: s.count - 1 })
+}
+
 /// Drops empty desktops at the end, never the current one or the first
 pub fn prune(mut s: Spaces, has_windows: impl Fn(u32) -> bool) -> Spaces {
     while s.count > 1 && s.count - 1 > s.current && !has_windows(s.count - 1) {
@@ -91,6 +100,26 @@ impl FeatherCompositor {
         self.spaces == before
     }
 
+    /// Mission Control's × on a desktop: its windows join the desktop on its left
+    /// (the first one's go to the next), later desktops shift down by one
+    pub fn remove_space(&mut self, space: u32) {
+        let Some(next) = removed(self.spaces, space) else { return };
+        let home = space.saturating_sub(1);
+        for w in &mut self.windows {
+            if w.space == space {
+                w.space = home;
+            } else if w.space > space {
+                w.space -= 1;
+            }
+        }
+        self.spaces = next;
+        self.apply_space_visibility();
+        self.dock_model_dirty = true;
+        self.pointer_focus_dirty = true;
+        self.refresh_focus();
+        self.needs_redraw = true;
+    }
+
     /// A window about to be shown: its desktop comes forward first
     pub fn reveal_window_space(&mut self, id: u64) {
         if let Some(space) = self.windows.iter().find(|w| w.id == id && w.mapped && !w.minimized).map(|w| w.space) {
@@ -116,6 +145,10 @@ mod tests {
         assert_eq!(prune(back, |s| s == 1), Spaces { current: 0, count: 2 });
         assert_eq!(prune(back, |s| s == 2), back);
         assert_eq!(prune(Spaces { current: 2, count: 3 }, |_| false).count, 3, "never the current one");
+        assert_eq!(removed(Spaces { current: 2, count: 3 }, 1), Some(Spaces { current: 1, count: 2 }), "later desktops shift");
+        assert_eq!(removed(Spaces { current: 1, count: 3 }, 1), Some(Spaces { current: 0, count: 2 }), "current one removed: its left neighbour");
+        assert_eq!(removed(Spaces { current: 0, count: 3 }, 0), Some(Spaces { current: 0, count: 2 }));
+        assert_eq!(removed(Spaces::default(), 0), None, "the last desktop stays");
         let full = Spaces { current: MAX_SPACES - 1, count: MAX_SPACES };
         assert_eq!(step(full, 1, true), None);
     }
