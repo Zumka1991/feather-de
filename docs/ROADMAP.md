@@ -68,7 +68,7 @@
 ## Окна и рабочие столы
 
 - [x] Рабочие столы (Spaces): Ctrl+Alt+←/→, перенос окна, анимация — [WINDOWS.md](WINDOWS.md#рабочие-столы-srcspacesrs-шаг-1)
-- [ ] Mission Control: обзор окон и столов, перенос окна на стол
+- [x] Mission Control: обзор окон и столов, перенос окна на стол — [WINDOWS.md](WINDOWS.md#mission-control-srcmissionrs-шаг-2)
 - [ ] Жесты трекпада: столы и Mission Control
 - [x] Переключение окон одного приложения (Alt+`) — [WINDOWS.md](WINDOWS.md)
 - [x] Горячие углы — [WINDOWS.md](WINDOWS.md#активные-углы-srchot_cornersrs)

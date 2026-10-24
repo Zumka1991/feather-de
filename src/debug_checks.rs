@@ -52,6 +52,48 @@ fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("FEATHER_DEBUG_MISSION").is_some() {
+        // Mission Control without host input: spread, drag a window onto «+», pick a desktop
+        at(state, 1200, |s| {
+            s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+        })?;
+        at(state, 2200, |s| {
+            s.open_mission();
+            let m = s.mission.as_ref().unwrap();
+            let shown = s.windows.iter().filter(|w| w.is_visible()).count();
+            assert_eq!(m.targets.len(), shown, "every window of the desktop is in the overview");
+            assert!(s.surface_under_pointer(10.0, 300.0).is_none(), "clients get no pointer");
+            eprintln!("[feather-mission-check] opened with {shown} windows");
+        })?;
+        at(state, 3000, |s| {
+            let (id, r) = s.mission.as_ref().unwrap().targets[0];
+            let add = crate::mission::strip(s.spaces.count, s.shell.screen_w as f32).into_iter().find(|(h, _)| *h == crate::mission::Hit::Add).unwrap().1;
+            let (x, y) = ((r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64);
+            s.mission_button(true, x, y);
+            s.mission_motion(x + 30.0, y - 30.0);
+            let (ax, ay) = ((add.x + add.w * 0.5) as f64, (add.y + add.h * 0.5) as f64);
+            s.mission_motion(ax, ay);
+            s.mission_button(false, ax, ay);
+            let w = s.windows.iter().find(|w| w.id == id).unwrap();
+            assert_eq!((w.space, s.spaces.count), (1, 2), "dropped on «+»: a new desktop");
+            assert!(s.mission.as_ref().unwrap().targets.iter().all(|(t, _)| *t != id), "left the overview");
+            assert!(s.mission_open());
+            eprintln!("[feather-mission-check] dragged a window to a new desktop");
+        })?;
+        at(state, 3600, |s| {
+            let tile = crate::mission::strip(s.spaces.count, s.shell.screen_w as f32)[1].1;
+            let (x, y) = ((tile.x + tile.w * 0.5) as f64, (tile.y + tile.h * 0.5) as f64);
+            s.mission_button(true, x, y);
+            s.mission_button(false, x, y);
+            assert_eq!(s.spaces.current, 1);
+            assert!(!s.mission_open());
+        })?;
+        at(state, 4400, |s| {
+            assert!(s.mission.is_none(), "closed after the spring");
+            assert!(s.windows.iter().any(|w| w.is_visible() && w.space == 1));
+            eprintln!("[feather-mission-check] picked a desktop, closed: ok");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_SPACES").is_some() {
         // Desktops without host input: carry a window right, come back, let the Dock
         // bring its desktop forward, carry it home and watch the empty desktop go away.

@@ -483,6 +483,17 @@ pub(crate) fn build_scene(
         }
     }
 
+    // Mission Control dims the desktop behind the spread windows
+    let dim = animations.mission_progress();
+    if dim > 0.0 {
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer, (0.0, 0.0), &shell.mission_dim, Some((0.35 * dim) as f32),
+            Some(smithay::utils::Rectangle::from_size((4.0, 4.0).into())),
+            Some((to_phys(shell.screen_w), to_phys(shell.screen_h)).into()), Kind::Unspecified,
+        ) {
+            out.push(SceneElement::Memory(e).into());
+        }
+    }
     out.extend(shell.desktop.elements(renderer, (shell.screen_w, shell.screen_h), scale));
     let wp_size = (to_phys(shell.screen_w), to_phys(shell.screen_h));
     // The source rect must be the (low-res) buffer itself; by default Smithay would use the
@@ -648,6 +659,7 @@ impl FeatherCompositor {
                 }
             }
             self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now()) || self.auth.animating();
+            self.finish_mission();
             self.advance_bounce();
         }
         let cpu_time = t_cpu.elapsed();
@@ -898,6 +910,9 @@ impl FeatherCompositor {
         px: f64,
         py: f64,
     ) -> Option<(WlSurface, Point<f64, smithay::utils::Logical>)> {
+        if self.mission.is_some() {
+            return None;
+        }
         if self.lock.active {
             return self.lock.focus().and_then(|surface|smithay::desktop::utils::under_from_surface_tree(&surface,(px,py).into(),(0,0),WindowSurfaceType::ALL).map(|(s,p)|(s,p.to_f64())));
         }

@@ -98,10 +98,18 @@ struct Slide {
     width: f64,
 }
 
+/// Mission Control: 0 = windows where they are, 1 = spread into their overview rectangles
+struct MissionMotion {
+    spring: Spring,
+    fresh: bool,
+    targets: HashMap<u64, R>,
+}
+
 #[derive(Default)]
 pub struct Animations {
     disabled: bool,
     slide: Option<Slide>,
+    mission: Option<MissionMotion>,
     windows: HashMap<u64, WindowMotion>,
     overlay_key: Option<OverlayKind>,
     overlay: Option<Spring>,
@@ -117,6 +125,7 @@ impl Animations {
         self.disabled = !enabled;
         self.windows.clear();
         self.slide = None;
+        self.mission = None;
         self.overlay = None;
         self.launchpad = None;
         self.last_frame = None;
@@ -139,6 +148,40 @@ impl Animations {
     }
     pub fn active(&self) -> bool {
         self.last_frame.is_some()
+    }
+
+    /// Opening keeps (or starts) the spring towards 1 with new rectangles; closing turns it
+    /// back to 0 and keeps them, so windows fly back to their places
+    pub fn set_mission(&mut self, open: bool, targets: &[(u64, R)]) {
+        let start = if self.disabled { 1.0 } else { 0.0 };
+        let m = self.mission.get_or_insert_with(|| MissionMotion { spring: Spring::new(start, 1.0), fresh: true, targets: HashMap::new() });
+        if open {
+            m.targets = targets.iter().copied().collect();
+            m.spring.target = 1.0;
+        } else {
+            m.spring.target = 0.0;
+        }
+        if self.disabled {
+            m.spring = Spring::new(m.spring.target, m.spring.target);
+            if !open {
+                self.mission = None;
+            }
+        }
+    }
+
+    pub fn move_mission_target(&mut self, id: u64, r: R) {
+        if let Some(m) = self.mission.as_mut() {
+            m.targets.insert(id, r);
+        }
+    }
+
+    /// Still on screen: open, or flying back
+    pub fn mission_visible(&self) -> bool {
+        self.mission.is_some()
+    }
+
+    pub fn mission_progress(&self) -> f64 {
+        self.mission.as_ref().map_or(0.0, |m| m.spring.value)
     }
 
     pub fn slide_spaces(&mut self, from: u32, to: u32, width: f64) {
@@ -204,7 +247,16 @@ impl Animations {
                 self.slide = None;
             }
         }
+        if let Some(m) = self.mission.as_mut() {
+            if !std::mem::take(&mut m.fresh) {
+                m.spring.advance(dt);
+            }
+            if m.spring.target == 0.0 && !m.spring.active() {
+                self.mission = None;
+            }
+        }
         let active = self.slide.is_some()
+            || self.mission.as_ref().is_some_and(|m| m.spring.active())
             || self.windows.values().any(|w| w.spring.active())
             || self.overlay.as_ref().is_some_and(Spring::active)
             || self.launchpad.as_ref().is_some_and(Spring::active);
@@ -214,6 +266,15 @@ impl Animations {
 
     pub fn window(&self, w: &ManagedWindow) -> Visual {
         let mut visual = self.window_motion(w);
+        if let Some((m, r)) = self.mission.as_ref().and_then(|m| Some((m, m.targets.get(&w.id)?))) {
+            let p = m.spring.value;
+            let (cx, cy) = (w.x as f64 + w.width as f64 * 0.5, w.y as f64 + w.total_height() as f64 * 0.5);
+            let k = r.w as f64 / w.width.max(1) as f64;
+            visual.center = (cx, cy);
+            visual.scale *= 1.0 + (k - 1.0) * p;
+            visual.offset.0 += ((r.x + r.w * 0.5) as f64 - cx) * p;
+            visual.offset.1 += ((r.y + r.h * 0.5) as f64 - cy) * p;
+        }
         if let Some(s) = self.slide.as_ref() {
             let p = s.spring.value;
             if w.space == s.from {

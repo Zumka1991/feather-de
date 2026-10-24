@@ -43,6 +43,43 @@ fn new_buffer(w: i32, h: i32) -> MemoryRenderBuffer {
     MemoryRenderBuffer::new(Fourcc::Abgr8888, (w.max(1), h.max(1)), 1, Transform::Normal, None)
 }
 
+/// A 4×4 black buffer, stretched (with `src`) to dim the desktop behind Mission Control
+fn black_buffer() -> MemoryRenderBuffer {
+    let mut b = new_buffer(4, 4);
+    let _ = b.render().draw(|buf| {
+        buf.chunks_exact_mut(4).for_each(|px| px.copy_from_slice(&[0, 0, 0, 255]));
+        Result::<_, ()>::Ok(vec![Rectangle::from_size((4, 4).into())])
+    });
+    b
+}
+
+/// One desktop tile (or «+») of the Mission Control strip
+#[derive(Debug, Clone)]
+pub struct MissionTile {
+    pub label: String,
+    pub rect: R,
+    pub current: bool,
+    pub hover: bool,
+    pub add: bool,
+    pub windows: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct MissionOverlay {
+    pub tiles: Vec<MissionTile>,
+    /// Title of the hovered window and its overview rectangle
+    pub title: Option<(String, R)>,
+}
+
+impl MissionOverlay {
+    fn title_rect(r: R) -> R {
+        R::new(r.x + r.w * 0.5 - 130.0, r.y + r.h + 8.0, 260.0, 26.0)
+    }
+    fn rects(&self) -> Vec<R> {
+        self.tiles.iter().map(|t| t.rect).chain(self.title.iter().map(|(_, r)| Self::title_rect(*r))).collect()
+    }
+}
+
 /// Logical rectangle (x, y, w, h)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct R {
@@ -672,6 +709,9 @@ pub struct MacShell {
     pub launchpad: Option<crate::launchpad::Launchpad>,
     /// Frosted wallpaper behind Launchpad, cached per wallpaper/size/appearance
     pub launchpad_bg: MemoryRenderBuffer,
+    /// Mission Control strip and title (CPU part; windows move on the GPU)
+    pub mission: Option<MissionOverlay>,
+    pub mission_dim: MemoryRenderBuffer,
     pub launchpad_bg_key: Option<(WallpaperTheme, i32, i32, bool)>,
     launchpad_bg_requested: Option<crate::raster::BackgroundKey>,
     pub raster: Option<crate::raster::RasterSender>,
@@ -765,6 +805,8 @@ impl MacShell {
             ghost_dirty: false,
             launchpad: None,
             launchpad_bg: new_buffer(1, 1),
+            mission: None,
+            mission_dim: black_buffer(),
             launchpad_bg_key: None,
             launchpad_bg_requested: None,
             raster: None,
@@ -1216,6 +1258,7 @@ impl MacShell {
             || !self.toasts.is_empty()
             || self.center_open
             || self.dock_menu.is_some()
+            || self.mission.is_some()
     }
 
     pub fn close_menus(&mut self) {
@@ -2609,6 +2652,9 @@ impl MacShell {
         if self.center_open {
             rects.push(self.center_layout().0);
         }
+        if let Some(m) = &self.mission {
+            rects.extend(m.rects());
+        }
         if let Some(m) = &self.dock_menu {
             rects.push(m.rect);
         }
@@ -2660,6 +2706,11 @@ impl MacShell {
             Vec::new()
         };
         let toast_hover = self.toast_hover;
+        let mission = self.mission.clone().map(|mut m| {
+            for t in &mut m.tiles { t.rect = local(t.rect); }
+            if let Some((_, r)) = m.title.as_mut() { *r = local(*r); }
+            m
+        });
         let center_hover = self.center_hover;
         let center = self.center_open.then(|| {
             let (panel, rows, clear) = self.center_layout();
@@ -2871,6 +2922,36 @@ impl MacShell {
             for (i, (t, r)) in toasts.iter().enumerate().rev() {
                 let hover = toast_hover.filter(|(h, _)| *h == i).map(|(_, part)| part);
                 Self::draw_toast(&mut pm, fonts, icons, t, *r, hover, "сейчас", true);
+            }
+
+            if let Some(m) = mission.as_ref() {
+                for t in &m.tiles {
+                    let r = t.rect;
+                    if t.add {
+                        draw_glass_panel(&mut pm, r.x, r.y, r.w, r.h, r.w * 0.5, false);
+                        fonts.draw_text_centered(&mut pm, "+", r.x + r.w * 0.5, r.y + r.h * 0.5 - 14.0, 26.0, if t.hover { p.accent } else { p.text }, false);
+                        continue;
+                    }
+                    // A frosted piece of the wallpaper, like a desktop seen from afar
+                    crate::theme::fill_frosted(&mut pm, r.x, r.y, r.w, r.h, 10.0);
+                    if t.hover { fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 10.0, rgba(255, 255, 255, 60)); }
+                    stroke_rounded_rect(&mut pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, 9.5, if t.current { 2.5 } else { 1.0 }, if t.current { p.accent } else { rgba(255, 255, 255, 140) });
+                    let pill = R::new(r.x + 10.0, r.y + r.h - 30.0, r.w - 20.0, 22.0);
+                    fill_rounded_rect(&mut pm, pill.x, pill.y, pill.w, pill.h, 11.0, rgba(0, 0, 0, 90));
+                    fonts.draw_text_centered(&mut pm, &t.label, pill.x + pill.w * 0.5, pill.y + 4.0, 12.0, Color::WHITE, true);
+                    if t.windows > 0 {
+                        let n = t.windows.min(9);
+                        for i in 0..n {
+                            let x = r.x + r.w * 0.5 - (n as f32 - 1.0) * 6.0 + i as f32 * 12.0;
+                            fill_rounded_rect(&mut pm, x - 4.0, r.y + 22.0, 8.0, 8.0, 2.0, rgba(255, 255, 255, 210));
+                        }
+                    }
+                }
+                if let Some((title, r)) = m.title.as_ref() {
+                    let pill = MissionOverlay::title_rect(*r);
+                    draw_glass_panel(&mut pm, pill.x, pill.y, pill.w, pill.h, 13.0, true);
+                    fonts.draw_text_clipped_centered(&mut pm, title, pill.x + pill.w * 0.5, pill.y + 5.0, pill.w - 20.0, 12.5, p.text, true);
+                }
             }
 
             if let Some((r, rows, clear)) = center.as_ref() {

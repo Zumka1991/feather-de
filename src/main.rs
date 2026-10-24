@@ -10,6 +10,7 @@ mod xwayland;
 mod gtk_menu;
 mod hot_corners;
 mod spaces;
+mod mission;
 mod gtk_shell;
 mod debug_checks;
 use feather_ui::cpu_profile;
@@ -153,6 +154,7 @@ pub struct FeatherCompositor {
     pub xwayland: Option<crate::xwayland::Xwayland>,
     pub hot_corners: crate::hot_corners::HotCorners,
     pub spaces: crate::spaces::Spaces,
+    pub mission: Option<crate::mission::Mission>,
     pub controls: Option<crate::controls::Controls>,
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
@@ -1269,7 +1271,7 @@ impl FeatherCompositor {
             }
             ShellClickAction::ShowShortcuts => self.shell.notify(
                 "Горячие клавиши",
-                "Super+Space поиск • Super+A приложения • Alt+Tab • Alt+` окна программы • Ctrl+Alt+←/→ столы • Super+Q/W/H/M/F",
+                "Super+Space поиск • Super+A приложения • Alt+Tab • Alt+` окна программы • Ctrl+Alt+←/→ столы • Ctrl+Alt+↑ Mission Control • Super+Q/W/H/M/F",
             ),
         }
     }
@@ -1675,6 +1677,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         xwayland: None,
         hot_corners: crate::hot_corners::HotCorners::new(saved.hot_corners),
         spaces: Default::default(),
+        mission: None,
         pending_autostart,
         idle_frame_timer_armed: false,
         frame_pending: false,

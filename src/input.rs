@@ -45,6 +45,8 @@ enum KeyAction {
     CycleAppWindows { reverse: bool },
     /// Ctrl+Alt+←/→ (Shift: take the front window along)
     Space { delta: i32, carry: bool },
+    /// Ctrl+Alt+↑ toggles; Escape/Return while open
+    Mission { focus_hover: bool, close_only: bool },
     SwitchVt(i32),
     /// Print: screen, Shift+Print: region/window selection, Alt+Print: active window
     Screenshot { shift: bool, alt: bool },
@@ -255,6 +257,14 @@ impl FeatherCompositor {
                 }
                 if st.screenshot_select.is_some() && raw == keysyms::KEY_Escape {
                     deferred = Some(KeyAction::Screenshot { shift: false, alt: false });
+                    return FilterResult::Intercept(());
+                }
+                if mods.ctrl && mods.alt && !mods.logo && matches!(raw, keysyms::KEY_Up | keysyms::KEY_Down) {
+                    deferred = Some(KeyAction::Mission { focus_hover: false, close_only: raw == keysyms::KEY_Down });
+                    return FilterResult::Intercept(());
+                }
+                if st.mission_open() && matches!(raw, keysyms::KEY_Escape | keysyms::KEY_Return | keysyms::KEY_KP_Enter) {
+                    deferred = Some(KeyAction::Mission { focus_hover: raw != keysyms::KEY_Escape, close_only: true });
                     return FilterResult::Intercept(());
                 }
                 if mods.ctrl && mods.alt && !mods.logo && matches!(raw, keysyms::KEY_Left | keysyms::KEY_Right) {
@@ -519,7 +529,18 @@ impl FeatherCompositor {
             Some(KeyAction::SwitcherStep { reverse }) => self.switcher_step(reverse),
             Some(KeyAction::SwitcherCommit) => self.switcher_commit(),
             Some(KeyAction::CycleAppWindows { reverse }) => self.cycle_app_windows(reverse),
-            Some(KeyAction::Space { delta, carry }) => self.space_step(delta, carry),
+            Some(KeyAction::Space { delta, carry }) => {
+                self.space_step(delta, carry);
+                if self.mission_open() { self.relayout_mission(); }
+            }
+            Some(KeyAction::Mission { focus_hover, close_only }) => {
+                if !self.mission_open() {
+                    if !close_only { self.open_mission(); }
+                } else {
+                    let hover = self.mission.as_ref().and_then(|m| match m.hover { Some(crate::mission::Hit::Window(id)) if focus_hover => Some(id), _ => None });
+                    self.close_mission(hover);
+                }
+            }
             Some(KeyAction::SwitchVt(vt)) => self.switch_vt(vt),
             // Any shortcut while selecting (Esc too) ends the selection first
             Some(KeyAction::Screenshot { .. }) if self.screenshot_select.is_some() => self.cancel_screenshot_selection(),
@@ -621,6 +642,7 @@ impl FeatherCompositor {
         use crate::hot_corners::HotAction as H;
         match action {
             H::None => return,
+            H::MissionControl => self.toggle_mission(),
             H::Launchpad => self.toggle_launchpad(),
             H::Desktop => self.execute_shell_action(ShellClickAction::MinimizeAllWindows),
             H::Notifications => self.shell.toggle_center(),
@@ -678,6 +700,11 @@ impl FeatherCompositor {
 
     fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer_location = pos;
+        if self.mission_open() {
+            self.mission_motion(pos.x, pos.y);
+            self.pointer_focus_dirty = true;
+            return;
+        }
         if self.lock.active {
             let under=self.surface_under_pointer(pos.x,pos.y);let pointer=self.pointer.clone();
             pointer.motion(self,under,&MotionEvent{location:pos,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);return;
@@ -860,6 +887,13 @@ impl FeatherCompositor {
     }
 
     fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
+        if self.mission_open() && !self.lock.active {
+            if button == BTN_LEFT {
+                let (x, y) = (self.pointer_location.x, self.pointer_location.y);
+                self.mission_button(btn_state == ButtonState::Pressed, x, y);
+            }
+            return;
+        }
         if self.lock.active {
             if self.lock.external() {
                 if btn_state==ButtonState::Pressed {if !self.pressed_buttons.contains(&button){self.pressed_buttons.push(button);}}

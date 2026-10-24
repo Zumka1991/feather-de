@@ -6,6 +6,7 @@
 pub enum HotAction {
     #[default]
     None,
+    MissionControl,
     Launchpad,
     Desktop,
     Notifications,
@@ -14,7 +15,7 @@ pub enum HotAction {
 }
 
 impl HotAction {
-    const ALL: [Self; 6] = [Self::None, Self::Launchpad, Self::Desktop, Self::Notifications, Self::Spotlight, Self::Lock];
+    const ALL: [Self; 7] = [Self::None, Self::MissionControl, Self::Launchpad, Self::Desktop, Self::Notifications, Self::Spotlight, Self::Lock];
 
     pub fn next(self) -> Self {
         let i = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);
@@ -23,6 +24,7 @@ impl HotAction {
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "Нет действия",
+            Self::MissionControl => "Mission Control",
             Self::Launchpad => "Launchpad",
             Self::Desktop => "Рабочий стол",
             Self::Notifications => "Центр уведомлений",
@@ -33,6 +35,7 @@ impl HotAction {
     pub fn id(self) -> &'static str {
         match self {
             Self::None => "none",
+            Self::MissionControl => "mission",
             Self::Launchpad => "launchpad",
             Self::Desktop => "desktop",
             Self::Notifications => "notifications",
