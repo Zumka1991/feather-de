@@ -897,10 +897,11 @@ impl FeatherCompositor {
                 items.push(("Закрепить в Dock".to_string(), DockMenuAction::KeepInDock));
             }
         }
+        items.push(self.dock_lock_menu_item());
+        // Like macOS: Quit is always the last item
         if running {
             items.push(("Завершить".to_string(), DockMenuAction::Quit));
         }
-        items.push(self.dock_lock_menu_item());
         self.shell.open_dock_menu(target, anchor, items, &mut self.fonts);
     }
 

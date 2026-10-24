@@ -1529,6 +1529,7 @@ impl MacShell {
             crate::controls::Update::Audio(audio) => {
                 if self.cc.audio==audio {return false;}
                 self.cc.audio=audio;
+                self.cc.audio_updated();
             }
             crate::controls::Update::Error(title,error) => {
                 if self.control_center_open {self.cc.open(if title=="Звук" {crate::control_panel::Page::Sound} else {crate::control_panel::Page::Wifi});}

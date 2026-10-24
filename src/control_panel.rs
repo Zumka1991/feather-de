@@ -33,6 +33,10 @@ pub struct Panel {
     pub hover: Option<(f32, f32)>,
     /// Display brightness 0…1; None when no display can be controlled
     pub brightness: Option<f32>,
+    /// Volume set by the last drag, shown until the sound server reports it (no jump back)
+    pending_volume: Option<(String, f32, u8)>,
+    /// Last volume sent while dragging (sent again only after a 2 % change)
+    sent_volume: Option<f32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,7 +61,8 @@ impl Panel {
         self.error = None;
     }
     pub fn volume(&self) -> f32 {
-        self.drag.as_ref().filter(|d| matches!(d.0, Slider::Volume(_))).map(|d| d.2).unwrap_or_else(|| {
+        let pending = self.pending_volume.as_ref().filter(|(sink, _, _)| self.audio.current().is_some_and(|s| &s.name == sink)).map(|p| p.1);
+        self.drag.as_ref().filter(|d| matches!(d.0, Slider::Volume(_))).map(|d| d.2).or(pending).unwrap_or_else(|| {
             self.audio
                 .current()
                 .map_or(0.0, |s| s.volume().clamp(0.0, 1.0))
@@ -86,6 +91,28 @@ impl Panel {
         Some(value)
     }
 
+    /// While dragging the volume: a command to send now, at most every 2 %
+    pub fn live_volume(&mut self) -> Option<ShellClickAction> {
+        let (Slider::Volume(sink), _, value) = self.drag.as_ref()? else { return None };
+        if self.sent_volume.is_some_and(|v| (v - value).abs() < 0.02) {
+            return None;
+        }
+        self.sent_volume = Some(*value);
+        Some(ShellClickAction::Control(Control::Volume { sink: sink.clone(), value: *value }))
+    }
+
+    /// A sound server snapshot: the pending value goes once it is confirmed (or after a
+    /// few snapshots that disagree, so a clamped volume cannot stick)
+    pub fn audio_updated(&mut self) {
+        if let Some((sink, value, seen)) = self.pending_volume.as_mut() {
+            let actual = self.audio.sinks.iter().find(|s| &s.name == sink).map(|s| s.volume());
+            *seen += 1;
+            if actual.is_none_or(|a| (a - *value).abs() < 0.02) || *seen >= 4 {
+                self.pending_volume = None;
+            }
+        }
+    }
+
     pub fn brightness_drag(&self) -> Option<f32> {
         self.drag.as_ref().filter(|d| d.0 == Slider::Brightness).map(|d| d.2)
     }
@@ -97,8 +124,12 @@ impl Panel {
         true
     }
     pub fn release(&mut self) -> Option<ShellClickAction> {
+        self.sent_volume = None;
         self.drag.take().map(|(target, _, value)| match target {
-            Slider::Volume(sink) => ShellClickAction::Control(Control::Volume { sink, value }),
+            Slider::Volume(sink) => {
+                self.pending_volume = Some((sink.clone(), value, 0));
+                ShellClickAction::Control(Control::Volume { sink, value })
+            }
             Slider::Brightness => ShellClickAction::SetBrightness(value),
         })
     }
@@ -766,6 +797,22 @@ mod tests {
             matches!(panel.release(),Some(ShellClickAction::Control(Control::Volume {value,..})) if value==0.75)
         );
         assert!(panel.release().is_none());
+        // After the release the new value stays shown until the server confirms it
+        assert_eq!(panel.volume(), 0.75, "no jump back to the old volume");
+        panel.audio_updated();
+        assert_eq!(panel.volume(), 0.75, "a stale snapshot does not move it");
+        panel.audio.sinks[0].channels = vec![49152];
+        panel.audio_updated();
+        assert_eq!(panel.volume(), 0.75);
+        assert!(panel.pending_volume.is_none(), "confirmed");
+        // Live volume while dragging: sent in 2 % steps, not on every pixel
+        panel.start_slider(R::new(10., 10., 200., 20.), 20.);
+        assert!(panel.live_volume().is_some());
+        panel.motion(21.);
+        assert!(panel.live_volume().is_none(), "half a percent: nothing sent");
+        panel.motion(30.);
+        assert!(panel.live_volume().is_some());
+        panel.release();
         panel.close();
         assert!(panel.selected.is_none());
         assert!(panel.password.is_empty());

@@ -729,8 +729,13 @@ impl FeatherCompositor {
             return;
         }
         if self.shell.control_center_open && self.shell.cc.motion(pos.x as f32) {
+            // The slider follows the pointer: a frame for every move
+            self.needs_redraw = true;
             if let Some(v) = self.shell.cc.brightness_drag() {
                 if let Some(b) = &self.brightness { b.set(v); }
+            }
+            if let Some(action) = self.shell.cc.live_volume() {
+                self.execute_shell_action(action);
             }
             self.shell.overlay_dirty=true;
             return;
