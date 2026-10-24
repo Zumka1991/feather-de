@@ -52,6 +52,173 @@ fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    crate::monitors::install_checks(state)?;
+    if std::env::var_os("FEATHER_DEBUG_AUDIO_KEYS").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only {return Err("audio key check requires isolated windowed input".into());}
+        let level = Rc::new(Cell::new(0.0f32));
+        at(state, 1200, |s| {
+            let sink=s.shell.cc.audio.current().expect("fake audio ready");
+            assert!((sink.volume()-0.5).abs()<0.001);
+            tap(s,115);
+        })?;
+        at(state, 1800, |s| {
+            assert!((s.shell.cc.audio.current().unwrap().volume()-0.55).abs()<0.001);
+            assert_eq!(s.audio_hud.percent,55);assert!(s.audio_hud.visible);
+            tap(s,114);tap(s,114);tap(s,113);tap(s,113);
+        })?;
+        at(state, 2400, |s| {
+            let a=s.shell.cc.audio.current().unwrap();assert!((a.volume()-0.45).abs()<0.001 && !a.muted);
+            s.debug_keyboard_key(115,true);
+        })?;
+        at(state, 3300, |s| {s.debug_keyboard_key(115,false);})?;
+        let value=level.clone();
+        at(state, 3650, move |s| {
+            let a=s.shell.cc.audio.current().unwrap();assert!((0.85..=1.0).contains(&a.volume()));value.set(a.volume());
+        })?;
+        let value=level.clone();
+        at(state, 4100, move |s| {
+            assert_eq!(s.shell.cc.audio.current().unwrap().volume(),value.get(),"release stops volume changes");
+            s.debug_keyboard_key(113,true); // Mute must never repeat while held.
+        })?;
+        at(state, 4900, |s| {
+            assert!(s.shell.cc.audio.current().unwrap().muted);assert!(s.audio_hud.muted);
+            s.debug_keyboard_key(113,false);
+            s.debug_keyboard_key(114,true);
+        })?;
+        at(state, 5450, |s| {s.debug_keyboard_key(114,false);})?;
+        at(state, 5900, |s| {
+            assert!(!s.shell.cc.audio.current().unwrap().muted,"volume keys unmute");
+            for _ in 0..10 {tap(s,115);}
+        })?;
+        at(state, 6500, |s| {
+            assert!((s.shell.cc.audio.current().unwrap().volume()-1.0).abs()<0.001,"clamped at 100%");
+            eprintln!("[feather-audio-key-check] steps/burst/balance/mute/hold/release: ok");
+        })?;
+        // The harness changes the default output at 7.0 s and removes it at 8.3 s.
+        at(state, 7600, |s| {tap(s,115);})?;
+        at(state, 8100, |s| {
+            let a=s.shell.cc.audio.current().unwrap();assert_eq!(a.name,"usb output");assert!((a.volume()-0.35).abs()<0.001);
+            eprintln!("[feather-audio-key-check] default output changed: ok");
+        })?;
+        at(state, 8900, |s| {tap(s,115);})?;
+        at(state, 9400, |s| {
+            assert!(s.shell.cc.audio.current().is_none());assert!(s.audio_hud.visible && !s.audio_hud.available);
+            for key in [68,87,88] {tap(s,key);} // F10/F11/F12 stay normal function keys.
+        })?;
+        at(state, 11100, |s| {
+            assert!(!s.audio_hud.visible,"feedback expires");
+            eprintln!("[feather-audio-key-check] disconnected/normal F-keys/expiry: ok");
+            eprintln!("[feather-audio-key-check] complete: ok");
+        })?;
+    }
+    if let Ok(mode) = std::env::var("FEATHER_DEBUG_KEYBOARD") {
+        use crate::{shortcuts::{Action as K, Chord, CTRL, SUPER}, system_settings::{Action as A, Page}};
+        fn search(s: &mut FeatherCompositor) {
+            s.debug_keyboard_key(29, true);
+            chord(s, 125, 25); // Ctrl+Super+P, independently of the current language
+            s.debug_keyboard_key(29, false);
+        }
+        fn choose(s: &mut FeatherCompositor, action: K) {
+            let w = s.windows.iter().find(|w| w.app_id == "builtin.settings").unwrap();
+            let (id, width, height) = (w.id, w.width as f32, w.height as f32);
+            let predicate = |a: &A| matches!(a, A::EditShortcut(k) if *k == action);
+            let (_, y) = s.system_settings.debug_point(width, height, &s.settings_context(), predicate).unwrap();
+            s.system_settings.scroll += (y - height * 0.5).max(0.0);
+            let (x, y) = s.system_settings.debug_point(width, height, &s.settings_context(), predicate).unwrap();
+            assert!(y > 50.0 && y < height - 24.0);
+            let w = s.windows.iter().find(|w| w.id == id).unwrap();
+            let (gx, gy) = (w.x as f64 + x as f64, (w.y + w.titlebar_h()) as f64 + y as f64);
+            s.debug_pointer_motion(gx, gy);
+            s.debug_pointer_button(0x110, true);s.debug_pointer_button(0x110, false);
+            assert_eq!(s.system_settings.shortcut_capture, Some(action));
+        }
+        if mode == "restore" {
+            at(state, 1000, |s| {
+                assert_eq!(s.keybindings.chord(K::Search), Some(Chord {mods:CTRL|SUPER,key:112}));
+                assert_eq!(s.keybindings.chord(K::Files), None);
+                assert_eq!((s.keyboard_config.repeat_delay,s.keyboard_config.repeat_rate),(400,20));
+                search(s);assert!(s.shell.spotlight_open);
+                tap(s,1);assert!(!s.shell.spotlight_open);
+                eprintln!("[feather-keyboard-check] restored: ok");
+            })?;
+        } else {
+            let count = Rc::new(Cell::new(0usize));
+            at(state, 1200, |s| {
+                s.apply_system_setting(A::Page(Page::Keyboard));
+                s.apply_system_setting(A::RepeatDelay(400));s.apply_system_setting(A::RepeatRate(20));
+                choose(s,K::Search);search(s);
+                assert!(!s.shell.spotlight_open,"capture must not perform the shortcut");
+                assert_eq!(s.keybindings.chord(K::Search), Some(Chord {mods:CTRL|SUPER,key:112}));
+                choose(s,K::Files);search(s);
+                assert!(s.system_settings.error.is_some());assert!(s.capturing_shortcut());
+                tap(s,1);assert!(!s.capturing_shortcut());
+                choose(s,K::Files);tap(s,14);assert_eq!(s.keybindings.chord(K::Files),None);
+                chord(s,125,57);assert!(!s.shell.spotlight_open,"old chord is unbound");
+                s.select_input_source(1);search(s);assert!(s.shell.spotlight_open,"Latin binding in Russian");
+                search(s);assert!(!s.shell.spotlight_open);s.select_input_source(0);
+                search(s);s.debug_keyboard_key(30,true);
+                eprintln!("[feather-keyboard-check] capture/conflict/disable/Russian: ok");
+            })?;
+            at(state, 1450, |s| {assert_eq!(s.shell.spotlight_query,"a","no repeat before delay");})?;
+            let n=count.clone();
+            at(state, 2100, move |s| {
+                let len=s.shell.spotlight_query.len();assert!((5..=14).contains(&len),"repeat count {len}");
+                s.debug_keyboard_key(30,false);n.set(len);
+                eprintln!("[feather-keyboard-check] delay/rate: {len} chars, ok");
+            })?;
+            let n=count.clone();
+            at(state, 2400, move |s| {
+                assert_eq!(s.shell.spotlight_query.len(),n.get(),"release stops repeat");
+                s.debug_keyboard_key(42,true);s.debug_keyboard_key(105,true); // Shift+Left
+            })?;
+            at(state, 3100, |s| {
+                assert!(s.shell.spotlight_input.selected_text().unwrap().len()>=3,"held selection");
+                s.debug_keyboard_key(105,false);s.debug_keyboard_key(42,false);
+                s.debug_keyboard_key(14,true);
+            })?;
+            at(state, 3900, |s| {
+                s.debug_keyboard_key(14,false);assert!(s.shell.spotlight_query.is_empty(),"held backspace");
+                s.debug_keyboard_key(48,true);s.release_all_input();
+            })?;
+            at(state, 4500, |s| {
+                assert_eq!(s.shell.spotlight_query,"b","lost host focus stops repeat");
+                s.shell.spotlight_open=false;
+                s.apply_system_setting(A::Page(Page::DateTime));s.system_settings.zone_picker=true;
+                s.debug_keyboard_key(30,true);
+            })?;
+            at(state, 5300, |s| {
+                assert!(s.system_settings.zone_query.len()>=5,"settings field repeats");s.debug_keyboard_key(30,false);
+                s.system_settings.zone_picker=false;
+                s.system_settings.time_editing=true;s.system_settings.time_input.clear();
+                s.debug_keyboard_key(2,true); // 1
+            })?;
+            at(state, 6100, |s| {
+                assert!(s.system_settings.time_input.len()>=5);s.debug_keyboard_key(2,false);
+                s.system_settings.time_editing=false;
+                s.shell.launchpad=Some(crate::launchpad::Launchpad::new(&s.app_registry,s.shell.screen_w,s.shell.screen_h));
+                s.debug_keyboard_key(30,true);
+            })?;
+            at(state, 6900, |s| {
+                let lp=s.shell.launchpad.as_ref().unwrap();assert!(lp.input.len()>=5,"Launchpad repeat");
+                s.debug_keyboard_key(30,false);tap(s,1);
+                s.shell.spotlight_input.clear();s.shell.spotlight_query.clear();search(s);
+                s.debug_keyboard_key(30,true);
+                // A click must immediately cancel the timer, even if the field stays open.
+                s.debug_pointer_motion(8.0,200.0);s.debug_pointer_button(0x111,true);s.debug_pointer_button(0x111,false);
+            })?;
+            at(state, 7500, |s| {
+                assert_eq!(s.shell.spotlight_query,"a","click stops repeat");
+                s.shell.close_menus();s.shell.spotlight_open=false;
+                s.apply_system_setting(A::Page(Page::Keyboard));
+                choose(s,K::Search); // show recording state in screenshot
+                eprintln!("[feather-keyboard-check] release/selection/delete/focus/fields/click: ok");
+            })?;
+            at(state, 9000, |s| {
+                tap(s,1);assert!(!s.capturing_shortcut());chord(s,125,17);
+                eprintln!("[feather-keyboard-check] complete: ok");
+            })?;
+        }
+    }
     if std::env::var_os("FEATHER_DEBUG_MINIMIZE").is_some() {
         // A Tauri-like client (bench/tauri-like.py): its own HTML titlebar buttons must keep
         // working after it minimizes itself and comes back from the Dock.

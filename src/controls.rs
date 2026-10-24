@@ -41,6 +41,20 @@ impl Audio {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioKey { Raise, Lower, Mute }
+impl AudioKey {
+    pub fn from_keysym(sym: u32) -> Option<Self> {
+        use smithay::input::keyboard::keysyms as k;
+        match sym {
+            k::KEY_XF86AudioRaiseVolume => Some(Self::Raise),
+            k::KEY_XF86AudioLowerVolume => Some(Self::Lower),
+            k::KEY_XF86AudioMute => Some(Self::Mute),
+            _ => None,
+        }
+    }
+}
+
 // Password commands intentionally do not implement Debug.
 #[derive(Clone)]
 pub enum Control {
@@ -62,6 +76,7 @@ pub enum Control {
         muted: bool,
     },
     Output(String),
+    AudioKey(AudioKey),
 }
 impl std::fmt::Debug for Control {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,12 +90,14 @@ impl std::fmt::Debug for Control {
             Self::Volume { .. } => "Volume",
             Self::Mute { .. } => "Mute",
             Self::Output(_) => "Output",
+            Self::AudioKey(_) => "AudioKey",
         })
     }
 }
 pub enum Update {
     Wifi(network::Wifi),
     Audio(Audio),
+    AudioFeedback(Audio),
     Error(&'static str, String),
 }
 
@@ -98,6 +115,9 @@ impl Controls {
         let (updates, source) = channel::sync_channel(4);
         handle.insert_source(source, |event, _, state| {
             if let channel::Event::Msg(update) = event {
+                if let Update::AudioFeedback(ref audio) = update {
+                    state.show_audio_feedback(audio);
+                }
                 if state.shell.install_controls(update) {
                     state.needs_redraw = true;
                 }
@@ -346,6 +366,7 @@ fn audio_action_with(
                 if muted { "1" } else { "0" }.into(),
             ])?;
         }
+        Control::AudioKey(key) => audio_keys_with(&[key], state, run)?,
         Control::Output(name) => {
             if !state.sinks.iter().any(|s| s.name == name) {
                 return Err("Устройство отключено".into());
@@ -378,6 +399,31 @@ fn audio_action_with(
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn audio_keys_with(keys: &[AudioKey], state: &Audio, run: &dyn Fn(&[String]) -> Result<String, String>) -> Result<(), String> {
+    let sink = state.current().ok_or("Нет устройства вывода звука")?;
+    let (mut value, mut muted) = (sink.volume(), sink.muted);
+    let mut changed_volume = false;
+    for key in keys {
+        match key {
+            AudioKey::Mute => muted = !muted,
+            AudioKey::Raise | AudioKey::Lower => {
+                value = (value + if *key == AudioKey::Raise { 0.05 } else { -0.05 }).clamp(0.0, 1.0);
+                changed_volume = true;
+                muted = false;
+            }
+        }
+    }
+    if changed_volume && (value - sink.volume()).abs() > 0.00001 {
+        let mut args = vec!["set-sink-volume".into(), sink.name.clone()];
+        args.extend(volumes(sink, value));
+        run(&args)?;
+    }
+    if muted != sink.muted {
+        run(&vec!["set-sink-mute".into(), sink.name.clone(), if muted {"1"} else {"0"}.into()])?;
     }
     Ok(())
 }
@@ -481,6 +527,8 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
     let mut state = Audio::default();
     let mut command = Some(Control::Refresh);
     loop {
+        let mut feedback = false;
+        let mut queued = None;
         if let Some(c) = command.take() {
             if matches!(c, Control::Refresh)
                 && watcher
@@ -489,7 +537,21 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
             {
                 watcher = subscribe(wake.clone()).ok();
             }
-            if let Err(error) = audio_action(c, &state) {
+            let result = if let Control::AudioKey(first) = c {
+                feedback = true;
+                let mut keys = vec![first];
+                // Collapse a burst without crossing a slider/output command or reordering mute.
+                for _ in 1..16 {
+                    match commands.try_recv() {
+                        Ok(Control::AudioKey(key)) => keys.push(key),
+                        Ok(other) => { queued = Some(other); break; }
+                        Err(_) => break,
+                    }
+                }
+                let deadline = Instant::now() + Duration::from_secs(3);
+                audio_keys_with(&keys, &state, &|args| pactl_until(args, deadline))
+            } else { audio_action(c, &state) };
+            if let Err(error) = result {
                 if updates.send(Update::Error("Звук", error)).is_err() {
                     break;
                 }
@@ -502,12 +564,12 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
                 ..Audio::default()
             },
         };
-        if next != state {
+        if feedback || next != state {
             state = next;
-            if updates.send(Update::Audio(state.clone())).is_err() {
-                break;
-            }
+            let update = if feedback { Update::AudioFeedback(state.clone()) } else { Update::Audio(state.clone()) };
+            if updates.send(update).is_err() { break; }
         }
+        if queued.is_some() { command = queued; continue; }
         enum Event {
             Command(Result<Control, async_channel::RecvError>),
             Changed,
@@ -542,6 +604,39 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+    #[test]
+    fn multimedia_keys_apply_in_order_clamp_preserve_balance_and_unmute() {
+        use AudioKey::{Raise as U, Lower as D, Mute as M};
+        let sink = Sink {name:"default; literal".into(),channels:vec![32768,16384],muted:false,..Default::default()};
+        let mut state = Audio {default:sink.name.clone(),sinks:vec![sink],error:None};
+        let calls=Mutex::new(Vec::new());
+        let run=|args:&[String]|{calls.lock().unwrap().push(args.to_vec());Ok(String::new())};
+        audio_keys_with(&[U,U,D],&state,&run).unwrap();
+        assert_eq!(*calls.lock().unwrap(),[vec!["set-sink-volume","default; literal","55.000%","27.500%"]]);
+        calls.lock().unwrap().clear();
+        audio_keys_with(&[M,M],&state,&run).unwrap();assert!(calls.lock().unwrap().is_empty());
+        audio_keys_with(&[U;32],&state,&run).unwrap();
+        assert_eq!(calls.lock().unwrap()[0],["set-sink-volume","default; literal","100.000%","50.000%"]);
+        calls.lock().unwrap().clear();
+        state.sinks[0].muted=true;
+        audio_keys_with(&[D],&state,&run).unwrap();
+        assert_eq!(*calls.lock().unwrap(),[
+            vec!["set-sink-volume","default; literal","45.000%","22.500%"],
+            vec!["set-sink-mute","default; literal","0"]]);
+        calls.lock().unwrap().clear();
+        audio_keys_with(&[U,M],&state,&run).unwrap();
+        assert_eq!(calls.lock().unwrap().len(),1,"raise then mute returns to the original mute state");
+        calls.lock().unwrap().clear();
+        audio_keys_with(&[D;32],&state,&run).unwrap();assert_eq!(calls.lock().unwrap()[0][2..],["0.000%","0.000%"]);
+        calls.lock().unwrap().clear();state.sinks[0].channels=vec![0,0];
+        audio_keys_with(&[U],&state,&run).unwrap();assert_eq!(calls.lock().unwrap()[0][2..],["5.000%","5.000%"]);
+        calls.lock().unwrap().clear();state.sinks.clear();
+        assert!(audio_keys_with(&[U],&state,&run).is_err());assert!(calls.lock().unwrap().is_empty());
+        use smithay::input::keyboard::keysyms as k;
+        assert_eq!(AudioKey::from_keysym(k::KEY_XF86AudioRaiseVolume),Some(U));
+        for key in [k::KEY_F10,k::KEY_F11,k::KEY_F12] {assert_eq!(AudioKey::from_keysym(key),None);}
+    }
+
     #[test]
     fn audio_actions_target_named_sink_and_move_only_old_default_streams() {
         let a = Sink {

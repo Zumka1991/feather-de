@@ -101,8 +101,16 @@ impl Panel {
         Some(ShellClickAction::Control(Control::Volume { sink: sink.clone(), value: *value }))
     }
 
+    /// A hardware key supersedes the slider's local preview.
+    pub fn keyboard_audio_updated(&mut self, audio: Audio) {
+        self.pending_volume = None;
+        self.sent_volume = None;
+        if matches!(self.drag, Some((Slider::Volume(_), _, _))) { self.drag = None; }
+        self.audio = audio;
+    }
+
     /// A sound server snapshot: the pending value goes once it is confirmed (or after a
-    /// few snapshots that disagree, so a clamped volume cannot stick)
+    /// few snapshots that disagree, so a clamped volume cannot stick).
     pub fn audio_updated(&mut self) {
         if let Some((sink, value, seen)) = self.pending_volume.as_mut() {
             let actual = self.audio.sinks.iter().find(|s| &s.name == sink).map(|s| s.volume());
@@ -816,6 +824,17 @@ mod tests {
         panel.close();
         assert!(panel.selected.is_none());
         assert!(panel.password.is_empty());
+    }
+
+    #[test]
+    fn hardware_keys_supersede_slider_preview_but_keep_brightness_drag() {
+        let mut panel=Panel::default();
+        let actual=Audio {default:"out".into(),sinks:vec![crate::controls::Sink {name:"out".into(),channels:vec![32768],..Default::default()}],error:None};
+        panel.audio=actual.clone();panel.start_slider(R::new(0.0,0.0,100.0,20.0),80.0);panel.release();
+        assert_eq!(panel.volume(),0.8);
+        panel.keyboard_audio_updated(actual.clone());assert_eq!(panel.volume(),0.5);
+        panel.brightness=Some(0.3);panel.start_brightness(R::new(0.0,0.0,100.0,20.0),60.0);
+        panel.keyboard_audio_updated(actual);assert_eq!(panel.shown_brightness(),Some(0.6));
     }
 
     #[test]

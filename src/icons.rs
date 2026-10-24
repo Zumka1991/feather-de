@@ -447,7 +447,7 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
     };
     let size = px as f32;
     if is_tile {
-        // Crop away the icon's own margins so all tiles line up
+        // Crop the icon's margins; centre slightly rectangular tiles in both axes.
         let scale = size / bw.max(bh);
         out.draw_pixmap(
             0,
@@ -459,8 +459,8 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
                 0.0,
                 0.0,
                 scale,
-                -(x0 as f32) * scale,
-                -(y0 as f32) * scale,
+                (size - bw * scale) * 0.5 - x0 as f32 * scale,
+                (size - bh * scale) * 0.5 - y0 as f32 * scale,
             ),
             None,
         );

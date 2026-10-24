@@ -18,9 +18,13 @@ mod gtk_shell;
 mod debug_checks;
 use feather_ui::cpu_profile;
 mod drm_backend;
+mod monitors;
 mod handlers;
 mod icons;
 mod input;
+mod shortcuts;
+mod key_repeat;
+mod audio_hud;
 mod launchpad;
 mod render;
 mod raster;
@@ -208,6 +212,10 @@ pub struct FeatherCompositor {
     pub keyboard: KeyboardHandle<Self>,
     pub pointer: PointerHandle<Self>,
     pub output: Output,
+    pub monitors: Vec<crate::monitors::Monitor>,
+    pub monitor_preferences: Vec<crate::monitors::Placement>,
+    pub monitor_layout_loaded: bool,
+    pub preview_monitor: Option<String>,
 
     pub phys_w: i32,
     pub phys_h: i32,
@@ -257,6 +265,9 @@ pub struct FeatherCompositor {
     pub active_layout_name: String,
     pub active_layout_index: usize,
     pub keyboard_config: crate::settings::Keyboard,
+    pub keybindings: crate::shortcuts::Bindings,
+    pub key_repeat: crate::key_repeat::Repeat,
+    pub audio_hud: crate::audio_hud::Hud,
     pub preferences: Option<crate::settings::Worker>,
     pub wallpaper_picker: Option<crate::wallpaper::Picker>,
     pub system_settings: crate::system_settings::Panel,
@@ -274,6 +285,7 @@ impl FeatherCompositor {
     /// Single source of truth for stacking → activation → keyboard focus.
     /// The topmost visible window is active; only Wayland windows receive keyboard focus.
     pub fn refresh_focus(&mut self) {
+        self.cancel_key_repeat();
         let top = self.windows.iter().rposition(|w| w.is_visible());
         // The desktop keeps the keyboard until another window comes to the front
         if self.shell.desktop.focused && top.map(|i| self.windows[i].id) != self.desktop_focus_top {
@@ -284,7 +296,7 @@ impl FeatherCompositor {
             w.set_activated(!self.lock.active && !desktop && Some(i) == top);
         }
         let password = self.auth.is_open() || (self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password);
-        let target = if self.lock.active {self.lock.focus()} else if password || desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
+        let target = if self.lock.active {self.lock_focus()} else if password || desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus() != target {
             keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
@@ -334,45 +346,28 @@ impl FeatherCompositor {
         let logical_w = ((self.phys_w as f64) / clamped).round().max(640.0) as i32;
         let logical_h = ((self.phys_h as f64) / clamped).round().max(480.0) as i32;
 
-        self.output.change_current_state(
-            Some(OutputMode {
-                size: (self.phys_w, self.phys_h).into(),
-                refresh: self.refresh_mhz,
-            }),
-            Some(Transform::Normal),
-            Some(OutputScale::Fractional(clamped)),
-            Some((0, 0).into()),
-        );
-
-        self.shell.reallocate_buffers(logical_w, logical_h);
-        self.cursor.clear_cache();
-
-        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-        for win in &mut self.windows {
-            win.dirty = true;
-            if let WindowBackend::Wayland(ref toplevel) = win.backend {
-                with_states(toplevel.wl_surface(), |states| {
-                    fractional_scale::with_fractional_scale(states, |fs| {
-                        fs.set_preferred_scale(clamped);
-                    });
-                });
-                if toplevel.is_initial_configure_sent() {
-                    toplevel.send_configure();
-                }
-            }
-            // Re-fit maximized/fullscreen windows to the new logical screen size
-            if win.fullscreen {
-                win.resize_client(sw, sh);
-            } else if win.maximized {
-                let (ax, _, aw, ah) = crate::theme::maximized_area(sw, sh);
-                win.x = ax;
-                win.resize_client(aw, ah - win.titlebar_h());
-            } else {
-                if win.is_builtin(){win.resize_client(win.width.min(sw-24),win.height.min(sh-TOP_BAR_HEIGHT-48));}
-                win.x=win.x.clamp(0,(sw-win.width).max(0));
-                win.y=win.y.clamp(TOP_BAR_HEIGHT,(sh-win.titlebar_h()-48).max(TOP_BAR_HEIGHT));
+        let old:Vec<_>=self.monitors.iter().map(|m|m.info.clone()).collect();
+        for m in &mut self.monitors {
+            m.info.rect.w=(m.info.mode.width as f64/clamped).round().max(1.0) as i32;
+            m.info.rect.h=(m.info.mode.height as f64/clamped).round().max(1.0) as i32;
+            // Scale origins with the desktop so adjacent edges remain adjacent.
+            if let Some(before)=old.iter().find(|p|p.name==m.info.name){
+                let previous=before.mode.width as f64/before.rect.w as f64;
+                m.info.rect.x=(before.rect.x as f64*previous/clamped).round() as i32;
+                m.info.rect.y=(before.rect.y as f64*previous/clamped).round() as i32;
             }
         }
+        if self.monitors.len()==1 {let m=&mut self.monitors[0];m.info.mode.width=self.phys_w;m.info.mode.height=self.phys_h;m.info.mode.refresh=self.refresh_mhz;m.info.rect.w=logical_w;m.info.rect.h=logical_h;}
+        self.cursor.clear_cache();
+        for win in &mut self.windows {
+            win.dirty=true;
+            if let WindowBackend::Wayland(ref toplevel)=win.backend {
+                with_states(toplevel.wl_surface(),|states|fractional_scale::with_fractional_scale(states,|fs|fs.set_preferred_scale(clamped)));
+            }
+        }
+        let pending=self.pending_display;let queued=self.system_settings.queued_mode;let confirming=self.system_settings.confirming;
+        self.finish_monitor_change(&old);
+        self.pending_display=pending;self.system_settings.queued_mode=queued;self.system_settings.confirming=confirming;
         self.needs_redraw = true;
     }
 
@@ -390,16 +385,18 @@ impl FeatherCompositor {
             let id = self.next_win_id;
             self.next_win_id += 1;
             let offset = ((self.windows.len() as i32) % 5) * 30;
-            let x = (self.shell.screen_w / 2 - 260 + offset).max(32);
-            let y = (TOP_BAR_HEIGHT + 54 + offset).max(TOP_BAR_HEIGHT + 12);
+            let r=self.monitor_at(self.pointer_location.x,self.pointer_location.y);
+            let x=r.x+(r.w/2-260+offset).max(32);
+            let y=r.y+(TOP_BAR_HEIGHT+54+offset).max(TOP_BAR_HEIGHT+12);
             let mut win = ManagedWindow::new_builtin(id, kind, x, y);
             win.space = self.spaces.current;
             self.windows.push(win);
         }
         self.shell.dock_dirty = true;
-        if let Some(win)=self.windows.last_mut(){
-            win.resize_client(win.width.min(self.shell.screen_w-32),win.height.min(self.shell.screen_h-TOP_BAR_HEIGHT-48));
-            win.x=win.x.clamp(0,(self.shell.screen_w-win.width).max(0));
+        if !self.windows.is_empty(){
+            let i=self.windows.len()-1;let r=self.window_monitor(i);let win=&mut self.windows[i];
+            win.resize_client(win.width.min(r.w-32),win.height.min(r.h-TOP_BAR_HEIGHT-48));
+            win.x=win.x.clamp(r.x,(r.x+r.w-win.width).max(r.x));
         }
         self.refresh_focus();
     }
@@ -693,7 +690,9 @@ impl FeatherCompositor {
             dock: Some(self.dock_pins.clone()),
             animations: self.animations.enabled(),
             keyboard: self.keyboard_config.clone(),
+            keybindings: self.keybindings.clone(),
             display: self.display_preference.clone(),
+            monitor_layout: self.monitor_preferences.clone(),
         };
         if let Some(worker)=&self.preferences{worker.save(settings);}
     }
@@ -1252,19 +1251,10 @@ impl FeatherCompositor {
                 self.refresh_focus();
             }
             ShellClickAction::ZoomFocused => {
-                let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-                if let Some(w) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
-                    w.resize_anchor = None;
-                    w.toggle_maximize(sw, sh);
-                }
+                if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);}
             }
             ShellClickAction::FullscreenFocused => {
-                let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-                if let Some(w) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
-                    let on = !w.fullscreen;
-                    w.resize_anchor = None;
-                    w.set_fullscreen(on, sw, sh);
-                }
+                if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.fullscreen_on(!w.fullscreen,r);}
             }
             ShellClickAction::CloseFocused => {
                 if let Some(idx) = self.windows.iter().rposition(|w| w.is_visible()) {
@@ -1341,6 +1331,7 @@ impl FeatherCompositor {
     fn on_resized(&mut self, size: Size<i32, Physical>, host_scale: f64) {
         self.phys_w = size.w.max(640);
         self.phys_h = size.h.max(480);
+        if let Some(m)=self.monitors.iter_mut().find(|m|m.info.primary){m.info.mode.width=self.phys_w;m.info.mode.height=self.phys_h;}
         self.damage_tracker = OutputDamageTracker::new(size, 1.0, Transform::Flipped180);
 
         let scale = self
@@ -1549,6 +1540,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
                 .with_visible(true)
         };
         let (b, l) = winit::init_from_attributes::<GlesRenderer>(window_attrs)?;
+        if std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_some() {
+            // Internal test input does not need host hit testing. An empty input
+            // region also keeps host pointer motion out of idle CPU measurements.
+            b.window().set_cursor_hittest(false)?;
+        }
         winit_loop = Some(l);
         crate::backend::Backend::Winit(b)
     };
@@ -1746,6 +1742,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         seat,
         keyboard,
         pointer,
+        monitors: vec![crate::monitors::Monitor{info:crate::monitors::Info{name:output.name(),rect:crate::monitors::Rect{x:0,y:0,w:logical_w,h:logical_h},mode:crate::system_settings::Mode{width:phys_w,height:phys_h,refresh:refresh_mhz},primary:true},output:output.clone(),global:_output_global}],
+        monitor_preferences: saved.monitor_layout.clone(),
+        monitor_layout_loaded: false,
+        preview_monitor: None,
         output,
         phys_w,
         phys_h,
@@ -1789,9 +1789,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         active_layout_name: "EN".to_string(),
         active_layout_index: 0,
         keyboard_config: saved.keyboard.clone(),
+        keybindings: saved.keybindings.clone(),
+        key_repeat: Default::default(),
+        audio_hud: Default::default(),
         preferences: None,
         wallpaper_picker: None,
-        system_settings: crate::system_settings::Panel::default(),
+        system_settings: crate::system_settings::Panel {keybindings:saved.keybindings.clone(),..Default::default()},
         system_preferences: crate::system_preferences::State{browser:saved.default_browser.clone(),terminal:saved.default_terminal.clone().unwrap_or_else(||"feather-terminal.desktop".into()),..Default::default()},
         system_worker: None,
         display_modes: Vec::new(),display_name: String::new(),pending_display: None,display_generation: 0,
@@ -1805,6 +1808,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.system_worker=Some(crate::system_preferences::Worker::new(&state.loop_handle,saved.default_browser.clone(),saved.default_terminal.clone())?);
     state.refresh_input_source(0);
     state.animations.set_enabled(saved.animations,&state.windows,&state.shell);
+    if let crate::backend::Backend::Drm(d)=&state.backend {
+        let specs=d.specs();
+        // Apply saved primary selection on startup before normalizing the layout.
+        if let Some(m)=state.monitors.first_mut(){m.info.primary=!saved.monitor_layout.iter().any(|p|p.primary&&p.name!=m.info.name);}
+        state.sync_monitors(specs);
+    }
     state.refresh_display_choices();
 
     let raster = crate::raster::RasterSender::new(&state.loop_handle, state.fonts.for_worker())?;
@@ -2103,6 +2112,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         }
         state.refresh_lock();
         state.sync_idle_inhibit();
+        state.flush_hotplug();
         state.flush_display_mode();
         state.render_if_needed();
         if let Err(err) = state.display_handle.flush_clients() {

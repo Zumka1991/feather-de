@@ -75,8 +75,8 @@ impl FeatherCompositor {
 
     /// Picks a position for a freshly mapped window and keeps it on screen
     fn place_new_window(&mut self, idx: usize) {
-        let sw = self.shell.screen_w;
-        let sh = self.shell.screen_h;
+        let r=self.monitor_at(self.pointer_location.x,self.pointer_location.y);
+        let sw=r.w;let sh=r.h;
         let cascade = (self.windows.iter().filter(|w| w.is_visible()).count() as i32 % 6) * 26;
         let win = &mut self.windows[idx];
 
@@ -99,6 +99,7 @@ impl FeatherCompositor {
         let max_y = (sh - win.total_height()).max(min_y);
         win.x = ((sw - win.width) / 2 + cascade).clamp(0, max_x);
         win.y = ((sh - win.total_height()) / 2 + cascade - 20).clamp(min_y, max_y);
+        win.x+=r.x;win.y+=r.y;
     }
 
     fn handle_toplevel_commit(&mut self, surface: &WlSurface) {
@@ -160,10 +161,9 @@ impl FeatherCompositor {
         };
         let (cx, cy) = win.client_origin();
         let parent_offset = get_popup_toplevel_coords(&kind);
-        let mut target = Rectangle::<i32, Logical>::new(
-            (0, TOP_BAR_HEIGHT).into(),
-            (self.shell.screen_w, self.shell.screen_h - TOP_BAR_HEIGHT).into(),
-        );
+        let index=self.windows.iter().position(|w|w.id==win.id).unwrap();let r=self.window_monitor(index);
+        let top=if r.x==0&&r.y==0{TOP_BAR_HEIGHT}else{0};
+        let mut target=Rectangle::<i32,Logical>::new((r.x,r.y+top).into(),(r.w,r.h-top).into());
         target.loc.x -= cx + parent_offset.x;
         target.loc.y -= cy + parent_offset.y;
         positioner.get_unconstrained_geometry(target)
@@ -186,9 +186,9 @@ impl FeatherCompositor {
             None => {
                 if self.windows[idx].maximized {
                     // Dragging a maximized window restores it under the cursor, like macOS
-                    let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
+                    let r=self.window_monitor(idx);
                     if let Some(w) = self.windows.iter_mut().find(|w| w.id == win_id) {
-                        w.unmaximize_under((pos.x, pos.y), sw, sh);
+                        w.unmaximize_on((pos.x,pos.y),r);
                     }
                 }
                 let win = self.windows.iter_mut().find(|w| w.id == win_id).unwrap();
@@ -327,49 +327,24 @@ impl XdgShellHandler for FeatherCompositor {
         self.begin_client_drag(&surface, Some(Edges::from_xdg(edges)));
     }
 
-    fn maximize_request(&mut self, surface: ToplevelSurface) {
-        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-        if let Some(win) = self.window_for_toplevel_mut(surface.wl_surface()) {
-            win.resize_anchor = None;
-            win.set_maximized(true, sw, sh);
-        }
-        if !surface.is_initial_configure_sent() {
-            return;
-        }
-        surface.send_pending_configure();
+    fn maximize_request(&mut self,surface:ToplevelSurface){
+        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.windows[i].resize_anchor=None;self.windows[i].maximize_on(true,r);}
+        if surface.is_initial_configure_sent(){surface.send_pending_configure();}self.needs_redraw=true;
     }
-
-    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-        if let Some(win) = self.window_for_toplevel_mut(surface.wl_surface()) {
-            win.set_maximized(false, sw, sh);
-        }
-        if surface.is_initial_configure_sent() {
-            surface.send_pending_configure();
-        }
+    fn unmaximize_request(&mut self,surface:ToplevelSurface){
+        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.windows[i].maximize_on(false,r);}
+        if surface.is_initial_configure_sent(){surface.send_pending_configure();}self.needs_redraw=true;
     }
-
-    fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<wl_output::WlOutput>) {
-        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-        if let Some(win) = self.window_for_toplevel_mut(surface.wl_surface()) {
-            win.resize_anchor = None;
-            win.set_fullscreen(true, sw, sh);
+    fn fullscreen_request(&mut self,surface:ToplevelSurface,output:Option<wl_output::WlOutput>){
+        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){
+            let r=output.as_ref().and_then(|o|self.monitors.iter().find(|m|m.output.owns(o))).map(|m|m.info.rect).unwrap_or_else(||self.window_monitor(i));
+            self.windows[i].resize_anchor=None;self.windows[i].fullscreen_on(true,r);
         }
-        if surface.is_initial_configure_sent() {
-            surface.send_pending_configure();
-        }
-        self.needs_redraw = true;
+        if surface.is_initial_configure_sent(){surface.send_pending_configure();}self.needs_redraw=true;
     }
-
-    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-        if let Some(win) = self.window_for_toplevel_mut(surface.wl_surface()) {
-            win.set_fullscreen(false, sw, sh);
-        }
-        if surface.is_initial_configure_sent() {
-            surface.send_pending_configure();
-        }
-        self.needs_redraw = true;
+    fn unfullscreen_request(&mut self,surface:ToplevelSurface){
+        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.windows[i].fullscreen_on(false,r);}
+        if surface.is_initial_configure_sent(){surface.send_pending_configure();}self.needs_redraw=true;
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {

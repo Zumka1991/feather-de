@@ -41,6 +41,7 @@ pub struct Lock {
     pub active: bool,
     pub owner: Option<ExtSessionLockV1>,
     pub surface: Option<LockSurface>,
+    pub extra_surfaces: Vec<(String,LockSurface)>,
     pending: Option<SessionLocker>,
     confirmed: bool,
     generation: u64,
@@ -70,6 +71,7 @@ impl Default for Lock {
             active: false,
             owner: None,
             surface: None,
+            extra_surfaces: Vec::new(),
             pending: None,
             confirmed: false,
             generation: 0,
@@ -270,6 +272,16 @@ impl Lock {
         });
     }
 
+    pub fn monitor_elements(&self,renderer:&mut GlesRenderer,scale:f64,info:&crate::monitors::Info,wallpaper:Option<(&smithay::backend::renderer::element::texture::TextureBuffer<smithay::backend::renderer::gles::GlesTexture>,(i32,i32))>)->Vec<FeatherElement>{
+        if self.external(){
+            let mut out=Vec::new();
+            if let Some((_,s))=self.extra_surfaces.iter().find(|(name,_)|*name==info.name){
+                if s.alive(){crate::render::push_surface_tree(&mut out,renderer,s.wl_surface(),(0,0).into(),scale,Default::default());}
+            }
+            return out;
+        }
+        if info.primary {self.elements(renderer,scale,(info.rect.w,info.rect.h),wallpaper)}else{Vec::new()}
+    }
     pub fn elements(
         &self,
         renderer: &mut GlesRenderer,
@@ -372,7 +384,7 @@ impl FeatherCompositor {
         self.power.locked_hint(true);
         self.lock.input.clear();
         self.lock.message = "Введите пароль вашей учётной записи";
-        self.cancel_lock_input();
+        self.cancel_scene_input();
         self.shell.close_menus();
         self.shell.switcher = None;
         self.icon_drag = None;
@@ -382,7 +394,7 @@ impl FeatherCompositor {
         self.refresh_pointer_focus();
         tracing::info!("Сессия заблокирована");
     }
-    fn cancel_lock_input(&mut self) {
+    pub(crate) fn cancel_scene_input(&mut self) {
         self.shell.desktop.cancel_interaction();
         let keyboard = self.keyboard.clone();
         keyboard.unset_grab(self);
@@ -420,12 +432,13 @@ impl FeatherCompositor {
         if self.power.sleeping {
             return;
         }
-        self.cancel_lock_input();
+        self.cancel_scene_input();
         self.lock.active = false;
         self.lock.generation += 1;
         self.lock.retired_owner = self.lock.owner.take();
         self.lock.was_external = false;
         self.lock.surface = None;
+        self.lock.extra_surfaces.clear();
         self.lock.pending = None;
         self.lock.confirmed = false;
         self.lock.input.clear();
@@ -517,24 +530,34 @@ impl FeatherCompositor {
             self.lock.was_external = false;
             self.lock.dirty = true;
             self.lock.surface = None;
+        self.lock.extra_surfaces.clear();
             self.refresh_focus();
             self.refresh_pointer_focus();
             tracing::warn!("Приложение блокировки завершилось; сессия остаётся заблокированной");
         }
     }
     pub fn lock_surface_commit(&mut self, surface: &WlSurface) {
-        if self.lock.active && self.lock.focus().as_ref() == Some(surface) {
+        if self.lock.active && self.lock.extra_surfaces.iter().any(|(_,s)|s.wl_surface()==surface) {
             self.refresh_focus();
         }
     }
+    pub fn lock_focus(&self)->Option<WlSurface>{
+        if !self.lock.external(){return None;}
+        let r=self.monitor_at(self.pointer_location.x,self.pointer_location.y);
+        let m=self.monitors.iter().find(|m|m.info.rect==r)?;
+        let (_,s)=self.lock.extra_surfaces.iter().find(|(name,_)|*name==m.info.name)?;
+        s.alive().then(||s.wl_surface().clone()).filter(|s|smithay::backend::renderer::utils::with_renderer_surface_state(s,|r|r.buffer().is_some()).unwrap_or(false))
+    }
     pub fn lock_resized(&mut self) {
-        if let Some(surface) = &self.lock.surface {
-            surface.with_pending_state(|s| {
-                s.size = Some((self.shell.screen_w as u32, self.shell.screen_h as u32).into())
-            });
-            surface.send_configure();
+        self.lock.surface=None;
+        for (name,surface) in &self.lock.extra_surfaces {
+            if let Some(m)=self.monitors.iter().find(|m|m.info.name==*name){
+                surface.with_pending_state(|s|s.size=Some((m.info.rect.w as u32,m.info.rect.h as u32).into()));surface.send_configure();
+                if m.info.primary{self.lock.surface=Some(surface.clone());}
+            }
         }
     }
+
 }
 impl SessionLockHandler for FeatherCompositor {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
@@ -554,10 +577,9 @@ impl SessionLockHandler for FeatherCompositor {
         self.lock.retired_owner = None;
     }
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
-        if !self.output.owns(&output) {
-            return;
-        }
-        self.lock.surface = Some(surface);
+        let Some(name)=self.monitors.iter().find(|m|m.output.owns(&output)).map(|m|m.info.name.clone())else{return};
+        self.lock.extra_surfaces.retain(|(n,_)|*n!=name);
+        self.lock.extra_surfaces.push((name,surface));
         self.lock_resized();
     }
 }

@@ -589,6 +589,23 @@ impl ManagedWindow {
         }
     }
 
+    fn translate_monitor(&mut self,dx:i32,dy:i32){
+        self.x+=dx;self.y+=dy;
+        if let Some((x,y,_,_))=&mut self.saved_rect{*x+=dx;*y+=dy;}
+    }
+    pub fn toggle_maximize_on(&mut self,r:crate::monitors::Rect){self.maximize_on(!self.maximized,r);}
+    pub fn maximize_on(&mut self,on:bool,r:crate::monitors::Rect){
+        self.translate_monitor(-r.x,-r.y);self.set_maximized(on,r.w,r.h);self.translate_monitor(r.x,r.y);
+        if on && (r.x!=0||r.y!=0){self.x=r.x;self.y=r.y;self.resize_client(r.w,r.h-self.titlebar_h());}
+    }
+    pub fn fullscreen_on(&mut self,on:bool,r:crate::monitors::Rect){
+        self.translate_monitor(-r.x,-r.y);self.set_fullscreen(on,r.w,r.h);self.translate_monitor(r.x,r.y);
+        if !on && self.maximized && (r.x!=0||r.y!=0){self.x=r.x;self.y=r.y;self.resize_client(r.w,r.h-self.titlebar_h());}
+    }
+    pub fn unmaximize_on(&mut self,p:(f64,f64),r:crate::monitors::Rect){
+        self.translate_monitor(-r.x,-r.y);self.unmaximize_under((p.0-r.x as f64,p.1-r.y as f64),r.w,r.h);self.translate_monitor(r.x,r.y);
+    }
+
     pub fn set_maximized(&mut self, maximize: bool, screen_w: i32, screen_h: i32) {
         if maximize == self.maximized {
             return;
@@ -1201,6 +1218,14 @@ mod maximize_tests {
     use crate::apps::BuiltinWindowKind;
 
     #[test]
+    fn maximize_on_negative_monitor_preserves_global_restore_rectangle(){
+        let r=crate::monitors::Rect{x:-1280,y:-100,w:1280,h:720};
+        let mut w=ManagedWindow::new_builtin(1,BuiltinWindowKind::SystemSettings,-1100,40);w.resize_client(700,440);
+        let before=(w.x,w.y,w.width,w.height);w.maximize_on(true,r);
+        assert_eq!((w.x,w.y,w.width,w.total_height()),(-1280,-100,1280,720));
+        w.maximize_on(false,r);assert_eq!((w.x,w.y,w.width,w.height),before);
+    }
+    #[test]
     fn unmaximize_restores_the_real_size_or_a_sane_one_never_the_minimum() {
         let (sw, sh) = (1440, 900);
         let mut w = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 100, 120);
@@ -1266,6 +1291,7 @@ mod settings_tests {
                 dock_zoom: true,
                 scale: 1.25,
                 display_name: "Window",
+                monitors: Vec::new(),
                 modes: &[mode],
                 current: mode,
                 direct: false,

@@ -147,6 +147,15 @@ render_elements! {
     Animated=RelocateRenderElement<RescaleRenderElement<SceneElement>>,
 }
 
+render_elements! {
+    pub OutputElement<=GlesRenderer>;
+    View=RelocateRenderElement<FeatherElement>,
+}
+fn output_elements(elements:Vec<FeatherElement>,rect:crate::monitors::Rect,scale:f64)->Vec<OutputElement>{
+    let offset=(-(rect.x as f64*scale).round() as i32,-(rect.y as f64*scale).round() as i32);
+    elements.into_iter().map(|e|OutputElement::View(RelocateRenderElement::from_element(e,offset,Relocate::Relative))).collect()
+}
+
 impl crate::animation::Visual {
     fn element(self, element: SceneElement, scale: f64) -> FeatherElement {
         let pivot = ((self.center.0 * scale).round() as i32, (self.center.1 * scale).round() as i32).into();
@@ -299,9 +308,11 @@ pub(crate) fn build_scene(
     pointer: (f64, f64),
     rounded: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
     animations: &crate::animation::Animations,
+    view: crate::monitors::Rect,
 ) -> Vec<FeatherElement> {
     let mut out: Vec<FeatherElement> = Vec::with_capacity(64);
-    push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations);
+    let primary=view.x==0&&view.y==0;
+    if primary {push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations);}
     let mut mem = |out: &mut Vec<FeatherElement>, loc: (f64, f64), buf, src, visual: crate::animation::Visual| {
         if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
@@ -319,9 +330,10 @@ pub(crate) fn build_scene(
     let fullscreen_top = windows
         .iter()
         .rev()
-        .find(|w| w.is_visible())
+        .find(|w| w.is_visible() && crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(view)>0)
         .is_some_and(|w| w.fullscreen && animations.window(w).identity());
 
+    if primary {
     if shell.ghost.is_some() {
         let half = crate::shell::GHOST_SIZE as f64 * 0.5;
         mem(
@@ -389,7 +401,9 @@ pub(crate) fn build_scene(
             );
         }
     }
+    }
     drop(mem);
+    let launchpad_open=primary && shell.launchpad.is_some();
     if launchpad_open && shell.launchpad_bg_key.is_some() {
         // Opaque frosted wallpaper hides every window: nothing below needs drawing
         let size = (to_phys(shell.screen_w), to_phys(shell.screen_h));
@@ -411,20 +425,20 @@ pub(crate) fn build_scene(
     }
 
     for win in windows.iter().rev() {
-        if !animations.draws_window(win) {
+        if !animations.draws_window(win) || (animations.window(win).identity() && crate::monitors::Rect{x:win.x,y:win.y,w:win.width,h:win.total_height()}.intersection(view)==0) {
             continue;
         }
         let visual = animations.window(win);
         push_window(&mut out, renderer, win, visual, scale, rounded, true);
 
-        if win.fullscreen && !win.minimized && visual.identity() {
+        if win.fullscreen && !win.minimized && visual.identity() && win.x<=view.x && win.y<=view.y && win.x+win.width>=view.x+view.w && win.y+win.total_height()>=view.y+view.h {
             // Nothing below a fullscreen window is visible
             return out;
         }
     }
 
     // Mission Control dims the desktop behind the spread windows
-    let dim = animations.mission_progress();
+    let dim = if primary {animations.mission_progress()}else{0.0};
     if dim > 0.0 {
         if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
             renderer, (0.0, 0.0), &shell.mission_dim, Some((0.35 * dim) as f32),
@@ -434,13 +448,13 @@ pub(crate) fn build_scene(
             out.push(SceneElement::Memory(e).into());
         }
     }
-    out.extend(shell.desktop.elements(renderer, (shell.screen_w, shell.screen_h), scale));
-    let wp_size = (to_phys(shell.screen_w), to_phys(shell.screen_h));
+    if primary {out.extend(shell.desktop.elements(renderer, (shell.screen_w, shell.screen_h), scale));}
+    let wp_size = ((view.w as f64*scale).round() as i32,(view.h as f64*scale).round() as i32);
     // The source rect must be the (low-res) buffer itself; by default Smithay would use the
     // destination size and sample outside the texture
     if let Some(texture)=&shell.wallpaper_texture{
         let (w,h)=shell.wallpaper_texture_size;
-        out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer((0.0,0.0),texture,None,Some(smithay::utils::Rectangle::from_size((w as f64,h as f64).into())),Some(wp_size.into()),Kind::Unspecified)).into());
+        out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer((view.x as f64*scale,view.y as f64*scale),texture,None,Some(smithay::utils::Rectangle::from_size((w as f64,h as f64).into())),Some(wp_size.into()),Kind::Unspecified)).into());
     }
     out
 }
@@ -627,6 +641,8 @@ impl FeatherCompositor {
     fn update_cpu_buffers(&mut self) {
         let mut profile = crate::cpu_profile::Batch::new();
         if self.lock.active {self.shell.ensure_wallpaper_rendered();self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name,(self.shell.screen_w,self.shell.screen_h));profile.step("lock");return;}
+        self.audio_hud.paint(&mut self.fonts,self.scale_factor);
+        profile.step("audio-hud");
         let active_title = self.active_window_title();
         self.shell.ensure_wallpaper_rendered();
         self.shell.ensure_cc_backdrop();
@@ -663,7 +679,7 @@ impl FeatherCompositor {
         let visible_count = self.windows.iter().filter(|w| w.is_visible()).count();
         let ctx = BuiltinContext {
             settings: &self.system_settings,
-            settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref(),dnd:self.shell.dnd_active(),dnd_schedule:self.shell.dnd_schedule,notify_sounds:self.shell.notify_sounds,hot_corners:self.hot_corners.actions,night:self.night.prefs,night_active:self.night.active(),notify_apps:&self.shell.notify_apps},
+            settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,monitors:self.monitors.iter().map(|m|m.info.clone()).collect(),modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref(),dnd:self.shell.dnd_active(),dnd_schedule:self.shell.dnd_schedule,notify_sounds:self.shell.notify_sounds,hot_corners:self.hot_corners.actions,night:self.night.prefs,night_active:self.night.active(),notify_apps:&self.shell.notify_apps},
             notes_text: &self.notes_buffer,
             rss_mb: self.shell.last_rss_mb,
             window_count: visible_count,
@@ -703,6 +719,7 @@ impl FeatherCompositor {
                 return;
             }
         }
+        self.refresh_output_membership();
         self.needs_redraw = false;
         let t_cpu = Instant::now();
         self.shell.release_closed_launchpad();
@@ -734,7 +751,7 @@ impl FeatherCompositor {
         let gpu_time = t_gpu.elapsed();
         let swap_time = match presented {
             Some(swap) => {
-                if self.lock.active {self.lock.protected_frame=true;}
+                if self.lock.active && !self.backend.is_drm() {self.lock.protected_frame=true;}
                 self.mark_frame_in_flight();
                 // Clients start their next frame while ours is being presented
                 self.send_frame_callbacks();
@@ -743,9 +760,11 @@ impl FeatherCompositor {
             None => {
                 if self.lock.active && !self.lock.display_protected {
                     if let crate::backend::Backend::Drm(d)=&mut self.backend {
-                        if let Err(e)=d.output.with_compositor(|c|c.clear()){tracing::error!("Не удалось скрыть вывод при ошибке блокировки: {e}");}
+                        if let Err(e)=d.clear_all(){tracing::error!("Не удалось скрыть вывод при ошибке блокировки: {e}");}
                     }
                 }
+                if self.lock.active && self.lock.protected_frame && !self.backend.is_drm(){self.lock_presented();}
+                if self.lock.active && matches!(&self.backend,crate::backend::Backend::Drm(d) if !d.heads.is_empty()&&d.heads.iter().all(|h|h.protected)){self.lock.protected_frame=true;self.lock_presented();}
                 self.schedule_idle_frame_callbacks();
                 None
             }
@@ -758,6 +777,8 @@ impl FeatherCompositor {
 
     /// Nested: render into the host window; returns the swap duration if a frame was submitted
     fn render_winit(&mut self) -> Option<Duration> {
+        let view=self.monitors.iter().find(|m|self.preview_monitor.as_ref()==Some(&m.info.name)).or_else(||self.primary_monitor()).map(|m|m.info.clone())?;
+
         let crate::backend::Backend::Winit(backend) = &mut self.backend else {
             return None;
         };
@@ -804,9 +825,10 @@ impl FeatherCompositor {
             } }
             let pointer = (self.pointer_location.x, self.pointer_location.y);
             let elements = if self.power.blanked {Vec::new()} else if self.lock.active {
-                self.lock.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h),self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size)))
+                self.lock.monitor_elements(renderer,scale,&view,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size)))
             } else {
-                let mut elements = self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h));
+                let mut elements = if view.primary {self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h))}else{Vec::new()};
+                if view.primary {elements.extend(self.audio_hud.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h)));}
                 elements.extend(crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
                 drag_overlay(&mut elements, renderer, &self.shell, pointer, scale);
                 elements.extend(build_scene(
@@ -817,12 +839,14 @@ impl FeatherCompositor {
                     pointer,
                     self.rounded_program.as_ref(),
                     &self.animations,
+                    view.rect,
                 ));
                 elements
             };
+            let elements=if self.lock.active {output_elements(elements,crate::monitors::Rect{x:0,y:0,..view.rect},scale)}else{output_elements(elements,view.rect,scale)};
             let result = match self
                 .damage_tracker
-                .render_output(renderer, &mut framebuffer, age.max(0) as usize, &elements, if self.power.blanked {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR})
+                .render_output(renderer, &mut framebuffer, age.max(0) as usize, &elements, if self.power.blanked||self.lock.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR})
             {
                 Ok(res) => res.damage.cloned(),
                 Err(err) => {
@@ -857,50 +881,41 @@ impl FeatherCompositor {
 
     /// Direct DRM: compose (or scan out directly) and queue the frame for the next vblank
     fn render_drm(&mut self) -> Option<Duration> {
-        let crate::backend::Backend::Drm(d) = &mut self.backend else {
-            return None;
-        };
-        let scale = self.scale_factor;
-        let pointer = (self.pointer_location.x, self.pointer_location.y);
-        let mut elements = cursor_elements(&mut d.renderer, &mut self.cursor, pointer, scale);
-        if self.lock.active {
-            elements.extend(self.lock.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h),self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size))));
-        } else {
-            elements.extend(self.auth.elements(&mut d.renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h)));
-            elements.extend(crate::screenshot::overlay(&mut d.renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
-            drag_overlay(&mut elements, &mut d.renderer, &self.shell, pointer, scale);
-            elements.extend(build_scene(
-                &mut d.renderer,
-                &self.shell,
-                &self.windows,
-                scale,
-                pointer,
-                self.rounded_program.as_ref(),
-                &self.animations,
-            ));
-
-        }
-
-        let t = Instant::now();
-        match d.output.render_frame(
-            &mut d.renderer,
-            &elements,
-            CLEAR_COLOR,
-            smithay::backend::drm::compositor::FrameFlags::DEFAULT,
-        ) {
-            Ok(res) if !res.is_empty => {
-                if let Err(err) = d.output.queue_frame(()) {
-                    tracing::warn!("DRM queue_frame: {err:?}");
-                    return None;
+        let crate::backend::Backend::Drm(d)=&mut self.backend else{return None};
+        let scale=self.scale_factor;let pointer=(self.pointer_location.x,self.pointer_location.y);
+        let t=Instant::now();let mut submitted=false;
+        for head in &mut d.heads {
+            if head.pending {continue;}
+            let Some(m)=self.monitors.iter().find(|m|m.info.name==head.name)else{continue};
+            let info=&m.info;
+            let elements=if self.lock.active {
+                let mut e=cursor_elements(&mut d.renderer,&mut self.cursor,(pointer.0-info.rect.x as f64,pointer.1-info.rect.y as f64),scale);
+                e.extend(self.lock.monitor_elements(&mut d.renderer,scale,info,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size))));
+                output_elements(e,crate::monitors::Rect{x:0,y:0,..info.rect},scale)
+            }else{
+                let mut e=cursor_elements(&mut d.renderer,&mut self.cursor,pointer,scale);
+                if info.primary {
+                    e.extend(self.auth.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h),(self.phys_w,self.phys_h)));
+                    e.extend(self.audio_hud.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));
+                    e.extend(crate::screenshot::overlay(&mut d.renderer,self.screenshot_select.as_ref(),pointer,scale,(self.phys_w,self.phys_h)));
                 }
-                Some(t.elapsed())
-            }
-            Ok(_) => None,
-            Err(err) => {
-                tracing::warn!("DRM render_frame: {err:?}");
-                None
+                drag_overlay(&mut e,&mut d.renderer,&self.shell,pointer,scale);
+                e.extend(build_scene(&mut d.renderer,&self.shell,&self.windows,scale,pointer,self.rounded_program.as_ref(),&self.animations,info.rect));
+                output_elements(e,info.rect,scale)
+            };
+            match head.output.render_frame(&mut d.renderer,&elements,if self.lock.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR},smithay::backend::drm::compositor::FrameFlags::DEFAULT){
+                Ok(r) if !r.is_empty=>match head.output.queue_frame(()){
+                    Ok(())=>{head.pending=true;head.queued_protected=self.lock.active;submitted=true;},
+                    Err(e)=>tracing::warn!("DRM {} queue: {e:?}",head.name),
+                },
+                Ok(_)=>{},Err(e)=>tracing::warn!("DRM {} render: {e:?}",head.name),
             }
         }
+        // A failed lock frame must never leave the previous desktop on any connector.
+        if self.lock.active && d.heads.iter().any(|h|!h.pending&&!h.protected){
+            match d.clear_all(){Ok(())=>{submitted=false;self.lock.protected_frame=true;},Err(e)=>tracing::error!("Не удалось защитить все дисплеи: {e}")}
+        }
+        submitted.then(||t.elapsed())
     }
 
     fn mark_frame_in_flight(&mut self) {
@@ -929,7 +944,7 @@ impl FeatherCompositor {
 
     pub fn send_frame_callbacks(&mut self) {
         let time = self.start_time.elapsed().as_millis() as u32;
-        if self.lock.active {if let Some(surface)=self.lock.focus() {send_frames_surface_tree(&surface,time);}return;}
+        if self.lock.active {for (_,s) in &self.lock.extra_surfaces{send_frames_surface_tree(s.wl_surface(),time);}return;}
         if let smithay::input::pointer::CursorImageStatus::Surface(ref s) = self.cursor.status {
             send_frames_surface_tree(s, time);
         }
@@ -973,9 +988,9 @@ impl FeatherCompositor {
             return None;
         }
         if self.lock.active {
-            return self.lock.focus().and_then(|surface|smithay::desktop::utils::under_from_surface_tree(&surface,(px,py).into(),(0,0),WindowSurfaceType::ALL).map(|(s,p)|(s,p.to_f64())));
+            let r=self.monitor_at(px,py);return self.lock_focus().and_then(|surface|smithay::desktop::utils::under_from_surface_tree(&surface,(px,py).into(),(r.x,r.y),WindowSurfaceType::ALL).map(|(s,p)|(s,p.to_f64())));
         }
-        if self.shell.launchpad.is_some() || self.shell.switcher.as_ref().is_some_and(|s|s.visible) || self.icon_drag.as_ref().is_some_and(|d| d.active) {
+        if (self.shell.launchpad.is_some() && px>=0.0 && px<self.shell.screen_w as f64 && py>=0.0 && py<self.shell.screen_h as f64) || self.shell.switcher.as_ref().is_some_and(|s|s.visible) || self.icon_drag.as_ref().is_some_and(|d| d.active) {
             // Launchpad covers all windows; while dragging an app nothing below gets the pointer
             return None;
         }

@@ -18,7 +18,7 @@ use smithay::{
 };
 
 use crate::{
-    apps::{AppAction, BuiltinWindowKind},
+    apps::BuiltinWindowKind,
     launchpad::LaunchpadHit,
     shell::{AppIcon, DockTarget, ShellClickAction},
     theme::{TITLEBAR_HEIGHT, TOP_BAR_HEIGHT},
@@ -32,7 +32,7 @@ const DOUBLE_CLICK_MS: u128 = 350;
 
 /// Actions decided inside the keyboard filter. They run after it returns, because changing
 /// keyboard focus from inside `KeyboardHandle::input` would deadlock on the keyboard lock.
-enum KeyAction {
+pub(crate) enum KeyAction {
     Shell(ShellClickAction),
     CloseTop,
     MinimizeTop,
@@ -53,6 +53,7 @@ enum KeyAction {
     Auth(crate::auth_dialog::Cmd),
     Lock,
     Unlock,
+    Audio(crate::controls::AudioKey),
 }
 
 /// Delay before the Alt+Tab panel appears: short enough to feel instant when Alt is held,
@@ -118,16 +119,14 @@ impl FeatherCompositor {
             InputEvent::PointerMotion { event } => {
                 // Relative motion (mice/touchpads on DRM): libinput already applied acceleration
                 let delta = event.delta();
-                let max_x = (self.shell.screen_w - 1) as f64;
-                let max_y = (self.shell.screen_h - 1) as f64;
-                let pos = Point::from((
-                    (self.pointer_location.x + delta.x).clamp(0.0, max_x),
-                    (self.pointer_location.y + delta.y).clamp(0.0, max_y),
-                ));
+                let p=crate::monitors::project(&self.monitor_rects(),(self.pointer_location.x+delta.x,self.pointer_location.y+delta.y));
+                let pos=Point::from(p);
                 self.on_pointer_motion(pos, Event::time_msec(&event));
             }
             InputEvent::PointerMotionAbsolute { event } => {
-                let pos = event.position_transformed((self.shell.screen_w, self.shell.screen_h).into());
+                let r=self.monitors.iter().find(|m|self.preview_monitor.as_ref()==Some(&m.info.name)).or_else(||self.primary_monitor()).map(|m|m.info.rect).unwrap_or_else(||self.monitor_at(0.0,0.0));
+                let local=event.position_transformed((r.w,r.h).into());
+                let pos=Point::from((local.x+r.x as f64,local.y+r.y as f64));
                 self.on_pointer_motion(pos, Event::time_msec(&event));
             }
             InputEvent::PointerButton { event } => {
@@ -152,11 +151,18 @@ impl FeatherCompositor {
                 stats.record_key();
             }
         }
+        self.cancel_key_repeat();
         let serial = SERIAL_COUNTER.next_serial();
+        let mut repeat_candidate = None;
         let mut deferred: Option<KeyAction> = None;
 
         let keyboard = self.keyboard.clone();
         keyboard.input::<(), _>(self, keycode, key_state, serial, time, |st, mods, keysym_handle| {
+            let repeat_sym = keysym_handle.modified_sym();
+            let repeat_latin = keysym_handle.raw_latin_sym_or_raw_current_sym().unwrap_or(repeat_sym);
+            if key_state == KeyState::Pressed {
+                repeat_candidate = st.repeat_candidate(repeat_sym, repeat_latin, mods);
+            }
             let layout_idx = keysym_handle.xkb().lock().unwrap().active_layout().0;
             if st.active_layout_index!=layout_idx as usize{st.refresh_input_source(layout_idx as usize);}
             // Nothing in the desktop (including emergency quit and screenshots) runs locked.
@@ -177,6 +183,17 @@ impl FeatherCompositor {
                     if st.lock.key(sym.raw(),sym.key_char(),mods.ctrl,mods.shift,mods.caps_lock) {deferred=Some(KeyAction::Unlock);}
                     st.needs_redraw=true;
                 }
+                return FilterResult::Intercept(());
+            }
+            if let Some(key) = crate::controls::AudioKey::from_keysym(repeat_sym.raw()) {
+                if key_state == KeyState::Pressed { deferred = Some(KeyAction::Audio(key)); }
+                return FilterResult::Intercept(());
+            }
+            if st.capturing_shortcut() {
+                if key_state == KeyState::Pressed {
+                    st.capture_shortcut(repeat_sym.raw(), repeat_latin.raw(), mods);
+                }
+                repeat_candidate = None;
                 return FilterResult::Intercept(());
             }
             if key_state==KeyState::Pressed && mods.logo && keysym_handle.raw_latin_sym_or_raw_current_sym().is_some_and(|sym|sym.raw()==keysyms::KEY_l) {
@@ -266,16 +283,12 @@ impl FeatherCompositor {
                     deferred = Some(KeyAction::Screenshot { shift: false, alt: false });
                     return FilterResult::Intercept(());
                 }
-                if mods.ctrl && mods.alt && !mods.logo && matches!(raw, keysyms::KEY_Up | keysyms::KEY_Down) {
-                    deferred = Some(KeyAction::Mission { focus_hover: false, close_only: raw == keysyms::KEY_Down });
+                if mods.ctrl && mods.alt && !mods.logo && raw == keysyms::KEY_Down {
+                    deferred = Some(KeyAction::Mission {focus_hover:false,close_only:true});
                     return FilterResult::Intercept(());
                 }
                 if st.mission_open() && matches!(raw, keysyms::KEY_Escape | keysyms::KEY_Return | keysyms::KEY_KP_Enter) {
                     deferred = Some(KeyAction::Mission { focus_hover: raw != keysyms::KEY_Escape, close_only: true });
-                    return FilterResult::Intercept(());
-                }
-                if mods.ctrl && mods.alt && !mods.logo && matches!(raw, keysyms::KEY_Left | keysyms::KEY_Right) {
-                    deferred = Some(KeyAction::Space { delta: if raw == keysyms::KEY_Left { -1 } else { 1 }, carry: mods.shift });
                     return FilterResult::Intercept(());
                 }
                 if mods.ctrl && mods.alt && raw == keysyms::KEY_BackSpace {
@@ -306,6 +319,12 @@ impl FeatherCompositor {
 
             let sym = keysym_handle.modified_sym();
             let latin_sym = keysym_handle.raw_latin_sym_or_raw_current_sym().unwrap_or(sym);
+            if let Some(action) = st.keybindings.action(crate::shortcuts::Chord::new(mods, latin_sym.raw())) {
+                deferred = st.shortcut_action(action);
+                repeat_candidate = None;
+                return FilterResult::Intercept(());
+            }
+
             // Keys for the desktop icons when no window has the keyboard
             let shell_idle = st.shell.open_menu.is_none() && !st.shell.spotlight_open && st.shell.launchpad.is_none()
                 && !st.shell.control_center_open && st.shell.switcher.is_none();
@@ -342,164 +361,14 @@ impl FeatherCompositor {
                         deferred = Some(KeyAction::Shell(ShellClickAction::CycleHiDpiScale));
                         return FilterResult::Intercept(());
                     }
-                    keysyms::KEY_space => {
-                        st.shell.spotlight_open = !st.shell.spotlight_open;
-                        st.shell.control_center_open = false;
-                        st.shell.open_menu = None;
-                        st.shell.overlay_dirty = true;
-                        st.shell.topbar_dirty = true;
-                        return FilterResult::Intercept(());
-                    }
-                    // macOS: ⌘Q quits the app, ⌘W closes the window, ⌘H hides the app
-                    keysyms::KEY_q => {
-                        deferred = Some(KeyAction::Shell(ShellClickAction::QuitFocusedApp));
-                        return FilterResult::Intercept(());
-                    }
-                    keysyms::KEY_w => {
-                        deferred = Some(KeyAction::CloseTop);
-                        return FilterResult::Intercept(());
-                    }
-                    keysyms::KEY_h => {
-                        deferred = Some(KeyAction::Shell(if mods.alt {
-                            ShellClickAction::HideOthers
-                        } else {
-                            ShellClickAction::HideApp
-                        }));
-                        return FilterResult::Intercept(());
-                    }
-                    keysyms::KEY_m => {
-                        deferred = Some(KeyAction::MinimizeTop);
-                        return FilterResult::Intercept(());
-                    }
-                    keysyms::KEY_f => {
-                        deferred = Some(KeyAction::ToggleMaximizeTop);
-                        return FilterResult::Intercept(());
-                    }
-                    keysyms::KEY_Return | keysyms::KEY_t => {
-                        deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
-                            AppAction::Exec(st.system_preferences.terminal_command()),
-                            "Терминал".to_string(),
-                        )));
-                        return FilterResult::Intercept(());
-                    }
-                    // Super+E: a new Files window at home (as Win+E opens Explorer)
-                    keysyms::KEY_e => {
-                        deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
-                            AppAction::Exec(crate::apps::files_command()),
-                            "Файлы".to_string(),
-                        )));
-                        return FilterResult::Intercept(());
-                    }
-                    keysyms::KEY_n => {
-                        st.shell.control_center_open = !st.shell.control_center_open;
-                        st.shell.overlay_dirty = true;
-                        return FilterResult::Intercept(());
-                    }
                     _ => {}
                 }
             }
 
-            if mods.logo && matches!(latin_sym.raw(), keysyms::KEY_a | keysyms::KEY_A) {
-                deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
-                    AppAction::OpenLaunchpad,
-                    "Приложения".to_string(),
-                )));
+            if st.edit_builtin_key(sym, latin_sym, mods.ctrl, mods.shift, &mut deferred) {
                 return FilterResult::Intercept(());
             }
 
-            if st.shell.launchpad.is_some() {
-                let registry = &st.app_registry;
-                let lp = st.shell.launchpad.as_mut().unwrap();
-                match sym.raw() {
-                    keysyms::KEY_Escape => st.shell.launchpad = None,
-                    keysyms::KEY_Left | keysyms::KEY_Right if lp.input.is_empty() => {
-                        if sym.raw() == keysyms::KEY_Left {
-                            lp.set_page(lp.page.saturating_sub(1));
-                        } else {
-                            lp.set_page(lp.page + 1);
-                        }
-                    }
-                    keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
-                        if let Some(&app) = lp.apps.first() {
-                            deferred = Some(KeyAction::Shell(ShellClickAction::LaunchpadLaunch(app)));
-                        }
-                        st.shell.launchpad = None;
-                    }
-                    raw => {
-                        let utf8 = sym.key_char().map(String::from);
-                        let key = if mods.ctrl { latin_sym.raw() } else { raw };
-                        match lp.input.key(key, utf8.as_deref(), mods.ctrl, mods.shift) {
-                            feather_ui::input::Edit::Changed => {
-                                let q = lp.input.text().to_owned();
-                                lp.set_query(registry, q);
-                            }
-                            feather_ui::input::Edit::Moved => lp.mark_search_dirty(),
-                            feather_ui::input::Edit::Ignored => {}
-                        }
-                    }
-                }
-                return FilterResult::Intercept(());
-            }
-
-            if st.shell.spotlight_open {
-                match sym.raw() {
-                    keysyms::KEY_Escape => {
-                        st.shell.spotlight_open = false;
-                        st.shell.overlay_dirty = true;
-                        st.shell.topbar_dirty = true;
-                    }
-                    keysyms::KEY_Up => {
-                        st.shell.spotlight_selected = st.shell.spotlight_selected.saturating_sub(1);
-                        st.shell.overlay_dirty = true;
-                    }
-                    keysyms::KEY_Down => {
-                        let count = st.app_registry.search(&st.shell.spotlight_query).len();
-                        if count > 0 {
-                            st.shell.spotlight_selected = (st.shell.spotlight_selected + 1).min(count - 1);
-                        }
-                        st.shell.overlay_dirty = true;
-                    }
-                    keysyms::KEY_Return => {
-                        let results = st.app_registry.search(&st.shell.spotlight_query);
-                        let sel = st.shell.spotlight_selected.min(results.len().saturating_sub(1));
-                        if let Some(app) = results.get(sel) {
-                            deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
-                                app.action.clone(),
-                                app.name.clone(),
-                            )));
-                        }
-                        st.shell.spotlight_open = false;
-                        st.shell.spotlight_query.clear();
-                        st.shell.overlay_dirty = true;
-                        st.shell.topbar_dirty = true;
-                    }
-                    raw => {
-                        // Field keys: caret, Shift-selection, Ctrl+A, words, Backspace/Delete
-                        let utf8 = sym.key_char().map(String::from);
-                        let key = if mods.ctrl { latin_sym.raw() } else { raw };
-                        let sh = &mut st.shell;
-                        if sh.spotlight_input.text() != sh.spotlight_query {
-                            sh.spotlight_input.set(&sh.spotlight_query);
-                        }
-                        match sh.spotlight_input.key(key, utf8.as_deref(), mods.ctrl, mods.shift) {
-                            feather_ui::input::Edit::Changed => {
-                                sh.spotlight_query = sh.spotlight_input.text().to_owned();
-                                sh.spotlight_selected = 0;
-                                sh.overlay_dirty = true;
-                            }
-                            feather_ui::input::Edit::Moved => sh.overlay_dirty = true,
-                            feather_ui::input::Edit::Ignored => {}
-                        }
-                    }
-                }
-                return FilterResult::Intercept(());
-            }
-
-            // Built-in Notes window receives text when it is the focused (topmost) window
-            if st.system_settings.editing()&&st.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|matches!(w.backend,WindowBackend::Builtin(BuiltinWindowKind::SystemSettings))){
-                if let Some(action)=st.system_settings.edit_key(if mods.ctrl{latin_sym.raw()}else{sym.raw()},sym.key_char(),mods.ctrl,mods.shift){deferred=Some(KeyAction::Shell(ShellClickAction::SystemSettings(action)));}
-                st.mark_settings_dirty();st.needs_redraw=true;return FilterResult::Intercept(());
-            }
             if let Some(top_win) = st.windows.iter_mut().rev().find(|w| w.is_visible()) {
                 if let WindowBackend::Builtin(BuiltinWindowKind::QuickNotes) = top_win.backend {
                     match sym.raw() {
@@ -529,7 +398,15 @@ impl FeatherCompositor {
             FilterResult::Forward
         });
 
+        if deferred.is_none() {
+            if let Some(candidate) = repeat_candidate { self.arm_key_repeat(candidate); }
+        }
+
         match deferred {
+            Some(KeyAction::Audio(key)) => {
+                self.handle_audio_key(key);
+                if let Some(candidate) = repeat_candidate { self.arm_key_repeat(candidate); }
+            }
             Some(KeyAction::Lock)=>self.lock_session(),
             Some(KeyAction::Unlock)=>self.lock_submit(),
             Some(KeyAction::Auth(cmd)) => self.auth_command(cmd),
@@ -570,14 +447,107 @@ impl FeatherCompositor {
                 }
             }
             Some(KeyAction::ToggleMaximizeTop) => {
-                let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-                if let Some(top) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
-                    top.resize_anchor = None;
-                    top.toggle_maximize(sw, sh);
-                }
+                if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()) {let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);}
             }
             None => {}
         }
+    }
+
+    pub(crate) fn edit_builtin_key(&mut self, sym: smithay::input::keyboard::Keysym, latin_sym: smithay::input::keyboard::Keysym,
+        ctrl: bool, shift: bool, deferred: &mut Option<KeyAction>) -> bool {
+            if self.shell.launchpad.is_some() {
+                let registry = &self.app_registry;
+                let lp = self.shell.launchpad.as_mut().unwrap();
+                match sym.raw() {
+                    keysyms::KEY_Escape => self.shell.launchpad = None,
+                    keysyms::KEY_Left | keysyms::KEY_Right if lp.input.is_empty() => {
+                        if sym.raw() == keysyms::KEY_Left {
+                            lp.set_page(lp.page.saturating_sub(1));
+                        } else {
+                            lp.set_page(lp.page + 1);
+                        }
+                    }
+                    keysyms::KEY_Return | keysyms::KEY_KP_Enter => {
+                        if let Some(&app) = lp.apps.first() {
+                            *deferred = Some(KeyAction::Shell(ShellClickAction::LaunchpadLaunch(app)));
+                        }
+                        self.shell.launchpad = None;
+                    }
+                    raw => {
+                        let utf8 = sym.key_char().map(String::from);
+                        let key = if ctrl { latin_sym.raw() } else { raw };
+                        match lp.input.key(key, utf8.as_deref(), ctrl, shift) {
+                            feather_ui::input::Edit::Changed => {
+                                let q = lp.input.text().to_owned();
+                                lp.set_query(registry, q);
+                            }
+                            feather_ui::input::Edit::Moved => lp.mark_search_dirty(),
+                            feather_ui::input::Edit::Ignored => {}
+                        }
+                    }
+                }
+                return true;
+            }
+
+            if self.shell.spotlight_open {
+                match sym.raw() {
+                    keysyms::KEY_Escape => {
+                        self.shell.spotlight_open = false;
+                        self.shell.overlay_dirty = true;
+                        self.shell.topbar_dirty = true;
+                    }
+                    keysyms::KEY_Up => {
+                        self.shell.spotlight_selected = self.shell.spotlight_selected.saturating_sub(1);
+                        self.shell.overlay_dirty = true;
+                    }
+                    keysyms::KEY_Down => {
+                        let count = self.app_registry.search(&self.shell.spotlight_query).len();
+                        if count > 0 {
+                            self.shell.spotlight_selected = (self.shell.spotlight_selected + 1).min(count - 1);
+                        }
+                        self.shell.overlay_dirty = true;
+                    }
+                    keysyms::KEY_Return => {
+                        let results = self.app_registry.search(&self.shell.spotlight_query);
+                        let sel = self.shell.spotlight_selected.min(results.len().saturating_sub(1));
+                        if let Some(app) = results.get(sel) {
+                            *deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
+                                app.action.clone(),
+                                app.name.clone(),
+                            )));
+                        }
+                        self.shell.spotlight_open = false;
+                        self.shell.spotlight_query.clear();
+                        self.shell.overlay_dirty = true;
+                        self.shell.topbar_dirty = true;
+                    }
+                    raw => {
+                        // Field keys: caret, Shift-selection, Ctrl+A, words, Backspace/Delete
+                        let utf8 = sym.key_char().map(String::from);
+                        let key = if ctrl { latin_sym.raw() } else { raw };
+                        let sh = &mut self.shell;
+                        if sh.spotlight_input.text() != sh.spotlight_query {
+                            sh.spotlight_input.set(&sh.spotlight_query);
+                        }
+                        match sh.spotlight_input.key(key, utf8.as_deref(), ctrl, shift) {
+                            feather_ui::input::Edit::Changed => {
+                                sh.spotlight_query = sh.spotlight_input.text().to_owned();
+                                sh.spotlight_selected = 0;
+                                sh.overlay_dirty = true;
+                            }
+                            feather_ui::input::Edit::Moved => sh.overlay_dirty = true,
+                            feather_ui::input::Edit::Ignored => {}
+                        }
+                    }
+                }
+                return true;
+            }
+
+            if self.system_settings.editing()&&self.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|matches!(w.backend,WindowBackend::Builtin(BuiltinWindowKind::SystemSettings))){
+                if let Some(action)=self.system_settings.edit_key(if ctrl{latin_sym.raw()}else{sym.raw()},sym.key_char(),ctrl,shift){*deferred=Some(KeyAction::Shell(ShellClickAction::SystemSettings(action)));}
+                self.mark_settings_dirty();self.needs_redraw=true;return true;
+            }
+        false
     }
 
     fn switcher_step(&mut self, reverse: bool) {
@@ -739,6 +709,7 @@ impl FeatherCompositor {
             return;
         }
         if self.lock.active {
+            self.refresh_focus();
             let under=self.surface_under_pointer(pos.x,pos.y);let pointer=self.pointer.clone();
             pointer.motion(self,under,&MotionEvent{location:pos,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);return;
         }
@@ -777,7 +748,7 @@ impl FeatherCompositor {
         }
         self.dock_autohide_motion(pos.x, pos.y);
         // Not while a button is held: a drag into a corner is not a request
-        if self.pressed_buttons.is_empty() {
+        if self.pressed_buttons.is_empty() && self.monitor_at(pos.x,pos.y).contains(0.0,0.0) {
             let screen = (self.shell.screen_w as f64, self.shell.screen_h as f64);
             if let Some(action) = self.hot_corners.motion(pos.x, pos.y, screen) {
                 self.run_hot_corner(action);
@@ -832,9 +803,10 @@ impl FeatherCompositor {
             } => {
                 let dx = (pos.x - start_cursor.0).round() as i32;
                 let dy = (pos.y - start_cursor.1).round() as i32;
+                let r=self.monitor_at(pos.x,pos.y);let top=r.y+if r.x==0&&r.y==0{TOP_BAR_HEIGHT}else{0};
                 if let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) {
                     win.x = start_pos.0 + dx;
-                    win.y = (start_pos.1 + dy).max(TOP_BAR_HEIGHT);
+                    win.y = (start_pos.1 + dy).max(top);
                 }
             }
             DragOperation::ResizeWindow {
@@ -861,13 +833,14 @@ impl FeatherCompositor {
                 }
                 let w = w.max(MIN_WINDOW_W);
                 let h = h.max(MIN_WINDOW_H);
+                let r=self.monitor_at(pos.x,pos.y);let top=r.y+if r.x==0&&r.y==0{TOP_BAR_HEIGHT}else{0};
                 if let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) {
                     if win.is_builtin() {
                         if edges.left {
                             win.x = x0 + (w0 - w);
                         }
                         if edges.top {
-                            win.y = (y0 + (h0 - h)).max(TOP_BAR_HEIGHT);
+                            win.y = (y0 + (h0 - h)).max(top);
                         }
                     }
                     win.resize_client(w, h);
@@ -919,9 +892,9 @@ impl FeatherCompositor {
 
     fn start_move(&mut self, idx: usize) {
         let pos = self.pointer_location;
-        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
+        let r=self.window_monitor(idx);
         let win = &mut self.windows[idx];
-        win.unmaximize_under((pos.x, pos.y), sw, sh);
+        win.unmaximize_on((pos.x,pos.y),r);
         win.resize_anchor = None;
         self.active_drag = Some(DragOperation::MoveWindow {
             win_id: win.id,
@@ -931,6 +904,7 @@ impl FeatherCompositor {
     }
 
     pub(crate) fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
+        self.cancel_key_repeat();
         if self.mission_open() && !self.lock.active {
             let (x, y) = (self.pointer_location.x, self.pointer_location.y);
             if btn_state == ButtonState::Pressed && self.shell.dock_contains(x, y) {
@@ -1032,12 +1006,9 @@ impl FeatherCompositor {
             self.refresh_pointer_focus();
         }
 
-        let fullscreen_top = self
-            .windows
-            .iter()
-            .rev()
-            .find(|w| w.is_visible())
-            .is_some_and(|w| w.fullscreen);
+        let primary=self.primary_monitor().map(|m|m.info.rect).unwrap_or_else(||self.monitor_at(0.0,0.0));
+        let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen);
+        if !primary.contains(pos.x,pos.y)&&self.shell.launchpad.is_some(){self.shell.launchpad=None;self.needs_redraw=true;}
         if (!fullscreen_top || self.shell.has_visible_overlay()) && self.shell.launchpad.is_none() {
             if let Some((item,_))=self.shell.tray_hit(pos.x,pos.y).map(|(i,r)|(i.clone(),r)) {
                 let action=match button {
@@ -1166,7 +1137,7 @@ impl FeatherCompositor {
         let super_held = self.keyboard.modifier_state().logo;
         let mut consumed = true;
         let mut builtin_action: Option<ShellClickAction> = None;
-        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
+        let r=self.window_monitor(idx);
 
         if super_held && button == BTN_LEFT {
             self.start_move(idx);
@@ -1184,7 +1155,7 @@ impl FeatherCompositor {
                 }
                 crate::window::TrafficButton::Maximize => {
                     self.windows[idx].resize_anchor = None;
-                    self.windows[idx].toggle_maximize(sw, sh);
+                    self.windows[idx].toggle_maximize_on(r);
                 }
             }
         } else if self.windows[idx].in_titlebar(pos.x, pos.y) && button == BTN_LEFT {
@@ -1196,7 +1167,7 @@ impl FeatherCompositor {
             if is_double {
                 self.last_titlebar_click = None;
                 self.windows[idx].resize_anchor = None;
-                self.windows[idx].toggle_maximize(sw, sh);
+                self.windows[idx].toggle_maximize_on(r);
             } else {
                 self.last_titlebar_click = Some((now, win_id));
                 self.start_move(idx);
@@ -1310,6 +1281,8 @@ impl FeatherCompositor {
     /// The host window lost focus: whatever is held now will be released elsewhere and we
     /// would never hear about it (stuck Alt, stuck mouse button = dead clicks)
     pub fn release_all_input(&mut self) {
+        self.cancel_key_repeat();
+        self.system_settings.shortcut_capture = None;
         let time = self.start_time.elapsed().as_millis() as u32;
         let pointer = self.pointer.clone();
         let client_held: Vec<u32> = self

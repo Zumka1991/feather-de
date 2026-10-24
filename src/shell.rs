@@ -1569,6 +1569,9 @@ impl MacShell {
                 self.cc.wifi=wifi;
                 self.topbar_dirty=true;
             }
+            crate::controls::Update::AudioFeedback(audio) => {
+                self.cc.keyboard_audio_updated(audio);
+            }
             crate::controls::Update::Audio(audio) => {
                 if self.cc.audio==audio {return false;}
                 self.cc.audio=audio;
@@ -2292,7 +2295,7 @@ impl MacShell {
         }
         if self.open_menu.is_some() {
             // Like macOS: with a menu open, sliding along the menu bar switches menus
-            if py < TOP_BAR_HEIGHT as f64 {
+            if px>=0.0 && px<self.screen_w as f64 && py>=0.0 && py < TOP_BAR_HEIGHT as f64 {
                 if let Some(TopbarItem::Menu(m)) = self.topbar_item_at(px as f32) {
                     if Some(m) != self.open_menu {
                         self.open_menu = Some(m);
@@ -2371,7 +2374,7 @@ impl MacShell {
         }
 
         // Menu bar
-        if my >= 0.0 && my < TOP_BAR_HEIGHT as f32 {
+        if mx>=0.0 && mx<self.screen_w as f32 && my >= 0.0 && my < TOP_BAR_HEIGHT as f32 {
             let hit = self.topbar_item_at(mx);
             let was = (self.open_menu, self.control_center_open, self.spotlight_open, self.center_open);
             self.close_menus();

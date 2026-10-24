@@ -184,7 +184,7 @@ impl FeatherCompositor {
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let profile = self.frame_stats.is_some().then(std::time::Instant::now);
         let renderer = self.backend.renderer();
-        let elements = crate::render::build_scene(renderer, &self.shell, &self.windows, s, pointer, self.rounded_program.as_ref(), &self.animations);
+        let elements = crate::render::build_scene(renderer, &self.shell, &self.windows, s, pointer, self.rounded_program.as_ref(), &self.animations,crate::monitors::Rect{x:0,y:0,w:self.shell.screen_w,h:self.shell.screen_h});
         let mapping = (|| {
             let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, (sw, sh).into()).ok()?;
             let mut fb = renderer.bind(&mut texture).ok()?;

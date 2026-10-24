@@ -253,7 +253,7 @@ impl FeatherCompositor {
             if !d.active {
                 return;
             }
-            if let Err(e) = d.output.with_compositor(|c| c.clear()) {
+            if let Err(e) = d.clear_all() {
                 tracing::warn!("Гашение экрана: {e}");
                 return;
             }
@@ -268,7 +268,7 @@ impl FeatherCompositor {
         }
         self.power.blanked = false;
         if let crate::backend::Backend::Drm(d) = &mut self.backend {
-            d.output.reset_buffers();
+            for h in &mut d.heads{h.output.reset_buffers();h.pending=false;h.protected=false;}
         }
         self.frame_pending = false;
         self.needs_redraw = true;

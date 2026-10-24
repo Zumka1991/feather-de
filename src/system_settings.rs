@@ -102,6 +102,8 @@ pub enum Action {
     SelectSource(usize),
     Shortcut(Shortcut),
     CapsLock,
+    EditShortcut(crate::shortcuts::Action),
+    ResetShortcuts,
     RepeatDelay(u32),
     RepeatRate(u32),
     CursorPicker,
@@ -115,6 +117,8 @@ pub enum Action {
     LeftHanded,
     Scale(f64),
     ModeStep(i32),
+    PrimaryMonitor(String),
+    PositionMonitor(String,u8),
     ApplyMode,
     KeepMode,
     RevertMode,
@@ -150,6 +154,8 @@ pub struct Panel {
     pub page: Page,
     pub adding: bool,
     pub keyboard_busy: bool,
+    pub keybindings: crate::shortcuts::Bindings,
+    pub shortcut_capture: Option<crate::shortcuts::Action>,
     pub keyboard_generation: u64,
     pub error: Option<String>,
     pub selected_mode: Option<usize>,
@@ -170,6 +176,7 @@ pub struct Context<'a> {
     pub dock_zoom: bool,
     pub scale: f64,
     pub display_name: &'a str,
+    pub monitors: Vec<crate::monitors::Info>,
     pub modes: &'a [Mode],
     pub current: Mode,
     pub direct: bool,
@@ -200,6 +207,7 @@ pub struct FrameJob {
     pub dock_zoom: bool,
     pub scale: f64,
     pub display_name: String,
+    pub monitors: Vec<crate::monitors::Info>,
     pub modes: Vec<Mode>,
     pub current: Mode,
     pub direct: bool,
@@ -239,6 +247,7 @@ impl FrameJob {
             dock_zoom: c.dock_zoom,
             scale: c.scale,
             display_name: c.display_name.into(),
+            monitors: c.monitors.clone(),
             modes: c.modes.to_vec(),
             current: c.current,
             direct: c.direct,
@@ -269,6 +278,7 @@ impl FrameJob {
             dock_zoom: self.dock_zoom,
             scale: self.scale,
             display_name: &self.display_name,
+            monitors: self.monitors.clone(),
             modes: &self.modes,
             current: self.current,
             direct: self.direct,
@@ -785,6 +795,16 @@ impl Panel {
                 l.row(52.0, "Клавиша Caps Lock", c.keyboard.caps.label().into(), Style::Row, kb.then_some(Action::CapsLock));
                 l.end();
                 l.footer("Автоповтор применяется сразу во всех программах. Нажмите на строку Caps Lock, чтобы выбрать её действие.");
+                l.header("Сочетания действий");
+                l.begin();
+                for action in crate::shortcuts::Action::ALL.iter().copied() {
+                    let value = if self.shortcut_capture == Some(action) { "Нажмите сочетание…".into() }
+                        else { self.keybindings.chord(action).map_or("Выключено".into(), |c| c.label()) };
+                    l.row(48.0, action.label(), value, Style::Row, Some(Action::EditShortcut(action)));
+                }
+                l.row(48.0, "Вернуть стандартные сочетания", String::new(), Style::Row, Some(Action::ResetShortcuts));
+                l.end();
+                l.footer("Нажмите на действие, затем сочетание с Ctrl, Alt или Super. Esc — отмена; Backspace — выключить. Super+L, Alt+Tab и системные клавиши сохраняются.");
             }
             Page::Pointer => {
                 let p = &c.pointer;
@@ -864,6 +884,22 @@ impl Panel {
                 let d = l.push(r, c.display_name, Style::Display, None);
                 d.detail = c.current.label();
                 l.y += 168.0 + 20.0;
+                if c.monitors.len()>1 {
+                    l.begin();
+                    for m in &c.monitors {
+                        let detail=format!("{} × {} · ({}, {}){}",m.rect.w,m.rect.h,m.rect.x,m.rect.y,if m.primary {" · Основной"}else{""});
+                        let r=l.row(if m.primary{58.0}else{96.0},&m.name,detail,Style::Row,None);
+                        if !m.primary {
+                            l.push(R::new(r.x+r.w-116.0,r.y+10.0,105.0,25.0),"Основной",Style::Push(false),(!self.confirming).then(||Action::PrimaryMonitor(m.name.clone())));
+                            for (i,label) in ["Слева","Справа","Сверху","Снизу"].iter().enumerate(){
+                                l.push(R::new(r.x+14.0+i as f32*76.0,r.y+59.0,70.0,25.0),label,Style::Mini,(!self.confirming).then(||Action::PositionMonitor(m.name.clone(),i as u8)));
+                            }
+                        }
+                    }
+                    l.end();l.y+=12.0;
+                    l.footer("Меню и Dock — на основном экране. Масштаб общий для всех дисплеев.");
+                }
+
                 l.begin();
                 let r = l.row(
                     94.0,
@@ -890,7 +926,7 @@ impl Panel {
                     .copied()
                     .unwrap_or(c.current);
                 if c.direct {
-                    let r = l.row(48.0, "Разрешение и частота", String::new(), Style::Row, None);
+                    let r = l.row(48.0, "Режим основного дисплея", String::new(), Style::Row, None);
                     // Value sits left of the steppers; the row keeps its full-width divider.
                     l.push(R::new(r.x, r.y, r.w - 64.0, r.h), "", Style::Row, None).value =
                         selected.label();
@@ -912,7 +948,7 @@ impl Panel {
                     );
                     l.y += 40.0;
                 } else {
-                    let r = l.row(48.0, "Разрешение и частота", String::new(), Style::Row, None);
+                    let r = l.row(48.0, "Режим основного дисплея", String::new(), Style::Row, None);
                     let _ = r;
                     l.out.last_mut().unwrap().value = "Задаётся окном".into();
                     l.end();
@@ -1217,6 +1253,9 @@ impl Panel {
             );
         } else if let Some(e) = &self.error {
             l.fixed(R::new(x, h - 52.0, cw, 40.0), e, Style::Banner(true), None);
+        } else if self.shortcut_capture.is_some() && self.page == Page::Keyboard {
+            l.fixed(R::new(x, h - 64.0, cw, 52.0), "Нажмите новое сочетание", Style::Banner(false), None).detail =
+                "Esc — отмена; Backspace — выключить.".into();
         }
         let mut controls = l.out;
         for control in controls.iter_mut().filter(|c| !c.fixed) {
@@ -1702,6 +1741,7 @@ impl crate::FeatherCompositor {
             dock_zoom: self.shell.dock_zoom_enabled,
             scale: self.scale_factor,
             display_name: &self.display_name,
+            monitors: self.monitors.iter().map(|m|m.info.clone()).collect(),
             modes: &self.display_modes,
             current: Mode {
                 width: self.phys_w,
@@ -1732,6 +1772,7 @@ impl crate::FeatherCompositor {
         self.needs_redraw = true;
     }
     pub fn select_input_source(&mut self, index: usize) {
+        self.cancel_key_repeat();
         if index >= self.keyboard_config.layouts.len() {
             return;
         }
@@ -1742,6 +1783,7 @@ impl crate::FeatherCompositor {
         self.refresh_input_source(index);
     }
     fn request_keyboard(&mut self, config: Keyboard) {
+        self.cancel_key_repeat();
         if self.system_settings.keyboard_busy {
             return;
         }
@@ -1767,6 +1809,7 @@ impl crate::FeatherCompositor {
 
     /// Programs learn the new repeat delay/rate at once (wl_keyboard.repeat_info)
     pub fn apply_key_repeat(&mut self) {
+        self.cancel_key_repeat();
         let (rate, delay) = (self.keyboard_config.repeat_rate as i32, self.keyboard_config.repeat_delay as i32);
         let keyboard = self.keyboard.clone();
         keyboard.change_repeat_info(rate, delay);
@@ -1799,6 +1842,9 @@ impl crate::FeatherCompositor {
                 let index = previous
                     .and_then(|id| config.layouts.iter().position(|s| *s == id))
                     .unwrap_or(0);
+                let mut config = config;
+                config.repeat_rate = self.keyboard_config.repeat_rate;
+                config.repeat_delay = self.keyboard_config.repeat_delay;
                 self.keyboard_config = config;
                 self.select_input_source(index);
                 self.save_settings();
@@ -1914,6 +1960,8 @@ impl crate::FeatherCompositor {
                 *value=crate::power::Preferences::next(*value);self.activity();self.rearm_idle();self.save_settings();
             }
             Action::Page(page) => {
+                self.cancel_key_repeat();
+                self.system_settings.shortcut_capture = None;
                 self.system_settings.apps_picker = None;
                 self.system_settings.cursor_picker = false;
                 self.system_settings.zone_picker = false;
@@ -2048,6 +2096,16 @@ impl crate::FeatherCompositor {
                 config.shortcut = shortcut;
                 self.request_keyboard(config);
             }
+            Action::EditShortcut(action) => {
+                self.cancel_key_repeat();
+                self.system_settings.shortcut_capture = Some(action);
+            }
+            Action::ResetShortcuts => {
+                self.keybindings.reset();
+                self.system_settings.keybindings = self.keybindings.clone();
+                self.system_settings.shortcut_capture = None;
+                self.save_settings();
+            }
             Action::CapsLock => {
                 let mut config = self.keyboard_config.clone();
                 config.caps = config.caps.next();
@@ -2111,6 +2169,8 @@ impl crate::FeatherCompositor {
                     self.save_settings();
                 }
             }
+            Action::PrimaryMonitor(name)=>self.select_primary_monitor(&name),
+            Action::PositionMonitor(name,side)=>self.position_monitor(&name,side),
             Action::ModeStep(delta) => {
                 if !self.display_modes.is_empty() && !self.system_settings.confirming {
                     let current = self.system_settings.selected_mode.unwrap_or_else(|| {
@@ -2245,9 +2305,9 @@ impl crate::FeatherCompositor {
                 .copied()
                 .find(|m| crate::drm_backend::mode_info(*m) == target)
             {
-                let result = d
-                    .output
-                    .use_mode::<_, crate::render::FeatherElement>(
+                let Some(head)=d.heads.iter_mut().find(|h|h.name==d.connector_name)else{return};
+                let result = head.output
+                    .use_mode::<_, crate::render::OutputElement>(
                         mode,
                         &mut d.renderer,
                         &smithay::backend::drm::output::DrmOutputRenderElements::default(),
@@ -2256,14 +2316,15 @@ impl crate::FeatherCompositor {
                 if result.is_ok() {
                     d.size = (target.width, target.height);
                     d.refresh = target.refresh;
-                    d.output.with_compositor(|c| {
+                    head.size=d.size;head.refresh=d.refresh;
+                    head.output.with_compositor(|c| {
                         c.set_output_mode_source(smithay::output::OutputModeSource::Static {
                             size: d.size.into(),
                             scale: 1.0.into(),
                             transform: smithay::utils::Transform::Normal,
                         })
                     });
-                    d.output.reset_buffers();
+                    head.output.reset_buffers();head.pending=false;head.protected=false;
                 }
                 result
             } else {
@@ -2278,6 +2339,7 @@ impl crate::FeatherCompositor {
             self.needs_redraw = true;
             return;
         }
+        if let Some(m)=self.monitors.iter_mut().find(|m|m.info.primary){m.info.mode=target;}
         self.phys_w = target.width;
         self.phys_h = target.height;
         self.refresh_mhz = target.refresh;
@@ -2290,7 +2352,9 @@ impl crate::FeatherCompositor {
         } else {
             self.pending_display.map_or(self.scale_factor, |p| p.2)
         };
+        let pending=self.pending_display;
         self.apply_hidpi_scale(scale);
+        self.pending_display=pending;
         self.system_settings.selected_mode = Some(index);
         if confirm {
             self.display_generation = self.display_generation.wrapping_add(1);
@@ -2409,6 +2473,7 @@ mod tests {
             dock_zoom: true,
             scale: 2.0,
             display_name: "DP-1",
+            monitors: vec![crate::monitors::Info{name:"DP-1".into(),rect:crate::monitors::Rect{x:0,y:0,w:1920,h:1080},mode,primary:true},crate::monitors::Info{name:"HDMI-A-1".into(),rect:crate::monitors::Rect{x:-1280,y:0,w:1280,h:720},mode:Mode{width:2560,height:1440,refresh:60000},primary:false}],
             modes: &[mode],
             current: mode,
             direct: false,
@@ -2519,6 +2584,7 @@ mod tests {
             dock_zoom: false,
             scale: 1.0,
             display_name: "Window",
+            monitors: Vec::new(),
             modes: &[mode],
             current: mode,
             direct: false,

@@ -297,7 +297,9 @@ pub struct Settings {
     pub dock: Option<Vec<String>>,
     pub animations: bool,
     pub keyboard: Keyboard,
+    pub keybindings: crate::shortcuts::Bindings,
     pub display: Option<Display>,
+    pub monitor_layout: Vec<crate::monitors::Placement>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -326,7 +328,9 @@ impl Default for Settings {
             dock: None,
             animations: true,
             keyboard: Keyboard::default(),
+            keybindings: Default::default(),
             display: None,
+            monitor_layout: Vec::new(),
         }
     }
 }
@@ -497,6 +501,7 @@ impl Settings {
                         s.keyboard.shortcut = v;
                     }
                 }
+                "keybinding" => s.keybindings.parse_line(v),
                 "keyboard_caps" => {
                     if let Some(v) = Caps::parse(v) {
                         s.keyboard.caps = v;
@@ -510,6 +515,15 @@ impl Settings {
                 "keyboard_repeat_rate" => {
                     if let Some(v) = v.parse().ok().filter(|v| REPEAT_RATES.contains(v)) {
                         s.keyboard.repeat_rate = v;
+                    }
+                }
+                "monitor_layout" => {
+                    if let Ok(serde_json::Value::Array(rows))=serde_json::from_str(v) {
+                        s.monitor_layout=rows.into_iter().take(16).filter_map(|v|{
+                            let name=v.get("name")?.as_str()?.to_owned();let x=i32::try_from(v.get("x")?.as_i64()?).ok()?;let y=i32::try_from(v.get("y")?.as_i64()?).ok()?;
+                            if name.is_empty()||name.len()>128||name.chars().any(char::is_control)||x.unsigned_abs()>32768||y.unsigned_abs()>32768{return None;}
+                            Some(crate::monitors::Placement{name,x,y,primary:v.get("primary").and_then(|v|v.as_bool()).unwrap_or(false)})
+                        }).collect();
                     }
                 }
                 "display" => {
@@ -544,6 +558,7 @@ impl Settings {
             }
         }
         s.keyboard = s.keyboard.normalized();
+        s.keybindings.normalize();
         s
     }
     fn text(&self) -> String {
@@ -553,6 +568,7 @@ impl Settings {
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
         text.push_str(&format!("idle_lock_minutes={}\nidle_blank_minutes={}\nidle_suspend_minutes={}\n",self.power.lock,self.power.blank,self.power.suspend));
         text.push_str(&format!("keyboard_caps={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\n", self.keyboard.caps.id(), self.keyboard.repeat_delay, self.keyboard.repeat_rate));
+        for line in self.keybindings.lines() { text.push_str(&line); }
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
@@ -589,6 +605,10 @@ impl Settings {
                     text.push_str(&format!("{key}={value}\n"));
                 }
             }
+        }
+        if !self.monitor_layout.is_empty(){
+            let rows:Vec<_>=self.monitor_layout.iter().take(16).map(|m|serde_json::json!({"name":m.name,"x":m.x,"y":m.y,"primary":m.primary})).collect();
+            text.push_str(&format!("monitor_layout={}\n",serde_json::Value::Array(rows)));
         }
         text
     }
@@ -727,6 +747,24 @@ mod tests {
         assert_eq!(restored.notify_apps, s.notify_apps);
         let bad = Settings::parse("notify_app=x|X|loud\nnotify_app=|Y|off\nnotify_app=a|A|off\nnotify_app=a|B|banners\nnotify_app=only\n");
         assert_eq!(bad.notify_apps, [AppPolicy { key: "a".into(), label: "A".into(), delivery: Delivery::Off }]);
+    }
+
+    #[test]
+    fn monitor_layout_round_trips_and_rejects_unbounded_or_control_coordinates(){
+        let mut s=Settings::default();s.monitor_layout=vec![crate::monitors::Placement{name:"DP-1".into(),x:-1920,y:120,primary:true}];
+        assert_eq!(Settings::parse(&s.text()).monitor_layout,s.monitor_layout);
+        assert!(Settings::parse(r#"monitor_layout=[{"name":"DP-1","x":9999999999,"y":0}]"#).monitor_layout.is_empty());
+        assert!(Settings::parse(r#"monitor_layout=[{"name":"DP-1","x":-32769,"y":0}]"#).monitor_layout.is_empty());
+    }
+    #[test]
+    fn custom_shortcuts_survive_the_settings_file() {
+        use crate::shortcuts::{Action as A, Chord, CTRL, SUPER};
+        let mut s = Settings::default();
+        s.keybindings.set(A::Search, Some(Chord {mods:CTRL|SUPER,key:112})).unwrap();
+        s.keybindings.set(A::Files, None).unwrap();
+        let back = Settings::parse(&s.text());
+        assert_eq!(back.keybindings,s.keybindings);
+        assert_eq!(Settings::parse("keybinding=files;999;123" ).keybindings,Default::default());
     }
 
     #[test]
