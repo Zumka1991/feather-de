@@ -13,6 +13,7 @@ mod spaces;
 mod mission;
 mod night;
 mod brightness;
+mod gtk_theme;
 mod gtk_shell;
 mod debug_checks;
 use feather_ui::cpu_profile;
@@ -159,6 +160,10 @@ pub struct FeatherCompositor {
     pub mission: Option<crate::mission::Mission>,
     pub night: crate::night::NightShift,
     pub brightness: Option<crate::brightness::Brightness>,
+    /// «Пёрышко» look for GTK programs (Системные настройки → Оформление)
+    pub gtk_theme: bool,
+    /// Our own session (DRM or standalone), not a nested window: may change user config
+    pub own_session: bool,
     pub controls: Option<crate::controls::Controls>,
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
@@ -649,6 +654,10 @@ impl FeatherCompositor {
             Appearance::Dark => Appearance::Light,
         };
         set_appearance(next);
+        // GTK programs follow (Firefox, GTK 3/4, libadwaita) when ours is the session
+        if self.gtk_theme && self.own_session {
+            crate::gtk_theme::apply(next == Appearance::Dark);
+        }
         self.shell.theme = WallpaperTheme::for_appearance(next);
         self.shell.invalidate_all();
         for w in &mut self.windows {
@@ -674,6 +683,7 @@ impl FeatherCompositor {
             dock_size: crate::theme::dock_icon(),
             dock_autohide: crate::theme::dock_autohide(),
             dock_edge: crate::theme::dock_edge(),
+            gtk_theme: self.gtk_theme,
             do_not_disturb: self.shell.dnd_enabled,
             dnd_schedule: self.shell.dnd_schedule,
             notify_apps: self.shell.notify_apps.clone(),
@@ -1710,6 +1720,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         mission: None,
         night: crate::night::NightShift::new(saved.night),
         brightness: None,
+        gtk_theme: saved.gtk_theme,
+        own_session: false,
         pending_autostart,
         idle_frame_timer_armed: false,
         frame_pending: false,
@@ -1831,6 +1843,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start Polkit Authentication Agent (for MouseVPN / pkexec password prompts) and D-Bus env
     spawn_session_services(&socket_name, is_standalone);
+    state.own_session = is_standalone || use_drm;
+    crate::gtk_theme::set_enabled(state.gtk_theme);
+    if state.own_session && state.gtk_theme {
+        crate::gtk_theme::apply(appearance() == Appearance::Dark);
+    }
     // Own polkit agent in a real session; FEATHER_POLKIT_AGENT=1 forces it (tests),
     // FEATHER_POLKIT=lxqt keeps the external agent.
     let own_agent = std::env::var("FEATHER_POLKIT").as_deref() != Ok("lxqt")

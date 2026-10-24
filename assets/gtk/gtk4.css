@@ -1,0 +1,29 @@
+/* Пёрышко (Feather DE) GTK 4 / libadwaita overrides: macOS-style window controls.
+   Loaded as the user stylesheet (libadwaita apps accept no themes, but read it). */
+
+@define-color accent_bg_color @feather_accent;
+@define-color accent_color @feather_accent;
+
+windowcontrols { border-spacing: 8px; }
+windowcontrols > button {
+  min-width: 14px; min-height: 14px;
+  margin: 0; padding: 0;
+  background: none; box-shadow: none; border: none;
+}
+windowcontrols > button > image {
+  min-width: 12px; min-height: 12px;
+  padding: 0;
+  border-radius: 50%;
+  background-image: none;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+  color: transparent;
+  -gtk-icon-size: 8px;
+}
+windowcontrols > button:hover > image { color: @feather_glyph; }
+windowcontrols > button.close > image    { background-color: #ff5f57; }
+windowcontrols > button.minimize > image { background-color: #febc2e; }
+windowcontrols > button.maximize > image { background-color: #28c840; }
+windowcontrols > button:active > image { filter: brightness(0.85); }
+windowcontrols > button:backdrop > image { background-color: @feather_dot_idle; }
+
+headerbar { min-height: 38px; box-shadow: inset 0 -1px @feather_border; }

@@ -80,6 +80,7 @@ pub enum Action {
     Animations,
     DockZoom,
     DockSize(u32),
+    GtkTheme,
     DockEdge(crate::theme::DockEdge),
     DockAutohide,
     Wallpaper,
@@ -695,6 +696,13 @@ impl Panel {
                     "Появление окон, меню и запуск приложений".into(),
                     Style::Toggle(c.animations),
                     Some(Action::Animations),
+                );
+                l.row(
+                    52.0,
+                    "Программы GTK в стиле Пёрышка",
+                    "Светофоры и заголовки в Firefox и программах GTK 3/4".into(),
+                    Style::Toggle(crate::gtk_theme::enabled()),
+                    Some(Action::GtkTheme),
                 );
                 l.end();
                 l.footer("Если анимации выключены, окна и панели появляются мгновенно.");
@@ -1847,6 +1855,20 @@ impl crate::FeatherCompositor {
                 self.night.prefs.kelvin = w[i].0;
                 self.night.jump();
                 self.apply_night_shift();
+                self.save_settings();
+            }
+            Action::GtkTheme => {
+                self.gtk_theme = !self.gtk_theme;
+                crate::gtk_theme::set_enabled(self.gtk_theme);
+                if self.own_session {
+                    if self.gtk_theme {
+                        crate::gtk_theme::apply(crate::theme::appearance() == crate::theme::Appearance::Dark);
+                    } else {
+                        crate::gtk_theme::restore();
+                    }
+                } else {
+                    self.system_settings.error = Some("Тема GTK меняется только в собственной сессии Пёрышка".into());
+                }
                 self.save_settings();
             }
             Action::DockSize(size) => {

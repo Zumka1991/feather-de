@@ -1,0 +1,9 @@
+/* Пёрышко (Feather DE) — light palette, macOS Tahoe */
+@define-color feather_accent #0a84ff;
+@define-color feather_window #f5f5f7;
+@define-color feather_header #ececee;
+@define-color feather_header_backdrop #f2f2f4;
+@define-color feather_border rgba(0, 0, 0, 0.10);
+@define-color feather_text #1d1d1f;
+@define-color feather_dot_idle #d0d0d4;
+@define-color feather_glyph rgba(0, 0, 0, 0.55);

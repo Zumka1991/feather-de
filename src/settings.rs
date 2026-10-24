@@ -287,6 +287,7 @@ pub struct Settings {
     pub dock_size: f32,
     pub dock_autohide: bool,
     pub dock_edge: crate::theme::DockEdge,
+    pub gtk_theme: bool,
     pub do_not_disturb: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
@@ -315,6 +316,7 @@ impl Default for Settings {
             dock_size: 50.0,
             dock_autohide: false,
             dock_edge: Default::default(),
+            gtk_theme: true,
             do_not_disturb: false,
             dnd_schedule: None,
             notify_apps: Vec::new(),
@@ -453,6 +455,11 @@ impl Settings {
                         s.dock_size = v;
                     }
                 }
+                "gtk_theme" => {
+                    if let Ok(v) = v.parse() {
+                        s.gtk_theme = v;
+                    }
+                }
                 "dock_edge" => {
                     if let Some(e) = crate::theme::DockEdge::parse(v) {
                         s.dock_edge = e;
@@ -549,7 +556,7 @@ impl Settings {
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
-        text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_edge={}\n", self.dock_size, self.dock_autohide, self.dock_edge.id()));
+        text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_edge={}\ngtk_theme={}\n", self.dock_size, self.dock_autohide, self.dock_edge.id(), self.gtk_theme));
         text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
         text.push_str(&format!("hot_corners={}\n", self.hot_corners.map(|a| a.id()).join(",")));
         text.push_str(&format!("night_manual={}\nnight_kelvin={}\n", self.night.manual, self.night.kelvin));

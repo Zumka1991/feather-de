@@ -1,0 +1,90 @@
+/* Пёрышко (Feather DE) GTK 3 overrides on top of Adwaita: macOS-style title bars.
+   Used by GTK 3 apps, Firefox and Chromium (GTK mode) for their own title bars. */
+
+@define-color theme_selected_bg_color @feather_accent;
+@define-color accent_color @feather_accent;
+
+/* Title bars: flat, the colour of the window, a hairline below */
+headerbar, .titlebar:not(headerbar) {
+  background-image: none;
+  background-color: @feather_header;
+  border-bottom: 1px solid @feather_border;
+  box-shadow: none;
+  min-height: 38px;
+  padding: 0 10px;
+}
+headerbar:backdrop, .titlebar:not(headerbar):backdrop {
+  background-color: @feather_header_backdrop;
+}
+headerbar .title { font-weight: 600; color: @feather_text; }
+
+/* Traffic lights: 12 px dots, glyph only on hover (like macOS). Selectors outrank
+   Adwaita's `button.titlebutton:not(.appmenu)`; the image keeps its 16 px, so an inset
+   ring in the title bar colour makes the dot 12 px. */
+headerbar button.titlebutton:not(.appmenu),
+.titlebar button.titlebutton:not(.appmenu),
+headerbar.default-decoration button.titlebutton:not(.appmenu),
+.default-decoration.titlebar button.titlebutton:not(.appmenu) {
+  min-width: 16px; min-height: 16px;
+  margin: 0 2px; padding: 0;
+  border: none; border-radius: 50%;
+  background-image: none;
+  box-shadow: inset 0 0 0 2px @feather_header, inset 0 0 0 2.5px rgba(0, 0, 0, 0.18);
+  color: transparent;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+}
+headerbar button.titlebutton:not(.appmenu) image,
+.titlebar button.titlebutton:not(.appmenu) image,
+headerbar.default-decoration button.titlebutton:not(.appmenu) image,
+.default-decoration.titlebar button.titlebutton:not(.appmenu) image {
+  opacity: 0;
+  -gtk-icon-transform: scale(0.55);
+}
+headerbar button.titlebutton:not(.appmenu):hover image,
+.titlebar button.titlebutton:not(.appmenu):hover image,
+headerbar.default-decoration button.titlebutton:not(.appmenu):hover image,
+.default-decoration.titlebar button.titlebutton:not(.appmenu):hover image { opacity: 1; color: @feather_glyph; }
+
+headerbar button.titlebutton:not(.appmenu).close,
+.titlebar button.titlebutton:not(.appmenu).close,
+headerbar.default-decoration button.titlebutton:not(.appmenu).close,
+.default-decoration.titlebar button.titlebutton:not(.appmenu).close { background-color: #ff5f57; }
+headerbar button.titlebutton:not(.appmenu).minimize,
+.titlebar button.titlebutton:not(.appmenu).minimize,
+headerbar.default-decoration button.titlebutton:not(.appmenu).minimize,
+.default-decoration.titlebar button.titlebutton:not(.appmenu).minimize { background-color: #febc2e; }
+headerbar button.titlebutton:not(.appmenu).maximize,
+.titlebar button.titlebutton:not(.appmenu).maximize,
+headerbar.default-decoration button.titlebutton:not(.appmenu).maximize,
+.default-decoration.titlebar button.titlebutton:not(.appmenu).maximize { background-color: #28c840; }
+headerbar button.titlebutton:not(.appmenu).close:active,
+.titlebar button.titlebutton:not(.appmenu).close:active,
+headerbar.default-decoration button.titlebutton:not(.appmenu).close:active,
+.default-decoration.titlebar button.titlebutton:not(.appmenu).close:active { background-color: shade(#ff5f57, 0.85); }
+headerbar button.titlebutton:not(.appmenu).minimize:active,
+.titlebar button.titlebutton:not(.appmenu).minimize:active,
+headerbar.default-decoration button.titlebutton:not(.appmenu).minimize:active,
+.default-decoration.titlebar button.titlebutton:not(.appmenu).minimize:active { background-color: shade(#febc2e, 0.85); }
+headerbar button.titlebutton:not(.appmenu).maximize:active,
+.titlebar button.titlebutton:not(.appmenu).maximize:active,
+headerbar.default-decoration button.titlebutton:not(.appmenu).maximize:active,
+.default-decoration.titlebar button.titlebutton:not(.appmenu).maximize:active { background-color: shade(#28c840, 0.85); }
+headerbar button.titlebutton:not(.appmenu):backdrop,
+.titlebar button.titlebutton:not(.appmenu):backdrop,
+headerbar.default-decoration button.titlebutton:not(.appmenu):backdrop,
+.default-decoration.titlebar button.titlebutton:not(.appmenu):backdrop {
+  background-color: @feather_dot_idle;
+  box-shadow: inset 0 0 0 2px @feather_header_backdrop, inset 0 0 0 2.5px rgba(0, 0, 0, 0.12);
+}
+
+/* Rounded windows with a soft shadow, as Feather draws its own */
+window.csd decoration, window.csd.background > decoration {
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.22), 0 0 0 1px @feather_border;
+}
+window.csd > .titlebar, window.csd > headerbar { border-radius: 12px 12px 0 0; }
+window.maximized decoration, window.tiled decoration { border-radius: 0; }
+
+/* Accent */
+button.suggested-action { background-image: none; background-color: @feather_accent; color: white; border-color: shade(@feather_accent, 0.9); }
