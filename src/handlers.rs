@@ -82,7 +82,7 @@ impl FeatherCompositor {
 
         // Never let a client open bigger than the usable desktop
         let max_w = sw - 16;
-        let max_h = sh - TOP_BAR_HEIGHT - crate::theme::DOCK_RESERVED_HEIGHT - win.titlebar_h();
+        let max_h = sh - TOP_BAR_HEIGHT - crate::theme::dock_reserved() - win.titlebar_h();
         if (win.width > max_w || win.height > max_h) && !win.maximized && !win.fullscreen {
             let w = win.width.min(max_w);
             let h = win.height.min(max_h);

@@ -122,16 +122,77 @@ impl Shortcut {
         Self::ALL.into_iter().find(|v| v.option() == s)
     }
 }
+/// What Caps Lock does (an XKB option compiled with the layouts)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Caps {
+    #[default]
+    Normal,
+    Ctrl,
+    Escape,
+    /// Switches the input source, like macOS «Caps Lock переключает языки»
+    Layout,
+    Off,
+}
+impl Caps {
+    pub const ALL: [Self; 5] = [Self::Normal, Self::Ctrl, Self::Escape, Self::Layout, Self::Off];
+    pub fn option(self) -> Option<&'static str> {
+        match self {
+            Self::Normal => None,
+            Self::Ctrl => Some("caps:ctrl_modifier"),
+            Self::Escape => Some("caps:escape"),
+            Self::Layout => Some("grp:caps_toggle"),
+            Self::Off => Some("caps:none"),
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Caps Lock",
+            Self::Ctrl => "Control",
+            Self::Escape => "Escape",
+            Self::Layout => "Переключение языка",
+            Self::Off => "Нет действия",
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Ctrl => "ctrl",
+            Self::Escape => "escape",
+            Self::Layout => "layout",
+            Self::Off => "off",
+        }
+    }
+    fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.id() == s)
+    }
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|c| *c == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
+
+/// Offered key repeat delays (ms) and rates (keys per second), short to long / slow to fast
+pub const REPEAT_DELAYS: [u32; 5] = [1000, 600, 400, 250, 150];
+pub const REPEAT_RATES: [u32; 5] = [10, 20, 35, 50, 70];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Keyboard {
     pub layouts: Vec<String>,
     pub shortcut: Shortcut,
+    pub caps: Caps,
+    /// Milliseconds before a held key repeats
+    pub repeat_delay: u32,
+    /// Repeats per second
+    pub repeat_rate: u32,
 }
 impl Default for Keyboard {
     fn default() -> Self {
         Self {
             layouts: vec!["us".into(), "ru".into()],
             shortcut: Shortcut::default(),
+            caps: Caps::default(),
+            repeat_delay: 250,
+            repeat_rate: 35,
         }
     }
 }
@@ -149,6 +210,10 @@ impl Keyboard {
         self.layouts = layouts;
         self
     }
+    /// XKB options: the layout shortcut and the Caps Lock behaviour
+    pub fn options(&self) -> String {
+        std::iter::once(self.shortcut.option()).chain(self.caps.option()).collect::<Vec<_>>().join(",")
+    }
     pub fn sources(&self) -> Vec<InputSource> {
         self.layouts.iter().filter_map(|s| source(s)).collect()
     }
@@ -160,7 +225,7 @@ impl Keyboard {
             "pc105",
             &self.layouts.join(","),
             "",
-            Some(self.shortcut.option().into()),
+            Some(self.options()),
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )
         .map(|k| k.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1))
@@ -219,6 +284,8 @@ pub struct Settings {
     pub scale: Option<f64>,
     pub dock_zoom: bool,
     pub dock_locked: bool,
+    pub dock_size: f32,
+    pub dock_autohide: bool,
     pub do_not_disturb: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
@@ -244,6 +311,8 @@ impl Default for Settings {
             scale: None,
             dock_zoom: true,
             dock_locked: false,
+            dock_size: 50.0,
+            dock_autohide: false,
             do_not_disturb: false,
             dnd_schedule: None,
             notify_apps: Vec::new(),
@@ -377,6 +446,16 @@ impl Settings {
                         s.notify_sounds = v;
                     }
                 }
+                "dock_size" => {
+                    if let Some(v) = v.parse::<f32>().ok().filter(|v| crate::theme::DOCK_SIZES.contains(v)) {
+                        s.dock_size = v;
+                    }
+                }
+                "dock_autohide" => {
+                    if let Ok(v) = v.parse() {
+                        s.dock_autohide = v;
+                    }
+                }
                 "do_not_disturb" => {
                     if let Ok(v) = v.parse() {
                         s.do_not_disturb = v;
@@ -402,6 +481,21 @@ impl Settings {
                 "keyboard_shortcut" => {
                     if let Some(v) = Shortcut::parse(v) {
                         s.keyboard.shortcut = v;
+                    }
+                }
+                "keyboard_caps" => {
+                    if let Some(v) = Caps::parse(v) {
+                        s.keyboard.caps = v;
+                    }
+                }
+                "keyboard_repeat_delay" => {
+                    if let Some(v) = v.parse().ok().filter(|v| REPEAT_DELAYS.contains(v)) {
+                        s.keyboard.repeat_delay = v;
+                    }
+                }
+                "keyboard_repeat_rate" => {
+                    if let Some(v) = v.parse().ok().filter(|v| REPEAT_RATES.contains(v)) {
+                        s.keyboard.repeat_rate = v;
                     }
                 }
                 "display" => {
@@ -444,9 +538,11 @@ impl Settings {
             self.dock_zoom,self.dock.as_ref().map(|d|format!("dock={}\n",d.join(","))).unwrap_or_default(),self.animations,self.keyboard.layouts.join(","),self.keyboard.shortcut.option(),
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
         text.push_str(&format!("idle_lock_minutes={}\nidle_blank_minutes={}\nidle_suspend_minutes={}\n",self.power.lock,self.power.blank,self.power.suspend));
+        text.push_str(&format!("keyboard_caps={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\n", self.keyboard.caps.id(), self.keyboard.repeat_delay, self.keyboard.repeat_rate));
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
+        text.push_str(&format!("dock_size={}\ndock_autohide={}\n", self.dock_size, self.dock_autohide));
         text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
         text.push_str(&format!("hot_corners={}\n", self.hot_corners.map(|a| a.id()).join(",")));
         text.push_str(&format!("night_manual={}\nnight_kelvin={}\n", self.night.manual, self.night.kelvin));
@@ -620,6 +716,32 @@ mod tests {
     }
 
     #[test]
+    fn key_repeat_and_caps_lock_round_trip_and_compile() {
+        let mut s = Settings::default();
+        assert_eq!((s.keyboard.repeat_delay, s.keyboard.repeat_rate, s.keyboard.caps), (250, 35, Caps::Normal));
+        assert_eq!(s.keyboard.options(), "grp:alt_shift_toggle");
+        s.keyboard.caps = Caps::Escape;
+        s.keyboard.repeat_delay = 400;
+        s.keyboard.repeat_rate = 50;
+        let back = Settings::parse(&s.text());
+        assert_eq!(back.keyboard, s.keyboard);
+        assert_eq!(back.keyboard.options(), "grp:alt_shift_toggle,caps:escape");
+        for caps in Caps::ALL {
+            let mut k = Keyboard::default();
+            k.caps = caps;
+            assert!(k.compile().is_ok(), "{caps:?} compiles");
+        }
+        let bad = Settings::parse("keyboard_repeat_delay=3\nkeyboard_repeat_rate=9999\nkeyboard_caps=boom");
+        assert_eq!((bad.keyboard.repeat_delay, bad.keyboard.repeat_rate, bad.keyboard.caps), (250, 35, Caps::Normal));
+        assert_eq!(Caps::Off.next(), Caps::Normal);
+        s.dock_size = 64.0;
+        s.dock_autohide = true;
+        let back = Settings::parse(&s.text());
+        assert!(back.dock_size == 64.0 && back.dock_autohide);
+        assert_eq!(Settings::parse("dock_size=13").dock_size, 50.0);
+    }
+
+    #[test]
     fn dock_pins_and_lock_survive_settings_round_trip() {
         let old = Settings::parse("dock=konsole,firefox\n");
         assert!(!old.dock_locked);
@@ -677,7 +799,8 @@ mod tests {
                 assert!(
                     Keyboard {
                         layouts: vec!["us".into(), source.id.into()],
-                        shortcut
+                        shortcut,
+                        ..Default::default()
                     }
                     .compile()
                     .is_ok(),

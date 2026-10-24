@@ -79,6 +79,8 @@ pub enum Action {
     Appearance(Appearance),
     Animations,
     DockZoom,
+    DockSize(u32),
+    DockAutohide,
     Wallpaper,
     WallpaperImage(Option<crate::wallpaper::ImageSource>),
     ChooseWallpaper,
@@ -97,6 +99,9 @@ pub enum Action {
     RemoveSource(usize),
     SelectSource(usize),
     Shortcut(Shortcut),
+    CapsLock,
+    RepeatDelay(u32),
+    RepeatRate(u32),
     CursorPicker,
     CursorTheme(Option<String>),
     CursorSize(u32),
@@ -753,6 +758,24 @@ impl Panel {
                 }
                 l.end();
                 l.footer("Сменить язык можно также в меню источников ввода в строке меню.");
+                l.header("Клавиши");
+                l.begin();
+                for (title, values, current, labels, make) in [
+                    ("Задержка перед повтором", crate::settings::REPEAT_DELAYS, c.keyboard.repeat_delay, ["Долго", "", "", "", "Коротко"], Action::RepeatDelay as fn(u32) -> Action),
+                    ("Скорость повтора", crate::settings::REPEAT_RATES, c.keyboard.repeat_rate, ["Медленно", "", "", "", "Быстро"], Action::RepeatRate as fn(u32) -> Action),
+                ] {
+                    let r = l.row(84.0, title, format!("{}  ·  {}", labels[0], labels[4]), Style::Row, None);
+                    let track = R::new(r.x + 14.0, r.y + 46.0, r.w - 28.0, 28.0);
+                    l.push(track, "", Style::Track, None);
+                    let sw = track.w / values.len() as f32;
+                    for (i, v) in values.into_iter().enumerate() {
+                        let label = if title.starts_with("Задержка") { format!("{v} мс") } else { format!("{v}/с") };
+                        l.push(R::new(track.x + i as f32 * sw, track.y, sw, track.h), &label, Style::Segment(current == v), Some(make(v)));
+                    }
+                }
+                l.row(52.0, "Клавиша Caps Lock", c.keyboard.caps.label().into(), Style::Row, kb.then_some(Action::CapsLock));
+                l.end();
+                l.footer("Автоповтор применяется сразу во всех программах. Нажмите на строку Caps Lock, чтобы выбрать её действие.");
             }
             Page::Pointer => {
                 let p = &c.pointer;
@@ -1112,6 +1135,13 @@ impl Panel {
                     Style::Toggle(c.dock_zoom),
                     Some(Action::DockZoom),
                 );
+                let r = l.row(48.0, "Размер значков", String::new(), Style::Row, None);
+                let track = right(r, 3.0 * 96.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, (size, label)) in crate::theme::DOCK_SIZES.iter().zip(["Маленькие", "Средние", "Крупные"]).enumerate() {
+                    l.push(R::new(track.x + i as f32 * 96.0, track.y, 96.0, track.h), label, Style::Segment(crate::theme::dock_icon() == *size), Some(Action::DockSize(*size as u32)));
+                }
+                l.row(52.0, "Автоматически скрывать Dock", "Появляется, когда указатель у нижнего края".into(), Style::Toggle(crate::theme::dock_autohide()), Some(Action::DockAutohide));
                 l.end();
                 l.header("Активные углы");
                 l.begin();
@@ -1708,6 +1738,25 @@ impl crate::FeatherCompositor {
             worker.keyboard(self.system_settings.keyboard_generation, config);
         }
     }
+    /// The room kept for the Dock changed: maximized windows take the new height
+    pub fn refit_maximized_windows(&mut self) {
+        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
+        for w in self.windows.iter_mut().filter(|w| w.maximized && !w.fullscreen) {
+            let h = sh - crate::theme::TOP_BAR_HEIGHT - crate::theme::dock_reserved() - w.titlebar_h();
+            w.resize_client(sw, h);
+        }
+        self.dock_model_dirty = true;
+        self.needs_redraw = true;
+    }
+
+    /// Programs learn the new repeat delay/rate at once (wl_keyboard.repeat_info)
+    pub fn apply_key_repeat(&mut self) {
+        let (rate, delay) = (self.keyboard_config.repeat_rate as i32, self.keyboard_config.repeat_delay as i32);
+        let keyboard = self.keyboard.clone();
+        keyboard.change_repeat_info(rate, delay);
+        self.save_settings();
+    }
+
     pub fn install_keyboard(
         &mut self,
         generation: u64,
@@ -1790,6 +1839,21 @@ impl crate::FeatherCompositor {
                 self.night.prefs.kelvin = w[i].0;
                 self.night.jump();
                 self.apply_night_shift();
+                self.save_settings();
+            }
+            Action::DockSize(size) => {
+                crate::theme::set_dock_icon(size as f32);
+                self.shell.resize_dock();
+                self.refit_maximized_windows();
+                self.save_settings();
+            }
+            Action::DockAutohide => {
+                let on = !crate::theme::dock_autohide();
+                crate::theme::set_dock_autohide(on);
+                self.shell.dock_hidden = on;
+                self.animations.set_dock_hidden(on);
+                self.shell.desktop.invalidate();
+                self.refit_maximized_windows();
                 self.save_settings();
             }
             Action::HotCorner(i) => {
@@ -1947,6 +2011,19 @@ impl crate::FeatherCompositor {
                 let mut config = self.keyboard_config.clone();
                 config.shortcut = shortcut;
                 self.request_keyboard(config);
+            }
+            Action::CapsLock => {
+                let mut config = self.keyboard_config.clone();
+                config.caps = config.caps.next();
+                self.request_keyboard(config);
+            }
+            Action::RepeatDelay(delay) => {
+                self.keyboard_config.repeat_delay = delay;
+                self.apply_key_repeat();
+            }
+            Action::RepeatRate(rate) => {
+                self.keyboard_config.repeat_rate = rate;
+                self.apply_key_repeat();
             }
             Action::CursorPicker => {
                 self.system_settings.cursor_picker = !self.system_settings.cursor_picker;

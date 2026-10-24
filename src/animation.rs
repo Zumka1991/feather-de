@@ -108,6 +108,8 @@ struct MissionMotion {
 #[derive(Default)]
 pub struct Animations {
     disabled: bool,
+    /// Auto-hide Dock: 0 shown, 1 below the screen
+    dock: Option<Spring>,
     slide: Option<Slide>,
     mission: Option<MissionMotion>,
     windows: HashMap<u64, WindowMotion>,
@@ -178,6 +180,21 @@ impl Animations {
     /// Still on screen: open, or flying back
     pub fn mission_visible(&self) -> bool {
         self.mission.is_some()
+    }
+
+    pub fn set_dock_hidden(&mut self, hidden: bool) {
+        let target = if hidden { 1.0 } else { 0.0 };
+        if self.disabled {
+            self.dock = Some(Spring::new(target, target));
+            return;
+        }
+        let s = self.dock.get_or_insert_with(|| Spring::new(1.0 - target, target));
+        s.target = target;
+    }
+
+    /// How far the Dock is pushed below the screen (0…1)
+    pub fn dock_hidden(&self) -> f64 {
+        self.dock.as_ref().map_or(0.0, |s| s.value)
     }
 
     /// This desktop is sliding in or out right now
@@ -252,6 +269,9 @@ impl Animations {
                 self.slide = None;
             }
         }
+        if let Some(d) = self.dock.as_mut() {
+            d.advance(dt);
+        }
         if let Some(m) = self.mission.as_mut() {
             if !std::mem::take(&mut m.fresh) {
                 m.spring.advance(dt);
@@ -261,6 +281,7 @@ impl Animations {
             }
         }
         let active = self.slide.is_some()
+            || self.dock.as_ref().is_some_and(Spring::active)
             || self.mission.as_ref().is_some_and(|m| m.spring.active())
             || self.windows.values().any(|w| w.spring.active())
             || self.overlay.as_ref().is_some_and(Spring::active)

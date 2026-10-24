@@ -20,7 +20,7 @@ use crate::theme::{
     appearance, draw_control_center_icon, draw_feather_logo, draw_glass_panel, draw_search_icon,
     draw_wifi_icon, fill_circle, fill_rounded_rect, palette, rgba,
     stroke_line, stroke_rounded_rect, to_phys, ui_scale, with_alpha, Appearance, WallpaperTheme,
-    DOCK_BOTTOM_MARGIN, DOCK_ICON_BASE, DOCK_ICON_GAP, DOCK_PAD_X, DOCK_PAD_Y, DOCK_RADIUS,
+    DOCK_BOTTOM_MARGIN, DOCK_ICON_GAP, DOCK_PAD_X, DOCK_PAD_Y, DOCK_RADIUS, dock_icon,
     TOP_BAR_HEIGHT,
 };
 
@@ -28,7 +28,9 @@ use crate::theme::{
 /// upscale it with linear filtering (16x less CPU work than a full-res 4K raster).
 pub const WALLPAPER_DIV: i32 = 4;
 /// Logical height of the Dock buffer (room for magnified icons and the hover label)
-const DOCK_BUF_H: i32 = 136;
+fn dock_buf_height() -> i32 {
+    (crate::theme::dock_icon() * (1.0 + DOCK_MAGNIFY)) as i32 + 61
+}
 /// Maximum Dock magnification
 const DOCK_MAGNIFY: f32 = 0.5;
 
@@ -779,6 +781,8 @@ pub struct MacShell {
     /// Mission Control strip and title (CPU part; windows move on the GPU)
     pub mission: Option<MissionOverlay>,
     pub mission_dim: MemoryRenderBuffer,
+    /// Auto-hidden Dock is out of the way (it slides back at the bottom edge)
+    pub dock_hidden: bool,
     /// Wallpaper under the menu bar is dark (None until the first wallpaper arrives)
     pub bar_on_dark: Option<bool>,
     pub launchpad_bg_key: Option<(WallpaperTheme, i32, i32, bool)>,
@@ -817,9 +821,9 @@ impl MacShell {
             tray_items: Vec::new(),
             input_sources: crate::settings::Keyboard::default().sources(),input_selected:0,input_shortcut:"Alt + Shift",
             tray_menu: None,
-            dock_buffer: new_buffer(to_phys(w), to_phys(DOCK_BUF_H)),
+            dock_buffer: new_buffer(to_phys(w), to_phys(dock_buf_height())),
             dock_buf_w: w,
-            dock_buf_h: DOCK_BUF_H,
+            dock_buf_h: dock_buf_height(),
             dock_dirty: true,
             dock_zoom_enabled: true,
             dock_items: Vec::new(),
@@ -876,6 +880,7 @@ impl MacShell {
             launchpad_bg: new_buffer(1, 1),
             mission: None,
             mission_dim: black_buffer(),
+            dock_hidden: false,
             bar_on_dark: None,
             launchpad_bg_key: None,
             launchpad_bg_requested: None,
@@ -1265,6 +1270,7 @@ impl MacShell {
         self.screen_h = h;
         self.topbar_buffer = new_buffer(to_phys(w), to_phys(TOP_BAR_HEIGHT));
         self.dock_buf_w = w;
+        self.dock_buf_h = dock_buf_height();
         self.dock_anchor = None;
         self.dock_buffer = new_buffer(to_phys(w), to_phys(self.dock_buf_h));
         self.overlay_buffer = new_buffer(1, 1);
@@ -1643,9 +1649,9 @@ impl MacShell {
     pub fn start_bounce(&mut self, app: usize, first_new_window: u64, fonts: &mut FontSystem) {
         let target = DockTarget::App(app);
         let Some(item) = self.dock_items.iter().find(|i| i.target == target).cloned() else { return };
-        let px = to_phys(DOCK_ICON_BASE as i32);
+        let px = to_phys(dock_icon() as i32);
         let Some(mut pm) = tiny_skia::Pixmap::new(px as u32, px as u32) else { return };
-        draw_any_icon(&mut pm.as_mut(), fonts, &mut self.icons, &item.icon, &item.label, 0.0, 0.0, DOCK_ICON_BASE);
+        draw_any_icon(&mut pm.as_mut(), fonts, &mut self.icons, &item.icon, &item.label, 0.0, 0.0, dock_icon());
         let buffer = MemoryRenderBuffer::from_slice(pm.data(), smithay::backend::allocator::Fourcc::Abgr8888, (px, px), 1, smithay::utils::Transform::Normal, None);
         self.bounce = Some(Bounce { target, app, started: Instant::now(), first_new_window, finish_at: None, buffer, px });
         self.dock_dirty = true;
@@ -1658,10 +1664,19 @@ impl MacShell {
     }
 
     fn dock_origin(&self) -> (f32, f32) {
-        (
-            ((self.screen_w - self.dock_buf_w) / 2) as f32,
-            (self.screen_h - self.dock_buf_h) as f32,
-        )
+        // A hidden Dock sits below the screen: every hit test misses it by itself
+        let y = if self.dock_hidden { self.screen_h } else { self.screen_h - self.dock_buf_h };
+        (((self.screen_w - self.dock_buf_w) / 2) as f32, y as f32)
+    }
+
+    /// New icon size: the buffer follows (magnification and label room scale with it)
+    pub fn resize_dock(&mut self) {
+        self.dock_buf_h = dock_buf_height();
+        self.dock_buffer = new_buffer(to_phys(self.dock_buf_w), to_phys(self.dock_buf_h));
+        self.dock_painted.clear();
+        self.dock_anchor = None;
+        self.dock_dirty = true;
+        self.desktop.invalidate();
     }
 
     // ───────────────────────── Layouts (shared by drawing and hit testing) ─────────────
@@ -2594,32 +2609,32 @@ impl MacShell {
         let buf_h = self.dock_buf_h as f32;
 
         // Base layout (unmagnified) to know where the cursor is relative to icons
-        let base_total = n as f32 * DOCK_ICON_BASE + n.saturating_sub(1) as f32 * DOCK_ICON_GAP + sep_w;
+        let base_total = n as f32 * dock_icon() + n.saturating_sub(1) as f32 * DOCK_ICON_GAP + sep_w;
         let base_x0 = (buf_w - base_total) * 0.5;
         let base_center = |i: usize| {
             base_x0
-                + i as f32 * (DOCK_ICON_BASE + DOCK_ICON_GAP)
+                + i as f32 * (dock_icon() + DOCK_ICON_GAP)
                 + SEP * boundaries.iter().filter(|&&b| i >= b).count() as f32
-                + DOCK_ICON_BASE * 0.5
+                + dock_icon() * 0.5
         };
 
         let sizes: Vec<f32> = (0..n)
             .map(|i| match (self.dock_zoom_enabled, self.dock_cursor_x) {
                 (true, Some(cx)) => {
-                    let d = ((cx - base_center(i)) / (DOCK_ICON_BASE * 2.6)).abs();
+                    let d = ((cx - base_center(i)) / (dock_icon() * 2.6)).abs();
                     let f = if d < 1.0 { (d * std::f32::consts::FRAC_PI_2).cos().powi(2) } else { 0.0 };
-                    DOCK_ICON_BASE * (1.0 + DOCK_MAGNIFY * f)
+                    dock_icon() * (1.0 + DOCK_MAGNIFY * f)
                 }
-                _ => DOCK_ICON_BASE,
+                _ => dock_icon(),
             })
             .collect();
 
         // An empty slot opens where a dragged app would land
         let gap = self.dock_gap;
-        let gap_w = if gap.is_some() { DOCK_ICON_BASE + DOCK_ICON_GAP } else { 0.0 };
+        let gap_w = if gap.is_some() { dock_icon() + DOCK_ICON_GAP } else { 0.0 };
         let content_w: f32 =
             sizes.iter().sum::<f32>() + n.saturating_sub(1) as f32 * DOCK_ICON_GAP + sep_w + gap_w;
-        let bar_h = DOCK_ICON_BASE + DOCK_PAD_Y * 2.0;
+        let bar_h = dock_icon() + DOCK_PAD_Y * 2.0;
         let bar_w = content_w + DOCK_PAD_X * 2.0;
         let mut bar = R::new((buf_w - bar_w) * 0.5, buf_h - bar_h - DOCK_BOTTOM_MARGIN as f32, bar_w, bar_h);
         let baseline = bar.y + bar.h - DOCK_PAD_Y;
@@ -2702,7 +2717,7 @@ impl MacShell {
                     if bouncing == Some(item.target) {
                         continue;
                     }
-                    if slot.size == DOCK_ICON_BASE {
+                    if slot.size == dock_icon() {
                         draw_any_icon(&mut pm, fonts, icons, &item.icon, &item.label, slot.x, slot.y, slot.size);
                     } else {
                         draw_resampled_icon(&mut pm, icons, &item.icon, &item.label, slot.x, slot.y, slot.size);
@@ -3610,6 +3625,22 @@ mod appmenu_tests {
             }
         }
         sheet.save(out).unwrap();
+    }
+
+    #[test]
+    fn hidden_dock_takes_no_clicks_and_its_buffer_follows_the_icon_size() {
+        let mut shell = MacShell::new(1440, 900);
+        shell.set_dock_items(vec![DockItem { target: DockTarget::Trash, label: "Корзина".into(), icon: AppIcon { kind: crate::apps::IconKind::TrashEmpty, name: None }, windows: 0, pinned: false }]);
+        let mut fonts = FontSystem::new();
+        shell.ensure_dock_rendered(&mut fonts);
+        let (x, y) = (720.0, 900.0 - 30.0);
+        assert!(shell.dock_contains(x, y), "shown: the bar is hit");
+        shell.dock_hidden = true;
+        assert!(!shell.dock_contains(x, y) && shell.dock_target_at(x, y).is_none(), "hidden: clicks pass through");
+        // Sizes are pure functions of the icon size (the global is not touched in tests)
+        assert_eq!(crate::theme::reserved_for(50.0, false), 74, "the old fixed value");
+        assert!(crate::theme::reserved_for(64.0, false) > 74);
+        assert_eq!(crate::theme::reserved_for(64.0, true), 4, "maximized windows reach almost the bottom");
     }
 
     #[test]

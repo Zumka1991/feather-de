@@ -23,7 +23,7 @@ use crate::text::FontSystem;
 use crate::theme::{
     appearance, draw_feather_logo, fill_circle, fill_rounded_rect, fill_squircle_gradient, palette,
     render_shadow_tile, rgba, stroke_circle, stroke_line, stroke_rounded_rect, to_phys, ui_scale,
-    Appearance, DOCK_RESERVED_HEIGHT, SHADOW_PAD, TITLEBAR_HEIGHT, TOP_BAR_HEIGHT, TRAFFIC_CENTERS,
+    Appearance, SHADOW_PAD, TITLEBAR_HEIGHT, TOP_BAR_HEIGHT, TRAFFIC_CENTERS,
     TRAFFIC_RADIUS, WINDOW_CORNER_RADIUS,
 };
 
@@ -601,7 +601,7 @@ impl ManagedWindow {
             self.y = TOP_BAR_HEIGHT;
             self.maximized = true;
             let max_w = screen_w.max(MIN_WINDOW_W);
-            let max_h = (screen_h - TOP_BAR_HEIGHT - DOCK_RESERVED_HEIGHT - self.titlebar_h())
+            let max_h = (screen_h - TOP_BAR_HEIGHT - crate::theme::dock_reserved() - self.titlebar_h())
                 .max(MIN_WINDOW_H);
             self.set_xdg_state(xdg_toplevel::State::Maximized, true);
             self.resize_client(max_w, max_h);
@@ -622,7 +622,7 @@ impl ManagedWindow {
 
     /// Restored size when nothing was remembered: a comfortable part of the screen
     pub fn fallback_size(screen_w: i32, screen_h: i32) -> (i32, i32) {
-        let usable = screen_h - TOP_BAR_HEIGHT - DOCK_RESERVED_HEIGHT;
+        let usable = screen_h - TOP_BAR_HEIGHT - crate::theme::dock_reserved();
         (((screen_w as f32 * 0.6) as i32).max(MIN_WINDOW_W), ((usable as f32 * 0.75) as i32).max(MIN_WINDOW_H))
     }
 
@@ -685,7 +685,7 @@ impl ManagedWindow {
             // client's own idea may be a tiny size it saved earlier.
             let (w, h) = Self::fallback_size(screen_w, screen_h);
             self.x = (screen_w - w) / 2;
-            self.y = TOP_BAR_HEIGHT + ((screen_h - TOP_BAR_HEIGHT - DOCK_RESERVED_HEIGHT - h) / 2).max(0);
+            self.y = TOP_BAR_HEIGHT + ((screen_h - TOP_BAR_HEIGHT - crate::theme::dock_reserved() - h) / 2).max(0);
             self.resize_client(w, h);
         } else if let Some(t) = self.toplevel() {
             // Let the client pick its preferred size again

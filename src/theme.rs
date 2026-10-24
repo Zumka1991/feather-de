@@ -13,11 +13,35 @@ pub const WINDOW_CORNER_RADIUS: f32 = 12.0;
 pub const DOCK_BOTTOM_MARGIN: i32 = 6;
 pub const DOCK_PAD_X: f32 = 8.0;
 pub const DOCK_PAD_Y: f32 = 7.0;
-pub const DOCK_ICON_BASE: f32 = 50.0;
 pub const DOCK_ICON_GAP: f32 = 6.0;
 pub const DOCK_RADIUS: f32 = 22.0;
-/// Vertical space kept free for the Dock when a window is maximized
-pub const DOCK_RESERVED_HEIGHT: i32 = 74;
+/// Offered Dock icon sizes (Системные настройки → Рабочий стол и Dock)
+pub const DOCK_SIZES: [f32; 3] = [40.0, 50.0, 64.0];
+
+static DOCK_ICON_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x4248_0000); // 50.0
+static DOCK_AUTOHIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Resting size of a Dock icon (logical points)
+pub fn dock_icon() -> f32 {
+    f32::from_bits(DOCK_ICON_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
+pub fn set_dock_icon(size: f32) {
+    DOCK_ICON_BITS.store(size.clamp(32.0, 80.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+pub fn dock_autohide() -> bool {
+    DOCK_AUTOHIDE.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub fn set_dock_autohide(on: bool) {
+    DOCK_AUTOHIDE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+/// Vertical space kept free for the Dock when a window is maximized: the bar and its
+/// margins, or just a sliver when the Dock hides itself
+pub fn dock_reserved() -> i32 {
+    reserved_for(dock_icon(), dock_autohide())
+}
+pub fn reserved_for(icon: f32, autohide: bool) -> i32 {
+    if autohide { 4 } else { (icon + DOCK_PAD_Y * 2.0) as i32 + DOCK_BOTTOM_MARGIN + 4 }
+}
 
 /// Traffic light geometry (relative to the window's top-left corner)
 pub const TRAFFIC_RADIUS: f32 = 6.0;

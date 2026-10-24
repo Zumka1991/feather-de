@@ -645,6 +645,24 @@ impl FeatherCompositor {
         self.needs_redraw = true;
     }
 
+    /// Auto-hide Dock: the bottom edge brings it, leaving its area sends it away (not while
+    /// its menu is open or an icon is being dragged onto it)
+    pub(crate) fn dock_autohide_motion(&mut self, x: f64, y: f64) {
+        if !crate::theme::dock_autohide() {
+            return;
+        }
+        let _ = x;
+        let h = self.shell.screen_h as f64;
+        let busy = self.shell.dock_menu.is_some() || self.icon_drag.as_ref().is_some_and(|d| d.active) && y > h - self.shell.dock_buf_h as f64;
+        let hidden = if self.shell.dock_hidden { y < h - 2.0 } else { !busy && y < h - self.shell.dock_buf_h as f64 * 0.75 };
+        if hidden != self.shell.dock_hidden {
+            self.shell.dock_hidden = hidden;
+            self.animations.set_dock_hidden(hidden);
+            self.shell.update_pointer_hover(x, y);
+            self.needs_redraw = true;
+        }
+    }
+
     fn run_hot_corner(&mut self, action: crate::hot_corners::HotAction) {
         use crate::hot_corners::HotAction as H;
         match action {
@@ -751,6 +769,7 @@ impl FeatherCompositor {
                 return;
             }
         }
+        self.dock_autohide_motion(pos.x, pos.y);
         // Not while a button is held: a drag into a corner is not a request
         if self.pressed_buttons.is_empty() {
             let screen = (self.shell.screen_w as f64, self.shell.screen_h as f64);

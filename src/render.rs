@@ -354,12 +354,14 @@ pub(crate) fn build_scene(
     }
     if !fullscreen_top || launchpad_open {
         let dock_x = (((shell.screen_w - shell.dock_buf_w) as f64) * 0.5 * scale).round();
-        let dock_y = (((shell.screen_h - shell.dock_buf_h) as f64) * scale).round();
+        // Auto-hide: the bar slides below the screen (GPU offset of the same buffer)
+        let hide = animations.dock_hidden() * (crate::theme::dock_reserved().max((crate::theme::dock_icon() + 24.0) as i32) as f64 + 8.0);
+        let dock_y = (((shell.screen_h - shell.dock_buf_h) as f64 + hide) * scale).round();
         if let Some(b) = shell.bounce.as_ref() {
             if let Some((x, y, size)) = shell.dock_slot_global(b.target) {
                 let (lift, _) = b.offset(Instant::now());
                 // Centred on the slot, so a magnified slot still lines up
-                let inset = (size - crate::theme::DOCK_ICON_BASE) as f64 * 0.5;
+                let inset = (size - crate::theme::dock_icon()) as f64 * 0.5;
                 let src = smithay::utils::Rectangle::new((0.0, 0.0).into(), (b.px as f64, b.px as f64).into());
                 let loc = (((x as f64 + inset) * scale).round(), ((y as f64 + inset * 2.0 - lift as f64) * scale).round());
                 mem(&mut out, loc, &b.buffer, Some(src), crate::animation::Visual::default());

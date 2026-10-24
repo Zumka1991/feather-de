@@ -53,7 +53,7 @@ use smithay::{
 
 use crate::{
     render::{FeatherElement, SceneElement},
-    theme::{rgba, ui_scale, DOCK_RESERVED_HEIGHT, TOP_BAR_HEIGHT},
+    theme::{rgba, ui_scale, TOP_BAR_HEIGHT},
     FeatherCompositor,
 };
 
@@ -348,7 +348,7 @@ impl Desktop {
 
     fn grid(screen: (i32, i32)) -> (usize, usize) {
         let top = TOP_BAR_HEIGHT as f32 + MARGIN_TOP;
-        let rows = (((screen.1 as f32 - top - DOCK_RESERVED_HEIGHT as f32) / CELL_H).floor() as usize).max(1);
+        let rows = (((screen.1 as f32 - top - crate::theme::dock_reserved() as f32) / CELL_H).floor() as usize).max(1);
         let cols = (((screen.0 as f32 - MARGIN_RIGHT) / CELL_W).floor() as usize).max(1);
         (rows, cols)
     }

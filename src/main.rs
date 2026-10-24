@@ -96,7 +96,7 @@ use crate::{
         ShellClickAction, SwitcherItem, R,
     },
     text::FontSystem,
-    theme::{appearance, set_appearance, set_ui_scale, Appearance, WallpaperTheme, DOCK_RESERVED_HEIGHT, TOP_BAR_HEIGHT},
+    theme::{appearance, set_appearance, set_ui_scale, Appearance, WallpaperTheme, TOP_BAR_HEIGHT},
     window::{Edges, ManagedWindow, WindowBackend},
 };
 
@@ -359,7 +359,7 @@ impl FeatherCompositor {
             if win.fullscreen {
                 win.resize_client(sw, sh);
             } else if win.maximized {
-                win.resize_client(sw, sh - TOP_BAR_HEIGHT - DOCK_RESERVED_HEIGHT - win.titlebar_h());
+                win.resize_client(sw, sh - TOP_BAR_HEIGHT - crate::theme::dock_reserved() - win.titlebar_h());
             } else {
                 if win.is_builtin(){win.resize_client(win.width.min(sw-24),win.height.min(sh-TOP_BAR_HEIGHT-48));}
                 win.x=win.x.clamp(0,(sw-win.width).max(0));
@@ -669,6 +669,8 @@ impl FeatherCompositor {
             scale: self.explicit_scale,
             dock_zoom: self.shell.dock_zoom_enabled,
             dock_locked: self.dock_locked,
+            dock_size: crate::theme::dock_icon(),
+            dock_autohide: crate::theme::dock_autohide(),
             do_not_disturb: self.shell.dnd_enabled,
             dnd_schedule: self.shell.dnd_schedule,
             notify_apps: self.shell.notify_apps.clone(),
@@ -1510,6 +1512,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let use_drm = args.iter().any(|a| a == "--drm") || (!nested && !is_windowed);
 
     let saved = crate::settings::Settings::load();
+    // Before the shell exists: its Dock buffer is sized from these
+    crate::theme::set_dock_icon(saved.dock_size);
+    crate::theme::set_dock_autohide(saved.dock_autohide);
     let mut winit_loop = None;
     let mut drm_info = None;
     let mut backend = if use_drm {
@@ -1595,9 +1600,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         model: "pc105",
         layout: &keyboard_layouts,
         variant: "",
-        options: Some(saved.keyboard.shortcut.option().to_string()),
+        options: Some(saved.keyboard.options()),
     };
-    let keyboard = seat.add_keyboard(xkb_config, 250, 35)?;
+    let keyboard = seat.add_keyboard(xkb_config, saved.keyboard.repeat_delay as i32, saved.keyboard.repeat_rate as i32)?;
     let pointer = seat.add_pointer();
 
     let handle = event_loop.handle();
@@ -1738,6 +1743,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             shell.theme = saved.wallpaper;
             shell.dock_zoom_enabled = saved.dock_zoom;
             shell.dnd_enabled = saved.do_not_disturb;
+            shell.dock_hidden = saved.dock_autohide;
             shell.dnd_schedule = saved.dnd_schedule;
             shell.notify_apps = saved.notify_apps.clone();
             shell.notify_sounds = saved.notify_sounds;
@@ -1787,6 +1793,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
 
     let raster = crate::raster::RasterSender::new(&state.loop_handle, state.fonts.for_worker())?;
     state.shell.attach_raster(raster);
+    if crate::theme::dock_autohide() {
+        // Starts hidden: one short slide out of the way at login
+        state.animations.set_dock_hidden(true);
+    }
     state.start_desktop()?;
     state.start_trash()?;
     crate::apps::set_cursor_env(
