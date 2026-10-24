@@ -762,6 +762,14 @@ impl FeatherCompositor {
             }
             self.dock_model_dirty = true;
         }
+        // Over a program's window: hand over to a real Wayland drag of a launcher file
+        if let DragSource::Launchpad { app } = drag.source {
+            if self.windows.iter().any(|w| w.is_visible() && w.contains_point(pos.x, pos.y)) && self.launchpad_drag_to_client(app) {
+                self.needs_redraw = true;
+                return;
+            }
+        }
+        let Some(drag) = self.icon_drag.as_mut() else { return };
         let can_pin = !matches!(drag.source, DragSource::DockApp { pinned: false, .. })
             || self.shell.dock_in_pinned_section(pos.x);
         let gap = (can_pin && self.shell.dock_in_drop_zone(pos.x, pos.y))

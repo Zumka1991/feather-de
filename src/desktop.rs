@@ -196,6 +196,8 @@ struct IconDrag {
     start: (f64, f64),
     paths: Vec<PathBuf>,
     active: bool,
+    /// A Launchpad app offered to programs as a launcher file
+    launcher_app: Option<usize>,
 }
 
 /// A drag started by a program; the desktop may become its drop target
@@ -257,6 +259,11 @@ pub struct Desktop {
 }
 
 impl Desktop {
+    /// Debug checks: what the current drag offers to programs
+    pub fn dragged_paths(&self) -> Vec<PathBuf> {
+        self.drag.as_ref().map(|d| d.paths.clone()).unwrap_or_default()
+    }
+
     /// Invalidate pending drag paths too, so a late worker reply cannot finish a drop.
     pub fn cancel_interaction(&mut self) {
         self.drag = None;
@@ -835,6 +842,34 @@ impl FeatherCompositor {
             && !self.shell.dock_in_drop_zone(x, y)
     }
 
+    /// A Launchpad app dragged over a program's window: from here on it is an ordinary
+    /// Wayland drag of a launcher file, so Files (or any app) can copy it into a folder.
+    /// The file lives in the runtime dir; the ghost icon stays under the pointer.
+    pub fn launchpad_drag_to_client(&mut self, app: usize) -> bool {
+        let entry = &self.app_registry.apps[app];
+        let Some(text) = launcher_text(entry) else { return false };
+        let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else { return false };
+        let dir = runtime.join("feather-launchers");
+        let stem: String = entry.name.chars().filter(|c| *c != '/' && !c.is_control()).take(80).collect();
+        let path = dir.join(format!("{}.desktop", if stem.trim().is_empty() { "Программа" } else { stem.as_str() }));
+        use std::os::unix::fs::OpenOptionsExt;
+        // A few hundred bytes in tmpfs, on a user action: written here, before it is offered
+        let written = std::fs::create_dir_all(&dir).and_then(|_| {
+            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(&path)?;
+            std::io::Write::write_all(&mut f, text.as_bytes())
+        });
+        if written.is_err() {
+            return false;
+        }
+        let pos = (self.pointer_location.x, self.pointer_location.y);
+        self.icon_drag = None;
+        self.shell.dock_dragging = false;
+        self.shell.set_dock_gap(None);
+        self.dock_model_dirty = true;
+        self.start_icon_drag(IconDrag { start: pos, paths: vec![path], active: false, launcher_app: Some(app) });
+        true
+    }
+
     /// An app dropped from Launchpad: a launcher in the folder icon under the pointer, or
     /// on the desktop at the pointer's cell. Position first, then the file, on one thread,
     /// so the listing that the new file triggers already knows where it goes.
@@ -933,7 +968,7 @@ impl FeatherCompositor {
                 // Pressing a selected icon may become a drag of the whole selection
                 if desktop.selected.contains(&path) {
                     let paths = desktop.selected_paths();
-                    desktop.drag = Some(IconDrag { start: (x, y), paths, active: false });
+                    desktop.drag = Some(IconDrag { start: (x, y), paths, active: false, launcher_app: None });
                 }
             }
             None => {
@@ -1025,6 +1060,7 @@ impl FeatherCompositor {
 
     /// The button went up: a program may now read the data (finished) or refuse (cancelled)
     pub fn desktop_dnd_dropped(&mut self) {
+        self.shell.set_ghost(None);
         self.shell.desktop.dropped = self.shell.desktop.drag.take();
         self.shell.desktop.hover_folder = None;
         self.needs_redraw = true;
@@ -1032,8 +1068,21 @@ impl FeatherCompositor {
 
     /// No program took the icons: a desktop folder takes them, or they move on the grid
     pub fn desktop_dnd_cancelled(&mut self) {
+        self.shell.set_ghost(None);
         let Some(drag) = self.shell.desktop.dropped.take() else { return };
         let p = (self.pointer_location.x, self.pointer_location.y);
+        // A Launchpad app no program took: the Dock pins it, the desktop gets a launcher
+        if let Some(app) = drag.launcher_app {
+            if self.shell.dock_in_drop_zone(p.0, p.1) {
+                let id = self.app_registry.apps[app].id.clone();
+                let gap = self.shell.dock_insert_index(p.0);
+                self.pin_app(&id, Some(gap));
+            } else if self.over_bare_desktop(p.0, p.1) {
+                self.add_launcher(app, p.0, p.1);
+            }
+            self.needs_redraw = true;
+            return;
+        }
         if self.over_dock_trash(p.0, p.1) {
             self.trash_paths(drag.paths);
             return;
@@ -1328,7 +1377,7 @@ mod tests {
 
         let mut desktop = Desktop::new();
         let path = PathBuf::from("/not-read/secret.txt");
-        desktop.drag = Some(IconDrag {start:(10.0,10.0),paths:vec![path.clone()],active:true});
+        desktop.drag = Some(IconDrag {start:(10.0,10.0),paths:vec![path.clone()],active:true,launcher_app:None});
         desktop.dropped = desktop.drag.clone();
         desktop.client_drag = Some(ClientDrag {id:7,paths:Some(vec![path.clone()]),drop_into:Some("/not-written".into())});
         desktop.rubber = Some(((0.0,0.0),(20.0,20.0)));

@@ -73,6 +73,32 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             assert!(l.executable && item.name.ends_with(".desktop"));
             eprintln!("[feather-launcher-check] listed «{}» → {}: ok", l.name, crate::desktop::launcher_command(&l.exec));
         })?;
+        at(state, 3400, |s| {
+            // Over a window the drag becomes a Wayland drag of a launcher file
+            let app = s.app_registry.apps.iter().position(|a| a.id == "firefox").unwrap_or(1);
+            let entry = s.app_registry.apps[app].clone();
+            let w = s.windows.iter().rev().find(|w| w.is_visible()).expect("a window to drag over");
+            let over = ((w.x + w.width / 2) as f64, (w.y + 40) as f64);
+            s.pointer_location = (over.0 - 20.0, over.1).into();
+            s.begin_icon_press(crate::DragSource::Launchpad { app }, crate::shell::AppIcon::of(&entry), entry.name.clone(), crate::shell::ShellClickAction::None);
+            s.pointer_location = over.into();
+            s.update_icon_drag();
+            assert!(s.icon_drag.is_none(), "handed over to the Wayland drag");
+            assert!(s.shell.ghost.is_some(), "the icon stays under the pointer");
+            let offered = s.shell.desktop.dragged_paths();
+            assert!(offered.len() == 1 && offered[0].exists() && offered[0].extension().is_some_and(|e| e == "desktop"));
+            // No program took it; back on the bare desktop it becomes a launcher there
+            s.desktop_dnd_dropped();
+            s.pointer_location = (150.0, 520.0).into();
+            s.desktop_dnd_cancelled();
+            assert!(s.shell.ghost.is_none());
+            eprintln!("[feather-launcher-check] offered {} to programs, dropped back on the desktop", offered[0].display());
+        })?;
+        at(state, 5200, |s| {
+            let n = s.shell.desktop.items.iter().filter(|i| i.launcher.is_some()).count();
+            assert_eq!(n, 2, "the second launcher arrived");
+            eprintln!("[feather-launcher-check] second launcher listed: ok");
+        })?;
     }
     if std::env::var_os("FEATHER_DEBUG_MISSION").is_some() {
         // Mission Control without host input: spread, drag a window onto «+», pick a desktop
