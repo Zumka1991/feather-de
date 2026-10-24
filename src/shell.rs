@@ -164,6 +164,9 @@ pub struct NotificationToast {
     /// None: stays until closed
     pub duration: Option<Duration>,
     pub resident: bool,
+    /// Not kept in the notification center
+    pub transient: bool,
+    pub posted: chrono::DateTime<chrono::Local>,
 }
 
 impl NotificationToast {
@@ -179,8 +182,32 @@ const TOAST_W: f32 = 344.0;
 const TOAST_H: f32 = 72.0;
 const TOAST_BUTTON_H: f32 = 26.0;
 const TOAST_GAP: f32 = 8.0;
-/// Banners shown at once; an older one is pushed out (reported as expired)
+/// Banners shown at once; an older one moves to the notification center
 const MAX_TOASTS: usize = 3;
+/// Notification center history; the oldest is closed (expired) beyond it
+const MAX_HISTORY: usize = 50;
+const CENTER_HEADER_H: f32 = 40.0;
+const CENTER_GROUP_H: f32 = 26.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CenterHit {
+    ClearAll,
+    /// Clear the group whose newest entry has this history index
+    ClearGroup(usize),
+    Card(usize, ToastPart),
+}
+
+/// A drawn center row, detached from the shell for the render closure
+enum CenterItem {
+    Group(usize, String),
+    Card(usize, NotificationToast),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CenterRow {
+    Group(usize),
+    Card(usize),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToastPart {
@@ -388,6 +415,7 @@ pub enum ShellClickAction {
     FocusWindow(u64),
     ShowShortcuts,
     TogglePinFocused,
+    ToggleDoNotDisturb,
 }
 
 /// Menus of the menu bar
@@ -592,6 +620,11 @@ pub struct MacShell {
 
     pub toasts: Vec<NotificationToast>,
     toast_hover: Option<(usize, ToastPart)>,
+    /// Notification center: history newest first
+    pub history: Vec<NotificationToast>,
+    pub center_open: bool,
+    center_first: usize,
+    center_hover: Option<CenterHit>,
     /// Closes and actions for D-Bus clients; drained by the compositor
     pub notification_events: Vec<NotificationEvent>,
 
@@ -681,6 +714,10 @@ impl MacShell {
             client_scroll: std::collections::HashMap::new(),
             toasts: Vec::new(),
             toast_hover: None,
+            history: Vec::new(),
+            center_open: false,
+            center_first: 0,
+            center_hover: None,
             notification_events: Vec::new(),
             overlay_buffer: new_buffer(1, 1),
             overlay_dirty: true,
@@ -753,11 +790,13 @@ impl MacShell {
             created_at: Instant::now(),
             duration: Some(crate::notifications::DEFAULT_TIMEOUT),
             resident: false,
+            transient: true,
+            posted: chrono::Local::now(),
         });
     }
 
-    /// A client notification (org.freedesktop.Notifications). With «Не беспокоить» only
-    /// critical ones are shown; the rest stay unanswered like ones waiting in a center.
+    /// A client notification (org.freedesktop.Notifications). With «Не беспокоить» or an
+    /// open center only critical ones show a banner; the rest go straight to the center.
     pub fn show_notification(&mut self, n: crate::notifications::Incoming, registry: &AppRegistry) {
         let app = [n.desktop_entry.as_str(), n.app_name.as_str()]
             .into_iter()
@@ -780,16 +819,43 @@ impl MacShell {
             created_at: Instant::now(),
             duration: n.timeout,
             resident: n.resident,
+            transient: n.transient,
+            posted: chrono::Local::now(),
         };
         if let Some(i) = self.toasts.iter().position(|t| t.id == toast.id) {
             self.toasts[i] = toast;
             self.overlay_dirty = true;
             return;
         }
-        if self.dnd_enabled && n.timeout.is_some() && !n.critical {
+        if let Some(i) = self.history.iter().position(|t| t.id == toast.id) {
+            // A replaced entry moves up as the newest one
+            self.history.remove(i);
+            self.history.insert(0, toast);
+            self.overlay_dirty = true;
+            return;
+        }
+        if (self.dnd_enabled || self.center_open) && !n.critical {
+            self.to_history(toast);
             return;
         }
         self.push_toast(toast);
+    }
+
+    /// A banner that left the screen: kept in the center unless the client said transient
+    fn to_history(&mut self, toast: NotificationToast) {
+        if toast.id == 0 {
+            return;
+        }
+        if toast.transient {
+            self.toast_closed(toast.id, crate::notifications::Reason::Expired);
+            return;
+        }
+        self.history.insert(0, toast);
+        while self.history.len() > MAX_HISTORY {
+            let old = self.history.pop().unwrap();
+            self.toast_closed(old.id, crate::notifications::Reason::Expired);
+        }
+        if self.center_open { self.overlay_dirty = true; }
     }
 
     fn push_toast(&mut self, toast: NotificationToast) {
@@ -797,7 +863,7 @@ impl MacShell {
         self.toasts.insert(0, toast);
         while self.toasts.len() > MAX_TOASTS {
             let old = self.toasts.pop().unwrap();
-            self.toast_closed(old.id, crate::notifications::Reason::Expired);
+            self.to_history(old);
         }
         self.toast_hover = None;
         self.overlay_dirty = true;
@@ -816,12 +882,152 @@ impl MacShell {
         self.overlay_dirty = true;
     }
 
-    /// CloseNotification from the client: true when it was shown
+    /// CloseNotification from the client: true when it was shown or kept in the center
     pub fn close_notification(&mut self, id: u32) -> bool {
-        match self.toasts.iter().position(|t| t.id == id && id != 0) {
-            Some(i) => { self.remove_toast(i, crate::notifications::Reason::Closed); true }
+        if id == 0 { return false; }
+        if let Some(i) = self.toasts.iter().position(|t| t.id == id) {
+            self.remove_toast(i, crate::notifications::Reason::Closed);
+            return true;
+        }
+        match self.history.iter().position(|t| t.id == id) {
+            Some(i) => { self.remove_history(i, crate::notifications::Reason::Closed); true }
             None => false,
         }
+    }
+
+    fn remove_history(&mut self, index: usize, reason: crate::notifications::Reason) {
+        let t = self.history.remove(index);
+        self.toast_closed(t.id, reason);
+        self.center_hover = None;
+        self.overlay_dirty = true;
+    }
+
+    pub fn toggle_center(&mut self) {
+        let open = !self.center_open;
+        self.close_menus();
+        self.center_open = open;
+        self.center_first = 0;
+        if open {
+            // Banners on screen join the center at once, like on macOS
+            for t in std::mem::take(&mut self.toasts).into_iter().rev() { self.to_history(t); }
+            self.toast_hover = None;
+        }
+        self.overlay_dirty = true;
+        self.topbar_dirty = true;
+    }
+
+    /// History grouped by app in order of each app's newest entry
+    fn center_rows(&self) -> Vec<CenterRow> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut rows = Vec::new();
+        for (i, t) in self.history.iter().enumerate() {
+            if seen.contains(&t.app_label.as_str()) { continue; }
+            seen.push(&t.app_label);
+            rows.push(CenterRow::Group(i));
+            rows.extend(self.history.iter().enumerate().filter(|(_, o)| o.app_label == t.app_label).map(|(j, _)| CenterRow::Card(j)));
+        }
+        rows
+    }
+
+    /// Panel, visible rows with their rectangles and the «clear all» target. Rows scroll
+    /// whole, so nothing needs clipping; `center_first` is the first shown row.
+    fn center_layout(&self) -> (R, Vec<(R, CenterRow)>, Option<R>) {
+        let x = self.screen_w as f32 - TOAST_W - 10.0;
+        let y = TOP_BAR_HEIGHT as f32 + 8.0;
+        let max_h = (self.screen_h as f32 - y - 96.0).max(160.0);
+        let rows = self.center_rows();
+        if rows.is_empty() {
+            return (R::new(x, y, TOAST_W, 120.0), Vec::new(), None);
+        }
+        let mut cy = y + CENTER_HEADER_H;
+        let mut out = Vec::new();
+        for row in rows.into_iter().skip(self.center_first) {
+            let h = match row {
+                CenterRow::Group(_) => CENTER_GROUP_H,
+                CenterRow::Card(i) => self.history[i].height(),
+            };
+            if cy + h > y + max_h - 10.0 && !out.is_empty() { break; }
+            out.push((R::new(x + 8.0, cy, TOAST_W - 16.0, h), row));
+            cy += h + if matches!(row, CenterRow::Card(_)) { 8.0 } else { 0.0 };
+        }
+        let clear = R::new(x + TOAST_W - 112.0, y + 10.0, 100.0, 22.0);
+        (R::new(x, y, TOAST_W, cy - y + 4.0), out, Some(clear))
+    }
+
+    fn center_at(&self, x: f32, y: f32) -> Option<CenterHit> {
+        if !self.center_open { return None; }
+        let (panel, rows, clear) = self.center_layout();
+        if clear.is_some_and(|c| c.contains(x, y)) { return Some(CenterHit::ClearAll); }
+        for (r, row) in rows {
+            match row {
+                CenterRow::Group(i) => {
+                    if R::new(r.x + r.w - 26.0, r.y + 2.0, 24.0, 22.0).contains(x, y) { return Some(CenterHit::ClearGroup(i)); }
+                }
+                CenterRow::Card(i) => {
+                    if self.center_hover.is_some_and(|h| matches!(h, CenterHit::Card(j, _) if j == i)) && Self::toast_close_rect(r).contains(x, y) {
+                        return Some(CenterHit::Card(i, ToastPart::Close));
+                    }
+                    if r.contains(x, y) {
+                        let part = Self::toast_button_rects(&self.history[i], r).into_iter()
+                            .find(|(_, b)| b.contains(x, y))
+                            .map_or(ToastPart::Body, |(a, _)| ToastPart::Action(a));
+                        return Some(CenterHit::Card(i, part));
+                    }
+                }
+            }
+        }
+        let _ = panel;
+        None
+    }
+
+    /// Wheel over the open center: one row per notch
+    pub fn scroll_center(&mut self, px: f32, py: f32, delta: f64) -> bool {
+        if !self.center_open || delta == 0.0 || !self.center_layout().0.contains(px, py) { return false; }
+        let total = self.center_rows().len();
+        let next = if delta > 0.0 { (self.center_first + 1).min(total.saturating_sub(1)) } else { self.center_first.saturating_sub(1) };
+        if next != self.center_first {
+            self.center_first = next;
+            self.center_hover = None;
+            self.overlay_dirty = true;
+        }
+        true
+    }
+
+    fn center_click(&mut self, hit: CenterHit) {
+        use crate::notifications::Reason;
+        match hit {
+            CenterHit::ClearAll => {
+                for t in std::mem::take(&mut self.history) { self.toast_closed(t.id, Reason::Dismissed); }
+            }
+            CenterHit::ClearGroup(i) => {
+                let app = self.history[i].app_label.clone();
+                let (gone, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.history).into_iter().partition(|t| t.app_label == app);
+                self.history = keep;
+                for t in gone { self.toast_closed(t.id, Reason::Dismissed); }
+            }
+            CenterHit::Card(i, part) => {
+                let t = &self.history[i];
+                let key = match part {
+                    ToastPart::Close => None,
+                    ToastPart::Body => t.actions.iter().any(|(k, _)| k == "default").then(|| "default".to_string()),
+                    ToastPart::Action(a) => Some(t.actions[a].0.clone()),
+                };
+                let resident = t.resident;
+                if let Some(key) = key {
+                    self.notification_events.push(NotificationEvent::Invoked(t.id, key));
+                    if resident { return; }
+                    // The app comes forward: the center gets out of the way
+                    self.remove_history(i, Reason::Dismissed);
+                    self.close_menus();
+                    return;
+                }
+                self.remove_history(i, Reason::Dismissed);
+            }
+        }
+        let total = self.center_rows().len();
+        self.center_first = self.center_first.min(total.saturating_sub(1));
+        self.center_hover = None;
+        self.overlay_dirty = true;
     }
 
     /// Everything must be redrawn (appearance, wallpaper or scale changed)
@@ -878,6 +1084,8 @@ impl MacShell {
         if clock != self.last_clock_str {
             self.last_clock_str = clock;
             self.topbar_dirty = true;
+            // «N мин назад» in the open center follows the minute
+            if self.center_open && !self.history.is_empty() { self.overlay_dirty = true; }
         }
         if self.last_rss_check.elapsed() >= Duration::from_secs(3) {
             self.last_rss_check = Instant::now();
@@ -885,10 +1093,14 @@ impl MacShell {
         }
         // A banner under the pointer waits; it gets its full time again on leave.
         let hovered = self.toast_hover.map(|(i, _)| i);
-        while let Some(i) = self.toasts.iter().enumerate().position(|(i, t)| {
+        // Oldest first, so the center stays ordered newest first
+        while let Some(i) = self.toasts.iter().enumerate().rposition(|(i, t)| {
             Some(i) != hovered && t.duration.is_some_and(|d| t.created_at.elapsed() >= d)
         }) {
-            self.remove_toast(i, crate::notifications::Reason::Expired);
+            let t = self.toasts.remove(i);
+            self.toast_hover = None;
+            self.overlay_dirty = true;
+            self.to_history(t);
         }
         if self.overlay_allocated && !self.has_visible_overlay() {
             // Free the full-screen overlay buffer while nothing is shown
@@ -904,6 +1116,7 @@ impl MacShell {
             || self.control_center_open
             || self.open_menu.is_some()
             || !self.toasts.is_empty()
+            || self.center_open
             || self.dock_menu.is_some()
     }
 
@@ -911,6 +1124,12 @@ impl MacShell {
         self.tray_menu=None;
         if self.dock_menu.take().is_some() {
             self.overlay_dirty = true;
+        }
+        if self.center_open {
+            self.center_open = false;
+            self.center_hover = None;
+            self.overlay_dirty = true;
+            self.topbar_dirty = true;
         }
         if self.open_menu.is_some() || self.control_center_open || self.spotlight_open {
             self.open_menu = None;
@@ -1614,7 +1833,58 @@ impl MacShell {
     }
 
     fn toast_visible(&self)->bool {
-        !self.toasts.is_empty()&&!self.control_center_open&&!matches!(self.open_menu,Some(TopMenu::Tray(_)))
+        !self.toasts.is_empty()&&!self.control_center_open&&!self.center_open&&!matches!(self.open_menu,Some(TopMenu::Tray(_)))
+    }
+
+    /// «сейчас», «12 мин назад», «14:05», «вчера», «21.10»
+    fn posted_label(t: &NotificationToast) -> String {
+        let now = chrono::Local::now();
+        let minutes = (now - t.posted).num_minutes();
+        if minutes < 1 { return "сейчас".into(); }
+        if minutes < 60 { return format!("{minutes} мин назад"); }
+        let (day, today) = (t.posted.date_naive(), now.date_naive());
+        if day == today { t.posted.format("%H:%M").to_string() }
+        else if today.pred_opt() == Some(day) { "вчера".into() }
+        else { t.posted.format("%d.%m").to_string() }
+    }
+
+    /// One banner or center card: icon, title, time, two body lines, action buttons and,
+    /// on hover, the close button at the top-left corner
+    #[allow(clippy::too_many_arguments)]
+    fn draw_toast(pm: &mut PixmapMut, fonts: &mut FontSystem, icons: &mut IconCache, t: &NotificationToast, r: R, hover: Option<ToastPart>, when: &str, banner: bool) {
+        let p = palette();
+        if banner { draw_glass_panel(pm, r.x, r.y, r.w, r.h, 18.0, false); }
+        else { fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 14.0, p.control_fill); }
+        let (ix, iy) = (r.x + 14.0, r.y + 18.0);
+        if let Some(img) = &t.image {
+            let k = 36.0 / img.width().max(img.height()) as f32;
+            let (w, h) = (img.width() as f32 * k, img.height() as f32 * k);
+            crate::icons::draw_icon(pm, img, ix + (36.0 - w) * 0.5, iy + (36.0 - h) * 0.5, w);
+        } else if let Some(icon) = &t.icon {
+            draw_any_icon(pm, fonts, icons, icon, &t.app_label, ix, iy, 36.0);
+        } else {
+            crate::theme::fill_squircle_gradient(pm, ix, iy, 36.0, rgba(110, 200, 255, 255), rgba(20, 110, 235, 255));
+            draw_feather_logo(pm, ix + 18.0, iy + 18.0, 1.3, Color::WHITE);
+        }
+        let when_w = fonts.measure_text(when, 11.5, false);
+        fonts.draw_text_clipped(pm, &t.title, r.x + 62.0, r.y + 13.0, r.w - 62.0 - when_w - 24.0, 13.0, p.text, true);
+        fonts.draw_text_right(pm, when, r.x + r.w - 14.0, r.y + 13.5, 11.5, p.text_secondary, false);
+        for (k, line) in fonts.wrap_two_lines(&t.body, r.w - 76.0, 12.5, false).iter().enumerate() {
+            fonts.draw_text(pm, line, r.x + 62.0, r.y + 32.0 + k as f32 * 16.0, 12.5, p.text_secondary, false);
+        }
+        for (a, b) in Self::toast_button_rects(t, r) {
+            let hot = hover == Some(ToastPart::Action(a));
+            let fill = if hot { p.accent } else if banner { p.control_fill } else { p.window_bg };
+            fill_rounded_rect(pm, b.x, b.y, b.w, b.h, 7.0, fill);
+            let label = fonts.ellipsize(&t.actions[a].1, b.w - 12.0, 12.0, false);
+            fonts.draw_text_centered(pm, &label, b.x + b.w * 0.5, b.y + 5.5, 12.0, if hot { p.on_accent } else { p.text }, false);
+        }
+        if hover.is_some() {
+            let c = Self::toast_close_rect(r);
+            draw_glass_panel(pm, c.x, c.y, c.w, c.h, c.w * 0.5, false);
+            let col = if hover == Some(ToastPart::Close) { p.text } else { p.text_secondary };
+            fonts.draw_text_centered(pm, "×", c.x + c.w * 0.5, c.y + 1.0, 14.0, col, true);
+        }
     }
 
     /// Banner rectangles, newest first, stacked down from the menu bar
@@ -1661,6 +1931,11 @@ impl MacShell {
     pub fn update_pointer_hover(&mut self, px: f64, py: f64) {
         let hover=if py>=0.0&&py<TOP_BAR_HEIGHT as f64{self.topbar_item_at(px as f32)}else{None};
         if hover!=self.status_hover{self.status_hover=hover;self.topbar_dirty=true;}
+        let center = self.center_at(px as f32, py as f32);
+        if center != self.center_hover {
+            self.center_hover = center;
+            self.overlay_dirty = true;
+        }
         let toast = self.toast_at(px as f32, py as f32);
         if toast != self.toast_hover {
             let left = self.toast_hover.map(|(i, _)| i).filter(|i| toast.map(|(j, _)| j) != Some(*i));
@@ -1772,7 +2047,7 @@ impl MacShell {
         // Menu bar
         if my >= 0.0 && my < TOP_BAR_HEIGHT as f32 {
             let hit = self.topbar_item_at(mx);
-            let was = (self.open_menu, self.control_center_open, self.spotlight_open);
+            let was = (self.open_menu, self.control_center_open, self.spotlight_open, self.center_open);
             self.close_menus();
             match hit {
                 Some(TopbarItem::Menu(m)) => {
@@ -1780,7 +2055,7 @@ impl MacShell {
                         self.open_menu = Some(m);
                     }
                 }
-                Some(TopbarItem::Clock)=>return Some(ShellClickAction::SystemSettings(crate::system_settings::Action::Page(crate::system_settings::Page::DateTime))),
+                Some(TopbarItem::Clock)=>{ if !was.3 { self.toggle_center(); } }
                 Some(TopbarItem::ControlCenter) | Some(TopbarItem::Wifi) => {
                     self.control_center_open = !was.1
                 }
@@ -1835,7 +2110,7 @@ impl MacShell {
                 match item {
                     CcItem::Wifi => { self.cc.open(crate::control_panel::Page::Wifi); return Some(ShellClickAction::Control(crate::controls::Control::Scan)); }
                     CcItem::Bluetooth => return Some(ShellClickAction::BluetoothSettings),
-                    CcItem::Focus => self.dnd_enabled = !self.dnd_enabled,
+                    CcItem::Focus => return Some(ShellClickAction::ToggleDoNotDisturb),
                     CcItem::DarkMode => return Some(ShellClickAction::ToggleAppearance),
                     CcItem::Brightness => { self.cc.error=Some("Яркость этого дисплея недоступна".into()); }
                     CcItem::Volume => {
@@ -1877,6 +2152,14 @@ impl MacShell {
             return Some(ShellClickAction::None);
         }
 
+        if self.center_open && my >= TOP_BAR_HEIGHT as f32 {
+            match self.center_at(mx, my) {
+                Some(hit) => self.center_click(hit),
+                None if self.center_layout().0.contains(mx, my) => {}
+                None => self.close_menus(),
+            }
+            return Some(ShellClickAction::None);
+        }
         if let Some((i, part)) = self.toast_at(mx, my) {
             let t = &self.toasts[i];
             let (id, resident) = (t.id, t.resident);
@@ -1958,6 +2241,7 @@ impl MacShell {
         let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0};
         let input=self.input_sources.get(self.input_selected).copied().unwrap_or(crate::settings::SOURCES[0]);
         let hover=self.status_hover;
+        let (center_open,dnd)=(self.center_open,self.dnd_enabled);
         let mut menus = vec![(active_app_title.to_string(), TopMenu::App, true, true)];
         if let Some(root) = self.client_menu.as_ref().filter(|root| root.children.iter().any(|n| n.visible)) {
             menus.extend(root.children.iter().filter(|n| n.visible && !n.separator).map(|n| (n.label.clone(), TopMenu::Client(n.id), false, n.enabled)));
@@ -2002,8 +2286,9 @@ impl MacShell {
                 let mut rx=lw-14.0;
                 let cw=fonts.measure_text(&clock,13.0,false);
                 let clock_width=cw.max(146.0);
-                if hover==Some(TopbarItem::Clock){highlight(&mut pm,rx-clock_width-4.0,lw-5.0);}
+                if center_open||hover==Some(TopbarItem::Clock){highlight(&mut pm,rx-clock_width-4.0,lw-5.0);}
                 fonts.draw_text(&mut pm,&clock,rx-cw,text_y,13.0,p.menubar_text,false);
+                if dnd {crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Moon,rx-cw-12.0,lh*0.5,p.menubar_text,false);}
                 hits.push((rx-clock_width-4.0,lw,TopbarItem::Clock));rx-=clock_width+14.0;
                 for (hit,opened) in [(TopbarItem::ControlCenter,cc_open),(TopbarItem::Spotlight,sp_open),(TopbarItem::Wifi,cc_open)]{
                     if opened||hover==Some(hit){highlight(&mut pm,rx-29.0,rx-1.0);}
@@ -2223,6 +2508,9 @@ impl MacShell {
         if self.toast_visible() {
             rects.extend(self.toast_rects());
         }
+        if self.center_open {
+            rects.push(self.center_layout().0);
+        }
         if let Some(m) = &self.dock_menu {
             rects.push(m.rect);
         }
@@ -2274,6 +2562,15 @@ impl MacShell {
             Vec::new()
         };
         let toast_hover = self.toast_hover;
+        let center_hover = self.center_hover;
+        let center = self.center_open.then(|| {
+            let (panel, rows, clear) = self.center_layout();
+            let rows: Vec<_> = rows.into_iter().map(|(r, row)| (local(r), match row {
+                CenterRow::Group(i) => CenterItem::Group(i, self.history[i].app_label.clone()),
+                CenterRow::Card(i) => CenterItem::Card(i, self.history[i].clone()),
+            })).collect();
+            (local(panel), rows, clear.filter(|_| !self.history.is_empty()).map(local))
+        });
         let input_badges:Vec<_>=if self.open_menu==Some(TopMenu::Input){self.input_sources.iter().map(|s|s.badge).collect()}else{Vec::new()};
         let active_input_label=self.input_sources.get(self.input_selected).map_or("ABC",|s|s.label);
         let (cc_open, sp_open) = (self.control_center_open, self.spotlight_open);
@@ -2474,36 +2771,35 @@ impl MacShell {
 
             // Bottom of the stack first: the newest banner's close button overlaps its neighbour.
             for (i, (t, r)) in toasts.iter().enumerate().rev() {
+                let hover = toast_hover.filter(|(h, _)| *h == i).map(|(_, part)| part);
+                Self::draw_toast(&mut pm, fonts, icons, t, *r, hover, "сейчас", true);
+            }
+
+            if let Some((r, rows, clear)) = center.as_ref() {
                 let r = *r;
                 draw_glass_panel(&mut pm, r.x, r.y, r.w, r.h, 18.0, false);
-                let (ix, iy) = (r.x + 14.0, r.y + 18.0);
-                if let Some(img) = &t.image {
-                    let k = 36.0 / img.width().max(img.height()) as f32;
-                    let (w, h) = (img.width() as f32 * k, img.height() as f32 * k);
-                    crate::icons::draw_icon(&mut pm, img, ix + (36.0 - w) * 0.5, iy + (36.0 - h) * 0.5, w);
-                } else if let Some(icon) = &t.icon {
-                    draw_any_icon(&mut pm, fonts, icons, icon, &t.app_label, ix, iy, 36.0);
-                } else {
-                    crate::theme::fill_squircle_gradient(&mut pm, ix, iy, 36.0, rgba(110, 200, 255, 255), rgba(20, 110, 235, 255));
-                    draw_feather_logo(&mut pm, ix + 18.0, iy + 18.0, 1.3, Color::WHITE);
+                fonts.draw_text(&mut pm, "Уведомления", r.x + 16.0, r.y + 12.0, 15.0, p.text, true);
+                if rows.is_empty() {
+                    fonts.draw_text_centered(&mut pm, "Нет уведомлений", r.x + r.w * 0.5, r.y + 66.0, 13.0, p.text_secondary, false);
                 }
-                fonts.draw_text_clipped(&mut pm, &t.title, r.x + 62.0, r.y + 13.0, r.w - 120.0, 13.0, p.text, true);
-                fonts.draw_text_right(&mut pm, "сейчас", r.x + r.w - 14.0, r.y + 13.5, 11.5, p.text_secondary, false);
-                for (k, line) in fonts.wrap_two_lines(&t.body, r.w - 76.0, 12.5, false).iter().enumerate() {
-                    fonts.draw_text(&mut pm, line, r.x + 62.0, r.y + 32.0 + k as f32 * 16.0, 12.5, p.text_secondary, false);
+                if let Some(c) = clear {
+                    let hot = center_hover == Some(CenterHit::ClearAll);
+                    fonts.draw_text_right(&mut pm, "Очистить все", c.x + c.w, c.y + 4.0, 12.0, if hot { p.accent } else { p.text_secondary }, false);
                 }
-                let hover = toast_hover.filter(|(h, _)| *h == i).map(|(_, part)| part);
-                for (a, b) in Self::toast_button_rects(t, r) {
-                    let hot = hover == Some(ToastPart::Action(a));
-                    fill_rounded_rect(&mut pm, b.x, b.y, b.w, b.h, 7.0, if hot { p.accent } else { p.control_fill });
-                    let label = fonts.ellipsize(&t.actions[a].1, b.w - 12.0, 12.0, false);
-                    fonts.draw_text_centered(&mut pm, &label, b.x + b.w * 0.5, b.y + 5.5, 12.0, if hot { p.on_accent } else { p.text }, false);
-                }
-                if hover.is_some() {
-                    let c = Self::toast_close_rect(r);
-                    draw_glass_panel(&mut pm, c.x, c.y, c.w, c.h, c.w * 0.5, false);
-                    let col = if hover == Some(ToastPart::Close) { p.text } else { p.text_secondary };
-                    fonts.draw_text_centered(&mut pm, "×", c.x + c.w * 0.5, c.y + 1.0, 14.0, col, true);
+                for (rr, row) in rows {
+                    let rr = *rr;
+                    match row {
+                        CenterItem::Group(i, label) => {
+                            fonts.draw_text_clipped(&mut pm, label, rr.x + 6.0, rr.y + 6.0, rr.w - 40.0, 12.0, p.text_secondary, true);
+                            let hot = center_hover == Some(CenterHit::ClearGroup(*i));
+                            if hot { fill_rounded_rect(&mut pm, rr.x + rr.w - 24.0, rr.y + 3.0, 20.0, 20.0, 10.0, p.control_fill); }
+                            fonts.draw_text_centered(&mut pm, "×", rr.x + rr.w - 14.0, rr.y + 4.0, 14.0, if hot { p.text } else { p.text_secondary }, true);
+                        }
+                        CenterItem::Card(i, t) => {
+                            let hover = match center_hover { Some(CenterHit::Card(j, part)) if j == *i => Some(part), _ => None };
+                            Self::draw_toast(&mut pm, fonts, icons, t, rr, hover, &Self::posted_label(t), false);
+                        }
+                    }
                 }
             }
 
@@ -2717,7 +3013,7 @@ mod appmenu_tests {
             id, replaces: false, app_name: "Test".into(), app_icon: String::new(), desktop_entry: String::new(),
             image: None, summary: format!("N{id}"), body: "Тело".into(),
             actions: actions.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
-            timeout: Some(crate::notifications::DEFAULT_TIMEOUT), critical: false, resident: false,
+            timeout: Some(crate::notifications::DEFAULT_TIMEOUT), critical: false, resident: false, transient: false,
         }
     }
 
@@ -2736,10 +3032,10 @@ mod appmenu_tests {
         shell.show_notification(again, &registry);
         assert_eq!(shell.toasts[1].title, "new");
         assert!(shell.notification_events.is_empty());
-        // A fourth pushes the oldest out
+        // A fourth pushes the oldest into the center
         shell.show_notification(incoming(4, &[("default", ""), ("reply", "Ответить")]), &registry);
-        assert_eq!(shell.notification_events, [NotificationEvent::Closed(1, Reason::Expired)]);
-        shell.notification_events.clear();
+        assert!(shell.notification_events.is_empty());
+        assert_eq!(shell.history[0].id, 1);
         // Action button, then the default click on the body
         let r = shell.toast_rects()[0];
         assert!(r.h > TOAST_H);
@@ -2762,6 +3058,56 @@ mod appmenu_tests {
     }
 
     #[test]
+    fn notification_center_keeps_history_groups_and_reports_closes() {
+        use crate::notifications::Reason;
+        let registry = AppRegistry::new();
+        let mut shell = MacShell::new(1000, 700);
+        shell.toasts.clear();
+        shell.show_notification(incoming(1, &[("default", "")]), &registry);
+        let mut other = incoming(2, &[]); other.app_name = "Other".into();
+        shell.show_notification(other, &registry);
+        let mut gone = incoming(3, &[]); gone.transient = true;
+        shell.show_notification(gone, &registry);
+        // Expired banners move to the center silently; a transient one closes
+        for t in &mut shell.toasts { t.created_at -= Duration::from_secs(60); }
+        shell.tick();
+        assert!(shell.toasts.is_empty());
+        assert_eq!(shell.history.iter().map(|t| t.id).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(shell.notification_events, [NotificationEvent::Closed(3, Reason::Expired)]);
+        shell.notification_events.clear();
+        // While the center is open, new ones go straight into it
+        shell.toggle_center();
+        assert!(shell.center_open && shell.has_visible_overlay());
+        shell.show_notification(incoming(4, &[]), &registry);
+        assert!(shell.toasts.is_empty() && shell.history[0].id == 4);
+        assert_eq!(shell.center_rows(), [CenterRow::Group(0), CenterRow::Card(0), CenterRow::Card(2), CenterRow::Group(1), CenterRow::Card(1)]);
+        // Default click on a card invokes, removes and closes the center
+        let (_, rows, _) = shell.center_layout();
+        let (r, _) = rows.iter().find(|(_, row)| *row == CenterRow::Card(2)).copied().unwrap();
+        shell.update_pointer_hover((r.x + 150.0) as f64, (r.y + 40.0) as f64);
+        shell.handle_pointer_click((r.x + 150.0) as f64, (r.y + 40.0) as f64, &registry);
+        assert_eq!(shell.notification_events, [NotificationEvent::Invoked(1, "default".into()), NotificationEvent::Closed(1, Reason::Dismissed)]);
+        assert!(!shell.center_open);
+        shell.notification_events.clear();
+        // Clear a group, then client close of the rest
+        shell.toggle_center();
+        let (_, rows, _) = shell.center_layout();
+        let (g, _) = rows.iter().find(|(_, row)| *row == CenterRow::Group(1)).copied().unwrap();
+        shell.handle_pointer_click((g.x + g.w - 14.0) as f64, (g.y + 12.0) as f64, &registry);
+        assert_eq!(shell.notification_events, [NotificationEvent::Closed(2, Reason::Dismissed)]);
+        assert!(shell.close_notification(4) && shell.history.is_empty());
+        // A click outside closes it; history is bounded
+        shell.handle_pointer_click(20.0, 400.0, &registry);
+        assert!(!shell.center_open);
+        shell.notification_events.clear();
+        shell.dnd_enabled = true;
+        for id in 10..10 + MAX_HISTORY as u32 + 2 { shell.show_notification(incoming(id, &[]), &registry); }
+        assert!(shell.toasts.is_empty(), "do not disturb sends everything to the center");
+        assert_eq!(shell.history.len(), MAX_HISTORY);
+        assert_eq!(shell.notification_events, [NotificationEvent::Closed(10, Reason::Expired), NotificationEvent::Closed(11, Reason::Expired)]);
+    }
+
+    #[test]
     fn notification_expiry_waits_for_hover_and_do_not_disturb_hides_non_critical() {
         use crate::notifications::Reason;
         let registry = AppRegistry::new();
@@ -2780,12 +3126,14 @@ mod appmenu_tests {
         shell.toasts[1].created_at -= Duration::from_secs(60);
         shell.tick();
         assert_eq!(shell.toasts.iter().map(|t| t.id).collect::<Vec<_>>(), [2]);
-        assert_eq!(shell.notification_events, [NotificationEvent::Closed(1, Reason::Expired)]);
+        assert_eq!(shell.history[0].id, 1);
+        assert!(shell.notification_events.is_empty());
         shell.dnd_enabled = true;
         shell.show_notification(incoming(3, &[]), &registry);
         let mut urgent = incoming(4, &[]); urgent.critical = true; urgent.timeout = None;
         shell.show_notification(urgent, &registry);
         assert_eq!(shell.toasts.iter().map(|t| t.id).collect::<Vec<_>>(), [4, 2]);
+        assert_eq!(shell.history[0].id, 3);
     }
 
     #[test]

@@ -219,6 +219,7 @@ pub struct Settings {
     pub scale: Option<f64>,
     pub dock_zoom: bool,
     pub dock_locked: bool,
+    pub do_not_disturb: bool,
     pub dock: Option<Vec<String>>,
     pub animations: bool,
     pub keyboard: Keyboard,
@@ -238,6 +239,7 @@ impl Default for Settings {
             scale: None,
             dock_zoom: true,
             dock_locked: false,
+            do_not_disturb: false,
             dock: None,
             animations: true,
             keyboard: Keyboard::default(),
@@ -327,6 +329,11 @@ impl Settings {
                         s.dock_locked = v;
                     }
                 }
+                "do_not_disturb" => {
+                    if let Ok(v) = v.parse() {
+                        s.do_not_disturb = v;
+                    }
+                }
                 "animations" => {
                     if let Ok(v) = v.parse() {
                         s.animations = v;
@@ -391,6 +398,7 @@ impl Settings {
         text.push_str(&format!("idle_lock_minutes={}\nidle_blank_minutes={}\nidle_suspend_minutes={}\n",self.power.lock,self.power.blank,self.power.suspend));
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
+        text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
         let pt = &self.pointer;
         if let Some(theme) = pt.cursor_theme.as_deref().filter(|t| valid_theme(t)) {
             text.push_str(&format!("cursor_theme={theme}\n"));

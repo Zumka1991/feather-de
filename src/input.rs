@@ -245,7 +245,7 @@ impl FeatherCompositor {
             if shell_idle && st.desktop_key(latin_sym.raw(), mods.ctrl) {
                 return FilterResult::Intercept(());
             }
-            if st.shell.open_menu.is_some() && sym.raw() == keysyms::KEY_Escape {
+            if (st.shell.open_menu.is_some() || st.shell.center_open) && sym.raw() == keysyms::KEY_Escape {
                 st.shell.close_menus();
                 return FilterResult::Intercept(());
             }
@@ -1190,6 +1190,10 @@ impl FeatherCompositor {
         let menu_delta = event.amount(Axis::Vertical).unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0));
         if self.shell.control_center_open && self.shell.cc.page!=crate::control_panel::Page::Main {
             self.shell.cc.scroll(menu_delta); self.shell.overlay_dirty=true; return;
+        }
+        if self.shell.scroll_center(self.pointer_location.x as f32, self.pointer_location.y as f32, menu_delta) {
+            self.needs_redraw |= self.shell.overlay_dirty;
+            return;
         }
         if self.shell.scroll_client_menu(self.pointer_location.x as f32, self.pointer_location.y as f32, menu_delta) {
             self.needs_redraw |= self.shell.overlay_dirty;

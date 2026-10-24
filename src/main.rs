@@ -646,6 +646,7 @@ impl FeatherCompositor {
             scale: self.explicit_scale,
             dock_zoom: self.shell.dock_zoom_enabled,
             dock_locked: self.dock_locked,
+            do_not_disturb: self.shell.dnd_enabled,
             dock: Some(self.dock_pins.clone()),
             animations: self.animations.enabled(),
             keyboard: self.keyboard_config.clone(),
@@ -970,6 +971,12 @@ impl FeatherCompositor {
         match action {
             ShellClickAction::SystemSettings(action)=>self.apply_system_setting(action),
             ShellClickAction::None => {}
+            ShellClickAction::ToggleDoNotDisturb => {
+                self.shell.dnd_enabled = !self.shell.dnd_enabled;
+                self.shell.topbar_dirty = true;
+                self.shell.overlay_dirty = true;
+                self.save_settings();
+            }
             ShellClickAction::Tray {key,action,x,y} => {
                 self.shell.close_menus();
                 let token=if matches!(action,crate::tray::Action::Activate|crate::tray::Action::Secondary) {
@@ -1671,6 +1678,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             let mut shell = MacShell::new(logical_w, logical_h);
             shell.theme = saved.wallpaper;
             shell.dock_zoom_enabled = saved.dock_zoom;
+            shell.dnd_enabled = saved.do_not_disturb;
             shell
         },
         windows: Vec::new(),
@@ -1961,6 +1969,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("menu-app") => state.shell.open_menu = Some(crate::shell::TopMenu::App),
         Ok("menu-window") => state.shell.open_menu = Some(crate::shell::TopMenu::Window),
         Ok("cc") => state.shell.control_center_open = true,
+        Ok("center") => state.shell.toggle_center(),
         Ok("dock-minimized") => {
             if let Some(w) = state.windows.last_mut() {
                 w.minimized = true;

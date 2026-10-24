@@ -41,6 +41,8 @@ pub struct Incoming {
     pub critical: bool,
     /// Stays after an action was invoked
     pub resident: bool,
+    /// Not kept in the notification center
+    pub transient: bool,
 }
 
 pub enum Update {
@@ -127,7 +129,7 @@ impl Server {
     }
 
     fn get_capabilities(&self) -> Vec<&'static str> {
-        vec!["actions", "body", "body-markup", "icon-static"]
+        vec!["actions", "body", "body-markup", "icon-static", "persistence"]
     }
 
     fn get_server_information(&self) -> (&'static str, &'static str, &'static str, &'static str) {
@@ -207,6 +209,7 @@ fn parse(
         timeout,
         critical,
         resident: flag("resident"),
+        transient: flag("transient"),
     }
 }
 
