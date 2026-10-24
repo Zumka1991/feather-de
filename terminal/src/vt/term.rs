@@ -234,6 +234,8 @@ pub struct Term {
     pub clipboard: Option<String>,
     /// Rows of the screen that changed since the renderer last looked
     dirty: Vec<bool>,
+    /// Cursor row, column and visibility when the renderer last looked
+    painted_cursor: (usize, usize, bool),
     /// Lines pushed into the scrollback since start (keeps a scrolled view in place)
     pub scrolled_out: u64,
     /// Colours reported to programs that ask (OSC 10/11): (foreground, background)
@@ -270,6 +272,7 @@ impl Term {
             bell: false,
             clipboard: None,
             dirty: vec![true; rows],
+            painted_cursor: (0, 0, false),
             scrolled_out: 0,
             report_colors: ([0, 0, 0], [255, 255, 255]),
         }
@@ -345,8 +348,16 @@ impl Term {
         out
     }
 
-    /// Takes the set of changed screen rows
+    /// Takes the set of changed screen rows. A cursor that moved without changing cells
+    /// (BS, CR, CSI C/D — readline's arrow keys) dirties the row it left and the row it is on.
     pub fn take_dirty(&mut self) -> Vec<bool> {
+        let cursor = (self.y, self.x, self.modes.cursor_visible);
+        if cursor != self.painted_cursor {
+            let left = self.painted_cursor.0;
+            self.touch(left);
+            self.touch(cursor.0);
+            self.painted_cursor = cursor;
+        }
         std::mem::replace(&mut self.dirty, vec![false; self.rows])
     }
 
@@ -1150,6 +1161,25 @@ mod tests {
         let mut t = Term::new(cols, rows);
         Parser::new().advance(&mut t, input.as_bytes());
         t
+    }
+
+    #[test]
+    fn cursor_moves_alone_repaint_the_rows_they_touch() {
+        let mut t = Term::new(10, 4);
+        let mut p = Parser::new();
+        p.advance(&mut t, b"abc");
+        t.take_dirty();
+        assert!(t.take_dirty().iter().all(|d| !d), "nothing moved");
+        // Left arrow in readline: a bare backspace
+        p.advance(&mut t, b"\x08");
+        assert_eq!(t.take_dirty(), [true, false, false, false]);
+        p.advance(&mut t, b"\x1b[C");
+        assert_eq!(t.take_dirty(), [true, false, false, false]);
+        // To another row: both the old and the new one
+        p.advance(&mut t, b"\x1b[3;1H");
+        assert_eq!(t.take_dirty(), [true, false, true, false]);
+        p.advance(&mut t, b"\x1b[?25l");
+        assert_eq!(t.take_dirty(), [false, false, true, false], "hiding the cursor");
     }
 
     #[test]
