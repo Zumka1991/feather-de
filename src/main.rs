@@ -7,6 +7,8 @@ mod desktop;
 mod tray;
 mod notifications;
 mod xwayland;
+mod gtk_menu;
+mod gtk_shell;
 mod debug_checks;
 use feather_ui::cpu_profile;
 mod drm_backend;
@@ -1615,6 +1617,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Only used by the nested backend; DRM has its own damage tracking per output
     let damage_tracker = OutputDamageTracker::new(initial_size, 1.0, Transform::Flipped180);
 
+    crate::gtk_shell::create_global(&dh);
     let appmenus = crate::appmenu::AppMenus::new(
         &dh, &handle, is_standalone || use_drm || std::env::var_os("FEATHER_APPMENU_REGISTRAR").is_some(),
     )?;

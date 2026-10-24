@@ -724,6 +724,8 @@ dependencies = [
  "tracing-subscriber",
  "ttf-parser",
  "wayland-protocols-plasma",
+ "wayland-scanner",
+ "wayland-server",
  "xcursor",
  "zbus",
  "zeroize",

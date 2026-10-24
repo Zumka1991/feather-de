@@ -127,3 +127,32 @@ Gemini не завершил; это не засчитывается как ег
 - [KDE Wayland appmenu](https://github.com/KDE/plasma-wayland-protocols/blob/master/src/protocols/appmenu.xml)
 - [DBusMenu XML](https://github.com/KDE/plasma-workspace/blob/master/libdbusmenuqt/com.canonical.dbusmenu.xml)
 - [Qt DBusMenu exporter](https://github.com/qt/qtbase/blob/dev/src/gui/platform/unix/dbusmenu/qdbusmenubar.cpp)
+
+## GTK
+
+GTK3 и GTK4 (`GtkApplication` с `set_menubar`) сообщают адрес меню через
+`gtk_shell1.gtk_surface1.set_dbus_properties`. Протокол сгенерирован из
+`protocols/gtk-shell.xml` (ветка GTK gtk-3-24). Пёрышко предлагает только версию 1 и
+сообщает capability `GLOBAL_MENU_BAR`, поэтому GTK сам прячет меню внутри окна.
+`present`, `request_focus` и `titlebar_gesture` из более новых версий не предлагаются:
+GTK обрабатывает их сам, через xdg-activation и свою шапку окна. Если у окна есть и
+адрес KDE appmenu, приоритет у него.
+
+`src/gtk_menu.rs` работает на потоке appmenu. Он подписывается `Start` на группу 0 и на
+все группы, на которые ведут `:section` и `:submenu` (не больше 256 групп и 4096 пунктов,
+меню, ссылающееся само на себя, не зацикливается). Секции рисуются подряд через
+разделители. Состояние берётся из `DescribeAll` действий программы (`app.`) и окна
+(`win.`): выключенные пункты серые, булево состояние даёт галочку, состояние со
+значением даёт выбор одного из. Клик вызывает `Activate(имя, [target], {})` на нужном
+пути. Сигнал `Changed` и каждое открытие меню перечитывают его. Повторный `Start`
+уравновешивается `End` для старых групп, при смене окна выполняется `End`.
+
+Проверено `bench/gtkmenu.py` (PyGObject) во вложенном ×2, GTK 3 и 4: File/View в
+меню-баре, меню в окне скрыто (`gtk-shell-shows-menubar=True`), Save выключен,
+разделитель между секциями, галочка у Sidebar, File/New вызывает `app.new`.
+Сочетания из `set_accels_for_action` в модели меню не экспортируются, поэтому
+показываются только явные `accel` пунктов.
+
+```bash
+FEATHER_DEBUG_APPMENU="File/New" FEATHER_DEBUG_APPMENU_ACTIVATE=1 target/release/feather-de --windowed --autostart "python3 bench/gtkmenu.py 4.0"
+```

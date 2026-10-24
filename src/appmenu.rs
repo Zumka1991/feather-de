@@ -52,18 +52,34 @@ const MAX_DEPTH: usize = 12;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub service: String,
+    /// com.canonical.dbusmenu object, or the org.gtk.Menus menubar
     pub path: String,
+    /// Set for GTK: where `app.` and `win.` actions live
+    pub gtk: Option<GtkActions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GtkActions {
+    pub app: Option<String>,
+    pub window: Option<String>,
 }
 
 impl Endpoint {
     fn new(service: String, path: String) -> Option<Self> {
         zbus::names::BusName::try_from(service.as_str()).ok()?;
         OwnedObjectPath::try_from(path.as_str()).ok()?;
-        Some(Self { service, path })
+        Some(Self { service, path, gtk: None })
+    }
+
+    pub fn gtk(service: String, menubar: String, app: Option<String>, window: Option<String>) -> Option<Self> {
+        let valid = |p: Option<String>| p.filter(|p| OwnedObjectPath::try_from(p.as_str()).is_ok());
+        let mut e = Self::new(service, menubar)?;
+        e.gtk = Some(GtkActions { app: valid(app), window: valid(window) });
+        Some(e)
     }
 }
 
-type SurfaceMenu = Mutex<Option<(ObjectId, Endpoint)>>;
+pub(crate) type SurfaceMenu = Mutex<Option<(ObjectId, Endpoint)>>;
 
 pub fn endpoint(surface: &WlSurface) -> Option<Endpoint> {
     with_states(surface, |states| {
@@ -176,7 +192,7 @@ impl MenuNode {
 
 type WireNode = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
-fn label_without_mnemonic(text: &str) -> String {
+pub(crate) fn label_without_mnemonic(text: &str) -> String {
     let mut result = String::new();
     let mut chars = text.chars().take(512).peekable();
     while let Some(c) = chars.next() {
@@ -577,6 +593,9 @@ async fn worker(
     let mut proxy: Option<Proxy<'static>> = None;
     let mut signals: Option<zbus::proxy::SignalStream<'static>> = None;
     let mut root: Option<Arc<MenuNode>> = None;
+    // GTK windows: action paths of the focused one and its loaded menu (ids → actions)
+    let mut gtk: Option<GtkActions> = None;
+    let mut gtk_menu = crate::gtk_menu::GtkMenu::default();
     enum Wake {
         Command(Result<Command, async_channel::RecvError>),
         Signal(Option<zbus::Message>),
@@ -607,6 +626,11 @@ async fn worker(
                     continue;
                 }
                 generation = next;
+                if let Some(p) = proxy.as_ref().filter(|_| gtk.is_some()) {
+                    gtk_menu.end(p).await;
+                }
+                gtk = None;
+                gtk_menu = Default::default();
                 active_service.clear();
                 proxy = None;
                 signals = None;
@@ -614,10 +638,12 @@ async fn worker(
                 if let Some(target) = target {
                     let endpoint = target.endpoint;
                     active_service = endpoint.service.clone();
+                    let interface = if endpoint.gtk.is_some() { crate::gtk_menu::MENUS } else { INTERFACE };
+                    gtk = endpoint.gtk;
                     let created: zbus::Result<Proxy<'static>> = zbus::proxy::Builder::new(&conn)
                         .destination(endpoint.service)?
                         .path(endpoint.path)?
-                        .interface(INTERFACE)?
+                        .interface(interface)?
                         .cache_properties(CacheProperties::No)
                         .build()
                         .await;
@@ -637,7 +663,10 @@ async fn worker(
                 generation: token,
                 id,
             })) if token == generation && token == latest_generation.load(Ordering::Acquire) => {
-                if let Some(p) = &proxy {
+                if gtk.is_some() {
+                    // GTK has no AboutToShow: refresh enabled/checked states as it opens
+                    reload = true;
+                } else if let Some(p) = &proxy {
                     let shown = while_current(
                         p.call::<_, _, bool>("AboutToShow", &(id,)),
                         generation,
@@ -658,7 +687,7 @@ async fn worker(
                 generation: token,
                 id,
             })) if token == generation && token == latest_generation.load(Ordering::Acquire) => {
-                if let Some(p) = &proxy {
+                if let Some(p) = proxy.as_ref().filter(|_| gtk.is_none()) {
                     let _ = p
                         .call_noreply("Event", &(id, "closed", Value::from(0i32), 0u32))
                         .await;
@@ -674,7 +703,9 @@ async fn worker(
                     .and_then(|r| r.find(id))
                     .is_some_and(|n| n.enabled && n.visible && !n.separator && !n.submenu)
                 {
-                    if let Some(p) = &proxy {
+                    if let Some(paths) = &gtk {
+                        gtk_menu.activate(&conn, &active_service, paths, id).await;
+                    } else if let Some(p) = &proxy {
                         let _ = p
                             .call_noreply("Event", &(id, "clicked", Value::from(0i32), timestamp))
                             .await;
@@ -684,7 +715,7 @@ async fn worker(
             Wake::Command(Err(_)) => return Ok(()),
             Wake::Signal(Some(msg)) => {
                 reload = msg.header().member().is_some_and(|m| {
-                    matches!(m.as_str(), "LayoutUpdated" | "ItemsPropertiesUpdated")
+                    matches!(m.as_str(), "LayoutUpdated" | "ItemsPropertiesUpdated" | "Changed")
                 });
             }
             Wake::Signal(None) => {
@@ -736,7 +767,22 @@ async fn worker(
                     }
                 }
             }
-            if let Some(p) = &proxy {
+            if let (Some(p), Some(paths)) = (&proxy, &gtk) {
+                let loaded = while_current(crate::gtk_menu::load(&conn, p, paths), generation, &latest_generation, &focus_changes).await;
+                match loaded {
+                    None => continue,
+                    Some(Ok(menu)) => {
+                        // Start again counted every group once more: balance the old ones
+                        gtk_menu.end(p).await;
+                        root = menu.root.clone();
+                        gtk_menu = menu;
+                    }
+                    Some(Err(err)) => {
+                        tracing::debug!("GTK menu: {err}");
+                        root = None;
+                    }
+                }
+            } else if let Some(p) = &proxy {
                 let Some(loaded) =
                     while_current(load(p), generation, &latest_generation, &focus_changes).await
                 else {

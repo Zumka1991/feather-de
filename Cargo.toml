@@ -31,6 +31,9 @@ png = "0.18"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 feather-ui = { path = "crates/feather-ui" }
 wayland-protocols-plasma = { version = "0.3", features = ["server"] }
+# gtk_shell1 (GTK global menus) is generated from protocols/gtk-shell.xml
+wayland-server = "0.31"
+wayland-scanner = "0.31"
 zbus = { version = "5.18", default-features = false, features = ["async-io"] }
 async-channel = "2"
 futures-lite = "2"
