@@ -188,10 +188,7 @@ impl FeatherCompositor {
                     // Dragging a maximized window restores it under the cursor, like macOS
                     let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
                     if let Some(w) = self.windows.iter_mut().find(|w| w.id == win_id) {
-                        let saved_w = w.saved_rect.map(|r| r.2).unwrap_or(w.width);
-                        w.set_maximized(false, sw, sh);
-                        w.x = (pos.x as i32 - saved_w / 2).max(0);
-                        w.y = (pos.y as i32 - 10).max(TOP_BAR_HEIGHT);
+                        w.unmaximize_under((pos.x, pos.y), sw, sh);
                     }
                 }
                 let win = self.windows.iter_mut().find(|w| w.id == win_id).unwrap();

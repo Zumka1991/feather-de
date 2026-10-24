@@ -2165,7 +2165,10 @@ pub fn draw_input_badge(
     color: tiny_skia::Color,
 ) {
     fill_rounded_rect(pm, x, y, w, h, 3.0, color);
-    let ink = if appearance() == Appearance::Dark {
+    // Letters knocked out of the badge: dark on a light badge, light on a dark one. Taken
+    // from the badge itself (white on a dark wallpaper or a selected menu row), not the theme.
+    let luma = 0.2126 * color.red() + 0.7152 * color.green() + 0.0722 * color.blue();
+    let ink = if luma > 0.5 {
         rgba(24, 25, 30, 255)
     } else {
         rgba(250, 251, 253, 255)

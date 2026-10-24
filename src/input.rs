@@ -879,7 +879,9 @@ impl FeatherCompositor {
 
     fn start_move(&mut self, idx: usize) {
         let pos = self.pointer_location;
+        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
         let win = &mut self.windows[idx];
+        win.unmaximize_under((pos.x, pos.y), sw, sh);
         win.resize_anchor = None;
         self.active_drag = Some(DragOperation::MoveWindow {
             win_id: win.id,

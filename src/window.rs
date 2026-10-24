@@ -595,7 +595,7 @@ impl ManagedWindow {
         }
         if maximize {
             if !self.fullscreen {
-                self.saved_rect = Some((self.x, self.y, self.width, self.height));
+                self.remember_rect();
             }
             self.x = 0;
             self.y = TOP_BAR_HEIGHT;
@@ -608,9 +608,40 @@ impl ManagedWindow {
         } else {
             self.maximized = false;
             self.set_xdg_state(xdg_toplevel::State::Maximized, false);
-            self.restore_saved_rect();
+            self.restore_saved_rect((screen_w, screen_h));
         }
         self.dirty = true;
+    }
+
+    /// Size and place to come back to. A window maximized before its first frame (Electron
+    /// and Chromium restore their maximized state that way) has no size yet: remembering
+    /// 0×0 shrank it to the minimum on the first drag, and the app then kept that size.
+    fn remember_rect(&mut self) {
+        self.saved_rect = (self.mapped && self.width > 0 && self.height > 0).then_some((self.x, self.y, self.width, self.height));
+    }
+
+    /// Restored size when nothing was remembered: a comfortable part of the screen
+    pub fn fallback_size(screen_w: i32, screen_h: i32) -> (i32, i32) {
+        let usable = screen_h - TOP_BAR_HEIGHT - DOCK_RESERVED_HEIGHT;
+        (((screen_w as f32 * 0.6) as i32).max(MIN_WINDOW_W), ((usable as f32 * 0.75) as i32).max(MIN_WINDOW_H))
+    }
+
+    /// Width the window will have once un-maximized
+    pub fn restored_width(&self, screen_w: i32, screen_h: i32) -> i32 {
+        self.saved_rect.map_or_else(|| Self::fallback_size(screen_w, screen_h).0, |r| r.2)
+    }
+
+    /// Dragging a maximized window: restore it under the pointer, like macOS, keeping the
+    /// grab at the same relative spot of the titlebar
+    pub fn unmaximize_under(&mut self, pointer: (f64, f64), screen_w: i32, screen_h: i32) {
+        if !self.maximized {
+            return;
+        }
+        let rel = if self.width > 0 { ((pointer.0 - self.x as f64) / self.width as f64).clamp(0.0, 1.0) } else { 0.5 };
+        let width = self.restored_width(screen_w, screen_h);
+        self.set_maximized(false, screen_w, screen_h);
+        self.x = ((pointer.0 - rel * width as f64) as i32).clamp(0, (screen_w - 40).max(0));
+        self.y = (pointer.1 as i32 - 10).max(TOP_BAR_HEIGHT);
     }
 
     pub fn toggle_maximize(&mut self, screen_w: i32, screen_h: i32) {
@@ -624,7 +655,7 @@ impl ManagedWindow {
         }
         if fullscreen {
             if !self.maximized {
-                self.saved_rect = Some((self.x, self.y, self.width, self.height));
+                self.remember_rect();
             }
             self.fullscreen = true;
             self.x = 0;
@@ -638,17 +669,24 @@ impl ManagedWindow {
                 self.maximized = false;
                 self.set_maximized(true, screen_w, screen_h);
             } else {
-                self.restore_saved_rect();
+                self.restore_saved_rect((screen_w, screen_h));
             }
         }
         self.dirty = true;
     }
 
-    fn restore_saved_rect(&mut self) {
+    fn restore_saved_rect(&mut self, (screen_w, screen_h): (i32, i32)) {
         if let Some((sx, sy, sw, sh)) = self.saved_rect.take() {
             self.x = sx;
             self.y = sy;
             self.resize_client(sw, sh);
+        } else if self.mapped {
+            // Shown already but never had a size of its own: a sane one, centred. The
+            // client's own idea may be a tiny size it saved earlier.
+            let (w, h) = Self::fallback_size(screen_w, screen_h);
+            self.x = (screen_w - w) / 2;
+            self.y = TOP_BAR_HEIGHT + ((screen_h - TOP_BAR_HEIGHT - DOCK_RESERVED_HEIGHT - h) / 2).max(0);
+            self.resize_client(w, h);
         } else if let Some(t) = self.toplevel() {
             // Let the client pick its preferred size again
             t.with_pending_state(|s| s.size = None);
@@ -1155,6 +1193,39 @@ pub struct SettingsFrame {
     buffer: MemoryRenderBuffer,
     shadow: Option<ShadowSet>,
     size: (i32, i32),
+}
+
+#[cfg(test)]
+mod maximize_tests {
+    use super::*;
+    use crate::apps::BuiltinWindowKind;
+
+    #[test]
+    fn unmaximize_restores_the_real_size_or_a_sane_one_never_the_minimum() {
+        let (sw, sh) = (1440, 900);
+        let mut w = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 100, 120);
+        w.resize_client(800, 500);
+        w.set_maximized(true, sw, sh);
+        w.set_maximized(false, sw, sh);
+        assert_eq!((w.x, w.y, w.width, w.height), (100, 120, 800, 500));
+        // Maximized before it ever had a size (Electron restoring its state)
+        let mut early = ManagedWindow::new_builtin(2, BuiltinWindowKind::SystemSettings, 0, 0);
+        early.width = 0;
+        early.height = 0;
+        early.set_maximized(true, sw, sh);
+        assert!(early.saved_rect.is_none(), "0×0 is not remembered");
+        early.set_maximized(false, sw, sh);
+        let (fw, fh) = ManagedWindow::fallback_size(sw, sh);
+        assert_eq!((early.width, early.height), (fw, fh));
+        assert!(fw > MIN_WINDOW_W * 2 && fh > MIN_WINDOW_H, "a usable window, not the minimum");
+        // Dragging a maximized window keeps the grab at the same relative spot
+        let mut drag = ManagedWindow::new_builtin(3, BuiltinWindowKind::SystemSettings, 0, 0);
+        drag.resize_client(600, 400);
+        drag.set_maximized(true, sw, sh);
+        drag.unmaximize_under((sw as f64 * 0.75, 40.0), sw, sh);
+        assert!(!drag.maximized && drag.width == 600);
+        assert_eq!(drag.x, (sw as f64 * 0.75 - 0.75 * 600.0) as i32);
+    }
 }
 
 #[cfg(test)]

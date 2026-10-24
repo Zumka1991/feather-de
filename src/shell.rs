@@ -68,9 +68,9 @@ pub struct BarColors {
 impl BarColors {
     pub fn for_background(dark: bool) -> Self {
         if dark {
-            Self { tint: rgba(0, 0, 0, 36), text: rgba(255, 255, 255, 240), dim: rgba(255, 255, 255, 120), highlight: rgba(255, 255, 255, 42), chip: rgba(255, 255, 255, 58), dark }
+            Self { tint: rgba(0, 0, 0, 36), text: rgba(255, 255, 255, 240), dim: rgba(255, 255, 255, 120), highlight: rgba(255, 255, 255, 42), chip: rgba(255, 255, 255, 50), dark }
         } else {
-            Self { tint: rgba(255, 255, 255, 70), text: rgba(0, 0, 0, 225), dim: rgba(0, 0, 0, 105), highlight: rgba(0, 0, 0, 28), chip: rgba(0, 0, 0, 46), dark }
+            Self { tint: rgba(255, 255, 255, 70), text: rgba(0, 0, 0, 225), dim: rgba(0, 0, 0, 105), highlight: rgba(0, 0, 0, 28), chip: rgba(0, 0, 0, 34), dark }
         }
     }
 }
@@ -92,38 +92,21 @@ pub fn bar_luma(glass: &tiny_skia::Pixmap, screen_h: i32) -> f32 {
     if n == 0.0 { 1.0 } else { sum / n }
 }
 
-/// Recolours a one-colour icon to `text`; returns true when a coloured icon needs a chip
-/// (its brightness is too close to the bar's)
-pub fn adapt_tray_icon(icon: &mut tiny_skia::Pixmap, text: Color, dark_bar: bool) -> bool {
-    let (mut n, mut luma, mut luma2, mut sat) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+/// True when a tray icon is too close in brightness to the bar to stand out; it then gets
+/// a soft chip behind it. Icons keep their own colours (white symbolic ones included).
+pub fn tray_icon_needs_chip(icon: &tiny_skia::Pixmap, dark_bar: bool) -> bool {
+    let (mut n, mut luma) = (0.0f32, 0.0f32);
     for px in icon.data().chunks_exact(4) {
         let a = px[3] as f32;
         if a < 64.0 { continue; }
-        let (r, g, b) = (px[0] as f32 / a, px[1] as f32 / a, px[2] as f32 / a);
-        let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
-        let l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        luma += 0.2126 * px[0] as f32 / a + 0.7152 * px[1] as f32 / a + 0.0722 * px[2] as f32 / a;
         n += 1.0;
-        luma += l;
-        luma2 += l * l;
-        sat += if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
     }
     if n < 4.0 {
         return false;
     }
-    let (mean, var, sat) = (luma / n, (luma2 / n - (luma / n).powi(2)).max(0.0), sat / n);
-    if sat < 0.12 && var.sqrt() < 0.16 {
-        let (r, g, b) = (text.red(), text.green(), text.blue());
-        for px in icon.data_mut().chunks_exact_mut(4) {
-            let a = px[3] as f32 / 255.0 * text.alpha();
-            px[0] = (r * a * 255.0).round() as u8;
-            px[1] = (g * a * 255.0).round() as u8;
-            px[2] = (b * a * 255.0).round() as u8;
-            px[3] = (a * 255.0).round() as u8;
-        }
-        return false;
-    }
     let bar = if dark_bar { 0.2 } else { 0.85 };
-    (mean - bar).abs() < 0.3
+    (luma / n - bar).abs() < 0.3
 }
 
 /// One desktop tile (or «+») of the Mission Control strip
@@ -2550,13 +2533,13 @@ impl MacShell {
                     }else{None};
                     let source=icon.or(item.pixels.as_deref());
                     if let Some(image)=source {
-                        // Template-like (one-colour) icons take the bar's text colour; a
-                        // coloured one that would vanish into the wallpaper gets a soft chip
+                        // An icon that would vanish into the wallpaper gets a soft chip
                         let size=(18.0*ui_scale()).round().max(1.0);
                         if let Some(mut tile)=tiny_skia::Pixmap::new(size as u32,size as u32) {
                             tile.draw_pixmap(0,0,image.as_ref(),&tiny_skia::PixmapPaint{quality:tiny_skia::FilterQuality::Bilinear,..Default::default()},tiny_skia::Transform::from_scale(size/image.width() as f32,size/image.height() as f32),None);
-                            if adapt_tray_icon(&mut tile,bar.text,bar.dark) {
-                                fill_rounded_rect(&mut pm,x-3.0,y-2.0,24.0,22.0,7.0,bar.chip);
+                            if tray_icon_needs_chip(&tile,bar.dark) {
+                                // A soft disc, like a macOS status item's selection, not a box
+                                fill_rounded_rect(&mut pm,x-2.0,y-2.0,22.0,22.0,11.0,bar.chip);
                             }
                             pm.draw_pixmap((x*ui_scale()).round() as i32,(y*ui_scale()).round() as i32,tile.as_ref(),&tiny_skia::PixmapPaint::default(),tiny_skia::Transform::identity(),None);
                         }
@@ -3492,19 +3475,126 @@ mod appmenu_tests {
         let dark = BarColors::for_background(true);
         let light = BarColors::for_background(false);
         assert!(dark.text.red() > 0.9 && light.text.red() < 0.1);
-        // A white symbolic icon on a light bar takes the dark text colour
+        // A white icon on a light bar gets a chip and keeps its colour; on a dark bar not
         let mut white = tiny_skia::Pixmap::new(8, 8).unwrap();
         white.fill(tiny_skia::Color::WHITE);
-        assert!(!adapt_tray_icon(&mut white, light.text, false));
-        assert!(white.data()[0] < 10 && white.data()[3] > 200, "recoloured to black");
-        // A coloured icon close to the bar's brightness gets a chip, a contrasting one not
+        assert!(tray_icon_needs_chip(&white, false) && !tray_icon_needs_chip(&white, true));
         let mut yellow = tiny_skia::Pixmap::new(8, 8).unwrap();
         yellow.fill(tiny_skia::Color::from_rgba8(250, 220, 40, 255));
-        assert!(adapt_tray_icon(&mut yellow.clone(), light.text, false));
-        assert!(!adapt_tray_icon(&mut yellow, dark.text, true));
-        assert_eq!(&yellow.data()[..3], &[250, 220, 40], "coloured icons keep their colours");
-        let mut empty = tiny_skia::Pixmap::new(8, 8).unwrap();
-        assert!(!adapt_tray_icon(&mut empty, light.text, false));
+        assert!(tray_icon_needs_chip(&yellow, false));
+        assert!(!tray_icon_needs_chip(&yellow, true));
+        let empty = tiny_skia::Pixmap::new(8, 8).unwrap();
+        assert!(!tray_icon_needs_chip(&empty, false));
+    }
+
+    /// Visual check: the menu bar over every wallpaper, light and dark, with typical tray
+    /// icons, hovered language badge and the open input menu. Writes one PNG to
+    /// FEATHER_MENUBAR_SHEET (run with --ignored).
+    #[test]
+    #[ignore = "writes a contact sheet: FEATHER_MENUBAR_SHEET=/path.png cargo test --release menubar_contact_sheet -- --ignored"]
+    fn menubar_contact_sheet() {
+        let Some(out) = std::env::var_os("FEATHER_MENUBAR_SHEET") else { return };
+        let (lw, lh, scale) = (1440, 900, 2.0f32);
+        let (pw, ph) = ((lw as f32 * scale) as i32, (lh as f32 * scale) as i32);
+        let crop_w = 1300 * scale as i32;
+        let (bar_h, menu_h) = ((TOP_BAR_HEIGHT as f32 * scale) as i32, (150.0 * scale) as i32);
+        let icon = |f: &dyn Fn(u32, u32) -> [u8; 4]| {
+            let mut p = tiny_skia::Pixmap::new(40, 40).unwrap();
+            for (i, px) in p.data_mut().chunks_exact_mut(4).enumerate() {
+                let c = f((i % 40) as u32, (i / 40) as u32);
+                let a = c[3] as u16;
+                px.copy_from_slice(&[(c[0] as u16 * a / 255) as u8, (c[1] as u16 * a / 255) as u8, (c[2] as u16 * a / 255) as u8, c[3]]);
+            }
+            Some(Arc::new(p))
+        };
+        let ring = |rgb: [u8; 3]| move |x: u32, y: u32| {
+            let d = (((x as f32 - 19.5).powi(2) + (y as f32 - 19.5).powi(2)).sqrt() - 13.0).abs();
+            if d < 3.5 { [rgb[0], rgb[1], rgb[2], 255] } else { [0, 0, 0, 0] }
+        };
+        let disc = |rgb: [u8; 3]| move |x: u32, y: u32| {
+            if ((x as f32 - 19.5).powi(2) + (y as f32 - 19.5).powi(2)).sqrt() < 17.0 { [rgb[0], rgb[1], rgb[2], 255] } else { [0, 0, 0, 0] }
+        };
+        let items: Vec<crate::tray::Item> = [
+            ("white", icon(&ring([255, 255, 255]))),
+            ("black", icon(&ring([10, 10, 10]))),
+            ("grey", icon(&ring([140, 140, 140]))),
+            ("telegram", icon(&disc([40, 160, 230]))),
+            ("yellow", icon(&disc([250, 215, 40]))),
+            ("navy", icon(&disc([20, 30, 80]))),
+        ].into_iter().map(|(k, pixels)| crate::tray::Item { key: k.into(), title: k.into(), icon_name: String::new(), pixels, menu_only: false, attention: false }).collect();
+        let mut sources: Vec<(String, Vec<u8>)> = (0..3).map(|i| {
+            let img = image::load_from_memory(crate::wallpaper::bundled_bytes(i)).unwrap()
+                .resize_to_fill(pw as u32, ph as u32, image::imageops::FilterType::Triangle).to_rgba8();
+            (crate::wallpaper::NAMES[i].to_string(), img.into_raw())
+        }).collect();
+        for theme in [WallpaperTheme::TahoeDay, WallpaperTheme::TahoeNight, WallpaperTheme::SequoiaMidnight, WallpaperTheme::FeatherCyan] {
+            let mut px = vec![0; (pw * ph * 4) as usize];
+            crate::theme::render_wallpaper(&mut px, pw, ph, theme);
+            sources.push((theme.name().to_string(), px));
+        }
+        let row_h = bar_h * 3 + menu_h + 16;
+        let mut sheet = image::RgbaImage::new(crop_w as u32 * 2 + 20, row_h as u32 * sources.len() as u32);
+        for (row, (_, wall)) in sources.iter().enumerate() {
+            for (col, look) in [Appearance::Light, Appearance::Dark].into_iter().enumerate() {
+                crate::theme::with_render_settings(scale, look, || {
+                    let mut fonts = FontSystem::new();
+                    let registry = AppRegistry::new();
+                    let mut shell = MacShell::new(lw, lh);
+                    shell.toasts.clear();
+                    let glass = crate::wallpaper::glass(wall, (pw, ph), ((pw / 8).max(8), (ph / 8).max(8)), if look == Appearance::Dark { 0.8 } else { 1.0 });
+                    shell.install_asset(crate::raster::Asset::Wallpaper { pixels: Vec::new(), size: (pw, ph), image: None, glass });
+                    shell.set_tray_items(items.clone());
+                    let mut frame = |shell: &mut MacShell, fonts: &mut FontSystem, top: i32| {
+                        shell.topbar_dirty = true;
+                        shell.ensure_topbar_rendered(fonts, "Файлы", "EN");
+                        let mut bar = Vec::new();
+                        let _ = shell.topbar_buffer.render().draw(|d| { bar.extend_from_slice(d); Ok::<_, ()>(Vec::new()) });
+                        let mut over: Option<(Vec<u8>, Rectangle<i32, Buffer>)> = None;
+                        if shell.has_visible_overlay() {
+                            shell.overlay_dirty = true;
+                            shell.ensure_overlay_rendered(fonts, &registry, "EN");
+                            let mut o = Vec::new();
+                            let _ = shell.overlay_buffer.render().draw(|d| { o.extend_from_slice(d); Ok::<_, ()>(Vec::new()) });
+                            over = Some((o, shell.overlay_geometry));
+                        }
+                        let h = if over.is_some() { bar_h + menu_h } else { bar_h };
+                        let x0 = pw - crop_w;
+                        for y in 0..h {
+                            for x in 0..crop_w {
+                                let sx = x0 + x;
+                                let i = ((y * pw + sx) * 4) as usize;
+                                let mut c = [wall[i] as f32, wall[i + 1] as f32, wall[i + 2] as f32];
+                                let mut blend = |p: &[u8]| {
+                                    let a = p[3] as f32 / 255.0;
+                                    for k in 0..3 { c[k] = p[k] as f32 + c[k] * (1.0 - a); }
+                                };
+                                if let Some((o, g)) = &over {
+                                    let (ox, oy) = (sx - g.loc.x, y - g.loc.y);
+                                    if ox >= 0 && oy >= 0 && ox < g.size.w && oy < g.size.h {
+                                        let j = ((oy * g.size.w + ox) * 4) as usize;
+                                        // Overlay is above the bar: bar first, then overlay
+                                        if y < bar_h { let b = ((y * pw + sx) * 4) as usize; blend(&bar[b..b + 4]); }
+                                        blend(&o[j..j + 4]);
+                                        sheet.put_pixel((col as i32 * (crop_w + 20) + x) as u32, (row as i32 * row_h + top + y) as u32, image::Rgba([c[0] as u8, c[1] as u8, c[2] as u8, 255]));
+                                        continue;
+                                    }
+                                }
+                                if y < bar_h { let b = ((y * pw + sx) * 4) as usize; blend(&bar[b..b + 4]); }
+                                sheet.put_pixel((col as i32 * (crop_w + 20) + x) as u32, (row as i32 * row_h + top + y) as u32, image::Rgba([c[0] as u8, c[1] as u8, c[2] as u8, 255]));
+                            }
+                        }
+                    };
+                    frame(&mut shell, &mut fonts, 0);
+                    shell.status_hover = Some(TopbarItem::Layout);
+                    frame(&mut shell, &mut fonts, bar_h);
+                    shell.status_hover = None;
+                    shell.open_menu = Some(TopMenu::Input);
+                    shell.menu_hovered = Some(0);
+                    frame(&mut shell, &mut fonts, bar_h * 2 + 4);
+                });
+            }
+        }
+        sheet.save(out).unwrap();
     }
 
     #[test]

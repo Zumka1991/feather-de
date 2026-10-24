@@ -18,6 +18,11 @@ const IMAGES: [&[u8]; 3] = [
     include_bytes!("../assets/wallpapers/feather-aurora.png"),
     include_bytes!("../assets/wallpapers/feather-lake.png"),
 ];
+/// Encoded bundled wallpaper (visual checks render the menu bar over each)
+#[cfg(test)]
+pub fn bundled_bytes(index: usize) -> &'static [u8] {
+    IMAGES[index]
+}
 const THUMBS: [&[u8]; 3] = [
     include_bytes!("../assets/wallpapers/feather-dawn-thumb.png"),
     include_bytes!("../assets/wallpapers/feather-aurora-thumb.png"),
