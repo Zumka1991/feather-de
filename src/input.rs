@@ -43,6 +43,8 @@ enum KeyAction {
     SwitcherCancel,
     /// Alt/Super+`: the next window of the frontmost app, without a panel
     CycleAppWindows { reverse: bool },
+    /// Ctrl+Alt+←/→ (Shift: take the front window along)
+    Space { delta: i32, carry: bool },
     SwitchVt(i32),
     /// Print: screen, Shift+Print: region/window selection, Alt+Print: active window
     Screenshot { shift: bool, alt: bool },
@@ -253,6 +255,10 @@ impl FeatherCompositor {
                 }
                 if st.screenshot_select.is_some() && raw == keysyms::KEY_Escape {
                     deferred = Some(KeyAction::Screenshot { shift: false, alt: false });
+                    return FilterResult::Intercept(());
+                }
+                if mods.ctrl && mods.alt && !mods.logo && matches!(raw, keysyms::KEY_Left | keysyms::KEY_Right) {
+                    deferred = Some(KeyAction::Space { delta: if raw == keysyms::KEY_Left { -1 } else { 1 }, carry: mods.shift });
                     return FilterResult::Intercept(());
                 }
                 if mods.ctrl && mods.alt && raw == keysyms::KEY_BackSpace {
@@ -513,6 +519,7 @@ impl FeatherCompositor {
             Some(KeyAction::SwitcherStep { reverse }) => self.switcher_step(reverse),
             Some(KeyAction::SwitcherCommit) => self.switcher_commit(),
             Some(KeyAction::CycleAppWindows { reverse }) => self.cycle_app_windows(reverse),
+            Some(KeyAction::Space { delta, carry }) => self.space_step(delta, carry),
             Some(KeyAction::SwitchVt(vt)) => self.switch_vt(vt),
             // Any shortcut while selecting (Esc too) ends the selection first
             Some(KeyAction::Screenshot { .. }) if self.screenshot_select.is_some() => self.cancel_screenshot_selection(),

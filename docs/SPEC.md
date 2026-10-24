@@ -79,6 +79,7 @@ calloop EventLoop (один поток)
 | `notifications.rs` | Сервер `org.freedesktop.Notifications` на worker: разбор подсказок, картинки ≤ 96 px, сигналы закрытия/действий; имя чужого демона не перехватывается |
 | `xwayland.rs` | Свой X-дисплей: lock и сокеты, xwayland-satellite по первому X-клиенту через `-listenfd`, перезапуск и очистка |
 | `gtk_shell.rs`, `gtk_menu.rs` | `gtk_shell1` v1 (адрес меню GTK, capability глобального меню-бара) и загрузка `org.gtk.Menus`/`org.gtk.Actions` в общее дерево меню |
+| `spaces.rs` | Рабочие столы: принадлежность окон, рост и удаление столов, переход к столу окна, сдвиг пружиной |
 | `shell.rs` | UI оболочки: меню-бар, Dock, меню, Spotlight, Control Center, уведомления, переключатель |
 | `theme.rs` | Метрики macOS, палитры светлой/тёмной темы, примитивы рисования, тени, обои |
 | `ui_raster.rs` | AA-маска tiny-skia, целочисленные заливки и separable bilinear стекла; SSE2 span на x86_64 и скалярные края/другие архитектуры |

@@ -121,6 +121,9 @@ impl FeatherCompositor {
             self.pointer_focus_dirty = true;
         }
         if changes.newly_mapped {
+            // A new window opens on the desktop in front
+            self.windows[idx].space = self.spaces.current;
+            self.windows[idx].off_space = false;
             self.place_new_window(idx);
             // New windows go to the top of the stack and get keyboard focus
             let win = self.windows.remove(idx);

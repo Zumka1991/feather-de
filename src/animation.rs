@@ -87,9 +87,21 @@ struct WindowMotion {
     dock: Option<R>,
 }
 
+/// Switching desktops: windows of `from` leave, windows of `to` come in from the side
+struct Slide {
+    spring: Spring,
+    fresh: bool,
+    from: u32,
+    to: u32,
+    /// +1 when the new desktop is to the right
+    dir: f64,
+    width: f64,
+}
+
 #[derive(Default)]
 pub struct Animations {
     disabled: bool,
+    slide: Option<Slide>,
     windows: HashMap<u64, WindowMotion>,
     overlay_key: Option<OverlayKind>,
     overlay: Option<Spring>,
@@ -104,6 +116,7 @@ impl Animations {
     pub fn set_enabled(&mut self, enabled: bool, windows: &[ManagedWindow], shell: &MacShell) {
         self.disabled = !enabled;
         self.windows.clear();
+        self.slide = None;
         self.overlay = None;
         self.launchpad = None;
         self.last_frame = None;
@@ -126,6 +139,15 @@ impl Animations {
     }
     pub fn active(&self) -> bool {
         self.last_frame.is_some()
+    }
+
+    pub fn slide_spaces(&mut self, from: u32, to: u32, width: f64) {
+        if self.disabled || from == to {
+            self.slide = None;
+            return;
+        }
+        let dir = if to > from { 1.0 } else { -1.0 };
+        self.slide = Some(Slide { spring: Spring::new(0.0, 1.0), fresh: true, from, to, dir, width });
     }
 
     /// Called only for frames requested by events or a still-running spring.
@@ -173,7 +195,17 @@ impl Animations {
         } else {
             self.launchpad = None;
         }
-        let active = self.windows.values().any(|w| w.spring.active())
+        if let Some(slide) = self.slide.as_mut() {
+            // Starts on this frame, not at the previous idle one
+            if !std::mem::take(&mut slide.fresh) {
+                slide.spring.advance(dt);
+            }
+            if !slide.spring.active() {
+                self.slide = None;
+            }
+        }
+        let active = self.slide.is_some()
+            || self.windows.values().any(|w| w.spring.active())
             || self.overlay.as_ref().is_some_and(Spring::active)
             || self.launchpad.as_ref().is_some_and(Spring::active);
         self.last_frame = active.then_some(now);
@@ -181,6 +213,19 @@ impl Animations {
     }
 
     pub fn window(&self, w: &ManagedWindow) -> Visual {
+        let mut visual = self.window_motion(w);
+        if let Some(s) = self.slide.as_ref() {
+            let p = s.spring.value;
+            if w.space == s.from {
+                visual.offset.0 -= s.dir * p * s.width;
+            } else if w.space == s.to {
+                visual.offset.0 += s.dir * (1.0 - p) * s.width;
+            }
+        }
+        visual
+    }
+
+    fn window_motion(&self, w: &ManagedWindow) -> Visual {
         if self.disabled {
             return Visual::default();
         }
@@ -206,7 +251,10 @@ impl Animations {
     }
 
     pub fn draws_window(&self, w: &ManagedWindow) -> bool {
+        // The desktop being left stays drawn while it slides out
+        let on_screen = !w.off_space || self.slide.as_ref().is_some_and(|s| w.space == s.from || w.space == s.to);
         w.mapped
+            && on_screen
             && (!w.minimized
                 || (!self.disabled && self.windows.get(&w.id).is_some_and(|m| m.spring.active())))
     }

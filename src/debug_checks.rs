@@ -52,6 +52,39 @@ fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("FEATHER_DEBUG_SPACES").is_some() {
+        // Desktops without host input: carry a window right, come back, let the Dock
+        // bring its desktop forward, carry it home and watch the empty desktop go away.
+        at(state, 1200, |s| {
+            s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+        })?;
+        at(state, 1800, |s| {
+            let id = s.windows.iter().rev().find(|w| w.is_visible()).map(|w| w.id).unwrap();
+            s.space_step(1, true);
+            assert_eq!((s.spaces.current, s.spaces.count), (1, 2));
+            let w = s.windows.iter().find(|w| w.id == id).unwrap();
+            assert!(w.space == 1 && w.is_visible(), "carried window is in front");
+            assert!(s.windows.iter().filter(|w| w.id != id && w.mapped).all(|w| !w.is_visible()), "others hidden");
+            eprintln!("[feather-spaces-check] carried window to a new desktop");
+        })?;
+        at(state, 2600, |s| {
+            s.space_step(-1, false);
+            assert_eq!((s.spaces.current, s.spaces.count), (0, 2), "a desktop with a window stays");
+            let w = s.windows.iter().find(|w| w.space == 1).unwrap();
+            assert!(!w.is_visible() && s.switcher_items().iter().any(|i| i.key == s.app_key(w)), "hidden but in Alt+Tab");
+            let key = s.app_key(w);
+            s.activate_app(key);
+            assert_eq!(s.spaces.current, 1, "activating its app goes to its desktop");
+            eprintln!("[feather-spaces-check] Alt+Tab/Dock bring the window's desktop forward");
+        })?;
+        at(state, 3400, |s| {
+            s.space_step(-1, true);
+            assert_eq!((s.spaces.current, s.spaces.count), (0, 1), "the emptied desktop went away");
+            assert!(s.windows.iter().filter(|w| w.mapped && !w.minimized).all(|w| w.is_visible()));
+            assert!(s.space_step_noop_left(), "nothing left of the first desktop");
+            eprintln!("[feather-spaces-check] carried home, empty desktop removed: ok");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_EXTERNAL_LOCK_CHECK").is_some(){
         if state.backend.is_drm() || !state.debug_input_only {return Err("external lock check requires isolated windowed input".into());}
         at(state,2500,|st|{

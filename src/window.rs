@@ -207,6 +207,10 @@ impl ShadowSet {
 pub struct ManagedWindow {
     pub settings_ticket: Option<std::sync::Arc<()>>,
     pub id: u64,
+    /// Desktop (Space) the window lives on
+    pub space: u32,
+    /// On another desktop than the current one: hidden, no input, no focus
+    pub off_space: bool,
     pub title: String,
     pub app_id: String,
     /// Logical top-left of the visible frame (titlebar top for SSD, content top for CSD)
@@ -377,6 +381,8 @@ impl ManagedWindow {
             client_shadow: false,
             activated: false,
             minimized: false,
+            space: 0,
+            off_space: false,
             maximized: false,
             fullscreen: false,
             saved_rect: None,
@@ -423,6 +429,8 @@ impl ManagedWindow {
             client_shadow: false,
             activated: false,
             minimized: false,
+            space: 0,
+            off_space: false,
             maximized: false,
             fullscreen: false,
             saved_rect: None,
@@ -455,7 +463,7 @@ impl ManagedWindow {
 
     /// Visible and able to receive input
     pub fn is_visible(&self) -> bool {
-        self.mapped && !self.minimized
+        self.mapped && !self.minimized && !self.off_space
     }
 
     pub fn has_titlebar(&self) -> bool {

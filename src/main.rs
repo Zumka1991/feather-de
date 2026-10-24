@@ -9,6 +9,7 @@ mod notifications;
 mod xwayland;
 mod gtk_menu;
 mod hot_corners;
+mod spaces;
 mod gtk_shell;
 mod debug_checks;
 use feather_ui::cpu_profile;
@@ -151,6 +152,7 @@ pub struct FeatherCompositor {
     pub notifications: Option<crate::notifications::Notifications>,
     pub xwayland: Option<crate::xwayland::Xwayland>,
     pub hot_corners: crate::hot_corners::HotCorners,
+    pub spaces: crate::spaces::Spaces,
     pub controls: Option<crate::controls::Controls>,
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
@@ -377,7 +379,9 @@ impl FeatherCompositor {
             let offset = ((self.windows.len() as i32) % 5) * 30;
             let x = (self.shell.screen_w / 2 - 260 + offset).max(32);
             let y = (TOP_BAR_HEIGHT + 54 + offset).max(TOP_BAR_HEIGHT + 12);
-            self.windows.push(ManagedWindow::new_builtin(id, kind, x, y));
+            let mut win = ManagedWindow::new_builtin(id, kind, x, y);
+            win.space = self.spaces.current;
+            self.windows.push(win);
         }
         self.shell.dock_dirty = true;
         if let Some(win)=self.windows.last_mut(){
@@ -519,12 +523,12 @@ impl FeatherCompositor {
     /// Apps in most-recently-used order for Alt+Tab
     pub fn switcher_items(&self) -> Vec<SwitcherItem> {
         let mut items: Vec<SwitcherItem> = Vec::new();
-        // Visible windows first (top of the stack = most recent), then minimized ones
+        // Shown windows first (top of the stack = most recent, any desktop), then minimized
         let order = self
             .windows
             .iter()
             .rev()
-            .filter(|w| w.is_visible())
+            .filter(|w| w.mapped && !w.minimized)
             .chain(self.windows.iter().rev().filter(|w| w.mapped && w.minimized));
         for w in order {
             let key = self.app_key(w);
@@ -603,6 +607,13 @@ impl FeatherCompositor {
                 self.launch_app_instance(i);
             }
             return;
+        }
+        // Nothing of it on this desktop: go where its most recent window is
+        let here = self.windows.iter().any(|w| ids.contains(&w.id) && !w.minimized && w.space == self.spaces.current);
+        if !here {
+            if let Some(id) = self.windows.iter().rev().find(|w| ids.contains(&w.id) && !w.minimized).map(|w| w.id) {
+                self.reveal_window_space(id);
+            }
         }
         let all_minimized = ids
             .iter()
@@ -1128,6 +1139,9 @@ impl FeatherCompositor {
                 if let Some(pos) = self.windows.iter().position(|w| w.id == win_id) {
                     let mut win = self.windows.remove(pos);
                     win.minimized = false;
+                    // Restored onto the desktop in front, like on macOS
+                    win.space = self.spaces.current;
+                    win.off_space = false;
                     win.dirty = true;
                     self.windows.push(win);
                     self.shell.dock_dirty = true;
@@ -1229,6 +1243,7 @@ impl FeatherCompositor {
                 }
             }
             ShellClickAction::FocusWindow(id) => {
+                self.reveal_window_space(id);
                 if let Some(pos) = self.windows.iter().position(|w| w.id == id) {
                     let mut w = self.windows.remove(pos);
                     w.minimized = false;
@@ -1254,7 +1269,7 @@ impl FeatherCompositor {
             }
             ShellClickAction::ShowShortcuts => self.shell.notify(
                 "Горячие клавиши",
-                "Super+Space поиск • Super+A приложения • Alt+Tab • Alt+` окна программы • Super+Q/W/H/M/F",
+                "Super+Space поиск • Super+A приложения • Alt+Tab • Alt+` окна программы • Ctrl+Alt+←/→ столы • Super+Q/W/H/M/F",
             ),
         }
     }
@@ -1659,6 +1674,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         notifications: None,
         xwayland: None,
         hot_corners: crate::hot_corners::HotCorners::new(saved.hot_corners),
+        spaces: Default::default(),
         pending_autostart,
         idle_frame_timer_armed: false,
         frame_pending: false,
