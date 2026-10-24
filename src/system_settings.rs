@@ -18,9 +18,10 @@ pub enum Page {
     Defaults,
     DateTime,
     Power,
+    Notifications,
 }
 impl Page {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Appearance,
         Self::Keyboard,
         Self::Pointer,
@@ -29,6 +30,7 @@ impl Page {
         Self::Defaults,
         Self::DateTime,
         Self::Power,
+        Self::Notifications,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -40,6 +42,7 @@ impl Page {
             Self::Defaults => "Приложения",
             Self::DateTime => "Дата и время",
             Self::Power => "Экран блокировки и энергосбережение",
+            Self::Notifications => "Уведомления",
         }
     }
     fn caption(self) -> &'static str {
@@ -52,6 +55,7 @@ impl Page {
             Self::Defaults => "Выберите приложения для повседневных задач.",
             Self::DateTime => "Синхронизация часов и часовой пояс.",
             Self::Power => "Пароль, выключение экрана и переход в сон.",
+            Self::Notifications => "Баннеры, центр уведомлений и «Не беспокоить».",
         }
     }
 }
@@ -60,6 +64,9 @@ pub enum Action {
     Page(Page),
     LockNow,
     IdleTime(u8),
+    DoNotDisturb,
+    /// Next delivery mode of the program at this index
+    NotifyDelivery(usize),
     Appearance(Appearance),
     Animations,
     DockZoom,
@@ -152,6 +159,8 @@ pub struct Context<'a> {
     pub direct: bool,
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<&'a crate::wallpaper::ImageSource>,
+    pub dnd: bool,
+    pub notify_apps: &'a [crate::notifications::AppPolicy],
 }
 
 pub struct FrameJob {
@@ -174,6 +183,8 @@ pub struct FrameJob {
     pub current: Mode,
     pub direct: bool,
     pub wallpaper: WallpaperTheme,
+    pub dnd: bool,
+    pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub width: i32,
     pub height: i32,
     pub focused: bool,
@@ -206,6 +217,8 @@ impl FrameJob {
             current: c.current,
             direct: c.direct,
             wallpaper: c.wallpaper,
+            dnd: c.dnd,
+            notify_apps: c.notify_apps.to_vec(),
             width: win.width,
             height: win.height,
             focused: win.activated,
@@ -230,6 +243,8 @@ impl FrameJob {
             direct: self.direct,
             wallpaper: self.wallpaper,
             wallpaper_image: self.wallpaper_image.as_ref(),
+            dnd: self.dnd,
+            notify_apps: &self.notify_apps,
         }
     }
 }
@@ -239,7 +254,7 @@ const TOOLBAR_CLIP: f32 = 12.0;
 const SIDEBAR: [&[Page]; 3] = [
     &[Page::Appearance, Page::Desktop, Page::Displays],
     &[Page::Keyboard, Page::Pointer],
-    &[Page::Defaults, Page::DateTime, Page::Power],
+    &[Page::Notifications, Page::Defaults, Page::DateTime, Page::Power],
 ];
 fn side_width(w: f32) -> f32 {
     if w >= 720.0 {
@@ -377,6 +392,7 @@ fn page_color(page: Page) -> (tiny_skia::Color, tiny_skia::Color) {
         Page::Desktop => (rgba(80, 200, 245, 255), rgba(20, 140, 220, 255)),
         Page::Defaults => (rgba(150, 120, 255, 255), rgba(100, 70, 225, 255)),
         Page::Power => (rgba(90,165,220,255),rgba(45,95,175,255)),
+        Page::Notifications => (rgba(255, 92, 86, 255), rgba(236, 52, 62, 255)),
         Page::DateTime => (rgba(255, 105, 105, 255), rgba(225, 55, 70, 255)),
     }
 }
@@ -440,6 +456,30 @@ fn draw_page_icon(pm: &mut PixmapMut, page: Page, x: f32, y: f32, size: f32) {
             let (x0,y0)=pt(4.0,9.0);
             stroke_rounded_rect(pm,x0,y0,12.0*k,9.0*k,2.0*k,1.3*k,white);
             let (cx,cy)=pt(10.0,7.5);stroke_circle(pm,cx,cy,3.5*k,1.3*k,white);
+        }
+        Page::Notifications => {
+            // Bell: dome, rim and clapper
+            let mut b = tiny_skia::PathBuilder::new();
+            let (l, t) = pt(5.0, 14.0);
+            b.move_to(l, t);
+            let (c1x, c1y) = pt(6.4, 12.4);
+            let (sx, sy) = pt(6.0, 8.5);
+            b.quad_to(c1x, c1y, sx, sy);
+            let (k1x, k1y) = pt(6.0, 4.4);
+            let (tx, ty) = pt(10.0, 4.4);
+            b.quad_to(k1x, k1y, tx, ty);
+            let (k2x, k2y) = pt(14.0, 4.4);
+            let (ex, ey) = pt(14.0, 8.5);
+            b.quad_to(k2x, k2y, ex, ey);
+            let (c2x, c2y) = pt(13.6, 12.4);
+            let (rx, ry) = pt(15.0, 14.0);
+            b.quad_to(c2x, c2y, rx, ry);
+            b.close();
+            if let Some(path) = b.finish() {
+                fill_path_gradient(pm, &path, y, y + size, white, white);
+            }
+            let (cx, cy) = pt(10.0, 15.6);
+            fill_circle(pm, cx, cy, 1.5 * k, white);
         }
         Page::DateTime => {
             let (cx, cy) = pt(10.0, 10.0);
@@ -579,6 +619,23 @@ impl Panel {
                 l.end();
                 l.footer("Нажмите на строку, чтобы выбрать время. Выключение экрана и сон всегда требуют пароль при возвращении.");
                 l.footer(if c.direct && c.power_ready {"После пробуждения экран блокируется автоматически. Видео в видимом окне может отложить действия по простою."} else if c.direct {"Служба питания недоступна. Блокировка работает; автоматический сон пока недоступен."} else {"В оконном режиме гаснет только окно Пёрышка. Сон компьютера доступен в прямой сессии DRM."});
+            }
+            Page::Notifications => {
+                l.hero(Page::Notifications);
+                l.begin();
+                l.row(52.0, "Не беспокоить", "Всё уходит в центр уведомлений, баннер только у срочных".into(), Style::Toggle(c.dnd), Some(Action::DoNotDisturb));
+                l.end();
+                l.header("Уведомления программ");
+                if c.notify_apps.is_empty() {
+                    l.footer("Программы появятся здесь после первого уведомления.");
+                } else {
+                    l.begin();
+                    for (i, a) in c.notify_apps.iter().enumerate() {
+                        l.row(52.0, &a.label, a.delivery.label().into(), Style::Row, Some(Action::NotifyDelivery(i)));
+                    }
+                    l.end();
+                    l.footer("Нажмите на строку, чтобы сменить способ показа. Выключенные уведомления не сохраняются.");
+                }
             }
             Page::Appearance => {
                 l.hero(Page::Appearance);
@@ -1558,6 +1615,8 @@ impl crate::FeatherCompositor {
             direct: self.backend.is_drm(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.as_ref(),
+            dnd: self.shell.dnd_enabled,
+            notify_apps: &self.shell.notify_apps,
         }
     }
 
@@ -1632,6 +1691,18 @@ impl crate::FeatherCompositor {
         self.system_settings.error = None;
         match action {
             Action::LockNow=>self.lock_session(),
+            Action::DoNotDisturb => {
+                self.shell.dnd_enabled = !self.shell.dnd_enabled;
+                self.shell.topbar_dirty = true;
+                self.shell.overlay_dirty = true;
+                self.save_settings();
+            }
+            Action::NotifyDelivery(index) => {
+                if let Some(a) = self.shell.notify_apps.get_mut(index) {
+                    a.delivery = a.delivery.next();
+                    self.save_settings();
+                }
+            }
             Action::IdleTime(index)=>{
                 let p=&mut self.power.preferences;
                 let value=match index {0=>&mut p.lock,1=>&mut p.blank,_=>&mut p.suspend};
@@ -2098,6 +2169,7 @@ mod tests {
     #[test]
     fn all_pages_paint_at_fractional_scale_and_clicks_use_the_painted_geometry() {
         let keyboard = Keyboard::default();
+        let apps: Vec<_> = ["Telegram", "Firefox"].iter().map(|n| crate::notifications::AppPolicy { key: n.to_lowercase(), label: n.to_string(), delivery: Default::default() }).collect();
         let mode = Mode {
             width: 3840,
             height: 2160,
@@ -2119,6 +2191,8 @@ mod tests {
             direct: false,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
+            dnd: false,
+            notify_apps: &apps,
         };
         let mut fonts = FontSystem::new();
         for scale in [1.0, 1.25, 2.0] {
@@ -2222,6 +2296,8 @@ mod tests {
             direct: false,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
+            dnd: false,
+            notify_apps: &[],
         };
         let mut p = Panel {
             page: Page::Keyboard,

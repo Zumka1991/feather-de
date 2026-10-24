@@ -220,6 +220,7 @@ pub struct Settings {
     pub dock_zoom: bool,
     pub dock_locked: bool,
     pub do_not_disturb: bool,
+    pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub dock: Option<Vec<String>>,
     pub animations: bool,
     pub keyboard: Keyboard,
@@ -240,6 +241,7 @@ impl Default for Settings {
             dock_zoom: true,
             dock_locked: false,
             do_not_disturb: false,
+            notify_apps: Vec::new(),
             dock: None,
             animations: true,
             keyboard: Keyboard::default(),
@@ -329,6 +331,15 @@ impl Settings {
                         s.dock_locked = v;
                     }
                 }
+                "notify_app" => {
+                    let mut f = v.splitn(3, '|');
+                    if let (Some(key), Some(label), Some(Some(delivery))) = (f.next(), f.next(), f.next().map(crate::notifications::Delivery::parse)) {
+                        let key = crate::notifications::clean_field(key);
+                        if !key.is_empty() && s.notify_apps.len() < crate::notifications::MAX_APPS && !s.notify_apps.iter().any(|a| a.key == key) {
+                            s.notify_apps.push(crate::notifications::AppPolicy { key, label: crate::notifications::clean_field(label), delivery });
+                        }
+                    }
+                }
                 "do_not_disturb" => {
                     if let Ok(v) = v.parse() {
                         s.do_not_disturb = v;
@@ -399,6 +410,9 @@ impl Settings {
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
+        for a in &self.notify_apps {
+            text.push_str(&format!("notify_app={}|{}|{}\n", a.key, a.label, a.delivery.id()));
+        }
         let pt = &self.pointer;
         if let Some(theme) = pt.cursor_theme.as_deref().filter(|t| valid_theme(t)) {
             text.push_str(&format!("cursor_theme={theme}\n"));
@@ -524,6 +538,23 @@ mod tests {
         assert_eq!(invalid.power, crate::power::Preferences::default());
     }
     use super::*;
+    #[test]
+    fn notification_preferences_round_trip_and_reject_bad_lines() {
+        use crate::notifications::{AppPolicy, Delivery};
+        let mut s = Settings::default();
+        assert!(!s.do_not_disturb && s.notify_apps.is_empty());
+        s.do_not_disturb = true;
+        s.notify_apps = vec![
+            AppPolicy { key: "org.telegram.desktop".into(), label: "Telegram".into(), delivery: Delivery::CenterOnly },
+            AppPolicy { key: "firefox".into(), label: "Firefox".into(), delivery: Delivery::Off },
+        ];
+        let restored = Settings::parse(&s.text());
+        assert!(restored.do_not_disturb);
+        assert_eq!(restored.notify_apps, s.notify_apps);
+        let bad = Settings::parse("notify_app=x|X|loud\nnotify_app=|Y|off\nnotify_app=a|A|off\nnotify_app=a|B|banners\nnotify_app=only\n");
+        assert_eq!(bad.notify_apps, [AppPolicy { key: "a".into(), label: "A".into(), delivery: Delivery::Off }]);
+    }
+
     #[test]
     fn dock_pins_and_lock_survive_settings_round_trip() {
         let old = Settings::parse("dock=konsole,firefox\n");

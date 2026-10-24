@@ -651,6 +651,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
                 Ok("defaults") => Page::Defaults,
                 Ok("date") => Page::DateTime,
                 Ok("power") => Page::Power,
+                Ok("notifications") => Page::Notifications,
                 _ => Page::Appearance,
             };
             s.apply_system_setting(A::Page(page));

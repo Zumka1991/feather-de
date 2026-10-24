@@ -627,6 +627,9 @@ pub struct MacShell {
     center_hover: Option<CenterHit>,
     /// Closes and actions for D-Bus clients; drained by the compositor
     pub notification_events: Vec<NotificationEvent>,
+    /// Per-program delivery, in first-seen order; `notify_apps_changed` asks for a save
+    pub notify_apps: Vec<crate::notifications::AppPolicy>,
+    pub notify_apps_changed: bool,
 
     pub overlay_buffer: MemoryRenderBuffer,
     pub overlay_dirty: bool,
@@ -719,6 +722,8 @@ impl MacShell {
             center_first: 0,
             center_hover: None,
             notification_events: Vec::new(),
+            notify_apps: Vec::new(),
+            notify_apps_changed: false,
             overlay_buffer: new_buffer(1, 1),
             overlay_dirty: true,
             overlay_painted: Vec::new(),
@@ -803,6 +808,8 @@ impl MacShell {
             .filter(|s| !s.is_empty())
             .find_map(|s| registry.app_for_app_id(s).or_else(|| registry.app_for_app_id(&s.to_lowercase())))
             .map(|i| &registry.apps[i]);
+        let label = app.map_or_else(|| n.app_name.clone(), |a| a.name.clone());
+        let delivery = self.app_delivery(&n, &label);
         let icon = if !n.app_icon.is_empty() {
             Some(AppIcon { kind: crate::apps::IconKind::GenericApp, name: Some(n.app_icon.clone()) })
         } else {
@@ -813,7 +820,7 @@ impl MacShell {
             title: if n.summary.is_empty() { n.app_name.clone() } else { n.summary },
             body: n.body,
             icon,
-            app_label: app.map_or(n.app_name, |a| a.name.clone()),
+            app_label: label,
             image: n.image,
             actions: n.actions,
             created_at: Instant::now(),
@@ -822,6 +829,14 @@ impl MacShell {
             transient: n.transient,
             posted: chrono::Local::now(),
         };
+        if delivery == crate::notifications::Delivery::Off {
+            // A replaced one disappears too; the client hears it was dismissed
+            self.toasts.retain(|t| t.id != toast.id);
+            self.history.retain(|t| t.id != toast.id);
+            self.toast_closed(toast.id, crate::notifications::Reason::Dismissed);
+            self.overlay_dirty = true;
+            return;
+        }
         if let Some(i) = self.toasts.iter().position(|t| t.id == toast.id) {
             self.toasts[i] = toast;
             self.overlay_dirty = true;
@@ -834,11 +849,33 @@ impl MacShell {
             self.overlay_dirty = true;
             return;
         }
-        if (self.dnd_enabled || self.center_open) && !n.critical {
+        let quiet = self.dnd_enabled || self.center_open || delivery == crate::notifications::Delivery::CenterOnly;
+        if quiet && !n.critical {
             self.to_history(toast);
             return;
         }
         self.push_toast(toast);
+    }
+
+    /// The sender's setting; a new sender is remembered with the default
+    fn app_delivery(&mut self, n: &crate::notifications::Incoming, label: &str) -> crate::notifications::Delivery {
+        use crate::notifications::{clean_field, AppPolicy, MAX_APPS};
+        let key = clean_field(if !n.desktop_entry.is_empty() { &n.desktop_entry } else if !n.app_name.is_empty() { &n.app_name } else { label });
+        if key.is_empty() { return Default::default(); }
+        let label = match clean_field(label) { l if l.is_empty() => key.clone(), l => l };
+        match self.notify_apps.iter_mut().find(|a| a.key == key) {
+            Some(a) => {
+                if a.label != label { a.label = label; self.notify_apps_changed = true; }
+                a.delivery
+            }
+            None => {
+                if self.notify_apps.len() < MAX_APPS {
+                    self.notify_apps.push(AppPolicy { key, label, delivery: Default::default() });
+                    self.notify_apps_changed = true;
+                }
+                Default::default()
+            }
+        }
     }
 
     /// A banner that left the screen: kept in the center unless the client said transient
@@ -3108,8 +3145,45 @@ mod appmenu_tests {
     }
 
     #[test]
+    fn per_app_delivery_remembers_senders_and_routes_their_notifications() {
+        use crate::notifications::{Delivery, Reason};
+        let registry = AppRegistry::new();
+        let mut shell = MacShell::new(1000, 700);
+        shell.toasts.clear();
+        let mut tg = incoming(1, &[]); tg.app_name = "Telegram".into(); tg.desktop_entry = "org.telegram.desktop".into();
+        shell.show_notification(tg.clone(), &registry);
+        assert!(shell.notify_apps_changed);
+        assert_eq!(shell.notify_apps.len(), 1);
+        assert_eq!(shell.notify_apps[0].key, "org.telegram.desktop");
+        assert_eq!(shell.toasts[0].id, 1);
+        shell.notify_apps_changed = false;
+        // Same sender again: nothing new to save
+        tg.id = 2;
+        shell.show_notification(tg.clone(), &registry);
+        assert!(!shell.notify_apps_changed);
+        // Center only: no banner, but kept
+        shell.notify_apps[0].delivery = Delivery::CenterOnly;
+        tg.id = 3;
+        shell.show_notification(tg.clone(), &registry);
+        assert!(shell.toasts.iter().all(|t| t.id != 3) && shell.history[0].id == 3);
+        // Critical still gets a banner
+        tg.id = 4; tg.critical = true;
+        shell.show_notification(tg.clone(), &registry);
+        assert_eq!(shell.toasts[0].id, 4);
+        // Off: dropped, an existing one with that id disappears, the client is told
+        shell.notify_apps[0].delivery = Delivery::Off;
+        tg.id = 2; tg.critical = false;
+        shell.show_notification(tg, &registry);
+        assert!(shell.toasts.iter().chain(&shell.history).all(|t| t.id != 2));
+        assert_eq!(shell.notification_events, [NotificationEvent::Closed(2, Reason::Dismissed)]);
+        // Senders are bounded
+        for i in 0..100 { let mut n = incoming(100 + i, &[]); n.app_name = format!("App{i}"); shell.show_notification(n, &registry); }
+        assert_eq!(shell.notify_apps.len(), crate::notifications::MAX_APPS);
+        assert_eq!(Delivery::Off.next(), Delivery::Banners);
+    }
+
+    #[test]
     fn notification_expiry_waits_for_hover_and_do_not_disturb_hides_non_critical() {
-        use crate::notifications::Reason;
         let registry = AppRegistry::new();
         let mut shell = MacShell::new(1000, 700);
         shell.toasts.clear();

@@ -647,6 +647,7 @@ impl FeatherCompositor {
             dock_zoom: self.shell.dock_zoom_enabled,
             dock_locked: self.dock_locked,
             do_not_disturb: self.shell.dnd_enabled,
+            notify_apps: self.shell.notify_apps.clone(),
             dock: Some(self.dock_pins.clone()),
             animations: self.animations.enabled(),
             keyboard: self.keyboard_config.clone(),
@@ -941,6 +942,10 @@ impl FeatherCompositor {
             crate::notifications::Update::Show(n) => self.shell.show_notification(*n, &self.app_registry),
             crate::notifications::Update::Close(id) => { self.shell.close_notification(id); }
         }
+        if std::mem::take(&mut self.shell.notify_apps_changed) {
+            self.save_settings();
+            self.mark_settings_dirty();
+        }
         self.flush_notification_events();
         self.needs_redraw = true;
     }
@@ -971,12 +976,7 @@ impl FeatherCompositor {
         match action {
             ShellClickAction::SystemSettings(action)=>self.apply_system_setting(action),
             ShellClickAction::None => {}
-            ShellClickAction::ToggleDoNotDisturb => {
-                self.shell.dnd_enabled = !self.shell.dnd_enabled;
-                self.shell.topbar_dirty = true;
-                self.shell.overlay_dirty = true;
-                self.save_settings();
-            }
+            ShellClickAction::ToggleDoNotDisturb => self.apply_system_setting(crate::system_settings::Action::DoNotDisturb),
             ShellClickAction::Tray {key,action,x,y} => {
                 self.shell.close_menus();
                 let token=if matches!(action,crate::tray::Action::Activate|crate::tray::Action::Secondary) {
@@ -1680,6 +1680,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             shell.theme = saved.wallpaper;
             shell.dock_zoom_enabled = saved.dock_zoom;
             shell.dnd_enabled = saved.do_not_disturb;
+            shell.notify_apps = saved.notify_apps.clone();
             shell
         },
         windows: Vec::new(),

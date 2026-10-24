@@ -20,6 +20,52 @@ const PATH: &str = "/org/freedesktop/Notifications";
 const IMAGE_PX: u32 = 96;
 const MAX_ACTIONS: usize = 3;
 
+/// How one program's notifications reach the user (Системные настройки → Уведомления)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Delivery {
+    #[default]
+    Banners,
+    /// Straight to the notification center, no banner
+    CenterOnly,
+    /// Dropped (the client is told it was dismissed)
+    Off,
+}
+
+impl Delivery {
+    pub fn next(self) -> Self {
+        match self { Self::Banners => Self::CenterOnly, Self::CenterOnly => Self::Off, Self::Off => Self::Banners }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Banners => "Баннеры и центр уведомлений",
+            Self::CenterOnly => "Только центр уведомлений",
+            Self::Off => "Выключены",
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self { Self::Banners => "banners", Self::CenterOnly => "center", Self::Off => "off" }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        [Self::Banners, Self::CenterOnly, Self::Off].into_iter().find(|d| d.id() == s)
+    }
+}
+
+/// A program that has sent notifications; `key` is its desktop entry or app name
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppPolicy {
+    pub key: String,
+    pub label: String,
+    pub delivery: Delivery,
+}
+
+/// Programs remembered for per-app settings; new ones beyond it get the default
+pub const MAX_APPS: usize = 64;
+
+/// Safe for one `key|label|mode` line of settings.conf
+pub fn clean_field(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() && *c != '|').take(64).collect::<String>().trim().to_string()
+}
+
 /// Default banner time when the client leaves it to the server (expire_timeout = -1)
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 

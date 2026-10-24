@@ -1192,6 +1192,8 @@ mod settings_tests {
                 direct: false,
                 wallpaper: crate::theme::WallpaperTheme::for_appearance(Appearance::Light),
                 wallpaper_image: None,
+                dnd: false,
+                notify_apps: &[],
             };
             let mut direct = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 0, 0);
             direct.activated = true;
