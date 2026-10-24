@@ -5,6 +5,7 @@ mod backend;
 mod cursor;
 mod desktop;
 mod tray;
+mod notifications;
 mod debug_checks;
 use feather_ui::cpu_profile;
 mod drm_backend;
@@ -143,6 +144,7 @@ pub struct FeatherCompositor {
     pub animations: crate::animation::Animations,
     pub appmenus: crate::appmenu::AppMenus,
     pub tray: Option<crate::tray::Tray>,
+    pub notifications: Option<crate::notifications::Notifications>,
     pub controls: Option<crate::controls::Controls>,
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
@@ -933,8 +935,38 @@ impl FeatherCompositor {
         self.needs_redraw = true;
     }
 
+    pub fn notification_update(&mut self, update: crate::notifications::Update) {
+        match update {
+            crate::notifications::Update::Show(n) => self.shell.show_notification(*n, &self.app_registry),
+            crate::notifications::Update::Close(id) => { self.shell.close_notification(id); }
+        }
+        self.flush_notification_events();
+        self.needs_redraw = true;
+    }
+
+    /// Hands banner closes/actions to the D-Bus worker; an action gets an activation
+    /// token first so the app may raise its window.
+    pub fn flush_notification_events(&mut self) {
+        for event in std::mem::take(&mut self.shell.notification_events) {
+            let Some(server) = &self.notifications else { continue };
+            match event {
+                crate::shell::NotificationEvent::Closed(id, reason) => server.closed(id, reason),
+                crate::shell::NotificationEvent::Invoked(id, key) => {
+                    let token = self.xdg_activation_state.create_external_token(None).0.clone();
+                    let value = token.as_str().to_string();
+                    let _ = self.loop_handle.insert_source(Timer::from_duration(Duration::from_secs(10)), move |_, _, state| {
+                        state.xdg_activation_state.remove_token(&token);
+                        TimeoutAction::Drop
+                    });
+                    server.invoked(id, key, Some(value));
+                }
+            }
+        }
+    }
+
     pub fn execute_shell_action(&mut self, action: ShellClickAction) {
         self.needs_redraw = true;
+        self.flush_notification_events();
         match action {
             ShellClickAction::SystemSettings(action)=>self.apply_system_setting(action),
             ShellClickAction::None => {}
@@ -1547,7 +1579,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
 
     // Slow housekeeping: clock, RSS, toasts. Nothing else polls.
     handle.insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
-        if state.shell.tick() {
+        let ticked = state.shell.tick();
+        state.flush_notification_events();
+        if ticked {
             state.needs_redraw = true;
             if state.system_settings.page==crate::system_settings::Page::DateTime{state.mark_settings_dirty();}
         }
@@ -1600,6 +1634,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         animations: crate::animation::Animations::default(),
         appmenus,
         tray: None,
+        notifications: None,
         pending_autostart,
         idle_frame_timer_armed: false,
         frame_pending: false,
@@ -1694,6 +1729,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.controls=Some(crate::controls::Controls::new(&state.loop_handle)?);
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_TRAY").is_some() {
         state.tray=Some(crate::tray::Tray::new(&state.loop_handle)?);
+    }
+    // Nested runs share the host's session bus: they never serve its notifications.
+    if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_NOTIFY").is_some() {
+        state.notifications=Some(crate::notifications::Notifications::new(&state.loop_handle)?);
     }
 
     // Start Polkit Authentication Agent (for MouseVPN / pkexec password prompts) and D-Bus env

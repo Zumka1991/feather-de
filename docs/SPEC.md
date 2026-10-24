@@ -70,6 +70,7 @@ calloop EventLoop (один поток)
 | `raster.rs` | CPU worker: ограниченные очереди, снимки масштаба/темы, отмена устаревших результатов; никаких EGL/Wayland объектов |
 | `render.rs` | Сцена (front-to-back), damage tracking, темп кадров, frame callbacks, профайлер |
 | `window.rs` | Модель окна: geometry, SSD/CSD, mapped, maximize/fullscreen, 9-slice тень, встроенные окна |
+| `notifications.rs` | Сервер `org.freedesktop.Notifications` на worker: разбор подсказок, картинки ≤ 96 px, сигналы закрытия/действий; имя чужого демона не перехватывается |
 | `shell.rs` | UI оболочки: меню-бар, Dock, меню, Spotlight, Control Center, уведомления, переключатель |
 | `theme.rs` | Метрики macOS, палитры светлой/тёмной темы, примитивы рисования, тени, обои |
 | `ui_raster.rs` | AA-маска tiny-skia, целочисленные заливки и separable bilinear стекла; SSE2 span на x86_64 и скалярные края/другие архитектуры |

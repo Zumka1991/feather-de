@@ -54,7 +54,7 @@
 
 ## Уведомления
 
-- [ ] Сервер `org.freedesktop.Notifications`, баннеры в стиле macOS, действия
+- [x] Сервер `org.freedesktop.Notifications`, баннеры в стиле macOS, действия — [NOTIFICATIONS.md](NOTIFICATIONS.md)
 - [ ] Центр уведомлений (история), настоящий «Не беспокоить», настройки уведомлений по программам
 
 ## Совместимость

@@ -151,10 +151,48 @@ fn draw_cached_icon(pixmap: &mut PixmapMut, icons: &mut IconCache, icon: &AppIco
 
 #[derive(Debug, Clone)]
 pub struct NotificationToast {
+    /// D-Bus id; 0 for the shell's own messages, which emit no signals
+    pub id: u32,
     pub title: String,
     pub body: String,
+    pub icon: Option<AppIcon>,
+    pub app_label: String,
+    pub image: Option<std::sync::Arc<tiny_skia::Pixmap>>,
+    /// (key, label); "default" is the click on the banner
+    pub actions: Vec<(String, String)>,
     pub created_at: Instant,
-    pub duration: Duration,
+    /// None: stays until closed
+    pub duration: Option<Duration>,
+    pub resident: bool,
+}
+
+impl NotificationToast {
+    fn buttons(&self) -> impl Iterator<Item = (usize, &(String, String))> {
+        self.actions.iter().enumerate().filter(|(_, (k, _))| k != "default").take(3)
+    }
+    fn height(&self) -> f32 {
+        if self.buttons().next().is_some() { TOAST_H + TOAST_BUTTON_H + 10.0 } else { TOAST_H }
+    }
+}
+
+const TOAST_W: f32 = 344.0;
+const TOAST_H: f32 = 72.0;
+const TOAST_BUTTON_H: f32 = 26.0;
+const TOAST_GAP: f32 = 8.0;
+/// Banners shown at once; an older one is pushed out (reported as expired)
+const MAX_TOASTS: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToastPart {
+    Body,
+    Close,
+    Action(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotificationEvent {
+    Closed(u32, crate::notifications::Reason),
+    Invoked(u32, String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,7 +590,10 @@ pub struct MacShell {
     client_hovered: Option<(usize, usize)>,
     client_scroll: std::collections::HashMap<i32, usize>,
 
-    pub toast: Option<NotificationToast>,
+    pub toasts: Vec<NotificationToast>,
+    toast_hover: Option<(usize, ToastPart)>,
+    /// Closes and actions for D-Bus clients; drained by the compositor
+    pub notification_events: Vec<NotificationEvent>,
 
     pub overlay_buffer: MemoryRenderBuffer,
     pub overlay_dirty: bool,
@@ -638,7 +679,9 @@ impl MacShell {
             client_submenus: Vec::new(),
             client_hovered: None,
             client_scroll: std::collections::HashMap::new(),
-            toast: None,
+            toasts: Vec::new(),
+            toast_hover: None,
+            notification_events: Vec::new(),
             overlay_buffer: new_buffer(1, 1),
             overlay_dirty: true,
             overlay_painted: Vec::new(),
@@ -693,17 +736,92 @@ impl MacShell {
             .unwrap_or(0.0)
     }
 
+    /// The shell's own message; it replaces the previous one of its kind
     pub fn notify(&mut self, title: impl Into<String>, body: impl Into<String>) {
         if self.dnd_enabled {
             return;
         }
-        self.toast = Some(NotificationToast {
+        self.toasts.retain(|t| t.id != 0);
+        self.push_toast(NotificationToast {
+            id: 0,
             title: title.into(),
             body: body.into(),
+            icon: None,
+            app_label: String::new(),
+            image: None,
+            actions: Vec::new(),
             created_at: Instant::now(),
-            duration: Duration::from_secs(5),
+            duration: Some(crate::notifications::DEFAULT_TIMEOUT),
+            resident: false,
         });
+    }
+
+    /// A client notification (org.freedesktop.Notifications). With «Не беспокоить» only
+    /// critical ones are shown; the rest stay unanswered like ones waiting in a center.
+    pub fn show_notification(&mut self, n: crate::notifications::Incoming, registry: &AppRegistry) {
+        let app = [n.desktop_entry.as_str(), n.app_name.as_str()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .find_map(|s| registry.app_for_app_id(s).or_else(|| registry.app_for_app_id(&s.to_lowercase())))
+            .map(|i| &registry.apps[i]);
+        let icon = if !n.app_icon.is_empty() {
+            Some(AppIcon { kind: crate::apps::IconKind::GenericApp, name: Some(n.app_icon.clone()) })
+        } else {
+            app.map(AppIcon::of)
+        };
+        let toast = NotificationToast {
+            id: n.id,
+            title: if n.summary.is_empty() { n.app_name.clone() } else { n.summary },
+            body: n.body,
+            icon,
+            app_label: app.map_or(n.app_name, |a| a.name.clone()),
+            image: n.image,
+            actions: n.actions,
+            created_at: Instant::now(),
+            duration: n.timeout,
+            resident: n.resident,
+        };
+        if let Some(i) = self.toasts.iter().position(|t| t.id == toast.id) {
+            self.toasts[i] = toast;
+            self.overlay_dirty = true;
+            return;
+        }
+        if self.dnd_enabled && n.timeout.is_some() && !n.critical {
+            return;
+        }
+        self.push_toast(toast);
+    }
+
+    fn push_toast(&mut self, toast: NotificationToast) {
+        // Newest on top, like macOS; the oldest banner leaves when the stack is full.
+        self.toasts.insert(0, toast);
+        while self.toasts.len() > MAX_TOASTS {
+            let old = self.toasts.pop().unwrap();
+            self.toast_closed(old.id, crate::notifications::Reason::Expired);
+        }
+        self.toast_hover = None;
         self.overlay_dirty = true;
+    }
+
+    fn toast_closed(&mut self, id: u32, reason: crate::notifications::Reason) {
+        if id != 0 {
+            self.notification_events.push(NotificationEvent::Closed(id, reason));
+        }
+    }
+
+    fn remove_toast(&mut self, index: usize, reason: crate::notifications::Reason) {
+        let t = self.toasts.remove(index);
+        self.toast_closed(t.id, reason);
+        self.toast_hover = None;
+        self.overlay_dirty = true;
+    }
+
+    /// CloseNotification from the client: true when it was shown
+    pub fn close_notification(&mut self, id: u32) -> bool {
+        match self.toasts.iter().position(|t| t.id == id && id != 0) {
+            Some(i) => { self.remove_toast(i, crate::notifications::Reason::Closed); true }
+            None => false,
+        }
     }
 
     /// Everything must be redrawn (appearance, wallpaper or scale changed)
@@ -765,11 +883,12 @@ impl MacShell {
             self.last_rss_check = Instant::now();
             self.last_rss_mb = Self::read_process_rss_mb();
         }
-        if let Some(ref t) = self.toast {
-            if t.created_at.elapsed() >= t.duration {
-                self.toast = None;
-                self.overlay_dirty = true;
-            }
+        // A banner under the pointer waits; it gets its full time again on leave.
+        let hovered = self.toast_hover.map(|(i, _)| i);
+        while let Some(i) = self.toasts.iter().enumerate().position(|(i, t)| {
+            Some(i) != hovered && t.duration.is_some_and(|d| t.created_at.elapsed() >= d)
+        }) {
+            self.remove_toast(i, crate::notifications::Reason::Expired);
         }
         if self.overlay_allocated && !self.has_visible_overlay() {
             // Free the full-screen overlay buffer while nothing is shown
@@ -784,7 +903,7 @@ impl MacShell {
         self.spotlight_open
             || self.control_center_open
             || self.open_menu.is_some()
-            || self.toast.is_some()
+            || !self.toasts.is_empty()
             || self.dock_menu.is_some()
     }
 
@@ -1495,12 +1614,46 @@ impl MacShell {
     }
 
     fn toast_visible(&self)->bool {
-        self.toast.is_some()&&!self.control_center_open&&!matches!(self.open_menu,Some(TopMenu::Tray(_)))
+        !self.toasts.is_empty()&&!self.control_center_open&&!matches!(self.open_menu,Some(TopMenu::Tray(_)))
     }
-    fn toast_rect(&self) -> R { Self::toast_rect_for(self.screen_w) }
 
-    fn toast_rect_for(screen_w: i32) -> R {
-        R::new(screen_w as f32 - 344.0 - 10.0, TOP_BAR_HEIGHT as f32 + 8.0, 344.0, 72.0)
+    /// Banner rectangles, newest first, stacked down from the menu bar
+    fn toast_rects(&self) -> Vec<R> {
+        let x = self.screen_w as f32 - TOAST_W - 10.0;
+        let mut y = TOP_BAR_HEIGHT as f32 + 8.0;
+        self.toasts.iter().map(|t| {
+            let r = R::new(x, y, TOAST_W, t.height());
+            y += r.h + TOAST_GAP;
+            r
+        }).collect()
+    }
+
+    fn toast_close_rect(r: R) -> R { R::new(r.x - 6.0, r.y - 6.0, 20.0, 20.0) }
+
+    fn toast_button_rects(t: &NotificationToast, r: R) -> Vec<(usize, R)> {
+        let buttons: Vec<_> = t.buttons().map(|(i, _)| i).collect();
+        let n = buttons.len().max(1) as f32;
+        let (x0, w) = (r.x + 62.0, r.w - 62.0 - 12.0);
+        let bw = (w - (n - 1.0) * 8.0) / n;
+        buttons.into_iter().enumerate()
+            .map(|(k, i)| (i, R::new(x0 + k as f32 * (bw + 8.0), r.y + TOAST_H, bw, TOAST_BUTTON_H)))
+            .collect()
+    }
+
+    fn toast_at(&self, x: f32, y: f32) -> Option<(usize, ToastPart)> {
+        if !self.toast_visible() { return None; }
+        for (i, r) in self.toast_rects().into_iter().enumerate() {
+            if self.toast_hover.is_some_and(|(h, _)| h == i) && Self::toast_close_rect(r).contains(x, y) {
+                return Some((i, ToastPart::Close));
+            }
+            if r.contains(x, y) {
+                let part = Self::toast_button_rects(&self.toasts[i], r).into_iter()
+                    .find(|(_, b)| b.contains(x, y))
+                    .map_or(ToastPart::Body, |(a, _)| ToastPart::Action(a));
+                return Some((i, part));
+            }
+        }
+        None
     }
 
     // ───────────────────────── Pointer ─────────────────────────
@@ -1508,6 +1661,13 @@ impl MacShell {
     pub fn update_pointer_hover(&mut self, px: f64, py: f64) {
         let hover=if py>=0.0&&py<TOP_BAR_HEIGHT as f64{self.topbar_item_at(px as f32)}else{None};
         if hover!=self.status_hover{self.status_hover=hover;self.topbar_dirty=true;}
+        let toast = self.toast_at(px as f32, py as f32);
+        if toast != self.toast_hover {
+            let left = self.toast_hover.map(|(i, _)| i).filter(|i| toast.map(|(j, _)| j) != Some(*i));
+            if let Some(t) = left.and_then(|i| self.toasts.get_mut(i)) { t.created_at = Instant::now(); }
+            self.toast_hover = toast;
+            self.overlay_dirty = true;
+        }
         if self.control_center_open {
             let (panel, items) = self.cc_layout();
             let pos = (px as f32, py as f32);
@@ -1717,9 +1877,21 @@ impl MacShell {
             return Some(ShellClickAction::None);
         }
 
-        if self.toast_visible() && self.toast_rect().contains(mx, my) {
-            self.toast = None;
-            self.overlay_dirty = true;
+        if let Some((i, part)) = self.toast_at(mx, my) {
+            let t = &self.toasts[i];
+            let (id, resident) = (t.id, t.resident);
+            let key = match part {
+                ToastPart::Close => None,
+                ToastPart::Body => t.actions.iter().any(|(k, _)| k == "default").then(|| "default".to_string()),
+                ToastPart::Action(a) => Some(t.actions[a].0.clone()),
+            };
+            match key {
+                Some(key) if id != 0 => {
+                    self.notification_events.push(NotificationEvent::Invoked(id, key));
+                    if !resident { self.remove_toast(i, crate::notifications::Reason::Dismissed); }
+                }
+                _ => self.remove_toast(i, crate::notifications::Reason::Dismissed),
+            }
             return Some(ShellClickAction::None);
         }
 
@@ -2049,7 +2221,7 @@ impl MacShell {
             }
         }
         if self.toast_visible() {
-            rects.push(self.toast_rect());
+            rects.extend(self.toast_rects());
         }
         if let Some(m) = &self.dock_menu {
             rects.push(m.rect);
@@ -2096,8 +2268,12 @@ impl MacShell {
         let cc = (local(panel), items.into_iter().map(|(r, item)| (local(r), item)).collect::<Vec<_>>());
         let (bar, list, count, math) = self.spotlight_layout(registry);
         let sp = (local(bar), list.map(local), count, math);
-        let toast_rect = local(self.toast_rect());
-        let toast = self.toast.clone().filter(|_| self.toast_visible());
+        let toasts: Vec<_> = if self.toast_visible() {
+            self.toasts.iter().cloned().zip(self.toast_rects().into_iter().map(local)).collect()
+        } else {
+            Vec::new()
+        };
+        let toast_hover = self.toast_hover;
         let input_badges:Vec<_>=if self.open_menu==Some(TopMenu::Input){self.input_sources.iter().map(|s|s.badge).collect()}else{Vec::new()};
         let active_input_label=self.input_sources.get(self.input_selected).map_or("ABC",|s|s.label);
         let (cc_open, sp_open) = (self.control_center_open, self.spotlight_open);
@@ -2296,14 +2472,39 @@ impl MacShell {
                 }
             }
 
-            if let Some(t) = toast.as_ref() {
-                let r = toast_rect;
+            // Bottom of the stack first: the newest banner's close button overlaps its neighbour.
+            for (i, (t, r)) in toasts.iter().enumerate().rev() {
+                let r = *r;
                 draw_glass_panel(&mut pm, r.x, r.y, r.w, r.h, 18.0, false);
-                crate::theme::fill_squircle_gradient(&mut pm, r.x + 14.0, r.y + 18.0, 36.0, rgba(110, 200, 255, 255), rgba(20, 110, 235, 255));
-                draw_feather_logo(&mut pm, r.x + 32.0, r.y + 36.0, 1.3, Color::WHITE);
-                fonts.draw_text_clipped(&mut pm, &t.title, r.x + 62.0, r.y + 16.0, r.w - 120.0, 13.0, p.text, true);
-                fonts.draw_text_right(&mut pm, "сейчас", r.x + r.w - 14.0, r.y + 16.5, 11.5, p.text_secondary, false);
-                fonts.draw_text_clipped(&mut pm, &t.body, r.x + 62.0, r.y + 36.0, r.w - 76.0, 12.5, p.text_secondary, false);
+                let (ix, iy) = (r.x + 14.0, r.y + 18.0);
+                if let Some(img) = &t.image {
+                    let k = 36.0 / img.width().max(img.height()) as f32;
+                    let (w, h) = (img.width() as f32 * k, img.height() as f32 * k);
+                    crate::icons::draw_icon(&mut pm, img, ix + (36.0 - w) * 0.5, iy + (36.0 - h) * 0.5, w);
+                } else if let Some(icon) = &t.icon {
+                    draw_any_icon(&mut pm, fonts, icons, icon, &t.app_label, ix, iy, 36.0);
+                } else {
+                    crate::theme::fill_squircle_gradient(&mut pm, ix, iy, 36.0, rgba(110, 200, 255, 255), rgba(20, 110, 235, 255));
+                    draw_feather_logo(&mut pm, ix + 18.0, iy + 18.0, 1.3, Color::WHITE);
+                }
+                fonts.draw_text_clipped(&mut pm, &t.title, r.x + 62.0, r.y + 13.0, r.w - 120.0, 13.0, p.text, true);
+                fonts.draw_text_right(&mut pm, "сейчас", r.x + r.w - 14.0, r.y + 13.5, 11.5, p.text_secondary, false);
+                for (k, line) in fonts.wrap_two_lines(&t.body, r.w - 76.0, 12.5, false).iter().enumerate() {
+                    fonts.draw_text(&mut pm, line, r.x + 62.0, r.y + 32.0 + k as f32 * 16.0, 12.5, p.text_secondary, false);
+                }
+                let hover = toast_hover.filter(|(h, _)| *h == i).map(|(_, part)| part);
+                for (a, b) in Self::toast_button_rects(t, r) {
+                    let hot = hover == Some(ToastPart::Action(a));
+                    fill_rounded_rect(&mut pm, b.x, b.y, b.w, b.h, 7.0, if hot { p.accent } else { p.control_fill });
+                    let label = fonts.ellipsize(&t.actions[a].1, b.w - 12.0, 12.0, false);
+                    fonts.draw_text_centered(&mut pm, &label, b.x + b.w * 0.5, b.y + 5.5, 12.0, if hot { p.on_accent } else { p.text }, false);
+                }
+                if hover.is_some() {
+                    let c = Self::toast_close_rect(r);
+                    draw_glass_panel(&mut pm, c.x, c.y, c.w, c.h, c.w * 0.5, false);
+                    let col = if hover == Some(ToastPart::Close) { p.text } else { p.text_secondary };
+                    fonts.draw_text_centered(&mut pm, "×", c.x + c.w * 0.5, c.y + 1.0, 14.0, col, true);
+                }
             }
 
             Result::<_, ()>::Ok(damage)
@@ -2511,6 +2712,82 @@ mod appmenu_tests {
         shell
     }
 
+    fn incoming(id: u32, actions: &[(&str, &str)]) -> crate::notifications::Incoming {
+        crate::notifications::Incoming {
+            id, replaces: false, app_name: "Test".into(), app_icon: String::new(), desktop_entry: String::new(),
+            image: None, summary: format!("N{id}"), body: "Тело".into(),
+            actions: actions.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
+            timeout: Some(crate::notifications::DEFAULT_TIMEOUT), critical: false, resident: false,
+        }
+    }
+
+    #[test]
+    fn notification_banners_stack_replace_evict_and_report_user_actions() {
+        use crate::notifications::Reason;
+        let registry = AppRegistry::new();
+        let mut shell = MacShell::new(1000, 700);
+        shell.toasts.clear();
+        for id in 1..=3 { shell.show_notification(incoming(id, &[]), &registry); }
+        assert_eq!(shell.toasts.iter().map(|t| t.id).collect::<Vec<_>>(), [3, 2, 1]);
+        let rects = shell.toast_rects();
+        assert!(rects[1].y >= rects[0].y + rects[0].h, "stacked without overlap");
+        // Replacing keeps the place and emits nothing
+        let mut again = incoming(2, &[]); again.summary = "new".into(); again.replaces = true;
+        shell.show_notification(again, &registry);
+        assert_eq!(shell.toasts[1].title, "new");
+        assert!(shell.notification_events.is_empty());
+        // A fourth pushes the oldest out
+        shell.show_notification(incoming(4, &[("default", ""), ("reply", "Ответить")]), &registry);
+        assert_eq!(shell.notification_events, [NotificationEvent::Closed(1, Reason::Expired)]);
+        shell.notification_events.clear();
+        // Action button, then the default click on the body
+        let r = shell.toast_rects()[0];
+        assert!(r.h > TOAST_H);
+        let (_, b) = MacShell::toast_button_rects(&shell.toasts[0], r)[0];
+        shell.handle_pointer_click((b.x + 4.0) as f64, (b.y + 4.0) as f64, &registry);
+        assert_eq!(shell.notification_events, [NotificationEvent::Invoked(4, "reply".into()), NotificationEvent::Closed(4, Reason::Dismissed)]);
+        shell.notification_events.clear();
+        // Hover shows the close button; it dismisses without an action
+        let r = shell.toast_rects()[0];
+        shell.update_pointer_hover((r.x + 100.0) as f64, (r.y + 20.0) as f64);
+        let c = MacShell::toast_close_rect(r);
+        shell.update_pointer_hover((c.x + 10.0) as f64, (c.y + 10.0) as f64);
+        shell.handle_pointer_click((c.x + 10.0) as f64, (c.y + 10.0) as f64, &registry);
+        assert_eq!(shell.notification_events, [NotificationEvent::Closed(3, Reason::Dismissed)]);
+        shell.notification_events.clear();
+        // Client close, unknown ids and own messages are silent
+        assert!(shell.close_notification(2));
+        assert!(!shell.close_notification(2) && !shell.close_notification(0));
+        assert_eq!(shell.notification_events, [NotificationEvent::Closed(2, Reason::Closed)]);
+    }
+
+    #[test]
+    fn notification_expiry_waits_for_hover_and_do_not_disturb_hides_non_critical() {
+        use crate::notifications::Reason;
+        let registry = AppRegistry::new();
+        let mut shell = MacShell::new(1000, 700);
+        shell.toasts.clear();
+        shell.show_notification(incoming(1, &[]), &registry);
+        let mut sticky = incoming(2, &[]); sticky.timeout = None;
+        shell.show_notification(sticky, &registry);
+        for t in &mut shell.toasts { t.created_at -= Duration::from_secs(60); }
+        let r = shell.toast_rects()[1];
+        shell.update_pointer_hover((r.x + 100.0) as f64, (r.y + 20.0) as f64);
+        shell.tick();
+        assert_eq!(shell.toasts.len(), 2, "hovered banner waits");
+        shell.update_pointer_hover(10.0, 400.0);
+        assert!(shell.toasts[1].created_at.elapsed() < Duration::from_secs(1), "full time again after leave");
+        shell.toasts[1].created_at -= Duration::from_secs(60);
+        shell.tick();
+        assert_eq!(shell.toasts.iter().map(|t| t.id).collect::<Vec<_>>(), [2]);
+        assert_eq!(shell.notification_events, [NotificationEvent::Closed(1, Reason::Expired)]);
+        shell.dnd_enabled = true;
+        shell.show_notification(incoming(3, &[]), &registry);
+        let mut urgent = incoming(4, &[]); urgent.critical = true; urgent.timeout = None;
+        shell.show_notification(urgent, &registry);
+        assert_eq!(shell.toasts.iter().map(|t| t.id).collect::<Vec<_>>(), [4, 2]);
+    }
+
     #[test]
     fn client_menu_hit_testing_opens_cascade_and_dispatches_the_selected_leaf() {
         let mut shell = shell();
@@ -2640,7 +2917,7 @@ mod cc_backdrop_tests {
                     shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");
                     assert!(pixels(&mut shell) != prepared, "cached plate froze the slider");
                     // Toast expiry must not change CC geometry or paint.
-                    shell.toast = None;
+                    shell.toasts.clear();
                     let plates = shell.cc_backdrop.take();
                     shell.overlay_dirty = true;
                     shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");
