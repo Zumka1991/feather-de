@@ -65,6 +65,8 @@ pub enum Action {
     LockNow,
     IdleTime(u8),
     DoNotDisturb,
+    DndSchedule,
+    DndWindow,
     NotifySounds,
     /// Next delivery mode of the program at this index
     NotifyDelivery(usize),
@@ -161,6 +163,7 @@ pub struct Context<'a> {
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<&'a crate::wallpaper::ImageSource>,
     pub dnd: bool,
+    pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
     pub notify_apps: &'a [crate::notifications::AppPolicy],
 }
@@ -186,6 +189,7 @@ pub struct FrameJob {
     pub direct: bool,
     pub wallpaper: WallpaperTheme,
     pub dnd: bool,
+    pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub width: i32,
@@ -221,6 +225,7 @@ impl FrameJob {
             direct: c.direct,
             wallpaper: c.wallpaper,
             dnd: c.dnd,
+            dnd_schedule: c.dnd_schedule,
             notify_sounds: c.notify_sounds,
             notify_apps: c.notify_apps.to_vec(),
             width: win.width,
@@ -248,6 +253,7 @@ impl FrameJob {
             wallpaper: self.wallpaper,
             wallpaper_image: self.wallpaper_image.as_ref(),
             dnd: self.dnd,
+            dnd_schedule: self.dnd_schedule,
             notify_sounds: self.notify_sounds,
             notify_apps: &self.notify_apps,
         }
@@ -629,6 +635,10 @@ impl Panel {
                 l.hero(Page::Notifications);
                 l.begin();
                 l.row(52.0, "Не беспокоить", "Всё уходит в центр уведомлений, баннер только у срочных".into(), Style::Toggle(c.dnd), Some(Action::DoNotDisturb));
+                l.row(52.0, "По расписанию", "Каждый день в выбранные часы".into(), Style::Toggle(c.dnd_schedule.is_some()), Some(Action::DndSchedule));
+                if let Some(window) = c.dnd_schedule {
+                    l.row(52.0, "Время", crate::shell::dnd_window_label(window), Style::Row, Some(Action::DndWindow));
+                }
                 l.row(52.0, "Звук уведомлений", "Короткий сигнал при появлении баннера".into(), Style::Toggle(c.notify_sounds), Some(Action::NotifySounds));
                 l.end();
                 l.header("Уведомления программ");
@@ -1621,7 +1631,8 @@ impl crate::FeatherCompositor {
             direct: self.backend.is_drm(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.as_ref(),
-            dnd: self.shell.dnd_enabled,
+            dnd: self.shell.dnd_active(),
+            dnd_schedule: self.shell.dnd_schedule,
             notify_sounds: self.shell.notify_sounds,
             notify_apps: &self.shell.notify_apps,
         }
@@ -1699,9 +1710,22 @@ impl crate::FeatherCompositor {
         match action {
             Action::LockNow=>self.lock_session(),
             Action::DoNotDisturb => {
-                self.shell.dnd_enabled = !self.shell.dnd_enabled;
-                self.shell.topbar_dirty = true;
-                self.shell.overlay_dirty = true;
+                self.shell.toggle_dnd();
+                self.save_settings();
+            }
+            Action::DndSchedule | Action::DndWindow => {
+                let windows = crate::shell::DND_WINDOWS;
+                self.shell.dnd_schedule = match (action, self.shell.dnd_schedule) {
+                    (Action::DndSchedule, Some(_)) => None,
+                    (Action::DndSchedule, None) => Some(windows[0]),
+                    (_, current) => {
+                        let i = current.and_then(|w| windows.iter().position(|o| *o == w)).map_or(0, |i| (i + 1) % windows.len());
+                        Some(windows[i])
+                    }
+                };
+                use chrono::Timelike;
+                let now = chrono::Local::now();
+                self.shell.update_dnd_schedule((now.hour() * 60 + now.minute()) as u16);
                 self.save_settings();
             }
             Action::NotifySounds => {
@@ -2203,6 +2227,7 @@ mod tests {
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             dnd: false,
+            dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
             notify_apps: &apps,
         };
@@ -2309,6 +2334,7 @@ mod tests {
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             dnd: false,
+            dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
             notify_apps: &[],
         };

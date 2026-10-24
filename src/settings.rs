@@ -220,6 +220,7 @@ pub struct Settings {
     pub dock_zoom: bool,
     pub dock_locked: bool,
     pub do_not_disturb: bool,
+    pub dnd_schedule: Option<(u16, u16)>,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub notify_sounds: bool,
     pub dock: Option<Vec<String>>,
@@ -242,6 +243,7 @@ impl Default for Settings {
             dock_zoom: true,
             dock_locked: false,
             do_not_disturb: false,
+            dnd_schedule: None,
             notify_apps: Vec::new(),
             notify_sounds: true,
             dock: None,
@@ -342,6 +344,10 @@ impl Settings {
                         }
                     }
                 }
+                "dnd_schedule" => {
+                    let parsed = v.split_once('-').and_then(|(a, b)| Some((a.parse::<u16>().ok()?, b.parse::<u16>().ok()?)));
+                    s.dnd_schedule = parsed.filter(|(a, b)| *a < 1440 && *b < 1440 && a != b);
+                }
                 "notify_sounds" => {
                     if let Ok(v) = v.parse() {
                         s.notify_sounds = v;
@@ -418,6 +424,9 @@ impl Settings {
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
         text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
+        if let Some((from, to)) = self.dnd_schedule {
+            text.push_str(&format!("dnd_schedule={from}-{to}\n"));
+        }
         for a in &self.notify_apps {
             text.push_str(&format!("notify_app={}|{}|{}\n", a.key, a.label, a.delivery.id()));
         }
@@ -560,6 +569,12 @@ mod tests {
         ];
         let restored = Settings::parse(&s.text());
         assert!(restored.do_not_disturb && !restored.notify_sounds);
+        assert_eq!(restored.dnd_schedule, None);
+        s.dnd_schedule = Some((1320, 420));
+        assert_eq!(Settings::parse(&s.text()).dnd_schedule, Some((1320, 420)));
+        for bad in ["dnd_schedule=1440-1", "dnd_schedule=60-60", "dnd_schedule=x", "dnd_schedule=10"] {
+            assert_eq!(Settings::parse(bad).dnd_schedule, None, "{bad}");
+        }
         assert_eq!(restored.notify_apps, s.notify_apps);
         let bad = Settings::parse("notify_app=x|X|loud\nnotify_app=|Y|off\nnotify_app=a|A|off\nnotify_app=a|B|banners\nnotify_app=only\n");
         assert_eq!(bad.notify_apps, [AppPolicy { key: "a".into(), label: "A".into(), delivery: Delivery::Off }]);

@@ -1193,6 +1193,7 @@ mod settings_tests {
                 wallpaper: crate::theme::WallpaperTheme::for_appearance(Appearance::Light),
                 wallpaper_image: None,
                 dnd: false,
+                dnd_schedule: None,
                 notify_sounds: true,
                 notify_apps: &[],
             };

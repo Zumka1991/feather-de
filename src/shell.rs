@@ -149,6 +149,18 @@ fn draw_cached_icon(pixmap: &mut PixmapMut, icons: &mut IconCache, icon: &AppIco
     else { fill_rounded_rect(pixmap, x, y, size, size, size * 0.22, palette().control_fill); }
 }
 
+/// `minute` lies in [from, to), the window wrapping past midnight when to < from
+pub fn in_window(minute: u16, from: u16, to: u16) -> bool {
+    if from <= to { (from..to).contains(&minute) } else { minute >= from || minute < to }
+}
+
+/// Offered «Не беспокоить» windows, cycled by a click
+pub const DND_WINDOWS: [(u16, u16); 5] = [(22 * 60, 7 * 60), (23 * 60, 8 * 60), (21 * 60, 7 * 60), (0, 9 * 60), (13 * 60, 14 * 60)];
+
+pub fn dnd_window_label((from, to): (u16, u16)) -> String {
+    format!("{}:{:02} – {}:{:02}", from / 60, from % 60, to / 60, to % 60)
+}
+
 #[derive(Debug, Clone)]
 pub struct NotificationToast {
     /// D-Bus id; 0 for the shell's own messages, which emit no signals
@@ -608,7 +620,13 @@ pub struct MacShell {
     pub control_center_open: bool,
     pub cc: crate::control_panel::Panel,
     pub wifi_enabled: bool,
+    /// «Не беспокоить» turned on by hand; see `dnd_active` for the effective state
     pub dnd_enabled: bool,
+    /// Daily window in minutes after midnight (from, to); may cross midnight
+    pub dnd_schedule: Option<(u16, u16)>,
+    dnd_in_window: bool,
+    /// Turned off by hand inside the window: stays off until the window ends
+    dnd_skipped: bool,
 
     pub open_menu: Option<TopMenu>,
     pub menu_hovered: Option<usize>,
@@ -709,6 +727,9 @@ impl MacShell {
             cc: crate::control_panel::Panel::default(),
             wifi_enabled: false,
             dnd_enabled: false,
+            dnd_schedule: None,
+            dnd_in_window: false,
+            dnd_skipped: false,
             open_menu: None,
             menu_hovered: None,
             menu_ctx: MenuContext::default(),
@@ -781,9 +802,37 @@ impl MacShell {
             .unwrap_or(0.0)
     }
 
+    pub fn dnd_active(&self) -> bool {
+        self.dnd_enabled || (self.dnd_in_window && !self.dnd_skipped)
+    }
+
+    /// The switch in Control Center and Settings: off ends a scheduled window early
+    pub fn toggle_dnd(&mut self) {
+        if self.dnd_active() {
+            self.dnd_enabled = false;
+            self.dnd_skipped = self.dnd_in_window;
+        } else {
+            self.dnd_enabled = true;
+        }
+        self.topbar_dirty = true;
+        self.overlay_dirty = true;
+    }
+
+    /// Re-evaluates the schedule for `minute` (after midnight); true when the effective
+    /// state may have changed
+    pub fn update_dnd_schedule(&mut self, minute: u16) -> bool {
+        let inside = self.dnd_schedule.is_some_and(|(from, to)| in_window(minute, from, to));
+        if inside == self.dnd_in_window { return false; }
+        self.dnd_in_window = inside;
+        if !inside { self.dnd_skipped = false; }
+        self.topbar_dirty = true;
+        self.overlay_dirty = true;
+        true
+    }
+
     /// The shell's own message; it replaces the previous one of its kind
     pub fn notify(&mut self, title: impl Into<String>, body: impl Into<String>) {
-        if self.dnd_enabled {
+        if self.dnd_active() {
             return;
         }
         self.toasts.retain(|t| t.id != 0);
@@ -852,7 +901,7 @@ impl MacShell {
             self.overlay_dirty = true;
             return;
         }
-        let quiet = self.dnd_enabled || self.center_open || delivery == crate::notifications::Delivery::CenterOnly;
+        let quiet = self.dnd_active() || self.center_open || delivery == crate::notifications::Delivery::CenterOnly;
         if quiet && !n.critical {
             self.to_history(toast);
             return;
@@ -1124,6 +1173,11 @@ impl MacShell {
     /// Periodic housekeeping (clock, RSS, toast expiry). Returns true if anything needs a redraw.
     pub fn tick(&mut self) -> bool {
         let was_dirty = self.topbar_dirty || self.overlay_dirty;
+        {
+            use chrono::Timelike;
+            let now = chrono::Local::now();
+            self.update_dnd_schedule((now.hour() * 60 + now.minute()) as u16);
+        }
         let clock = Self::format_ru_clock();
         if clock != self.last_clock_str {
             self.last_clock_str = clock;
@@ -2285,7 +2339,7 @@ impl MacShell {
         let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0};
         let input=self.input_sources.get(self.input_selected).copied().unwrap_or(crate::settings::SOURCES[0]);
         let hover=self.status_hover;
-        let (center_open,dnd)=(self.center_open,self.dnd_enabled);
+        let (center_open,dnd)=(self.center_open,self.dnd_active());
         let mut menus = vec![(active_app_title.to_string(), TopMenu::App, true, true)];
         if let Some(root) = self.client_menu.as_ref().filter(|root| root.children.iter().any(|n| n.visible)) {
             menus.extend(root.children.iter().filter(|n| n.visible && !n.separator).map(|n| (n.label.clone(), TopMenu::Client(n.id), false, n.enabled)));
@@ -2621,7 +2675,7 @@ impl MacShell {
         let query = self.spotlight_query.clone();
         let spotlight_input = self.spotlight_input.clone();
         let selected = self.spotlight_selected;
-        let (wifi, dnd, vol) = (self.wifi_enabled, self.dnd_enabled, self.cc.volume());
+        let (wifi, dnd, vol) = (self.wifi_enabled, self.dnd_active(), self.cc.volume());
         let theme_name = self.theme.name();
         let dark = appearance() == Appearance::Dark;
         let scale_pct = format!("{}%", (ui_scale() * 100.0).round() as i32);
@@ -3199,6 +3253,35 @@ mod appmenu_tests {
         shell.notify_sounds = false;
         shell.show_notification(chime(3, false), &registry);
         assert_eq!(shell.notification_events, [NotificationEvent::Sound("/s.oga".into())]);
+    }
+
+    #[test]
+    fn do_not_disturb_schedule_wraps_midnight_and_can_be_ended_early() {
+        assert!(in_window(23 * 60, 22 * 60, 7 * 60) && in_window(6 * 60 + 59, 22 * 60, 7 * 60));
+        assert!(!in_window(7 * 60, 22 * 60, 7 * 60) && !in_window(12 * 60, 22 * 60, 7 * 60));
+        assert!(in_window(13 * 60, 13 * 60, 14 * 60) && !in_window(14 * 60, 13 * 60, 14 * 60));
+        let mut shell = MacShell::new(1000, 700);
+        shell.dnd_schedule = Some((22 * 60, 7 * 60));
+        assert!(!shell.update_dnd_schedule(12 * 60) && !shell.dnd_active());
+        assert!(shell.update_dnd_schedule(22 * 60) && shell.dnd_active());
+        // Off by hand: stays off for the rest of this window only
+        shell.toggle_dnd();
+        assert!(!shell.dnd_active() && !shell.dnd_enabled);
+        shell.update_dnd_schedule(3 * 60);
+        assert!(!shell.dnd_active());
+        assert!(shell.update_dnd_schedule(7 * 60));
+        shell.update_dnd_schedule(22 * 60);
+        assert!(shell.dnd_active(), "the next window applies again");
+        // Manual on outlives the window; removing the schedule ends a scheduled state
+        shell.toggle_dnd(); shell.toggle_dnd();
+        assert!(shell.dnd_enabled);
+        shell.update_dnd_schedule(8 * 60);
+        assert!(shell.dnd_active());
+        shell.dnd_enabled = false;
+        shell.update_dnd_schedule(23 * 60);
+        shell.dnd_schedule = None;
+        assert!(shell.update_dnd_schedule(23 * 60) && !shell.dnd_active());
+        assert_eq!(dnd_window_label((22 * 60, 7 * 60)), "22:00 – 7:00");
     }
 
     #[test]

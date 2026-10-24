@@ -647,6 +647,7 @@ impl FeatherCompositor {
             dock_zoom: self.shell.dock_zoom_enabled,
             dock_locked: self.dock_locked,
             do_not_disturb: self.shell.dnd_enabled,
+            dnd_schedule: self.shell.dnd_schedule,
             notify_apps: self.shell.notify_apps.clone(),
             notify_sounds: self.shell.notify_sounds,
             dock: Some(self.dock_pins.clone()),
@@ -1588,7 +1589,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
 
     // Slow housekeeping: clock, RSS, toasts. Nothing else polls.
     handle.insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
+        let dnd = state.shell.dnd_active();
         let ticked = state.shell.tick();
+        // A scheduled «Не беспокоить» started or ended: the Settings switch follows
+        if state.shell.dnd_active() != dnd { state.mark_settings_dirty(); }
         if state.lock.clock_stale() { state.needs_redraw = true; }
         state.flush_notification_events();
         if ticked {
@@ -1682,6 +1686,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             shell.theme = saved.wallpaper;
             shell.dock_zoom_enabled = saved.dock_zoom;
             shell.dnd_enabled = saved.do_not_disturb;
+            shell.dnd_schedule = saved.dnd_schedule;
             shell.notify_apps = saved.notify_apps.clone();
             shell.notify_sounds = saved.notify_sounds;
             shell
