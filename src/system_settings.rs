@@ -68,6 +68,8 @@ pub enum Action {
     DndSchedule,
     DndWindow,
     NotifySounds,
+    /// Next action of this corner (0 top-left … 3 bottom-right)
+    HotCorner(usize),
     /// Next delivery mode of the program at this index
     NotifyDelivery(usize),
     Appearance(Appearance),
@@ -165,6 +167,7 @@ pub struct Context<'a> {
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
+    pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub notify_apps: &'a [crate::notifications::AppPolicy],
 }
 
@@ -191,6 +194,7 @@ pub struct FrameJob {
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
+    pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub width: i32,
     pub height: i32,
@@ -227,6 +231,7 @@ impl FrameJob {
             dnd: c.dnd,
             dnd_schedule: c.dnd_schedule,
             notify_sounds: c.notify_sounds,
+            hot_corners: c.hot_corners,
             notify_apps: c.notify_apps.to_vec(),
             width: win.width,
             height: win.height,
@@ -255,6 +260,7 @@ impl FrameJob {
             dnd: self.dnd,
             dnd_schedule: self.dnd_schedule,
             notify_sounds: self.notify_sounds,
+            hot_corners: self.hot_corners,
             notify_apps: &self.notify_apps,
         }
     }
@@ -1085,6 +1091,13 @@ impl Panel {
                     Some(Action::DockZoom),
                 );
                 l.end();
+                l.header("Активные углы");
+                l.begin();
+                for (i, name) in crate::hot_corners::CORNER_NAMES.iter().enumerate() {
+                    l.row(52.0, name, c.hot_corners[i].label().into(), Style::Row, Some(Action::HotCorner(i)));
+                }
+                l.end();
+                l.footer("Подведите указатель в угол экрана, чтобы выполнить действие. Нажмите на строку, чтобы выбрать его.");
             }
         }
         if self.page == Page::Keyboard && self.adding {
@@ -1634,6 +1647,7 @@ impl crate::FeatherCompositor {
             dnd: self.shell.dnd_active(),
             dnd_schedule: self.shell.dnd_schedule,
             notify_sounds: self.shell.notify_sounds,
+            hot_corners: self.hot_corners.actions,
             notify_apps: &self.shell.notify_apps,
         }
     }
@@ -1727,6 +1741,12 @@ impl crate::FeatherCompositor {
                 let now = chrono::Local::now();
                 self.shell.update_dnd_schedule((now.hour() * 60 + now.minute()) as u16);
                 self.save_settings();
+            }
+            Action::HotCorner(i) => {
+                if let Some(a) = self.hot_corners.actions.get_mut(i) {
+                    *a = a.next();
+                    self.save_settings();
+                }
             }
             Action::NotifySounds => {
                 self.shell.notify_sounds = !self.shell.notify_sounds;
@@ -2229,6 +2249,7 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
             notify_apps: &apps,
         };
         let mut fonts = FontSystem::new();
@@ -2336,6 +2357,7 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
             notify_apps: &[],
         };
         let mut p = Panel {

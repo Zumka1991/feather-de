@@ -223,6 +223,7 @@ pub struct Settings {
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub notify_sounds: bool,
+    pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub dock: Option<Vec<String>>,
     pub animations: bool,
     pub keyboard: Keyboard,
@@ -246,6 +247,7 @@ impl Default for Settings {
             dnd_schedule: None,
             notify_apps: Vec::new(),
             notify_sounds: true,
+            hot_corners: Default::default(),
             dock: None,
             animations: true,
             keyboard: Keyboard::default(),
@@ -348,6 +350,12 @@ impl Settings {
                     let parsed = v.split_once('-').and_then(|(a, b)| Some((a.parse::<u16>().ok()?, b.parse::<u16>().ok()?)));
                     s.dnd_schedule = parsed.filter(|(a, b)| *a < 1440 && *b < 1440 && a != b);
                 }
+                "hot_corners" => {
+                    let parsed: Vec<_> = v.split(',').map(crate::hot_corners::HotAction::parse).collect();
+                    if let [Some(a), Some(b), Some(c), Some(d)] = parsed[..] {
+                        s.hot_corners = [a, b, c, d];
+                    }
+                }
                 "notify_sounds" => {
                     if let Ok(v) = v.parse() {
                         s.notify_sounds = v;
@@ -424,6 +432,7 @@ impl Settings {
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
         text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
+        text.push_str(&format!("hot_corners={}\n", self.hot_corners.map(|a| a.id()).join(",")));
         if let Some((from, to)) = self.dnd_schedule {
             text.push_str(&format!("dnd_schedule={from}-{to}\n"));
         }
@@ -570,6 +579,12 @@ mod tests {
         let restored = Settings::parse(&s.text());
         assert!(restored.do_not_disturb && !restored.notify_sounds);
         assert_eq!(restored.dnd_schedule, None);
+        use crate::hot_corners::HotAction as H;
+        assert_eq!(restored.hot_corners, [H::None; 4]);
+        s.hot_corners = [H::Launchpad, H::None, H::Lock, H::Notifications];
+        assert_eq!(Settings::parse(&s.text()).hot_corners, s.hot_corners);
+        assert_eq!(Settings::parse("hot_corners=lock,none").hot_corners, [H::None; 4], "incomplete");
+        assert_eq!(Settings::parse("hot_corners=lock,none,boom,none").hot_corners, [H::None; 4], "unknown action");
         s.dnd_schedule = Some((1320, 420));
         assert_eq!(Settings::parse(&s.text()).dnd_schedule, Some((1320, 420)));
         for bad in ["dnd_schedule=1440-1", "dnd_schedule=60-60", "dnd_schedule=x", "dnd_schedule=10"] {

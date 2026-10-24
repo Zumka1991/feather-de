@@ -1195,6 +1195,7 @@ mod settings_tests {
                 dnd: false,
                 dnd_schedule: None,
                 notify_sounds: true,
+                hot_corners: Default::default(),
                 notify_apps: &[],
             };
             let mut direct = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 0, 0);

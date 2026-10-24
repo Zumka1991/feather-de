@@ -8,6 +8,7 @@ mod tray;
 mod notifications;
 mod xwayland;
 mod gtk_menu;
+mod hot_corners;
 mod gtk_shell;
 mod debug_checks;
 use feather_ui::cpu_profile;
@@ -149,6 +150,7 @@ pub struct FeatherCompositor {
     pub tray: Option<crate::tray::Tray>,
     pub notifications: Option<crate::notifications::Notifications>,
     pub xwayland: Option<crate::xwayland::Xwayland>,
+    pub hot_corners: crate::hot_corners::HotCorners,
     pub controls: Option<crate::controls::Controls>,
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
@@ -654,6 +656,7 @@ impl FeatherCompositor {
             dnd_schedule: self.shell.dnd_schedule,
             notify_apps: self.shell.notify_apps.clone(),
             notify_sounds: self.shell.notify_sounds,
+            hot_corners: self.hot_corners.actions,
             dock: Some(self.dock_pins.clone()),
             animations: self.animations.enabled(),
             keyboard: self.keyboard_config.clone(),
@@ -1251,7 +1254,7 @@ impl FeatherCompositor {
             }
             ShellClickAction::ShowShortcuts => self.shell.notify(
                 "Горячие клавиши",
-                "Super+Space поиск • Super+A приложения • Alt+Tab • Super+Q/W/H/M/F",
+                "Super+Space поиск • Super+A приложения • Alt+Tab • Alt+` окна программы • Super+Q/W/H/M/F",
             ),
         }
     }
@@ -1655,6 +1658,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         tray: None,
         notifications: None,
         xwayland: None,
+        hot_corners: crate::hot_corners::HotCorners::new(saved.hot_corners),
         pending_autostart,
         idle_frame_timer_armed: false,
         frame_pending: false,

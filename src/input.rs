@@ -41,6 +41,8 @@ enum KeyAction {
     SwitcherStep { reverse: bool },
     SwitcherCommit,
     SwitcherCancel,
+    /// Alt/Super+`: the next window of the frontmost app, without a panel
+    CycleAppWindows { reverse: bool },
     SwitchVt(i32),
     /// Print: screen, Shift+Print: region/window selection, Alt+Print: active window
     Screenshot { shift: bool, alt: bool },
@@ -51,6 +53,42 @@ enum KeyAction {
 
 /// Delay before the Alt+Tab panel appears: short enough to feel instant when Alt is held,
 /// long enough that a quick tap (switch to the previous app) doesn't flash the panel
+/// Reorders a bottom-to-top stack for Alt+`: forward moves the lowest matching entry to
+/// the top, reverse moves the top one just below the lowest matching. The top entry must
+/// match (it is the frontmost app); false when fewer than two match.
+fn cycle_stack<T>(stack: &mut Vec<T>, matches: impl Fn(&T) -> bool, reverse: bool) -> bool {
+    let Some(lowest) = stack.iter().position(&matches) else { return false };
+    let Some(top) = stack.iter().rposition(&matches) else { return false };
+    if lowest == top {
+        return false;
+    }
+    if reverse {
+        let t = stack.remove(top);
+        stack.insert(lowest, t);
+    } else {
+        let l = stack.remove(lowest);
+        stack.insert(top, l);
+    }
+    true
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    #[test]
+    fn alt_grave_walks_every_window_of_the_app_both_ways() {
+        // Bottom → top; 'a' windows belong to the frontmost app, others stay in place
+        let mut s: Vec<&str> = vec!["a1", "x", "a2", "y", "a3"];
+        let a = |w: &&str| w.starts_with('a');
+        let tops: Vec<_> = (0..3).map(|_| { assert!(super::cycle_stack(&mut s, a, false)); *s.iter().rev().find(|w| a(w)).unwrap() }).collect();
+        assert_eq!(tops, ["a1", "a2", "a3"], "forward visits all, then returns");
+        assert_eq!(s.iter().filter(|w| !a(w)).copied().collect::<Vec<_>>(), ["x", "y"]);
+        assert!(super::cycle_stack(&mut s, a, true));
+        assert_eq!(*s.iter().rev().find(|w| a(w)).unwrap(), "a2", "reverse goes back");
+        let mut one = vec!["x", "a1"];
+        assert!(!super::cycle_stack(&mut one, a, false), "a single window does nothing");
+    }
+}
+
 const SWITCHER_SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(45);
 
 fn cursor_for_edges(edges: Edges) -> CursorIcon {
@@ -228,6 +266,12 @@ impl FeatherCompositor {
                     deferred = Some(KeyAction::SwitcherStep {
                         reverse: mods.shift || raw == keysyms::KEY_ISO_Left_Tab,
                     });
+                    return FilterResult::Intercept(());
+                }
+                // The key left of 1 in any layout (` in Latin, ё in Russian)
+                let latin = keysym_handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw());
+                if matches!(latin, Some(keysyms::KEY_grave | keysyms::KEY_asciitilde)) {
+                    deferred = Some(KeyAction::CycleAppWindows { reverse: mods.shift });
                     return FilterResult::Intercept(());
                 }
             }
@@ -468,6 +512,7 @@ impl FeatherCompositor {
             Some(KeyAction::Auth(cmd)) => self.auth_command(cmd),
             Some(KeyAction::SwitcherStep { reverse }) => self.switcher_step(reverse),
             Some(KeyAction::SwitcherCommit) => self.switcher_commit(),
+            Some(KeyAction::CycleAppWindows { reverse }) => self.cycle_app_windows(reverse),
             Some(KeyAction::SwitchVt(vt)) => self.switch_vt(vt),
             // Any shortcut while selecting (Esc too) ends the selection first
             Some(KeyAction::Screenshot { .. }) if self.screenshot_select.is_some() => self.cancel_screenshot_selection(),
@@ -548,6 +593,42 @@ impl FeatherCompositor {
         }
     }
 
+    /// Like macOS Cmd+`: forward raises the app's bottom-most window, so repeating it
+    /// walks through all of them; Shift sends the front one behind its siblings.
+    fn cycle_app_windows(&mut self, reverse: bool) {
+        let Some(top) = self.windows.iter().rposition(|w| w.is_visible()) else { return };
+        let key = self.app_key(&self.windows[top]);
+        let same: Vec<bool> = self.windows.iter().map(|w| w.is_visible() && self.app_key(w) == key).collect();
+        let mut order: Vec<usize> = (0..self.windows.len()).collect();
+        if !cycle_stack(&mut order, |i| same[*i], reverse) {
+            return;
+        }
+        let mut old: Vec<Option<crate::window::ManagedWindow>> = std::mem::take(&mut self.windows).into_iter().map(Some).collect();
+        self.windows = order.into_iter().filter_map(|i| old[i].take()).collect();
+        self.unfocus_desktop();
+        self.refresh_focus();
+        self.needs_redraw = true;
+    }
+
+    fn run_hot_corner(&mut self, action: crate::hot_corners::HotAction) {
+        use crate::hot_corners::HotAction as H;
+        match action {
+            H::None => return,
+            H::Launchpad => self.toggle_launchpad(),
+            H::Desktop => self.execute_shell_action(ShellClickAction::MinimizeAllWindows),
+            H::Notifications => self.shell.toggle_center(),
+            H::Spotlight => {
+                let open = !self.shell.spotlight_open;
+                self.shell.close_menus();
+                self.shell.spotlight_open = open;
+                self.shell.overlay_dirty = true;
+                self.refresh_focus();
+            }
+            H::Lock => self.lock_session(),
+        }
+        self.needs_redraw = true;
+    }
+
     fn close_top_window(&mut self) {
         let Some(idx) = self.windows.iter().rposition(|w| w.is_visible()) else {
             return;
@@ -617,6 +698,13 @@ impl FeatherCompositor {
             self.update_icon_drag();
             if self.icon_drag.as_ref().is_some_and(|d| d.active) {
                 return;
+            }
+        }
+        // Not while a button is held: a drag into a corner is not a request
+        if self.pressed_buttons.is_empty() {
+            let screen = (self.shell.screen_w as f64, self.shell.screen_h as f64);
+            if let Some(action) = self.hot_corners.motion(pos.x, pos.y, screen) {
+                self.run_hot_corner(action);
             }
         }
 
