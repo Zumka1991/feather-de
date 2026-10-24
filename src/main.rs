@@ -359,7 +359,9 @@ impl FeatherCompositor {
             if win.fullscreen {
                 win.resize_client(sw, sh);
             } else if win.maximized {
-                win.resize_client(sw, sh - TOP_BAR_HEIGHT - crate::theme::dock_reserved() - win.titlebar_h());
+                let (ax, _, aw, ah) = crate::theme::maximized_area(sw, sh);
+                win.x = ax;
+                win.resize_client(aw, ah - win.titlebar_h());
             } else {
                 if win.is_builtin(){win.resize_client(win.width.min(sw-24),win.height.min(sh-TOP_BAR_HEIGHT-48));}
                 win.x=win.x.clamp(0,(sw-win.width).max(0));
@@ -671,6 +673,7 @@ impl FeatherCompositor {
             dock_locked: self.dock_locked,
             dock_size: crate::theme::dock_icon(),
             dock_autohide: crate::theme::dock_autohide(),
+            dock_edge: crate::theme::dock_edge(),
             do_not_disturb: self.shell.dnd_enabled,
             dnd_schedule: self.shell.dnd_schedule,
             notify_apps: self.shell.notify_apps.clone(),
@@ -773,9 +776,9 @@ impl FeatherCompositor {
         }
         let Some(drag) = self.icon_drag.as_mut() else { return };
         let can_pin = !matches!(drag.source, DragSource::DockApp { pinned: false, .. })
-            || self.shell.dock_in_pinned_section(pos.x);
+            || self.shell.dock_in_pinned_section(pos.x, pos.y);
         let gap = (can_pin && self.shell.dock_in_drop_zone(pos.x, pos.y))
-            .then(|| self.shell.dock_insert_index(pos.x));
+            .then(|| self.shell.dock_insert_index(pos.x, pos.y));
         self.shell.set_dock_gap(gap);
         self.needs_redraw = true;
     }
@@ -1515,6 +1518,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Before the shell exists: its Dock buffer is sized from these
     crate::theme::set_dock_icon(saved.dock_size);
     crate::theme::set_dock_autohide(saved.dock_autohide);
+    crate::theme::set_dock_edge(saved.dock_edge);
     let mut winit_loop = None;
     let mut drm_info = None;
     let mut backend = if use_drm {

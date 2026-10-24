@@ -353,18 +353,27 @@ pub(crate) fn build_scene(
         mem(&mut out, (0.0, 0.0), &shell.topbar_buffer, None, crate::animation::Visual::default());
     }
     if !fullscreen_top || launchpad_open {
-        let dock_x = (((shell.screen_w - shell.dock_buf_w) as f64) * 0.5 * scale).round();
-        // Auto-hide: the bar slides below the screen (GPU offset of the same buffer)
-        let hide = animations.dock_hidden() * (crate::theme::dock_reserved().max((crate::theme::dock_icon() + 24.0) as i32) as f64 + 8.0);
-        let dock_y = (((shell.screen_h - shell.dock_buf_h) as f64 + hide) * scale).round();
+        use crate::theme::DockEdge;
+        let edge = crate::theme::dock_edge();
+        let (sx, sy) = shell.dock_shown_origin();
+        // Auto-hide: the bar slides beyond its screen edge (GPU offset of the same buffer)
+        let hide = animations.dock_hidden() * ((crate::theme::dock_icon() + 24.0) as f64 + 8.0);
+        let (hx, hy) = match edge { DockEdge::Bottom => (0.0, hide), DockEdge::Left => (-hide, 0.0), DockEdge::Right => (hide, 0.0) };
+        let (dock_x, dock_y) = (((sx as f64 + hx) * scale).round(), ((sy as f64 + hy) * scale).round());
         if let Some(b) = shell.bounce.as_ref() {
             if let Some((x, y, size)) = shell.dock_slot_global(b.target) {
                 let (lift, _) = b.offset(Instant::now());
-                // Centred on the slot, so a magnified slot still lines up
+                // Centred along the bar, resting on the edge side, jumping away from the edge
                 let inset = (size - crate::theme::dock_icon()) as f64 * 0.5;
+                let lift = lift as f64;
+                let (x, y) = (x as f64, y as f64);
+                let (lx, ly) = match edge {
+                    DockEdge::Bottom => (x + inset, y + inset * 2.0 - lift),
+                    DockEdge::Left => (x + lift, y + inset),
+                    DockEdge::Right => (x + inset * 2.0 - lift, y + inset),
+                };
                 let src = smithay::utils::Rectangle::new((0.0, 0.0).into(), (b.px as f64, b.px as f64).into());
-                let loc = (((x as f64 + inset) * scale).round(), ((y as f64 + inset * 2.0 - lift as f64) * scale).round());
-                mem(&mut out, loc, &b.buffer, Some(src), crate::animation::Visual::default());
+                mem(&mut out, ((lx * scale).round(), (ly * scale).round()), &b.buffer, Some(src), crate::animation::Visual::default());
             }
         }
         mem(&mut out, (dock_x, dock_y), &shell.dock_buffer, None, crate::animation::Visual::default());

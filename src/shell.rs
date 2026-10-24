@@ -111,6 +111,36 @@ pub fn tray_icon_needs_chip(icon: &tiny_skia::Pixmap, dark_bar: bool) -> bool {
     (luma / n - bar).abs() < 0.3
 }
 
+/// The Dock is laid out along its own axes: x along the bar, y towards the screen edge
+/// (the bottom Dock's buffer as is). A side Dock's buffer is that layout turned on its
+/// side; icons and text stay upright, only positions are mapped.
+#[derive(Clone, Copy, Debug)]
+pub struct DockMap {
+    pub edge: crate::theme::DockEdge,
+    /// Cross-axis depth of the layout (the bottom Dock's buffer height)
+    pub depth: f32,
+}
+
+impl DockMap {
+    pub fn point(self, x: f32, y: f32) -> (f32, f32) {
+        use crate::theme::DockEdge::*;
+        match self.edge { Bottom => (x, y), Left => (self.depth - y, x), Right => (y, x) }
+    }
+    pub fn rect(self, r: R) -> R {
+        use crate::theme::DockEdge::*;
+        match self.edge {
+            Bottom => r,
+            Left => R::new(self.depth - (r.y + r.h), r.x, r.h, r.w),
+            Right => R::new(r.y, r.x, r.h, r.w),
+        }
+    }
+    /// Buffer point back to layout axes
+    pub fn unpoint(self, bx: f32, by: f32) -> (f32, f32) {
+        use crate::theme::DockEdge::*;
+        match self.edge { Bottom => (bx, by), Left => (by, self.depth - bx), Right => (by, bx) }
+    }
+}
+
 /// One desktop tile (or «+») of the Mission Control strip
 #[derive(Debug, Clone)]
 pub struct MissionTile {
@@ -896,6 +926,8 @@ impl MacShell {
             last_rss_check: Instant::now(),
             reload_count: 0,
         };
+        // Buffer and axes for the saved Dock edge (a side Dock's is turned)
+        shell.resize_dock();
         shell.notify(
             "Добро пожаловать в Пёрышко",
             "Alt+Tab — приложения • Super+Space — Spotlight • Alt+Shift — язык",
@@ -1269,10 +1301,10 @@ impl MacShell {
         self.screen_w = w;
         self.screen_h = h;
         self.topbar_buffer = new_buffer(to_phys(w), to_phys(TOP_BAR_HEIGHT));
-        self.dock_buf_w = w;
-        self.dock_buf_h = dock_buf_height();
+        (self.dock_buf_w, self.dock_buf_h) = self.dock_axes();
         self.dock_anchor = None;
-        self.dock_buffer = new_buffer(to_phys(w), to_phys(self.dock_buf_h));
+        let (bw, bh) = self.dock_buffer_size();
+        self.dock_buffer = new_buffer(to_phys(bw), to_phys(bh));
         self.overlay_buffer = new_buffer(1, 1);
         self.overlay_allocated = false;
         self.switcher_rect = R::new(0.0, 0.0, 0.0, 0.0);
@@ -1392,9 +1424,18 @@ impl MacShell {
     }
 
     fn dock_menu_rect(&self, anchor: R, w: f32, h: f32) -> R {
-        let x = (anchor.x + anchor.w * 0.5 - w * 0.5).clamp(6.0, (self.screen_w as f32 - w - 6.0).max(6.0));
-        let y = (anchor.y - h - 10.0).max(TOP_BAR_HEIGHT as f32 + 4.0);
-        R::new(x,y,w,h)
+        use crate::theme::DockEdge::*;
+        // Opens away from the screen edge, like macOS
+        let side_y = (anchor.y + anchor.h * 0.5 - h * 0.5).clamp(TOP_BAR_HEIGHT as f32 + 4.0, (self.screen_h as f32 - h - 6.0).max(TOP_BAR_HEIGHT as f32 + 4.0));
+        match crate::theme::dock_edge() {
+            Bottom => {
+                let x = (anchor.x + anchor.w * 0.5 - w * 0.5).clamp(6.0, (self.screen_w as f32 - w - 6.0).max(6.0));
+                let y = (anchor.y - h - 10.0).max(TOP_BAR_HEIGHT as f32 + 4.0);
+                R::new(x,y,w,h)
+            }
+            Left => R::new(anchor.x + anchor.w + 10.0, side_y, w, h),
+            Right => R::new(anchor.x - w - 10.0, side_y, w, h),
+        }
     }
 
     fn update_dock_menu_anchor(&mut self) {
@@ -1411,9 +1452,8 @@ impl MacShell {
 
     /// Global icon destination for minimizing; layout is updated before animation sampling.
     pub fn minimized_target(&self, id: u64) -> R {
-        let (ox, oy) = self.dock_origin();
         self.dock_slots.iter().find(|s| s.target == DockTarget::Minimized(id))
-            .map(|s| R::new(ox + s.x, oy + s.y, s.size, s.size))
+            .map(|s| self.dock_global_rect(R::new(s.x, s.y, s.size, s.size)))
             .unwrap_or_else(|| R::new(self.screen_w as f32 * 0.5 - 24.0, self.screen_h as f32 - 64.0, 48.0, 48.0))
     }
 
@@ -1434,32 +1474,29 @@ impl MacShell {
 
     /// Dock icon under a global point
     pub fn dock_target_at(&self, px: f64, py: f64) -> Option<(DockTarget, R)> {
-        let (ox, oy) = self.dock_origin();
-        let (lx, ly) = (px as f32 - ox, py as f32 - oy);
+        let (lx, ly) = self.dock_local(px, py);
         self.dock_slots
             .iter()
             .find(|s| R::new(s.x, s.y, s.size, s.size).contains(lx, ly))
-            .map(|s| (s.target, R::new(s.x + ox, s.y + oy, s.size, s.size)))
+            .map(|s| (s.target, self.dock_global_rect(R::new(s.x, s.y, s.size, s.size))))
     }
 
     /// The visible Dock background, without the wider app drop margin.
     pub fn dock_contains(&self, px: f64, py: f64) -> bool {
-        let (ox, oy) = self.dock_origin();
-        self.dock_bar.contains(px as f32 - ox, py as f32 - oy)
+        let (lx, ly) = self.dock_local(px, py);
+        self.dock_bar.contains(lx, ly)
     }
 
     /// Area where dropping a dragged app pins it
     pub fn dock_in_drop_zone(&self, px: f64, py: f64) -> bool {
-        let (ox, oy) = self.dock_origin();
-        let (lx, ly) = (px as f32 - ox, py as f32 - oy);
+        let (lx, ly) = self.dock_local(px, py);
         let b = self.dock_bar;
         lx >= b.x - 60.0 && lx <= b.x + b.w + 60.0 && ly >= b.y - 40.0
     }
 
-    /// Insertion index among pinned items for a pointer at global `px`
-    pub fn dock_insert_index(&self, px: f64) -> usize {
-        let (ox, _) = self.dock_origin();
-        let lx = px as f32 - ox;
+    /// Insertion index among pinned items for a pointer at a global point
+    pub fn dock_insert_index(&self, px: f64, py: f64) -> usize {
+        let (lx, _) = self.dock_local(px, py);
         self.dock_slots
             .iter()
             .zip(self.dock_items.iter())
@@ -1469,12 +1506,12 @@ impl MacShell {
     }
 
     /// Running apps become pinned only when deliberately moved into the pinned section.
-    pub fn dock_in_pinned_section(&self, px: f64) -> bool {
-        let (ox, _) = self.dock_origin();
+    pub fn dock_in_pinned_section(&self, px: f64, py: f64) -> bool {
+        let (lx, _) = self.dock_local(px, py);
         self.dock_slots.iter().zip(&self.dock_items)
             .filter(|(_, item)| item.pinned)
             .next_back()
-            .is_some_and(|(slot, _)| px as f32 <= ox + slot.x + slot.size + DOCK_ICON_GAP * 0.5)
+            .is_some_and(|(slot, _)| lx <= slot.x + slot.size + DOCK_ICON_GAP * 0.5)
     }
 
     pub fn set_dock_gap(&mut self, gap: Option<usize>) {
@@ -1659,20 +1696,75 @@ impl MacShell {
 
     /// Global logical top-left and size of a Dock slot
     pub fn dock_slot_global(&self, target: DockTarget) -> Option<(f32, f32, f32)> {
+        self.dock_slots.iter().find(|s| s.target == target).map(|s| {
+            let r = self.dock_global_rect(R::new(s.x, s.y, s.size, s.size));
+            (r.x, r.y, s.size)
+        })
+    }
+
+    pub fn dock_map(&self) -> DockMap {
+        DockMap { edge: crate::theme::dock_edge(), depth: self.dock_buf_h as f32 }
+    }
+
+    /// Logical size of the Dock buffer on screen (a side Dock's is turned)
+    pub fn dock_buffer_size(&self) -> (i32, i32) {
+        if crate::theme::dock_edge().vertical() { (self.dock_buf_h, self.dock_buf_w) } else { (self.dock_buf_w, self.dock_buf_h) }
+    }
+
+    /// Top-left of the Dock buffer when shown
+    pub fn dock_shown_origin(&self) -> (f32, f32) {
+        use crate::theme::DockEdge::*;
+        let (bw, bh) = self.dock_buffer_size();
+        match crate::theme::dock_edge() {
+            Bottom => (((self.screen_w - bw) / 2) as f32, (self.screen_h - bh) as f32),
+            Left => (0.0, ((self.screen_h - bh) / 2) as f32),
+            Right => ((self.screen_w - bw) as f32, ((self.screen_h - bh) / 2) as f32),
+        }
+    }
+
+    pub fn dock_origin(&self) -> (f32, f32) {
+        // A hidden Dock sits beyond its screen edge: every hit test misses it by itself
+        if !self.dock_hidden {
+            return self.dock_shown_origin();
+        }
+        let (ox, oy) = self.dock_shown_origin();
+        let (bw, _) = self.dock_buffer_size();
+        use crate::theme::DockEdge::*;
+        match crate::theme::dock_edge() {
+            Bottom => (ox, self.screen_h as f32),
+            Left => (-(bw as f32) - 1.0, oy),
+            Right => (self.screen_w as f32 + 1.0, oy),
+        }
+    }
+
+    /// Global point in Dock layout axes
+    pub fn dock_local(&self, px: f64, py: f64) -> (f32, f32) {
         let (ox, oy) = self.dock_origin();
-        self.dock_slots.iter().find(|s| s.target == target).map(|s| (ox + s.x, oy + s.y, s.size))
+        self.dock_map().unpoint(px as f32 - ox, py as f32 - oy)
     }
 
-    fn dock_origin(&self) -> (f32, f32) {
-        // A hidden Dock sits below the screen: every hit test misses it by itself
-        let y = if self.dock_hidden { self.screen_h } else { self.screen_h - self.dock_buf_h };
-        (((self.screen_w - self.dock_buf_w) / 2) as f32, y as f32)
+    /// Layout rectangle on screen
+    pub fn dock_global_rect(&self, r: R) -> R {
+        let (ox, oy) = self.dock_origin();
+        let b = self.dock_map().rect(r);
+        R::new(b.x + ox, b.y + oy, b.w, b.h)
     }
 
-    /// New icon size: the buffer follows (magnification and label room scale with it)
+    /// Along-the-bar length and depth of the layout for the current edge and screen
+    fn dock_axes(&self) -> (i32, i32) {
+        if crate::theme::dock_edge().vertical() {
+            // Room beside the bar for the hover label
+            (self.screen_h, dock_buf_height() + 200)
+        } else {
+            (self.screen_w, dock_buf_height())
+        }
+    }
+
+    /// New icon size or edge: the buffer follows (magnification and label room scale too)
     pub fn resize_dock(&mut self) {
-        self.dock_buf_h = dock_buf_height();
-        self.dock_buffer = new_buffer(to_phys(self.dock_buf_w), to_phys(self.dock_buf_h));
+        (self.dock_buf_w, self.dock_buf_h) = self.dock_axes();
+        let (bw, bh) = self.dock_buffer_size();
+        self.dock_buffer = new_buffer(to_phys(bw), to_phys(bh));
         self.dock_painted.clear();
         self.dock_anchor = None;
         self.dock_dirty = true;
@@ -2238,9 +2330,7 @@ impl MacShell {
             }
         }
 
-        let (ox, oy) = self.dock_origin();
-        let local_x = px as f32 - ox;
-        let local_y = py as f32 - oy;
+        let (local_x, local_y) = self.dock_local(px, py);
         let bar = self.dock_bar;
         let in_dock = !self.dock_dragging
             && local_y >= bar.y - 10.0
@@ -2420,9 +2510,7 @@ impl MacShell {
         }
 
         // Dock
-        let (ox, oy) = self.dock_origin();
-        let lx = mx - ox;
-        let ly = my - oy;
+        let (lx, ly) = self.dock_local(px, py);
         let on_icon = self
             .dock_slots
             .iter()
@@ -2678,9 +2766,13 @@ impl MacShell {
         let label = hovered.map(|h| self.dock_items[h].label.clone());
         let label_w = label.as_ref().map(|l| fonts.measure_text(l, 13.0, false) + 20.0).unwrap_or(0.0);
         let top_icon = slots.iter().map(|s| s.y).fold(bar.y, f32::min);
+        let map = self.dock_map();
         let painted = R::new(bar.x - 30.0, top_icon - 40.0, bar.w + 60.0, buf_h - top_icon + 40.0).grow(label_w * 0.5);
-        let pw = to_phys(self.dock_buf_w);
-        let ph = to_phys(self.dock_buf_h);
+        // A side Dock's label sits beside the icon, outside the turned layout area
+        let painted = if map.edge.vertical() { map.rect(painted).grow(label_w + 20.0) } else { painted };
+        let (bw, bh) = self.dock_buffer_size();
+        let pw = to_phys(bw);
+        let ph = to_phys(bh);
         let current: Vec<_> = painted.to_buffer(pw, ph).into_iter().collect();
         let mut damage = std::mem::take(&mut self.dock_painted);
         damage.extend(current.iter().copied());
@@ -2696,39 +2788,51 @@ impl MacShell {
         let _ = ctx.draw(|buf| {
             clear_rects(buf, pw, &clear);
             if let Some(mut pm) = PixmapMut::from_bytes(buf, pw as u32, ph as u32) {
-                // Liquid-glass shelf over the frosted desktop
-                fill_rounded_rect(&mut pm, bar.x, bar.y + 2.0, bar.w, bar.h, DOCK_RADIUS, rgba(0, 0, 0, 22));
-                crate::theme::fill_frosted(&mut pm, bar.x, bar.y, bar.w, bar.h, DOCK_RADIUS);
-                fill_rounded_rect(&mut pm, bar.x, bar.y, bar.w, bar.h, DOCK_RADIUS, p.dock_fill);
-                stroke_rounded_rect(&mut pm, bar.x + 0.75, bar.y + 0.75, bar.w - 1.5, bar.h - 1.5, DOCK_RADIUS - 0.75, 1.0, p.glass_edge);
-                stroke_rounded_rect(&mut pm, bar.x - 0.25, bar.y - 0.25, bar.w + 0.5, bar.h + 0.5, DOCK_RADIUS + 0.25, 0.5, p.glass_outline);
+                // Liquid-glass shelf over the frosted desktop (positions mapped for a side Dock)
+                let b = map.rect(bar);
+                let shadow = map.rect(R::new(bar.x, bar.y + 2.0, bar.w, bar.h));
+                fill_rounded_rect(&mut pm, shadow.x, shadow.y, shadow.w, shadow.h, DOCK_RADIUS, rgba(0, 0, 0, 22));
+                crate::theme::fill_frosted(&mut pm, b.x, b.y, b.w, b.h, DOCK_RADIUS);
+                fill_rounded_rect(&mut pm, b.x, b.y, b.w, b.h, DOCK_RADIUS, p.dock_fill);
+                stroke_rounded_rect(&mut pm, b.x + 0.75, b.y + 0.75, b.w - 1.5, b.h - 1.5, DOCK_RADIUS - 0.75, 1.0, p.glass_edge);
+                stroke_rounded_rect(&mut pm, b.x - 0.25, b.y - 0.25, b.w + 0.5, b.h + 0.5, DOCK_RADIUS + 0.25, 0.5, p.glass_outline);
 
                 for &sx in &sep_x {
-                    stroke_line(&mut pm, sx, bar.y + 10.0, sx, bar.y + bar.h - 10.0, 1.0, p.separator);
+                    let (x0, y0) = map.point(sx, bar.y + 10.0);
+                    let (x1, y1) = map.point(sx, bar.y + bar.h - 10.0);
+                    stroke_line(&mut pm, x0, y0, x1, y1, 1.0, p.separator);
                 }
 
                 for (slot, item) in slots.iter().zip(items.iter()) {
                     let n = item.windows.min(3) as f32;
                     for k in 0..n as usize {
                         let dx = (k as f32 - (n - 1.0) * 0.5) * 5.0;
-                        fill_circle(&mut pm, slot.x + slot.size * 0.5 + dx, bar.y + bar.h - 3.0, 1.9, p.dock_dot);
+                        let (cx, cy) = map.point(slot.x + slot.size * 0.5 + dx, bar.y + bar.h - 3.0);
+                        fill_circle(&mut pm, cx, cy, 1.9, p.dock_dot);
                     }
                     // The bouncing icon is drawn as its own GPU element above the Dock
                     if bouncing == Some(item.target) {
                         continue;
                     }
+                    let r = map.rect(R::new(slot.x, slot.y, slot.size, slot.size));
                     if slot.size == dock_icon() {
-                        draw_any_icon(&mut pm, fonts, icons, &item.icon, &item.label, slot.x, slot.y, slot.size);
+                        draw_any_icon(&mut pm, fonts, icons, &item.icon, &item.label, r.x, r.y, slot.size);
                     } else {
-                        draw_resampled_icon(&mut pm, icons, &item.icon, &item.label, slot.x, slot.y, slot.size);
+                        draw_resampled_icon(&mut pm, icons, &item.icon, &item.label, r.x, r.y, slot.size);
                     }
                 }
 
                 if let (Some(h), Some(label)) = (hovered, label.as_ref()) {
                     let slot = &slots[h];
                     let lw = fonts.measure_text(label, 13.0, false) + 20.0;
-                    let lx = (slot.x + slot.size * 0.5 - lw * 0.5).clamp(4.0, buf_w - lw - 4.0);
-                    let ly = slot.y - 34.0;
+                    let (lx, ly) = if map.edge.vertical() {
+                        // Beside the icon, on the screen's inner side
+                        let r = map.rect(R::new(slot.x, slot.y, slot.size, slot.size));
+                        let ly = r.y + r.h * 0.5 - 12.0;
+                        if map.edge == crate::theme::DockEdge::Left { (r.x + r.w + 12.0, ly) } else { (r.x - lw - 12.0, ly) }
+                    } else {
+                        ((slot.x + slot.size * 0.5 - lw * 0.5).clamp(4.0, buf_w - lw - 4.0), slot.y - 34.0)
+                    };
                     draw_glass_panel(&mut pm, lx, ly, lw, 24.0, 8.0, true);
                     fonts.draw_text(&mut pm, label, lx + 10.0, ly + 4.5, 13.0, p.text, false);
                 }
@@ -3641,6 +3745,54 @@ mod appmenu_tests {
         assert_eq!(crate::theme::reserved_for(50.0, false), 74, "the old fixed value");
         assert!(crate::theme::reserved_for(64.0, false) > 74);
         assert_eq!(crate::theme::reserved_for(64.0, true), 4, "maximized windows reach almost the bottom");
+    }
+
+    /// Visual check of the Dock on each edge (hovered icon with its label). Changes the
+    /// global edge, so it runs only with FEATHER_DOCK_SHEET=/path.png and --ignored.
+    #[test]
+    #[ignore = "FEATHER_DOCK_SHEET=/path.png cargo test --release dock_edge_sheet -- --ignored"]
+    fn dock_edge_sheet() {
+        let Some(out) = std::env::var_os("FEATHER_DOCK_SHEET") else { return };
+        use crate::theme::DockEdge;
+        let mut sheet = image::RgbaImage::from_pixel(1800, 1000, image::Rgba([90, 110, 160, 255]));
+        let mut x0 = 0;
+        for edge in [DockEdge::Bottom, DockEdge::Left, DockEdge::Right] {
+            crate::theme::set_dock_edge(edge);
+            crate::theme::with_render_settings(1.0, Appearance::Light, || {
+                let mut fonts = FontSystem::new();
+                let mut shell = MacShell::new(1440, 900);
+                let items = (0..6).map(|i| DockItem { target: DockTarget::App(i), label: format!("Программа {i}"), icon: AppIcon { kind: crate::apps::IconKind::GenericApp, name: None }, windows: (i % 3) as u8, pinned: true }).chain(std::iter::once(DockItem { target: DockTarget::Trash, label: "Корзина".into(), icon: AppIcon { kind: crate::apps::IconKind::TrashEmpty, name: None }, windows: 0, pinned: false })).collect();
+                shell.set_dock_items(items);
+                shell.ensure_dock_rendered(&mut fonts);
+                let (x, y, size) = shell.dock_slot_global(DockTarget::App(2)).unwrap();
+                shell.update_pointer_hover((x + size * 0.5) as f64, (y + size * 0.5) as f64);
+                shell.ensure_dock_rendered(&mut fonts);
+                assert_eq!(shell.dock_target_at((x + size * 0.5) as f64, (y + size * 0.5) as f64).map(|t| t.0), Some(DockTarget::App(2)), "{edge:?}: hit test follows the drawing");
+                let (bw, bh) = shell.dock_buffer_size();
+                let mut px = Vec::new();
+                let _ = shell.dock_buffer.render().draw(|d| { px.extend_from_slice(d); Ok::<_, ()>(Vec::new()) });
+                let (bw, bh) = (bw as u32, bh as u32);
+                for yy in 0..bh.min(1000) {
+                    for xx in 0..bw.min(1800 - x0) {
+                        let i = ((yy * bw + xx) * 4) as usize;
+                        let a = px[i + 3] as f32 / 255.0;
+                        let base = sheet.get_pixel(x0 + xx, yy).0;
+                        let c = |k: usize| (px[i + k] as f32 + base[k] as f32 * (1.0 - a)) as u8;
+                        sheet.put_pixel(x0 + xx, yy, image::Rgba([c(0), c(1), c(2), 255]));
+                    }
+                }
+                x0 += if edge.vertical() { bw + 40 } else { 0 };
+                if !edge.vertical() { sheet = image::imageops::crop_imm(&sheet, 0, 0, 1800, 1000).to_image(); }
+            });
+            if edge == DockEdge::Bottom {
+                // Bottom Dock is wide and short: keep only its centre, then place the side ones
+                let strip = image::imageops::crop_imm(&sheet, 300, 0, 900, 150).to_image();
+                sheet = image::RgbaImage::from_pixel(1800, 1000, image::Rgba([90, 110, 160, 255]));
+                image::imageops::overlay(&mut sheet, &strip, 860, 820);
+            }
+        }
+        crate::theme::set_dock_edge(DockEdge::Bottom);
+        sheet.save(out).unwrap();
     }
 
     #[test]

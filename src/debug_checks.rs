@@ -67,22 +67,24 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         at(state, 4000, |s| { click(s, 110.0, 20.0); eprintln!("[feather-minimize-check] ping"); })?;
         at(state, 4600, |s| { click(s, 40.0, 20.0); eprintln!("[feather-minimize-check] minimize"); })?;
         at(state, 5400, |s| {
-            let w = s.windows.iter().find(|w| w.app_id.contains("tauri")).unwrap();
+            let Some(w) = s.windows.iter().find(|w| w.app_id.contains("tauri")) else { return eprintln!("[feather-minimize-check] window gone (hidden)") };
             eprintln!("[feather-minimize-check] minimized={}", w.minimized);
             let (id, key) = (w.id, s.app_key(w));
             match std::env::var("FEATHER_DEBUG_MINIMIZE").as_deref() {
                 // Dock icon click and Alt+Tab both go through activate_app
                 Ok("dock") => s.activate_app(key),
                 // The app restores itself (tray): nothing to do here
-                Ok("present") => {}
+                Ok("present") | Ok("hide") => {}
                 _ => s.execute_shell_action(crate::shell::ShellClickAction::RestoreMinimizedWindow(id)),
             }
-            let w = s.windows.iter().find(|w| w.id == id).unwrap();
-            eprintln!("[feather-minimize-check] restored: minimized={}", w.minimized);
+            if let Some(w) = s.windows.iter().find(|w| w.id == id) {
+                eprintln!("[feather-minimize-check] restored: minimized={}", w.minimized);
+            }
         })?;
         at(state, 6400, |s| {
-            let w = s.windows.iter().find(|w| w.app_id.contains("tauri")).unwrap();
-            eprintln!("[feather-minimize-check] before ping: minimized={} visible={}", w.minimized, w.is_visible());
+            for w in s.windows.iter().filter(|w| w.app_id.contains("tauri")) {
+                eprintln!("[feather-minimize-check] before ping: id={} mapped={} minimized={} visible={} ssd={} geo={:?}", w.id, w.mapped, w.minimized, w.is_visible(), w.has_titlebar(), (w.x, w.y, w.width, w.height));
+            }
             click(s, 110.0, 20.0);
             eprintln!("[feather-minimize-check] ping after restore");
         })?;

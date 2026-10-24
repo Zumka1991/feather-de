@@ -651,10 +651,16 @@ impl FeatherCompositor {
         if !crate::theme::dock_autohide() {
             return;
         }
-        let _ = x;
-        let h = self.shell.screen_h as f64;
-        let busy = self.shell.dock_menu.is_some() || self.icon_drag.as_ref().is_some_and(|d| d.active) && y > h - self.shell.dock_buf_h as f64;
-        let hidden = if self.shell.dock_hidden { y < h - 2.0 } else { !busy && y < h - self.shell.dock_buf_h as f64 * 0.75 };
+        // Distance from the Dock's screen edge, and how deep its bar reaches
+        let (w, h) = (self.shell.screen_w as f64, self.shell.screen_h as f64);
+        let dist = match crate::theme::dock_edge() {
+            crate::theme::DockEdge::Bottom => h - y,
+            crate::theme::DockEdge::Left => x,
+            crate::theme::DockEdge::Right => w - x,
+        };
+        let depth = (crate::theme::dock_icon() * 1.5) as f64 + 40.0;
+        let busy = self.shell.dock_menu.is_some() || self.icon_drag.as_ref().is_some_and(|d| d.active) && dist < depth;
+        let hidden = if self.shell.dock_hidden { dist > 2.0 } else { !busy && dist > depth };
         if hidden != self.shell.dock_hidden {
             self.shell.dock_hidden = hidden;
             self.animations.set_dock_hidden(hidden);

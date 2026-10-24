@@ -34,10 +34,58 @@ pub fn dock_autohide() -> bool {
 pub fn set_dock_autohide(on: bool) {
     DOCK_AUTOHIDE.store(on, std::sync::atomic::Ordering::Relaxed);
 }
-/// Vertical space kept free for the Dock when a window is maximized: the bar and its
-/// margins, or just a sliver when the Dock hides itself
-pub fn dock_reserved() -> i32 {
+/// Screen edge the Dock sits on
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DockEdge {
+    #[default]
+    Bottom,
+    Left,
+    Right,
+}
+impl DockEdge {
+    pub const ALL: [Self; 3] = [Self::Left, Self::Bottom, Self::Right];
+    pub fn id(self) -> &'static str {
+        match self { Self::Bottom => "bottom", Self::Left => "left", Self::Right => "right" }
+    }
+    pub fn label(self) -> &'static str {
+        match self { Self::Bottom => "Снизу", Self::Left => "Слева", Self::Right => "Справа" }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.id() == s)
+    }
+    pub fn vertical(self) -> bool {
+        self != Self::Bottom
+    }
+}
+static DOCK_EDGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub fn dock_edge() -> DockEdge {
+    match DOCK_EDGE.load(std::sync::atomic::Ordering::Relaxed) { 1 => DockEdge::Left, 2 => DockEdge::Right, _ => DockEdge::Bottom }
+}
+pub fn set_dock_edge(edge: DockEdge) {
+    DOCK_EDGE.store(match edge { DockEdge::Bottom => 0, DockEdge::Left => 1, DockEdge::Right => 2 }, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Space kept free for the Dock along its edge: the bar and its margins, or just a sliver
+/// when the Dock hides itself
+fn dock_depth() -> i32 {
     reserved_for(dock_icon(), dock_autohide())
+}
+/// Room kept free at the bottom (maximized windows, the desktop grid)
+pub fn dock_reserved() -> i32 {
+    if dock_edge() == DockEdge::Bottom { dock_depth() } else { 0 }
+}
+/// Room kept free at the left and right
+pub fn dock_side_reserved() -> (i32, i32) {
+    match dock_edge() {
+        DockEdge::Bottom => (0, 0),
+        DockEdge::Left => (dock_depth(), 0),
+        DockEdge::Right => (0, dock_depth()),
+    }
+}
+/// The area a maximized window fills (x, y, width, height of its frame)
+pub fn maximized_area(screen_w: i32, screen_h: i32) -> (i32, i32, i32, i32) {
+    let (left, right) = dock_side_reserved();
+    (left, TOP_BAR_HEIGHT, screen_w - left - right, screen_h - TOP_BAR_HEIGHT - dock_reserved())
 }
 pub fn reserved_for(icon: f32, autohide: bool) -> i32 {
     if autohide { 4 } else { (icon + DOCK_PAD_Y * 2.0) as i32 + DOCK_BOTTOM_MARGIN + 4 }

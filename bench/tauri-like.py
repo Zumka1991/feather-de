@@ -20,6 +20,11 @@ ucm.register_script_message_handler('feather')
 def on_message(_m, result):
     cmd = result.get_js_value().to_string()
     log('click ' + cmd)
+    if cmd == 'minimize' and os.environ.get('TAURI_HIDE'):
+        # Like closing to the tray: the window is hidden, the tray shows it again later
+        win.hide()
+        GLib.timeout_add(800, lambda: (log('show'), win.show_all(), win.present(), False)[3])
+        return
     if cmd == 'minimize':
         win.iconify()
         if os.environ.get('TAURI_PRESENT'):

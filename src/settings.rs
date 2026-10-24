@@ -286,6 +286,7 @@ pub struct Settings {
     pub dock_locked: bool,
     pub dock_size: f32,
     pub dock_autohide: bool,
+    pub dock_edge: crate::theme::DockEdge,
     pub do_not_disturb: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
@@ -313,6 +314,7 @@ impl Default for Settings {
             dock_locked: false,
             dock_size: 50.0,
             dock_autohide: false,
+            dock_edge: Default::default(),
             do_not_disturb: false,
             dnd_schedule: None,
             notify_apps: Vec::new(),
@@ -451,6 +453,11 @@ impl Settings {
                         s.dock_size = v;
                     }
                 }
+                "dock_edge" => {
+                    if let Some(e) = crate::theme::DockEdge::parse(v) {
+                        s.dock_edge = e;
+                    }
+                }
                 "dock_autohide" => {
                     if let Ok(v) = v.parse() {
                         s.dock_autohide = v;
@@ -542,7 +549,7 @@ impl Settings {
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
-        text.push_str(&format!("dock_size={}\ndock_autohide={}\n", self.dock_size, self.dock_autohide));
+        text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_edge={}\n", self.dock_size, self.dock_autohide, self.dock_edge.id()));
         text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
         text.push_str(&format!("hot_corners={}\n", self.hot_corners.map(|a| a.id()).join(",")));
         text.push_str(&format!("night_manual={}\nnight_kelvin={}\n", self.night.manual, self.night.kelvin));
@@ -738,6 +745,9 @@ mod tests {
         s.dock_autohide = true;
         let back = Settings::parse(&s.text());
         assert!(back.dock_size == 64.0 && back.dock_autohide);
+        s.dock_edge = crate::theme::DockEdge::Left;
+        assert_eq!(Settings::parse(&s.text()).dock_edge, crate::theme::DockEdge::Left);
+        assert_eq!(Settings::parse("dock_edge=top").dock_edge, crate::theme::DockEdge::Bottom);
         assert_eq!(Settings::parse("dock_size=13").dock_size, 50.0);
     }
 

@@ -349,13 +349,14 @@ impl Desktop {
     fn grid(screen: (i32, i32)) -> (usize, usize) {
         let top = TOP_BAR_HEIGHT as f32 + MARGIN_TOP;
         let rows = (((screen.1 as f32 - top - crate::theme::dock_reserved() as f32) / CELL_H).floor() as usize).max(1);
-        let cols = (((screen.0 as f32 - MARGIN_RIGHT) / CELL_W).floor() as usize).max(1);
+        let (left, right) = crate::theme::dock_side_reserved();
+        let cols = (((screen.0 as f32 - MARGIN_RIGHT - (left + right) as f32) / CELL_W).floor() as usize).max(1);
         (rows, cols)
     }
 
     fn cell_origin(cell: Cell, screen: (i32, i32)) -> (f64, f64) {
         let top = TOP_BAR_HEIGHT as f32 + MARGIN_TOP;
-        let x = screen.0 as f32 - MARGIN_RIGHT - CELL_W * (cell.0 as f32 + 1.0);
+        let x = screen.0 as f32 - MARGIN_RIGHT - crate::theme::dock_side_reserved().1 as f32 - CELL_W * (cell.0 as f32 + 1.0);
         (x as f64, (top + cell.1 as f32 * CELL_H) as f64)
     }
 
@@ -363,7 +364,7 @@ impl Desktop {
     fn cell_at(x: f64, y: f64, screen: (i32, i32)) -> Cell {
         let (rows, cols) = Self::grid(screen);
         let top = (TOP_BAR_HEIGHT as f32 + MARGIN_TOP) as f64;
-        let col = ((screen.0 as f64 - MARGIN_RIGHT as f64 - x) / CELL_W as f64).floor().clamp(0.0, (cols - 1) as f64);
+        let col = ((screen.0 as f64 - MARGIN_RIGHT as f64 - crate::theme::dock_side_reserved().1 as f64 - x) / CELL_W as f64).floor().clamp(0.0, (cols - 1) as f64);
         let row = ((y - top) / CELL_H as f64).floor().clamp(0.0, (rows - 1) as f64);
         (col as usize, row as usize)
     }
@@ -1075,7 +1076,7 @@ impl FeatherCompositor {
         if let Some(app) = drag.launcher_app {
             if self.shell.dock_in_drop_zone(p.0, p.1) {
                 let id = self.app_registry.apps[app].id.clone();
-                let gap = self.shell.dock_insert_index(p.0);
+                let gap = self.shell.dock_insert_index(p.0, p.1);
                 self.pin_app(&id, Some(gap));
             } else if self.over_bare_desktop(p.0, p.1) {
                 self.add_launcher(app, p.0, p.1);

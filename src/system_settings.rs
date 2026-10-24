@@ -80,6 +80,7 @@ pub enum Action {
     Animations,
     DockZoom,
     DockSize(u32),
+    DockEdge(crate::theme::DockEdge),
     DockAutohide,
     Wallpaper,
     WallpaperImage(Option<crate::wallpaper::ImageSource>),
@@ -1141,6 +1142,12 @@ impl Panel {
                 for (i, (size, label)) in crate::theme::DOCK_SIZES.iter().zip(["Маленькие", "Средние", "Крупные"]).enumerate() {
                     l.push(R::new(track.x + i as f32 * 96.0, track.y, 96.0, track.h), label, Style::Segment(crate::theme::dock_icon() == *size), Some(Action::DockSize(*size as u32)));
                 }
+                let r = l.row(48.0, "Положение на экране", String::new(), Style::Row, None);
+                let track = right(r, 3.0 * 96.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, edge) in crate::theme::DockEdge::ALL.into_iter().enumerate() {
+                    l.push(R::new(track.x + i as f32 * 96.0, track.y, 96.0, track.h), edge.label(), Style::Segment(crate::theme::dock_edge() == edge), Some(Action::DockEdge(edge)));
+                }
                 l.row(52.0, "Автоматически скрывать Dock", "Появляется, когда указатель у нижнего края".into(), Style::Toggle(crate::theme::dock_autohide()), Some(Action::DockAutohide));
                 l.end();
                 l.header("Активные углы");
@@ -1742,8 +1749,9 @@ impl crate::FeatherCompositor {
     pub fn refit_maximized_windows(&mut self) {
         let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
         for w in self.windows.iter_mut().filter(|w| w.maximized && !w.fullscreen) {
-            let h = sh - crate::theme::TOP_BAR_HEIGHT - crate::theme::dock_reserved() - w.titlebar_h();
-            w.resize_client(sw, h);
+            let (ax, _, aw, ah) = crate::theme::maximized_area(sw, sh);
+            w.x = ax;
+            w.resize_client(aw, ah - w.titlebar_h());
         }
         self.dock_model_dirty = true;
         self.needs_redraw = true;
@@ -1843,6 +1851,12 @@ impl crate::FeatherCompositor {
             }
             Action::DockSize(size) => {
                 crate::theme::set_dock_icon(size as f32);
+                self.shell.resize_dock();
+                self.refit_maximized_windows();
+                self.save_settings();
+            }
+            Action::DockEdge(edge) => {
+                crate::theme::set_dock_edge(edge);
                 self.shell.resize_dock();
                 self.refit_maximized_windows();
                 self.save_settings();

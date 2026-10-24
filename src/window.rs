@@ -597,12 +597,12 @@ impl ManagedWindow {
             if !self.fullscreen {
                 self.remember_rect();
             }
-            self.x = 0;
-            self.y = TOP_BAR_HEIGHT;
+            let (ax, ay, aw, ah) = crate::theme::maximized_area(screen_w, screen_h);
+            self.x = ax;
+            self.y = ay;
             self.maximized = true;
-            let max_w = screen_w.max(MIN_WINDOW_W);
-            let max_h = (screen_h - TOP_BAR_HEIGHT - crate::theme::dock_reserved() - self.titlebar_h())
-                .max(MIN_WINDOW_H);
+            let max_w = aw.max(MIN_WINDOW_W);
+            let max_h = (ah - self.titlebar_h()).max(MIN_WINDOW_H);
             self.set_xdg_state(xdg_toplevel::State::Maximized, true);
             self.resize_client(max_w, max_h);
         } else {
