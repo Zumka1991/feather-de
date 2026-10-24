@@ -53,6 +53,79 @@ fn black_buffer() -> MemoryRenderBuffer {
     b
 }
 
+/// Menu bar colours for the wallpaper under it (macOS Tahoe adapts them the same way)
+#[derive(Clone, Copy)]
+pub struct BarColors {
+    pub tint: Color,
+    pub text: Color,
+    pub dim: Color,
+    pub highlight: Color,
+    /// Behind a coloured tray icon that would not stand out
+    pub chip: Color,
+    pub dark: bool,
+}
+
+impl BarColors {
+    pub fn for_background(dark: bool) -> Self {
+        if dark {
+            Self { tint: rgba(0, 0, 0, 36), text: rgba(255, 255, 255, 240), dim: rgba(255, 255, 255, 120), highlight: rgba(255, 255, 255, 42), chip: rgba(255, 255, 255, 58), dark }
+        } else {
+            Self { tint: rgba(255, 255, 255, 70), text: rgba(0, 0, 0, 225), dim: rgba(0, 0, 0, 105), highlight: rgba(0, 0, 0, 28), chip: rgba(0, 0, 0, 46), dark }
+        }
+    }
+}
+
+/// Mean luminance (0…1) of the wallpaper under the menu bar, from the blurred copy
+pub fn bar_luma(glass: &tiny_skia::Pixmap, screen_h: i32) -> f32 {
+    let rows = ((TOP_BAR_HEIGHT as f32 / screen_h.max(1) as f32) * glass.height() as f32).ceil().max(1.0) as usize;
+    let w = glass.width() as usize;
+    let data = glass.data();
+    let (mut sum, mut n) = (0.0f32, 0.0f32);
+    for px in data[..(rows.min(glass.height() as usize) * w * 4)].chunks_exact(4) {
+        let a = px[3] as f32;
+        if a < 1.0 { continue; }
+        // Unpremultiplied sRGB, Rec. 709 weights: good enough to pick black or white text
+        let c = |v: u8| v as f32 / a;
+        sum += 0.2126 * c(px[0]) + 0.7152 * c(px[1]) + 0.0722 * c(px[2]);
+        n += 1.0;
+    }
+    if n == 0.0 { 1.0 } else { sum / n }
+}
+
+/// Recolours a one-colour icon to `text`; returns true when a coloured icon needs a chip
+/// (its brightness is too close to the bar's)
+pub fn adapt_tray_icon(icon: &mut tiny_skia::Pixmap, text: Color, dark_bar: bool) -> bool {
+    let (mut n, mut luma, mut luma2, mut sat) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for px in icon.data().chunks_exact(4) {
+        let a = px[3] as f32;
+        if a < 64.0 { continue; }
+        let (r, g, b) = (px[0] as f32 / a, px[1] as f32 / a, px[2] as f32 / a);
+        let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+        let l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        n += 1.0;
+        luma += l;
+        luma2 += l * l;
+        sat += if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+    }
+    if n < 4.0 {
+        return false;
+    }
+    let (mean, var, sat) = (luma / n, (luma2 / n - (luma / n).powi(2)).max(0.0), sat / n);
+    if sat < 0.12 && var.sqrt() < 0.16 {
+        let (r, g, b) = (text.red(), text.green(), text.blue());
+        for px in icon.data_mut().chunks_exact_mut(4) {
+            let a = px[3] as f32 / 255.0 * text.alpha();
+            px[0] = (r * a * 255.0).round() as u8;
+            px[1] = (g * a * 255.0).round() as u8;
+            px[2] = (b * a * 255.0).round() as u8;
+            px[3] = (a * 255.0).round() as u8;
+        }
+        return false;
+    }
+    let bar = if dark_bar { 0.2 } else { 0.85 };
+    (mean - bar).abs() < 0.3
+}
+
 /// One desktop tile (or «+») of the Mission Control strip
 #[derive(Debug, Clone)]
 pub struct MissionTile {
@@ -722,6 +795,8 @@ pub struct MacShell {
     /// Mission Control strip and title (CPU part; windows move on the GPU)
     pub mission: Option<MissionOverlay>,
     pub mission_dim: MemoryRenderBuffer,
+    /// Wallpaper under the menu bar is dark (None until the first wallpaper arrives)
+    pub bar_on_dark: Option<bool>,
     pub launchpad_bg_key: Option<(WallpaperTheme, i32, i32, bool)>,
     launchpad_bg_requested: Option<crate::raster::BackgroundKey>,
     pub raster: Option<crate::raster::RasterSender>,
@@ -817,6 +892,7 @@ impl MacShell {
             launchpad_bg: new_buffer(1, 1),
             mission: None,
             mission_dim: black_buffer(),
+            bar_on_dark: None,
             launchpad_bg_key: None,
             launchpad_bg_requested: None,
             raster: None,
@@ -1261,6 +1337,10 @@ impl MacShell {
         !was_dirty && (self.topbar_dirty || self.overlay_dirty)
     }
 
+    pub fn bar_colors(&self) -> BarColors {
+        BarColors::for_background(self.bar_on_dark.unwrap_or(appearance() == Appearance::Dark))
+    }
+
     pub fn has_visible_overlay(&self) -> bool {
         self.spotlight_open
             || self.control_center_open
@@ -1491,6 +1571,11 @@ impl MacShell {
             crate::raster::Asset::WallpaperError(_)=>return false,
             crate::raster::Asset::Wallpaper { pixels,size,image, glass } => {
                 let (w, h) = (glass.width(), glass.height());
+                let dark = bar_luma(&glass, self.screen_h) < 0.5;
+                if self.bar_on_dark != Some(dark) {
+                    self.bar_on_dark = Some(dark);
+                    self.topbar_dirty = true;
+                }
                 self.applied_wallpaper_image=image;
                 self.wallpaper_pending=Some((pixels,size));
                 crate::theme::set_glass_background(Some((std::rc::Rc::new(glass), self.screen_w as f32 / w as f32, self.screen_h as f32 / h as f32)));
@@ -2387,6 +2472,7 @@ impl MacShell {
         let (open_menu, cc_open, sp_open, wifi) =
             (self.open_menu, self.control_center_open, self.spotlight_open, self.wifi_enabled);
         let p = palette();
+        let bar = self.bar_colors();
         let mut hits = Vec::with_capacity(16);
         let tray=self.tray_items.clone();let visible_tray=self.tray_visible_count();
         let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0};
@@ -2406,17 +2492,17 @@ impl MacShell {
             buf.fill(0);
             if let Some(mut pm) = PixmapMut::from_bytes(buf, pw as u32, ph as u32) {
                 // Tahoe: the menu bar is (almost) transparent over the wallpaper
-                fill_rounded_rect(&mut pm, 0.0, 0.0, lw, lh, 0.0, p.menubar_tint);
+                fill_rounded_rect(&mut pm, 0.0, 0.0, lw, lh, 0.0, bar.tint);
                 let text_y = (lh - 13.0) * 0.5 - 1.5;
                 let highlight = |pm: &mut PixmapMut, x0: f32, x1: f32| {
-                    fill_rounded_rect(pm, x0, 2.0, x1 - x0, lh - 4.0, 6.0, p.menubar_highlight);
+                    fill_rounded_rect(pm, x0, 2.0, x1 - x0, lh - 4.0, 6.0, bar.highlight);
                 };
 
                 // Left: logo, app menu, Window, Help — all of them real menus
                 if open_menu == Some(TopMenu::Feather) {
                     highlight(&mut pm, 8.0, 36.0);
                 }
-                draw_feather_logo(&mut pm, 22.0, lh * 0.5, 0.95, p.menubar_text);
+                draw_feather_logo(&mut pm, 22.0, lh * 0.5, 0.95, bar.text);
                 hits.push((0.0, 38.0, TopbarItem::Menu(TopMenu::Feather)));
                 let mut x = 46.0;
                 let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 162.0+tray_width;
@@ -2428,7 +2514,7 @@ impl MacShell {
                     let w = fonts.measure_text(&label, 13.0, *bold);
                     if open_menu == Some(*menu) { highlight(&mut pm, x - 8.0, x + w + 8.0); }
                     fonts.draw_text(&mut pm, &label, x, text_y, 13.0,
-                        if *enabled { p.menubar_text } else { p.text_tertiary }, *bold);
+                        if *enabled { bar.text } else { bar.dim }, *bold);
                     if *enabled { hits.push((x - 9.0, x + w + 9.0, TopbarItem::Menu(*menu))); }
                     x += w + 20.0;
                 }
@@ -2438,21 +2524,21 @@ impl MacShell {
                 let cw=fonts.measure_text(&clock,13.0,false);
                 let clock_width=cw.max(146.0);
                 if center_open||hover==Some(TopbarItem::Clock){highlight(&mut pm,rx-clock_width-4.0,lw-5.0);}
-                fonts.draw_text(&mut pm,&clock,rx-cw,text_y,13.0,p.menubar_text,false);
-                if dnd {crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Moon,rx-cw-12.0,lh*0.5,p.menubar_text,false);}
+                fonts.draw_text(&mut pm,&clock,rx-cw,text_y,13.0,bar.text,false);
+                if dnd {crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Moon,rx-cw-12.0,lh*0.5,bar.text,false);}
                 hits.push((rx-clock_width-4.0,lw,TopbarItem::Clock));rx-=clock_width+14.0;
                 for (hit,opened) in [(TopbarItem::ControlCenter,cc_open),(TopbarItem::Spotlight,sp_open),(TopbarItem::Wifi,cc_open)]{
                     if opened||hover==Some(hit){highlight(&mut pm,rx-29.0,rx-1.0);}
                     let center=rx-15.0;
                     match hit {
-                        TopbarItem::ControlCenter=>draw_control_center_icon(&mut pm,center,lh*0.5,p.menubar_text),
-                        TopbarItem::Spotlight=>draw_search_icon(&mut pm,center,lh*0.5,5.0,p.menubar_text),
-                        TopbarItem::Wifi=>draw_wifi_icon(&mut pm,center,lh*0.5-2.0,p.menubar_text,wifi),_=>{}
+                        TopbarItem::ControlCenter=>draw_control_center_icon(&mut pm,center,lh*0.5,bar.text),
+                        TopbarItem::Spotlight=>draw_search_icon(&mut pm,center,lh*0.5,5.0,bar.text),
+                        TopbarItem::Wifi=>draw_wifi_icon(&mut pm,center,lh*0.5-2.0,bar.text,wifi),_=>{}
                     }
                     hits.push((rx-30.0,rx,hit));rx-=30.0;
                 }
                 if open_menu==Some(TopMenu::Input)||hover==Some(TopbarItem::Layout){highlight(&mut pm,rx-31.0,rx-1.0);}
-                crate::system_settings::draw_input_badge(&mut pm,fonts,input.badge,rx-27.0,(lh-16.0)*0.5,22.0,16.0,p.menubar_text);
+                crate::system_settings::draw_input_badge(&mut pm,fonts,input.badge,rx-27.0,(lh-16.0)*0.5,22.0,16.0,bar.text);
                 hits.push((rx-32.0,rx,TopbarItem::Layout));rx-=40.0;
                 for (index,item) in tray.iter().take(visible_tray).enumerate(){
                     let x=rx-23.0;let y=(lh-18.0)*0.5;
@@ -2462,21 +2548,29 @@ impl MacShell {
                     let icon=if item.pixels.is_none()&&!item.icon_name.is_empty(){
                         icons.get(&crate::icons::IconKey{icon:AppIcon{kind:crate::apps::IconKind::GenericApp,name:Some(item.icon_name.clone())},initial:String::new(),px:to_phys(18) as u32,dark:appearance()==Appearance::Dark})
                     }else{None};
-                    if let Some(icon)=icon {crate::icons::blit_icon(&mut pm,icon,x,y);}
-                    else if let Some(image)=&item.pixels {
-                        let size=18.0*ui_scale();
-                        pm.draw_pixmap(0,0,image.as_ref().as_ref(),&tiny_skia::PixmapPaint{quality:tiny_skia::FilterQuality::Bilinear,..Default::default()},tiny_skia::Transform::from_scale(size/image.width() as f32,size/image.height() as f32).post_translate((x*ui_scale()).round(),(y*ui_scale()).round()),None);
+                    let source=icon.or(item.pixels.as_deref());
+                    if let Some(image)=source {
+                        // Template-like (one-colour) icons take the bar's text colour; a
+                        // coloured one that would vanish into the wallpaper gets a soft chip
+                        let size=(18.0*ui_scale()).round().max(1.0);
+                        if let Some(mut tile)=tiny_skia::Pixmap::new(size as u32,size as u32) {
+                            tile.draw_pixmap(0,0,image.as_ref(),&tiny_skia::PixmapPaint{quality:tiny_skia::FilterQuality::Bilinear,..Default::default()},tiny_skia::Transform::from_scale(size/image.width() as f32,size/image.height() as f32),None);
+                            if adapt_tray_icon(&mut tile,bar.text,bar.dark) {
+                                fill_rounded_rect(&mut pm,x-3.0,y-2.0,24.0,22.0,7.0,bar.chip);
+                            }
+                            pm.draw_pixmap((x*ui_scale()).round() as i32,(y*ui_scale()).round() as i32,tile.as_ref(),&tiny_skia::PixmapPaint::default(),tiny_skia::Transform::identity(),None);
+                        }
                     }else{
-                        crate::theme::stroke_circle(&mut pm,x+9.0,y+9.0,6.0,1.3,p.menubar_text);
+                        crate::theme::stroke_circle(&mut pm,x+9.0,y+9.0,6.0,1.3,bar.text);
                         let label=item.title.chars().next().unwrap_or('•').to_string();
-                        fonts.draw_text_centered(&mut pm,&label,x+9.0,y+2.0,10.0,p.menubar_text,false);
+                        fonts.draw_text_centered(&mut pm,&label,x+9.0,y+2.0,10.0,bar.text,false);
                     }
                     if item.attention{fill_circle(&mut pm,x+17.0,y+2.0,2.0,p.accent);}
                     hits.push((rx-28.0,rx,TopbarItem::Tray(index)));rx-=28.0;
                 }
                 if tray.len()>visible_tray {
                     let label=format!("+{}",tray.len()-visible_tray);
-                    fonts.draw_text_centered(&mut pm,&label,rx-14.0,text_y,11.0,p.menubar_text,false);
+                    fonts.draw_text_centered(&mut pm,&label,rx-14.0,text_y,11.0,bar.text,false);
                     hits.push((rx-30.0,rx,TopbarItem::TrayOverflow));
                 }
             }
@@ -3380,6 +3474,37 @@ mod appmenu_tests {
         shell.dnd_schedule = None;
         assert!(shell.update_dnd_schedule(23 * 60) && !shell.dnd_active());
         assert_eq!(dnd_window_label((22 * 60, 7 * 60)), "22:00 – 7:00");
+    }
+
+    #[test]
+    fn menu_bar_follows_the_wallpaper_and_tray_icons_stay_visible() {
+        let mut glass = tiny_skia::Pixmap::new(40, 30).unwrap();
+        glass.fill(tiny_skia::Color::from_rgba8(20, 30, 60, 255));
+        assert!(bar_luma(&glass, 900) < 0.2, "a dark wallpaper is dark");
+        glass.fill(tiny_skia::Color::from_rgba8(240, 235, 250, 255));
+        assert!(bar_luma(&glass, 900) > 0.8);
+        // A bright strip below the bar does not count
+        let mut mixed = tiny_skia::Pixmap::new(40, 30).unwrap();
+        mixed.fill(tiny_skia::Color::from_rgba8(15, 15, 30, 255));
+        mixed.fill_rect(tiny_skia::Rect::from_xywh(0.0, 3.0, 40.0, 27.0).unwrap(), &tiny_skia::Paint { shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::WHITE), ..Default::default() }, tiny_skia::Transform::identity(), None);
+        assert!(bar_luma(&mixed, 900) < 0.2);
+
+        let dark = BarColors::for_background(true);
+        let light = BarColors::for_background(false);
+        assert!(dark.text.red() > 0.9 && light.text.red() < 0.1);
+        // A white symbolic icon on a light bar takes the dark text colour
+        let mut white = tiny_skia::Pixmap::new(8, 8).unwrap();
+        white.fill(tiny_skia::Color::WHITE);
+        assert!(!adapt_tray_icon(&mut white, light.text, false));
+        assert!(white.data()[0] < 10 && white.data()[3] > 200, "recoloured to black");
+        // A coloured icon close to the bar's brightness gets a chip, a contrasting one not
+        let mut yellow = tiny_skia::Pixmap::new(8, 8).unwrap();
+        yellow.fill(tiny_skia::Color::from_rgba8(250, 220, 40, 255));
+        assert!(adapt_tray_icon(&mut yellow.clone(), light.text, false));
+        assert!(!adapt_tray_icon(&mut yellow, dark.text, true));
+        assert_eq!(&yellow.data()[..3], &[250, 220, 40], "coloured icons keep their colours");
+        let mut empty = tiny_skia::Pixmap::new(8, 8).unwrap();
+        assert!(!adapt_tray_icon(&mut empty, light.text, false));
     }
 
     #[test]

@@ -36,9 +36,6 @@ pub fn scale_transform() -> Transform {
 
 /// Semantic colours of the system UI (macOS Tahoe look)
 pub struct Palette {
-    pub menubar_tint: Color,
-    pub menubar_text: Color,
-    pub menubar_highlight: Color,
     pub glass_fill: Color,
     pub glass_fill_strong: Color,
     pub glass_edge: Color,
@@ -67,9 +64,6 @@ pub struct Palette {
 pub fn palette() -> Palette {
     match appearance() {
         Appearance::Light => Palette {
-            menubar_tint: rgba(255, 255, 255, 70),
-            menubar_text: rgba(0, 0, 0, 225),
-            menubar_highlight: rgba(0, 0, 0, 28),
             glass_fill: rgba(246, 246, 248, 175),
             glass_fill_strong: rgba(250, 250, 252, 212),
             glass_edge: rgba(255, 255, 255, 210),
@@ -95,9 +89,6 @@ pub fn palette() -> Palette {
             shadow_strength: 1.0,
         },
         Appearance::Dark => Palette {
-            menubar_tint: rgba(0, 0, 0, 70),
-            menubar_text: rgba(255, 255, 255, 235),
-            menubar_highlight: rgba(255, 255, 255, 40),
             glass_fill: rgba(38, 38, 42, 185),
             glass_fill_strong: rgba(44, 44, 48, 215),
             glass_edge: rgba(255, 255, 255, 46),
