@@ -6,6 +6,7 @@ mod cursor;
 mod desktop;
 mod tray;
 mod notifications;
+mod xwayland;
 mod debug_checks;
 use feather_ui::cpu_profile;
 mod drm_backend;
@@ -145,6 +146,7 @@ pub struct FeatherCompositor {
     pub appmenus: crate::appmenu::AppMenus,
     pub tray: Option<crate::tray::Tray>,
     pub notifications: Option<crate::notifications::Notifications>,
+    pub xwayland: Option<crate::xwayland::Xwayland>,
     pub controls: Option<crate::controls::Controls>,
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
@@ -1649,6 +1651,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         appmenus,
         tray: None,
         notifications: None,
+        xwayland: None,
         pending_autostart,
         idle_frame_timer_armed: false,
         frame_pending: false,
@@ -1747,6 +1750,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.controls=Some(crate::controls::Controls::new(&state.loop_handle)?);
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_TRAY").is_some() {
         state.tray=Some(crate::tray::Tray::new(&state.loop_handle)?);
+    }
+    // X11 programs: our own display, satellite only once an X client connects.
+    // FEATHER_XWAYLAND=0 turns it off; =1 enables it in a nested run.
+    let xwayland = std::env::var("FEATHER_XWAYLAND").ok();
+    if xwayland.as_deref() != Some("0") && (is_standalone || use_drm || xwayland.as_deref() == Some("1")) {
+        state.start_xwayland(is_standalone || use_drm);
     }
     // Nested runs share the host's session bus: they never serve its notifications.
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_NOTIFY").is_some() {

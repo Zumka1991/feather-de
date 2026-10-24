@@ -423,6 +423,12 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
     if let Some((theme, size)) = CURSOR_ENV.lock().unwrap().clone() {
         command.env("XCURSOR_THEME", theme).env("XCURSOR_SIZE", size.to_string());
     }
+    // X programs go to our XWayland, never to a host X server of a nested run
+    match crate::xwayland::display() {
+        Some(display) => { command.env("DISPLAY", display); }
+        None if std::env::var_os("FEATHER_XWAYLAND").is_some() => { command.env_remove("DISPLAY"); }
+        None => {}
+    }
     command
         .arg("-c")
         .arg(trimmed)
