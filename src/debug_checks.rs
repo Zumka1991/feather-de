@@ -53,6 +53,164 @@ fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
     crate::monitors::install_checks(state)?;
+    if std::env::var_os("FEATHER_DEBUG_SWITCHER").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only { return Err("switcher check requires isolated windowed input".into()); }
+        fn fixture(s: &mut FeatherCompositor, specs: &[(&str,u32,bool)]) -> Vec<u64> {
+            s.release_all_input();s.shell.switcher=None;s.shell.close_menus();s.windows.clear();
+            s.spaces=crate::spaces::Spaces {current:0,count:2};
+            let mut ids=Vec::new();
+            for (i,(app,space,minimized)) in specs.iter().enumerate() {
+                let id=s.next_win_id;s.next_win_id+=1;
+                let mut w=crate::window::ManagedWindow::new_builtin(id,crate::apps::BuiltinWindowKind::QuickNotes,120+i as i32*80,100+i as i32*50);
+                w.app_id=(*app).into();w.title=format!("Switcher fixture {app} #{id}");w.space=*space;w.minimized=*minimized;
+                s.windows.push(w);ids.push(id);
+            }
+            s.apply_space_visibility();s.refresh_focus();s.needs_redraw=true;ids
+        }
+        fn front(s: &FeatherCompositor) -> u64 { s.windows.iter().rev().find(|w|w.is_visible()).unwrap().id }
+        fn begin(s: &mut FeatherCompositor) { s.debug_keyboard_key(56,true);tap(s,15); }
+        fn finish(s: &mut FeatherCompositor) { s.debug_keyboard_key(56,false); }
+        at(state,1200,|s| {
+            let ids=fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",1,false)]);
+            assert_eq!(front(s),ids[1]);
+            begin(s);finish(s);assert_eq!(front(s),ids[2],"current app must anchor selection ahead of a hidden desktop's top window");
+            begin(s);finish(s);assert_eq!(front(s),ids[1],"quick Alt+Tab returns to the previous app");
+            s.debug_keyboard_key(42,true);begin(s);finish(s);s.debug_keyboard_key(42,false);
+            assert_eq!(front(s),ids[0],"Shift before Alt must reverse even with Alt+Shift layout switching");
+            // Same chord in the opposite physical order: XKB consumes Shift instead.
+            let reverse_ids=fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",1,false)]);
+            s.debug_keyboard_key(56,true);s.debug_keyboard_key(42,true);tap(s,15);
+            s.debug_keyboard_key(42,false);
+            assert!(s.shell.switcher.is_some(),"releasing Shift must not commit while Alt is held");
+            finish(s);assert_eq!(front(s),reverse_ids[0],"Alt before Shift must also reverse");
+            eprintln!("[feather-switcher-check] current desktop/MRU/forward/reverse/both modifier orders: ok");
+        })?;
+        at(state,2000,|s| {
+            let ids=fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false)]);
+            for n in 0..32 {begin(s);finish(s);assert_eq!(front(s),ids[n%2],"rapid switching must not drift");}
+            assert!(s.shell.switcher.is_none());
+            s.debug_keyboard_key(56,true);s.debug_keyboard_key(15,true);s.debug_keyboard_key(56,false);
+            assert!(s.shell.switcher.is_none());assert!(!s.shell.switcher_keys.is_empty());
+            let selected=front(s);s.debug_keyboard_key(15,false);assert!(s.shell.switcher_keys.is_empty());assert_eq!(front(s),selected);
+            eprintln!("[feather-switcher-check] 32 rapid alternations/Alt-before-Tab release: ok");
+        })?;
+        at(state,2040,|s| { begin(s); })?;
+        at(state,2060,|s| { assert!(!s.shell.switcher.as_ref().unwrap().visible,"a previous invocation's timer must not reveal this panel early"); })?;
+        at(state,2120,|s| {
+            assert!(s.shell.switcher.as_ref().unwrap().visible);tap(s,1);finish(s);assert!(s.shell.switcher.is_none());
+            eprintln!("[feather-switcher-check] timer ownership/cancel: ok");
+        })?;
+        at(state,2600,|s| {
+            let ids=fixture(s,&[("fixture.unknown",0,false),("fixture.unknown",0,false),("builtin.monitor",0,false)]);
+            begin(s);s.windows.retain(|w|w.id!=ids[0]);s.refresh_focus();finish(s);
+            assert_eq!(front(s),ids[1],"closing an unknown app's first window must not invalidate the remaining selected window");
+            eprintln!("[feather-switcher-check] unknown app identity after close: ok");
+        })?;
+        at(state,3200,|s| {
+            let ids=fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false)]);
+            begin(s);s.windows.retain(|w|w.id!=ids[0]);s.refresh_focus();finish(s);
+            assert_eq!(s.windows.len(),1,"a closed selection must not relaunch its application");assert_eq!(front(s),ids[1]);
+            eprintln!("[feather-switcher-check] closed selection does not relaunch: ok");
+        })?;
+        at(state,3800,|s| {
+            let ids=fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false)]);
+            begin(s);s.release_all_input();assert!(s.shell.switcher.is_none(),"losing host focus must cancel the switcher");
+            tap(s,30);assert_eq!(front(s),ids[1],"an unrelated key must not commit a stale switcher");
+            eprintln!("[feather-switcher-check] focus loss/unrelated key: ok");
+        })?;
+        at(state,4500,|s| {
+            let ids=fixture(s,&[("builtin.about",1,true),("builtin.monitor",0,false)]);
+            begin(s);finish(s);assert_eq!(front(s),ids[0],"a minimized window on another desktop must become visible");
+            assert!(!s.windows.iter().find(|w|w.id==ids[0]).unwrap().minimized);
+            eprintln!("[feather-switcher-check] minimized window on another desktop: ok");
+        })?;
+        at(state,5200,|s| {
+            fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",0,false)]);
+            begin(s);
+        })?;
+        at(state,5600,|s| {
+            assert!(s.shell.switcher.as_ref().unwrap().visible);
+            eprintln!("[feather-switcher-check] complete: ok");
+        })?;
+        at(state,6500,|s| {tap(s,1);finish(s);})?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_AUDIO_SETTINGS").is_some() {
+        use crate::{controls::Control as C, system_settings::{Action as A, Page}};
+        if state.backend.is_drm() || !state.debug_input_only { return Err("audio settings check requires isolated windowed input".into()); }
+        fn click(s: &mut FeatherCompositor, predicate: impl Fn(&A) -> bool) {
+            let w = s.windows.iter().find(|w| w.app_id=="builtin.settings").unwrap();
+            let (width,height)=(w.width as f32,w.height as f32);
+            let (_,y)=s.system_settings.debug_point(width,height,&s.settings_context(),&predicate).unwrap();
+            s.system_settings.scroll += (y-height*0.6).max(0.0);
+            let (x,y)=s.system_settings.debug_point(width,height,&s.settings_context(),&predicate).unwrap();
+            let w=s.windows.iter().find(|w| w.app_id=="builtin.settings").unwrap();
+            let (gx,gy)=(w.x as f64+x as f64,(w.y+w.titlebar_h()) as f64+y as f64);
+            assert!(y>12.0 && y<height-20.0);
+            s.debug_pointer_motion(gx,gy);
+            s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);
+        }
+        at(state,1200,|s| {
+            assert_eq!(s.shell.cc.audio.sources.len(),2,"output monitors are excluded");
+            s.apply_system_setting(A::Page(Page::Sound));
+        })?;
+        at(state,1700,|s| { click(s,|a| matches!(a,A::Audio(C::Input(name)) if name=="usb mic")); })?;
+        at(state,2400,|s| {
+            assert_eq!(s.shell.cc.audio.default_source,"usb mic");
+            click(s,|a| matches!(a,A::Audio(C::InputVolume { .. })));
+        })?;
+        at(state,3100,|s| {
+            assert!((s.shell.cc.audio.current_source().unwrap().volume()-0.5).abs()<0.001);
+            click(s,|a| matches!(a,A::Audio(C::InputMute { .. })));
+            let w=s.windows.iter().find(|w| w.app_id=="builtin.settings").unwrap();
+            let (x,y)=s.system_settings.debug_point(w.width as f32,w.height as f32,&s.settings_context(),|a| matches!(a,A::Audio(C::InputVolume { .. }))).unwrap();
+            let (gx,gy)=(w.x as f64+x as f64,(w.y+w.titlebar_h()) as f64+y as f64);
+            s.debug_pointer_motion(gx,gy);s.debug_pointer_button(0x110,true);
+            for step in 1..=20 { s.debug_pointer_motion(gx+step as f64*2.0,gy); }
+            assert!(s.system_settings.audio_sent_volume.is_some_and(|v| v>0.55),"slow drag must enqueue intermediate commands");
+            eprintln!("[feather-microphone-check] slow drag commands queued before release: ok");
+        })?;
+        at(state,4500,|s| {
+            assert!(s.shell.cc.audio.current_source().unwrap().volume()>0.51,"slow drag must apply before release");
+            assert!(s.system_settings.audio_drag.is_some());
+            s.debug_pointer_button(0x110,false);
+            assert!(s.system_settings.audio_drag.is_none());
+        })?;
+        at(state,5100,|s| {
+            let mic=s.shell.cc.audio.current_source().unwrap();
+            assert!(mic.muted && mic.volume()>0.55 && mic.volume()<0.7);
+            eprintln!("[feather-microphone-check] selection/volume/mute/recording-move: ok");
+        })?;
+        at(state,6400,|s| {
+            click(s,|a| matches!(a,A::Audio(C::InputMute { .. })));
+        })?;
+        at(state,6700,|s| {
+            assert!(s.system_settings.error.is_some(),"a new snapshot must not erase a failed command");
+            eprintln!("[feather-microphone-check] command error survives snapshot: ok");
+            let audio=s.settings_context().audio;
+            assert_eq!(audio.default_source,"builtin mic");
+            assert!((audio.current_source().unwrap().volume()-0.25).abs()<0.001);
+            assert!(audio.current_source().unwrap().unplugged);
+            s.apply_system_setting(A::Page(Page::Sound));
+            assert!(s.system_settings.error.is_none(),"an explicit action clears the command error");
+            eprintln!("[feather-microphone-check] external changes: ok");
+        })?;
+        at(state,7900,|s| {
+            assert!(s.settings_context().audio.sources.is_empty());
+            assert!(s.shell.cc.audio.current().is_some(),"playback survives input removal");
+            eprintln!("[feather-microphone-check] unplug: ok");
+        })?;
+        at(state,9100,|s| {
+            assert!(s.settings_context().audio.input_error.is_some());
+            assert!(s.shell.cc.audio.current().is_some());
+            eprintln!("[feather-microphone-check] input error: ok");
+        })?;
+        at(state,10400,|s| {
+            assert_eq!(s.settings_context().audio.current_source().unwrap().name,"usb mic");
+            assert!(s.shell.cc.audio.input_error.is_none());
+            eprintln!("[feather-microphone-check] reconnect: ok");
+            eprintln!("[feather-microphone-check] complete: ok");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_AUDIO_KEYS").is_some() {
         if state.backend.is_drm() || !state.debug_input_only {return Err("audio key check requires isolated windowed input".into());}
         let level = Rc::new(Cell::new(0.0f32));

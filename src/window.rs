@@ -1300,6 +1300,7 @@ mod settings_tests {
                 dnd: false,
                 dnd_schedule: None,
                 notify_sounds: true,
+                audio: Default::default(),
                 hot_corners: Default::default(),
                 night: Default::default(),
                 night_active: false,

@@ -795,7 +795,7 @@ mod tests {
                 channels: vec![32768],
                 ..Default::default()
             }],
-            error: None,
+            ..Default::default()
         };
         panel.start_slider(R::new(10., 10., 200., 20.), 20.);
         panel.motion(160.);
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn hardware_keys_supersede_slider_preview_but_keep_brightness_drag() {
         let mut panel=Panel::default();
-        let actual=Audio {default:"out".into(),sinks:vec![crate::controls::Sink {name:"out".into(),channels:vec![32768],..Default::default()}],error:None};
+        let actual=Audio {default:"out".into(),sinks:vec![crate::controls::Sink {name:"out".into(),channels:vec![32768],..Default::default()}],..Default::default()};
         panel.audio=actual.clone();panel.start_slider(R::new(0.0,0.0,100.0,20.0),80.0);panel.release();
         assert_eq!(panel.volume(),0.8);
         panel.keyboard_audio_updated(actual.clone());assert_eq!(panel.volume(),0.5);
@@ -904,7 +904,7 @@ mod tests {
                     channels: vec![40000, 40000],
                     ..Default::default()
                 }],
-                error: None,
+                ..Default::default()
             };
             let mut fonts = FontSystem::new();
             for (name, page) in [

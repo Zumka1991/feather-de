@@ -19,9 +19,10 @@ pub enum Page {
     DateTime,
     Power,
     Notifications,
+    Sound,
 }
 impl Page {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Appearance,
         Self::Keyboard,
         Self::Pointer,
@@ -31,6 +32,7 @@ impl Page {
         Self::DateTime,
         Self::Power,
         Self::Notifications,
+        Self::Sound,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -42,6 +44,7 @@ impl Page {
             Self::Defaults => "Приложения",
             Self::DateTime => "Дата и время",
             Self::Power => "Экран блокировки и энергосбережение",
+            Self::Sound => "Звук",
             Self::Notifications => "Уведомления",
         }
     }
@@ -55,6 +58,7 @@ impl Page {
             Self::Defaults => "Выберите приложения для повседневных задач.",
             Self::DateTime => "Синхронизация часов и часовой пояс.",
             Self::Power => "Пароль, выключение экрана и переход в сон.",
+            Self::Sound => "Устройства вывода и микрофоны, громкость и запись.",
             Self::Notifications => "Баннеры, центр уведомлений и «Не беспокоить».",
         }
     }
@@ -68,6 +72,7 @@ pub enum Action {
     DndSchedule,
     DndWindow,
     NotifySounds,
+    Audio(crate::controls::Control),
     /// Next action of this corner (0 top-left … 3 bottom-right)
     HotCorner(usize),
     NightNow,
@@ -162,6 +167,8 @@ pub struct Panel {
     pub confirming: bool,
     pub queued_mode: Option<(usize, bool)>,
     pub scroll: f32,
+    pub audio_drag: Option<(R, crate::controls::Control)>,
+    pub audio_sent_volume: Option<f32>,
 }
 pub struct Context<'a> {
     pub system: crate::system_preferences::State,
@@ -185,6 +192,7 @@ pub struct Context<'a> {
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
+    pub audio: crate::controls::Audio,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
     pub night_active: bool,
@@ -215,6 +223,7 @@ pub struct FrameJob {
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
+    pub audio: crate::controls::Audio,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
     pub night_active: bool,
@@ -255,6 +264,7 @@ impl FrameJob {
             dnd: c.dnd,
             dnd_schedule: c.dnd_schedule,
             notify_sounds: c.notify_sounds,
+            audio: c.audio.clone(),
             hot_corners: c.hot_corners,
             night: c.night,
             night_active: c.night_active,
@@ -287,6 +297,7 @@ impl FrameJob {
             dnd: self.dnd,
             dnd_schedule: self.dnd_schedule,
             notify_sounds: self.notify_sounds,
+            audio: self.audio.clone(),
             hot_corners: self.hot_corners,
             night: self.night,
             night_active: self.night_active,
@@ -299,7 +310,7 @@ const TOOLBAR_CLIP: f32 = 12.0;
 /// Sidebar groups, like the sections of macOS System Settings.
 const SIDEBAR: [&[Page]; 3] = [
     &[Page::Appearance, Page::Desktop, Page::Displays],
-    &[Page::Keyboard, Page::Pointer],
+    &[Page::Keyboard, Page::Pointer, Page::Sound],
     &[Page::Notifications, Page::Defaults, Page::DateTime, Page::Power],
 ];
 fn side_width(w: f32) -> f32 {
@@ -324,6 +335,7 @@ enum Style {
     Segment(bool),
     /// Value 0…1; the click position decides the new value
     Slider(f32),
+    Volume(f32),
     Push(bool),
     Popup,
     Mini,
@@ -437,6 +449,7 @@ fn page_color(page: Page) -> (tiny_skia::Color, tiny_skia::Color) {
         Page::Displays => (rgba(70, 175, 255, 255), rgba(20, 115, 235, 255)),
         Page::Desktop => (rgba(80, 200, 245, 255), rgba(20, 140, 220, 255)),
         Page::Defaults => (rgba(150, 120, 255, 255), rgba(100, 70, 225, 255)),
+        Page::Sound => (rgba(255, 130, 150, 255), rgba(220, 60, 100, 255)),
         Page::Power => (rgba(90,165,220,255),rgba(45,95,175,255)),
         Page::Notifications => (rgba(255, 92, 86, 255), rgba(236, 52, 62, 255)),
         Page::DateTime => (rgba(255, 105, 105, 255), rgba(225, 55, 70, 255)),
@@ -497,6 +510,19 @@ fn draw_page_icon(pm: &mut PixmapMut, page: Page, x: f32, y: f32, size: f32) {
             stroke_rounded_rect(pm, x0, y0, 14.0 * k, 10.0 * k, 2.0 * k, 1.2 * k, white);
             let (a, b) = pt(7.0, 16.0);
             stroke_line(pm, a, b, a + 6.0 * k, b, 1.2 * k, white);
+        }
+        Page::Sound => {
+            let (mx, my) = pt(7.0, 3.0);
+            stroke_rounded_rect(pm, mx, my, 6.0*k, 9.0*k, 3.0*k, 1.4*k, white);
+            let (cx, cy) = pt(10.0, 10.0);
+            stroke_circle(pm, cx, cy, 5.0*k, 1.2*k, white);
+            // Cover the upper half of the outer ring with the tile gradient.
+            if let Some(path) = rounded_rect_path(x+3.5*k, y+3.0*k, 13.0*k, 6.0*k, 0.0) {
+                fill_path_gradient(pm, &path, y, y+size, top, bottom);
+            }
+            stroke_rounded_rect(pm, mx, my, 6.0*k, 9.0*k, 3.0*k, 1.4*k, white);
+            stroke_line(pm, cx, cy+5.0*k, cx, cy+8.0*k, 1.3*k, white);
+            stroke_line(pm, cx-3.0*k, cy+8.0*k, cx+3.0*k, cy+8.0*k, 1.3*k, white);
         }
         Page::Power => {
             let (x0,y0)=pt(4.0,9.0);
@@ -652,6 +678,51 @@ impl Panel {
         let right = |r: R, w: f32, h: f32| R::new(r.x + r.w - 14.0 - w, r.y + (r.h - h) / 2.0, w, h);
         let kb = !self.keyboard_busy;
         match self.page {
+            Page::Sound => {
+                use crate::controls::Control as Audio;
+                l.hero(Page::Sound);
+                for input in [true, false] {
+                    l.header(if input { "Микрофон" } else { "Вывод звука" });
+                    let audio = &c.audio;
+                    let (devices, default, current, error) = if input {
+                        (&audio.sources, &audio.default_source, audio.current_source(), &audio.input_error)
+                    } else { (&audio.sinks, &audio.default, audio.current(), &audio.error) };
+                    if let Some(error) = error { l.footer(error); }
+                    if devices.is_empty() {
+                        l.footer(if input { "Микрофоны не найдены. Подключите устройство записи." } else { "Устройства вывода не найдены." });
+                    } else {
+                        l.begin();
+                        for device in devices {
+                            let selected = device.name == *default;
+                            let detail = match (selected, device.unplugged) {
+                                (true, true) => "Выбрано · разъём не подключён",
+                                (false, true) => "Разъём не подключён",
+                                (true, false) => "Выбрано",
+                                (false, false) => "Нажмите, чтобы выбрать",
+                            };
+                            l.row(52.0, &device.label, detail.into(), Style::Row,
+                                Some(Action::Audio(if input { Audio::Input(device.name.clone()) } else { Audio::Output(device.name.clone()) })));
+                        }
+                        l.end();
+                        if let Some(device) = current {
+                            l.begin();
+                            let r = l.row(94.0, if input { "Уровень записи" } else { "Громкость" },
+                                format!("{} %", (self.audio_volume(device, input)*100.0).round() as u32), Style::Row, None);
+                            l.push(R::new(r.x+14.0, r.y+55.0, r.w-28.0, 26.0), "", Style::Volume(self.audio_volume(device, input).clamp(0.0, 1.0)),
+                                Some(Action::Audio(if input { Audio::InputVolume { source: device.name.clone(), value: 0.0 } }
+                                    else { Audio::Volume { sink: device.name.clone(), value: 0.0 } })));
+                            l.row(48.0, if input { "Выключить микрофон" } else { "Выключить звук" }, String::new(), Style::Toggle(device.muted),
+                                Some(Action::Audio(if input { Audio::InputMute { source: device.name.clone(), muted: !device.muted } }
+                                    else { Audio::Mute { sink: device.name.clone(), muted: !device.muted } })));
+                            l.end();
+                        } else { l.footer("Устройство по умолчанию недоступно. Выберите устройство из списка."); }
+                    }
+                }
+                l.footer("Уровень записи задаёт усиление микрофона. Изменение уровня сохраняет баланс каналов.");
+                l.begin();
+                l.row(48.0, "Обновить устройства", String::new(), Style::Row, Some(Action::Audio(Audio::RefreshAudio)));
+                l.end();
+            }
             Page::Power => {
                 l.hero(Page::Power);
                 l.begin();
@@ -1263,6 +1334,29 @@ impl Panel {
         }
         controls
     }
+    fn audio_volume(&self, device: &crate::controls::Sink, input: bool) -> f32 {
+        use crate::controls::Control;
+        match &self.audio_drag {
+            Some((_, Control::InputVolume { source, value })) if input && *source == device.name => *value,
+            Some((_, Control::Volume { sink, value })) if !input && *sink == device.name => *value,
+            _ => device.volume(),
+        }
+    }
+    pub fn audio_motion(&mut self, x: f32) -> Option<Action> {
+        use crate::controls::Control;
+        let (rect, command) = self.audio_drag.as_mut()?;
+        let value = ((x - rect.x - 10.0) / (rect.w - 20.0)).clamp(0.0, 1.0);
+        let current = match command { Control::InputVolume { value, .. } | Control::Volume { value, .. } => value, _ => return None };
+        let sent = *self.audio_sent_volume.get_or_insert(*current);
+        *current = value;
+        if (sent - value).abs() < 0.02 { return None; }
+        self.audio_sent_volume = Some(value);
+        Some(Action::Audio(command.clone()))
+    }
+    pub fn audio_release(&mut self) -> Option<Action> {
+        self.audio_sent_volume = None;
+        self.audio_drag.take().map(|(_, command)| Action::Audio(command))
+    }
     /// The control a click at the pointer would reach, if it does anything.
     fn hovered_index(&self, controls: &[Control], h: f32) -> Option<usize> {
         let (x, y) = self.pointer?;
@@ -1289,6 +1383,14 @@ impl Panel {
                 let t = ((x - control.rect.x - 10.0) / (control.rect.w - 20.0)).clamp(0.0, 1.0);
                 // Snap to tenths, like the tick marks.
                 Some(Action::PointerSpeed(((t as f64 * 2.0 - 1.0) * 10.0).round() / 10.0))
+            }
+            (Style::Volume(_), Some(Action::Audio(command))) => {
+                let value = ((x-control.rect.x-10.0)/(control.rect.w-20.0)).clamp(0.0, 1.0);
+                Some(Action::Audio(match command {
+                    crate::controls::Control::InputVolume { source, .. } => crate::controls::Control::InputVolume { source, value },
+                    crate::controls::Control::Volume { sink, .. } => crate::controls::Control::Volume { sink, value },
+                    other => other,
+                }))
             }
             (_, action) => action,
         }
@@ -1546,7 +1648,7 @@ impl Panel {
                 }
                 fonts.draw_text_clipped_centered(pm, &control.label, r.x + r.w / 2.0, r.y + (r.h - 12.0) / 2.0 - 1.0, r.w - 8.0, 12.0, fg, selected);
             }
-            Style::Slider(value) => {
+            Style::Slider(value) | Style::Volume(value) => {
                 let (tx, tw, cy) = (r.x + 10.0, r.w - 20.0, r.y + 10.0);
                 let rail = if dark { rgba(255, 255, 255, 40) } else { rgba(0, 0, 0, 24) };
                 for i in 0..=10 {
@@ -1559,8 +1661,10 @@ impl Panel {
                 fill_circle(pm, kx, cy + 0.5, 10.0, rgba(0, 0, 0, 30));
                 fill_circle(pm, kx, cy, 10.0, rgba(255, 255, 255, 255));
                 stroke_circle(pm, kx, cy, 10.0, 0.5, rgba(0, 0, 0, 40));
+                if matches!(control.style, Style::Slider(_)) {
                 fonts.draw_text(pm, "Медленно", tx, r.y + 25.0, 11.0, p.text_secondary, false);
                 fonts.draw_text_right(pm, "Быстро", tx + tw, r.y + 25.0, 11.0, p.text_secondary, false);
+                }
             }
             Style::Push(primary) => {
                 let fill = if primary { p.accent } else { push_fill };
@@ -1720,7 +1824,19 @@ impl Panel {
 }
 
 impl crate::FeatherCompositor {
-    pub fn settings_text_click(&mut self, action: &Action, x: f32, y: f32, w: f32, h: f32) {
+    pub fn settings_control_press(&mut self, action: &Action, x: f32, y: f32, w: f32, h: f32) {
+        if matches!(action, Action::Audio(crate::controls::Control::Volume { .. } | crate::controls::Control::InputVolume { .. })) {
+            if let Some(control) = self.system_settings.controls(w, h, &self.settings_context()).into_iter().rev()
+                .find(|c| matches!(c.style, Style::Volume(_)) && c.rect.contains(x, y)) {
+                if let Some(win) = self.windows.iter().find(|w| w.app_id == "builtin.settings") {
+                    let r = control.rect;
+                    if let Action::Audio(command) = action {
+                        self.system_settings.audio_sent_volume = None;
+                        self.system_settings.audio_drag = Some((R::new(r.x+win.x as f32, r.y+(win.y+win.titlebar_h()) as f32, r.w, r.h), command.clone()));
+                    }
+                }
+            }
+        }
         if !matches!(action, Action::EditTime | Action::ZoneSearchFocus) { return; }
         let Some(rect) = self.system_settings.text_rect(x, y, w, h, &self.settings_context()) else { return; };
         let input = if matches!(action, Action::ZoneSearchFocus) { &mut self.system_settings.zone_query } else { &mut self.system_settings.time_input };
@@ -1754,6 +1870,7 @@ impl crate::FeatherCompositor {
             dnd: self.shell.dnd_active(),
             dnd_schedule: self.shell.dnd_schedule,
             notify_sounds: self.shell.notify_sounds,
+            audio: self.shell.cc.audio.clone(),
             hot_corners: self.hot_corners.actions,
             night: self.night.prefs,
             night_active: self.night.active(),
@@ -1857,6 +1974,11 @@ impl crate::FeatherCompositor {
     pub fn apply_system_setting(&mut self, action: Action) {
         self.system_settings.error = None;
         match action {
+            Action::Audio(command) => {
+                if let Err(error) = self.controls.as_ref().ok_or("Служба звука недоступна").and_then(|c| c.send(command)) {
+                    self.system_settings.error = Some(error.into());
+                }
+            }
             Action::LockNow=>self.lock_session(),
             Action::DoNotDisturb => {
                 self.shell.toggle_dnd();
@@ -1966,10 +2088,14 @@ impl crate::FeatherCompositor {
                 self.system_settings.cursor_picker = false;
                 self.system_settings.zone_picker = false;
                 self.system_settings.time_editing = false;
+                self.system_settings.audio_drag = None;
                 self.system_settings.page = page;
                 self.system_settings.adding = false;
                 self.system_settings.scroll = 0.0;
                 self.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+                if page == Page::Sound {
+                    if let Some(controls) = &self.controls { let _ = controls.send(crate::controls::Control::RefreshAudio); }
+                }
                 if matches!(page, Page::Defaults | Page::DateTime | Page::Pointer) {
                     self.request_system_preference(crate::system_preferences::Command::Refresh);
                 }
@@ -2482,11 +2608,52 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            audio: Default::default(),
             hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
             night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
             night_active: true,
             notify_apps: &apps,
         };
+        let mut context = context;
+        context.audio = crate::controls::Audio {
+            default: "speakers".into(),
+            sinks: vec![crate::controls::Sink { name:"speakers".into(), label:"Встроенные динамики".into(), channels:vec![32768,32768], ..Default::default() }],
+            default_source: "builtin".into(),
+            sources: vec![
+                crate::controls::Sink {name:"builtin".into(),label:"Встроенный микрофон".into(),channels:vec![49152,24576],unplugged:true,..Default::default()},
+                crate::controls::Sink {name:"usb".into(),label:"USB · Студийный микрофон".into(),channels:vec![32768],..Default::default()},
+            ],
+            ..Default::default()
+        };
+        {
+            use crate::controls::Control as Audio;
+            let mut panel = Panel { page:Page::Sound, ..Default::default() };
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| c.detail.contains("разъём не подключён")));
+            let volume = controls.iter().find(|c| matches!(c.action, Some(Action::Audio(Audio::InputVolume { .. })))).unwrap();
+            let r = volume.rect;
+            for (fraction, expected) in [(0.0,0.0),(0.4,0.4),(1.0,1.0)] {
+                let action = panel.hit(r.x+10.0+(r.w-20.0)*fraction, r.y+10.0, 800.0,540.0,&context);
+                assert!(matches!(action, Some(Action::Audio(Audio::InputVolume { source, value })) if source=="builtin" && (value-expected).abs()<0.001));
+            }
+            panel.audio_drag = Some((r, Audio::InputVolume { source:"builtin".into(), value:0.5 }));
+            assert!(panel.audio_motion(r.x+r.w+100.0).is_some());
+            assert_eq!(panel.audio_volume(&context.audio.sources[0],true),1.0);
+            assert!(matches!(panel.audio_release(),Some(Action::Audio(Audio::InputVolume { value:1.0, .. }))));
+            assert!(panel.audio_motion(r.x).is_none());
+            panel.audio_drag = Some((r, Audio::InputVolume {source:"builtin".into(),value:0.2}));
+            let sent = (1..=20).filter_map(|step| panel.audio_motion(r.x+10.0+(r.w-20.0)*(0.2+step as f32*0.005))).count();
+            assert!(sent>=3,"slow motion must compare against the last command, not the preceding pointer event");
+            assert!(panel.audio_release().is_some());
+            assert!(panel.audio_sent_volume.is_none());
+            let audio = std::mem::take(&mut context.audio);
+            context.audio.input_error=Some("Звуковая служба недоступна".into());
+            let controls = panel.controls(800.0,540.0,&context);
+            assert!(controls.iter().any(|c| c.label.contains("Микрофоны не найдены")));
+            assert!(controls.iter().any(|c| c.label=="Звуковая служба недоступна"));
+            assert!(!controls.iter().any(|c| matches!(c.action,Some(Action::Audio(Audio::InputVolume { .. } | Audio::InputMute { .. } | Audio::Input(_))))));
+            context.audio=audio;
+        }
         let mut fonts = FontSystem::new();
         for scale in [1.0, 1.25, 2.0] {
             for dark in [false, true] {
@@ -2593,6 +2760,7 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            audio: Default::default(),
             hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
             night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
             night_active: true,

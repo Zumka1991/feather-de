@@ -157,7 +157,21 @@ impl FeatherCompositor {
         let mut deferred: Option<KeyAction> = None;
 
         let keyboard = self.keyboard.clone();
+        // grp:alt_shift_toggle turns the second modifier into ISO_Next_Group and
+        // can hide Alt/Shift from XKB's logical modifiers. Read physical keys BEFORE
+        // input takes its mutex; account for this event, which is not applied yet.
+        // Right Alt keeps its logical meaning (it may be AltGr).
+        let held = keyboard.pressed_keys();
+        let down = |evdev: u32| {
+            let code: smithay::input::keyboard::Keycode = (evdev + 8).into();
+            if code == keycode { key_state == KeyState::Pressed } else { held.contains(&code) }
+        };
+        let switcher_alt = down(56);
+        let switcher_shift = down(42) || down(54);
         keyboard.input::<(), _>(self, keycode, key_state, serial, time, |st, mods, keysym_handle| {
+            if key_state==KeyState::Released && st.shell.switcher_keys.remove(&keycode) {
+                return FilterResult::Intercept(());
+            }
             let repeat_sym = keysym_handle.modified_sym();
             let repeat_latin = keysym_handle.raw_latin_sym_or_raw_current_sym().unwrap_or(repeat_sym);
             if key_state == KeyState::Pressed {
@@ -221,7 +235,7 @@ impl FeatherCompositor {
             if st.shell.switcher.is_some() {
                 let sym = keysym_handle.modified_sym().raw();
                 if key_state == KeyState::Released {
-                    if !mods.alt && !mods.logo {
+                    if !mods.alt && !switcher_alt && !mods.logo {
                         deferred = Some(KeyAction::SwitcherCommit);
                         // If focus moves to another app, the old one must not see a lone Alt
                         // release (Firefox & co. would open their menu bar); it gets
@@ -244,10 +258,13 @@ impl FeatherCompositor {
                         _ => FilterResult::Forward,
                     };
                 }
+                if matches!(sym,keysyms::KEY_Tab|keysyms::KEY_ISO_Left_Tab|keysyms::KEY_Right|keysyms::KEY_grave|keysyms::KEY_Left|keysyms::KEY_Escape|keysyms::KEY_Return) {
+                    st.shell.switcher_keys.insert(keycode);
+                }
                 match sym {
                     keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab => {
                         deferred = Some(KeyAction::SwitcherStep {
-                            reverse: mods.shift || sym == keysyms::KEY_ISO_Left_Tab,
+                            reverse: mods.shift || switcher_shift || sym == keysyms::KEY_ISO_Left_Tab,
                         });
                     }
                     keysyms::KEY_Right | keysyms::KEY_grave => {
@@ -296,11 +313,12 @@ impl FeatherCompositor {
                     return FilterResult::Intercept(());
                 }
             }
-            if key_state == KeyState::Pressed && (mods.alt || mods.logo) {
+            if key_state == KeyState::Pressed && (mods.alt || switcher_alt || mods.logo) {
                 let raw = keysym_handle.modified_sym().raw();
                 if raw == keysyms::KEY_Tab || raw == keysyms::KEY_ISO_Left_Tab {
+                    st.shell.switcher_keys.insert(keycode);
                     deferred = Some(KeyAction::SwitcherStep {
-                        reverse: mods.shift || raw == keysyms::KEY_ISO_Left_Tab,
+                        reverse: mods.shift || switcher_shift || raw == keysyms::KEY_ISO_Left_Tab,
                     });
                     return FilterResult::Intercept(());
                 }
@@ -436,6 +454,8 @@ impl FeatherCompositor {
             Some(KeyAction::Screenshot { .. }) => self.take_screenshot(crate::screenshot::Target::Screen),
             Some(KeyAction::SwitcherCancel) => {
                 self.shell.switcher = None;
+                self.pointer_focus_dirty = true;
+                self.needs_redraw = true;
             }
             Some(KeyAction::Shell(act)) => self.execute_shell_action(act),
             Some(KeyAction::CloseTop) => self.close_top_window(),
@@ -553,6 +573,7 @@ impl FeatherCompositor {
     fn switcher_step(&mut self, reverse: bool) {
         if self.shell.switcher.is_some() {
             self.shell.switcher_step(if reverse { -1 } else { 1 });
+            if let Some(sw)=self.shell.switcher.as_mut() { sw.pointer_anchor=Some((self.pointer_location.x,self.pointer_location.y)); }
             return;
         }
         let items = self.switcher_items();
@@ -561,10 +582,12 @@ impl FeatherCompositor {
         }
         self.shell.close_menus();
         self.shell.open_switcher(items, reverse);
+        let opened_at=self.shell.switcher.as_ref().unwrap().opened_at;
+        self.shell.switcher.as_mut().unwrap().pointer_anchor=Some((self.pointer_location.x,self.pointer_location.y));
         let _ = self.loop_handle.insert_source(
             smithay::reexports::calloop::timer::Timer::from_duration(SWITCHER_SHOW_DELAY),
-            |_, _, state| {
-                if let Some(sw) = state.shell.switcher.as_mut() {
+            move |_, _, state| {
+                if let Some(sw) = state.shell.switcher.as_mut().filter(|sw|sw.opened_at==opened_at) {
                     sw.visible = true;
                     state.shell.switcher_dirty = true;
                     state.needs_redraw = true;
@@ -579,7 +602,7 @@ impl FeatherCompositor {
         let Some(sw) = self.shell.switcher.as_ref() else {
             return false;
         };
-        let target = sw.items.get(sw.selected).map(|i| i.key);
+        let target = sw.items.get(sw.selected).and_then(|item| self.windows.iter().find(|w|w.mapped && w.id==item.window_id)).map(|w|self.app_key(w));
         let current = self
             .windows
             .iter()
@@ -590,11 +613,14 @@ impl FeatherCompositor {
     }
 
     fn switcher_commit(&mut self) {
-        self.unfocus_desktop();
-        if let Some(sw) = self.shell.switcher.take() {
-            if let Some(item) = sw.items.get(sw.selected) {
-                self.activate_app(item.key);
-            }
+        // Resolve through a live window: unknown-app group ids and registry indices can
+        // change while Alt is held. A closed selection must never launch an application.
+        let target=self.shell.switcher.as_ref().and_then(|sw|sw.items.get(sw.selected))
+            .and_then(|item| self.windows.iter().find(|w|w.mapped && w.id==item.window_id))
+            .map(|w|self.app_key(w));
+        if self.shell.switcher.take().is_some() {
+            self.pointer_focus_dirty=true;self.needs_redraw=true;
+            if let Some(key)=target {self.unfocus_desktop();self.activate_app(key);}
         }
     }
 
@@ -715,10 +741,19 @@ impl FeatherCompositor {
         }
 
         if self.shell.switcher.as_ref().is_some_and(|s|s.visible){
-            if let Some(index)=self.shell.switcher_hit(pos.x,pos.y){
+            let intentional=self.shell.switcher.as_mut().unwrap().allow_pointer(pos.x,pos.y);
+            if let Some(index)=intentional.then(||self.shell.switcher_hit(pos.x,pos.y)).flatten(){
                 if let Some(sw)=self.shell.switcher.as_mut(){if sw.selected!=index{sw.selected=index;self.shell.switcher_dirty=true;self.needs_redraw=true;}}
             }
             self.pointer_focus_dirty=true;return;
+        }
+        if self.system_settings.audio_drag.is_some() {
+            if let Some(action) = self.system_settings.audio_motion(pos.x as f32) {
+                self.apply_system_setting(action);
+            }
+            self.mark_settings_dirty();
+            self.needs_redraw = true;
+            return;
         }
         if self.screenshot_motion() || self.desktop_motion() {
             return;
@@ -960,6 +995,7 @@ impl FeatherCompositor {
         }
         if btn_state == ButtonState::Released {
             if button==BTN_LEFT {
+                if let Some(action) = self.system_settings.audio_release() { self.apply_system_setting(action); }
                 if let Some(action)=self.shell.cc.release() {self.shell.overlay_dirty=true;self.execute_shell_action(action);}
                 self.desktop_release();
             }
@@ -1190,7 +1226,7 @@ impl FeatherCompositor {
                     let (width, height) = (win.width as f32, win.height as f32);
                     let action = self.system_settings.hit(lx, ly, width, height, &self.settings_context());
                     if let Some(action) = &action {
-                        self.settings_text_click(action, lx, ly, width, height);
+                        self.settings_control_press(action, lx, ly, width, height);
                     }
                     builtin_action = action.map(ShellClickAction::SystemSettings);
                 }
@@ -1305,19 +1341,25 @@ impl FeatherCompositor {
         pointer.frame(self);
         self.pressed_buttons.clear();
         self.consumed_buttons.clear();
+        self.system_settings.audio_drag = None;
         self.active_drag = None;
+        if self.shell.switcher.take().is_some() {
+            self.needs_redraw = true;
+        }
 
         let keyboard = self.keyboard.clone();
         for key in keyboard.pressed_keys() {
+            let consumed=self.shell.switcher_keys.remove(&key);
             keyboard.input::<(), _>(
                 self,
                 key,
                 KeyState::Released,
                 SERIAL_COUNTER.next_serial(),
                 time,
-                |_, _, _| FilterResult::Forward,
+                |_, _, _| if consumed {FilterResult::Intercept(())} else {FilterResult::Forward},
             );
         }
+        self.shell.switcher_keys.clear();
         self.pointer_focus_dirty = true;
     }
 

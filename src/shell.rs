@@ -484,6 +484,8 @@ pub enum AppKey {
 #[derive(Debug, Clone)]
 pub struct SwitcherItem {
     pub key: AppKey,
+    /// A mapped representative window; registry/group indices can change during a hold.
+    pub window_id: u64,
     pub label: String,
     pub icon: AppIcon,
 }
@@ -495,6 +497,17 @@ pub struct Switcher {
     pub opened_at: Instant,
     /// Shown only after a short hold, so a quick Alt+Tab tap switches without a flash
     pub visible: bool,
+    /// Keyboard selection wins until the mouse deliberately moves at least six points.
+    pub pointer_anchor: Option<(f64, f64)>,
+}
+impl Switcher {
+    pub fn allow_pointer(&mut self, x: f64, y: f64) -> bool {
+        if let Some((ax, ay)) = self.pointer_anchor {
+            if (x-ax)*(x-ax)+(y-ay)*(y-ay) < 36.0 { return false; }
+            self.pointer_anchor = None;
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -794,6 +807,7 @@ pub struct MacShell {
     overlay_geometry: Rectangle<i32, Buffer>,
 
     pub switcher: Option<Switcher>,
+    pub switcher_keys: std::collections::HashSet<smithay::input::keyboard::Keycode>,
     pub switcher_buffer: MemoryRenderBuffer,
     pub switcher_rect: R,
     pub switcher_dirty: bool,
@@ -897,6 +911,7 @@ impl MacShell {
             overlay_allocated: false,
             overlay_geometry: Rectangle::from_size((1, 1).into()),
             switcher: None,
+            switcher_keys: Default::default(),
             switcher_buffer: new_buffer(1, 1),
             switcher_rect: R::new(0.0, 0.0, 0.0, 0.0),
             switcher_dirty: false,
@@ -3219,6 +3234,12 @@ impl MacShell {
 
     // ───────────────────────── App switcher (Alt+Tab) ─────────────────────────
 
+    fn switcher_geometry(&self, count: usize) -> (f32, R) {
+        let cell = ((self.screen_w as f32 - 108.0) / count.max(1) as f32).clamp(40.0,96.0);
+        let w = (28.0 + cell*count as f32).ceil();
+        let h = (14.0 + cell + 34.0).ceil();
+        (cell,R::new(((self.screen_w as f32-w)*0.5).round(),((self.screen_h as f32-h)*0.5).round(),w,h))
+    }
     pub fn open_switcher(&mut self, items: Vec<SwitcherItem>, reverse: bool) {
         if items.is_empty() {
             return;
@@ -3236,6 +3257,7 @@ impl MacShell {
             selected,
             opened_at: Instant::now(),
             visible: false,
+            pointer_anchor: None,
         });
         self.switcher_dirty = true;
     }
@@ -3243,6 +3265,7 @@ impl MacShell {
     pub fn switcher_step(&mut self, delta: i32) {
         if let Some(sw) = self.switcher.as_mut() {
             let n = sw.items.len() as i32;
+            if n == 0 { return; }
             sw.selected = ((sw.selected as i32 + delta).rem_euclid(n)) as usize;
             sw.visible = true;
             self.switcher_dirty = true;
@@ -3252,8 +3275,7 @@ impl MacShell {
     pub fn switcher_hit(&self,x:f64,y:f64)->Option<usize>{
         let sw=self.switcher.as_ref().filter(|s|s.visible)?;
         let n=sw.items.len();if n==0{return None;}
-        let cell=((self.screen_w as f32-108.0)/n as f32).clamp(40.0,96.0);
-        let rect=self.switcher_rect;
+        let (cell,rect)=self.switcher_geometry(n);
         let (x,y)=(x as f32-rect.x-14.0,y as f32-rect.y-14.0);
         (x>=0.0&&x<cell*n as f32&&y>=0.0&&y<cell).then_some((x.max(0.0)/cell) as usize)
     }
@@ -3267,13 +3289,10 @@ impl MacShell {
         }
         self.switcher_dirty = false;
 
-        let n = sw.items.len() as f32;
         let pad = 14.0;
-        let cell = ((self.screen_w as f32 - 80.0 - pad * 2.0) / n).clamp(40.0, 96.0);
+        let (cell,rect) = self.switcher_geometry(sw.items.len());
         let icon = cell - 18.0;
-        let w = (pad * 2.0 + cell * n).ceil();
-        let h = (pad + cell + 34.0).ceil();
-        let rect = R::new(((self.screen_w as f32 - w) * 0.5).round(), ((self.screen_h as f32 - h) * 0.5).round(), w, h);
+        let (w,h) = (rect.w,rect.h);
         let (pw, ph) = (to_phys(w as i32), to_phys(h as i32));
         if self.switcher_rect.w != w || self.switcher_rect.h != h {
             self.switcher_buffer = new_buffer(pw, ph);
@@ -3316,6 +3335,33 @@ mod dock_tests {
 
     fn item(target: DockTarget) -> DockItem {
         DockItem { target, label: "Test".into(), icon: AppIcon { kind: crate::apps::IconKind::Terminal, name: None }, windows: 1, pinned: true }
+    }
+
+    fn switch_items(n: u64) -> Vec<SwitcherItem> {
+        (0..n).map(|id| SwitcherItem {key:AppKey::Window(id),window_id:id,label:format!("Fixture {id}"),icon:AppIcon {kind:crate::apps::IconKind::GenericApp,name:None}}).collect()
+    }
+    #[test]
+    fn switcher_hit_uses_current_layout_and_first_frame_has_real_pixels() {
+        let mut shell=MacShell::new(1440,900);let mut fonts=FontSystem::new();
+        shell.open_switcher(switch_items(3),false);shell.switcher.as_mut().unwrap().visible=true;
+        let (cell,r)=shell.switcher_geometry(3);
+        shell.switcher_rect=R::new(1.0,2.0,1.0,1.0);
+        assert_eq!(shell.switcher_hit((r.x+14.0+cell*1.5) as f64,(r.y+14.0+cell*0.5) as f64),Some(1));
+        shell.ensure_switcher_rendered(&mut fonts);
+        assert_eq!(shell.switcher_rect.w,r.w);
+        let expected=(to_phys(r.w as i32)*to_phys(r.h as i32)*4) as usize;
+        shell.switcher_buffer.render().draw(|pixels| {
+            assert_eq!(pixels.len(),expected);assert!(pixels.iter().any(|v|*v!=0));
+            Ok::<_,()>(Vec::new())
+        }).unwrap();
+    }
+    #[test]
+    fn keyboard_selection_ignores_pointer_jitter_but_allows_deliberate_hover() {
+        let mut shell=MacShell::new(1440,900);shell.open_switcher(switch_items(3),false);
+        let sw=shell.switcher.as_mut().unwrap();sw.pointer_anchor=Some((500.0,400.0));
+        assert!(!sw.allow_pointer(500.0,400.0));assert!(!sw.allow_pointer(502.0,402.0));assert_eq!(sw.selected,1);
+        assert!(sw.allow_pointer(507.0,400.0));assert!(sw.allow_pointer(501.0,400.0));
+        sw.pointer_anchor=Some((501.0,400.0));assert!(!sw.allow_pointer(502.0,400.0));
     }
 
     #[test]
@@ -3938,7 +3984,7 @@ mod cc_backdrop_tests {
                     }
                     crate::theme::set_glass_background(Some((std::rc::Rc::new(bg), 40.0, 800.0 / 24.0)));
                     let mut shell = MacShell::new(1280, 800);
-                    shell.cc.audio=crate::controls::Audio {default:"test".into(),sinks:vec![crate::controls::Sink {name:"test".into(),channels:vec![65536],..Default::default()}],error:None};
+                    shell.cc.audio=crate::controls::Audio {default:"test".into(),sinks:vec![crate::controls::Sink {name:"test".into(),channels:vec![65536],..Default::default()}],..Default::default()};
                     shell.control_center_open = true;
                     // Toast is present in the model but must not cover the controls.
                     shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");

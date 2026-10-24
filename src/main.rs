@@ -546,7 +546,14 @@ impl FeatherCompositor {
                 continue;
             }
             let (label, icon) = self.icon_for_key(key, Some(w));
-            items.push(SwitcherItem { key, label, icon });
+            items.push(SwitcherItem { key, window_id:w.id, label, icon });
+        }
+        // Space changes update focus without moving windows in the global stacking order.
+        // Anchor the actually focused app, preserving MRU order across all other spaces.
+        if let Some(current) = self.focused_app() {
+            if let Some(i) = items.iter().position(|item| item.key==current) {
+                let current=items.remove(i);items.insert(0,current);
+            }
         }
         items
     }
@@ -633,6 +640,8 @@ impl FeatherCompositor {
             if let Some(&id) = ids.last() {
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
                     w.minimized = false;
+                    w.space = self.spaces.current;
+                    w.off_space = false;
                 }
             }
         }
