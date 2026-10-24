@@ -11,6 +11,8 @@ mod gtk_menu;
 mod hot_corners;
 mod spaces;
 mod mission;
+mod night;
+mod brightness;
 mod gtk_shell;
 mod debug_checks;
 use feather_ui::cpu_profile;
@@ -155,6 +157,8 @@ pub struct FeatherCompositor {
     pub hot_corners: crate::hot_corners::HotCorners,
     pub spaces: crate::spaces::Spaces,
     pub mission: Option<crate::mission::Mission>,
+    pub night: crate::night::NightShift,
+    pub brightness: Option<crate::brightness::Brightness>,
     pub controls: Option<crate::controls::Controls>,
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
@@ -670,6 +674,7 @@ impl FeatherCompositor {
             notify_apps: self.shell.notify_apps.clone(),
             notify_sounds: self.shell.notify_sounds,
             hot_corners: self.hot_corners.actions,
+            night: self.night.prefs,
             dock: Some(self.dock_pins.clone()),
             animations: self.animations.enabled(),
             keyboard: self.keyboard_config.clone(),
@@ -1000,6 +1005,7 @@ impl FeatherCompositor {
             ShellClickAction::SystemSettings(action)=>self.apply_system_setting(action),
             ShellClickAction::None => {}
             ShellClickAction::ToggleDoNotDisturb => self.apply_system_setting(crate::system_settings::Action::DoNotDisturb),
+            ShellClickAction::SetBrightness(v) => self.set_brightness(v),
             ShellClickAction::Tray {key,action,x,y} => {
                 self.shell.close_menus();
                 let token=if matches!(action,crate::tray::Action::Activate|crate::tray::Action::Secondary) {
@@ -1614,6 +1620,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Slow housekeeping: clock, RSS, toasts. Nothing else polls.
     handle.insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
         let dnd = state.shell.dnd_active();
+        let night = state.night.active();
+        state.night_tick();
+        if state.night.active() != night { state.mark_settings_dirty(); }
         let ticked = state.shell.tick();
         // A scheduled «Не беспокоить» started or ended: the Settings switch follows
         if state.shell.dnd_active() != dnd { state.mark_settings_dirty(); }
@@ -1678,6 +1687,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         hot_corners: crate::hot_corners::HotCorners::new(saved.hot_corners),
         spaces: Default::default(),
         mission: None,
+        night: crate::night::NightShift::new(saved.night),
+        brightness: None,
         pending_autostart,
         idle_frame_timer_armed: false,
         frame_pending: false,
@@ -1782,6 +1793,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let xwayland = std::env::var("FEATHER_XWAYLAND").ok();
     if xwayland.as_deref() != Some("0") && (is_standalone || use_drm || xwayland.as_deref() == Some("1")) {
         state.start_xwayland(is_standalone || use_drm);
+    }
+    // Real hardware: only our own session (a nested run must not dim the host's monitor)
+    if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_BRIGHTNESS").is_some() {
+        state.brightness = crate::brightness::Brightness::new(&state.loop_handle).ok();
     }
     // Nested runs share the host's session bus: they never serve its notifications.
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_NOTIFY").is_some() {

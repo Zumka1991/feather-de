@@ -532,6 +532,7 @@ pub enum ShellClickAction {
     ShowShortcuts,
     TogglePinFocused,
     ToggleDoNotDisturb,
+    SetBrightness(f32),
 }
 
 /// Menus of the menu bar
@@ -2331,7 +2332,12 @@ impl MacShell {
                     CcItem::Bluetooth => return Some(ShellClickAction::BluetoothSettings),
                     CcItem::Focus => return Some(ShellClickAction::ToggleDoNotDisturb),
                     CcItem::DarkMode => return Some(ShellClickAction::ToggleAppearance),
-                    CcItem::Brightness => { self.cc.error=Some("Яркость этого дисплея недоступна".into()); }
+                    CcItem::Brightness => {
+                        match self.cc.start_brightness(R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),mx) {
+                            Some(v) => return Some(ShellClickAction::SetBrightness(v)),
+                            None => self.cc.error=Some("Яркость этого дисплея недоступна: нет подсветки и монитор не отвечает по DDC/CI".into()),
+                        }
+                    }
                     CcItem::Volume => {
                         if my<r.y+28.0 {
                             if mx<r.x+45.0 {return Some(self.cc.mute());}
@@ -2921,11 +2927,19 @@ impl MacShell {
                         CcItem::Bluetooth => toggle(&mut pm, fonts, false, "Bluetooth", "Настроить…",crate::control_panel::Icon::Bluetooth),
                         CcItem::Focus => toggle(&mut pm, fonts, dnd, "Не беспокоить", if dnd { "Вкл." } else { "Выкл." },crate::control_panel::Icon::Moon),
                         CcItem::DarkMode => toggle(&mut pm, fonts, dark, "Тёмный режим", if dark { "Вкл." } else { "Выкл." },crate::control_panel::Icon::Contrast),
-                        CcItem::Brightness => {
-                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Sun,r.x+25.0,r.y+27.0,p.text_secondary,false);
-                            fonts.draw_text(&mut pm,"Дисплей",r.x+46.0,r.y+10.0,13.0,p.text,true);
-                            fonts.draw_text_clipped(&mut pm,"Яркость недоступна",r.x+46.0,r.y+29.0,r.w-58.0,11.5,p.text_secondary,false);
-                        }
+                        CcItem::Brightness => match controls.shown_brightness() {
+                            Some(b) => {
+                                crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Sun,r.x+25.0,r.y+16.0,p.text,false);
+                                fonts.draw_text(&mut pm,"Дисплей",r.x+46.0,r.y+7.0,13.0,p.text,true);
+                                fonts.draw_text_right(&mut pm,&format!("{}%",(b*100.0).round() as u32),r.x+r.w-14.0,r.y+8.0,11.0,p.text_secondary,false);
+                                crate::control_panel::slider(&mut pm,R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),b,true);
+                            }
+                            None => {
+                                crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Sun,r.x+25.0,r.y+27.0,p.text_secondary,false);
+                                fonts.draw_text(&mut pm,"Дисплей",r.x+46.0,r.y+10.0,13.0,p.text,true);
+                                fonts.draw_text_clipped(&mut pm,"Яркость недоступна",r.x+46.0,r.y+29.0,r.w-58.0,11.5,p.text_secondary,false);
+                            }
+                        },
                         CcItem::Volume => {
                             crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Speaker,r.x+25.0,r.y+16.0,p.text,controls.audio.current().is_some_and(|s|s.muted));
                             fonts.draw_text(&mut pm,"Звук",r.x+46.0,r.y+7.0,13.0,p.text,true);

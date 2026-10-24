@@ -250,6 +250,13 @@ impl FeatherCompositor {
                     deferred = Some(KeyAction::SwitchVt((raw - keysyms::KEY_XF86Switch_VT_1 + 1) as i32));
                     return FilterResult::Intercept(());
                 }
+                // Brightness keys: ±10 %, like macOS F1/F2 (laptop panels and DDC/CI monitors)
+                if matches!(raw, keysyms::KEY_XF86MonBrightnessUp | keysyms::KEY_XF86MonBrightnessDown) && st.shell.cc.brightness.is_some() {
+                    let step = if raw == keysyms::KEY_XF86MonBrightnessUp { 0.1 } else { -0.1 };
+                    let value = st.shell.cc.brightness.unwrap_or(1.0) + step;
+                    deferred = Some(KeyAction::Shell(ShellClickAction::SetBrightness(((value * 10.0).round() / 10.0).clamp(0.0, 1.0))));
+                    return FilterResult::Intercept(());
+                }
                 // Alt+Print arrives as Sys_Req on most layouts
                 if raw == keysyms::KEY_Print || raw == keysyms::KEY_Sys_Req {
                     deferred = Some(KeyAction::Screenshot { shift: mods.shift, alt: mods.alt });
@@ -722,6 +729,9 @@ impl FeatherCompositor {
             return;
         }
         if self.shell.control_center_open && self.shell.cc.motion(pos.x as f32) {
+            if let Some(v) = self.shell.cc.brightness_drag() {
+                if let Some(b) = &self.brightness { b.set(v); }
+            }
             self.shell.overlay_dirty=true;
             return;
         }

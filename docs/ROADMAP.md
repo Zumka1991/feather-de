@@ -77,8 +77,8 @@
 
 - [ ] Несколько мониторов, горячее подключение, расположение и основной монитор
 - [ ] VRR, explicit sync, direct scanout
-- [ ] Ночной режим (тёплые цвета по расписанию, гамма DRM)
-- [ ] Яркость (logind / backlight), где есть железо
+- [x] Ночной режим (тёплые цвета по расписанию, гамма DRM) — [DISPLAY_COLOR.md](DISPLAY_COLOR.md)
+- [x] Яркость: logind/backlight и DDC/CI внешних мониторов — [DISPLAY_COLOR.md](DISPLAY_COLOR.md#яркость-srcbrightnessrs)
 
 ## Системные настройки — новые страницы
 

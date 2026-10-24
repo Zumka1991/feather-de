@@ -70,6 +70,10 @@ pub enum Action {
     NotifySounds,
     /// Next action of this corner (0 top-left … 3 bottom-right)
     HotCorner(usize),
+    NightNow,
+    NightSchedule,
+    NightWindow,
+    NightWarmth,
     /// Next delivery mode of the program at this index
     NotifyDelivery(usize),
     Appearance(Appearance),
@@ -168,6 +172,8 @@ pub struct Context<'a> {
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
+    pub night: crate::night::Preferences,
+    pub night_active: bool,
     pub notify_apps: &'a [crate::notifications::AppPolicy],
 }
 
@@ -195,6 +201,8 @@ pub struct FrameJob {
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
+    pub night: crate::night::Preferences,
+    pub night_active: bool,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub width: i32,
     pub height: i32,
@@ -232,6 +240,8 @@ impl FrameJob {
             dnd_schedule: c.dnd_schedule,
             notify_sounds: c.notify_sounds,
             hot_corners: c.hot_corners,
+            night: c.night,
+            night_active: c.night_active,
             notify_apps: c.notify_apps.to_vec(),
             width: win.width,
             height: win.height,
@@ -261,6 +271,8 @@ impl FrameJob {
             dnd_schedule: self.dnd_schedule,
             notify_sounds: self.notify_sounds,
             hot_corners: self.hot_corners,
+            night: self.night,
+            night_active: self.night_active,
             notify_apps: &self.notify_apps,
         }
     }
@@ -874,6 +886,16 @@ impl Panel {
                     l.end();
                     l.footer("Режимы экрана доступны при самостоятельном входе в Пёрышко.");
                 }
+                l.header("Ночной режим");
+                l.begin();
+                l.row(52.0, "Включить сейчас", "Тёплые цвета вечером легче для глаз".into(), Style::Toggle(c.night_active), Some(Action::NightNow));
+                l.row(52.0, "По расписанию", "Каждый день в выбранные часы".into(), Style::Toggle(c.night.schedule.is_some()), Some(Action::NightSchedule));
+                if let Some(w) = c.night.schedule {
+                    l.row(52.0, "Время", crate::shell::dnd_window_label(w), Style::Row, Some(Action::NightWindow));
+                }
+                l.row(52.0, "Цветовая температура", crate::night::warmth_label(c.night.kelvin), Style::Row, Some(Action::NightWarmth));
+                l.end();
+                l.footer(if c.direct {"Цвета меняются плавно за несколько секунд. Нажмите на строку, чтобы выбрать время или теплоту."} else {"Ночной режим меняет цвета монитора в прямой сессии Пёрышка; в окне настройки только сохраняются."});
             }
             Page::Defaults => {
                 let state = &c.system;
@@ -1648,6 +1670,8 @@ impl crate::FeatherCompositor {
             dnd_schedule: self.shell.dnd_schedule,
             notify_sounds: self.shell.notify_sounds,
             hot_corners: self.hot_corners.actions,
+            night: self.night.prefs,
+            night_active: self.night.active(),
             notify_apps: &self.shell.notify_apps,
         }
     }
@@ -1740,6 +1764,32 @@ impl crate::FeatherCompositor {
                 use chrono::Timelike;
                 let now = chrono::Local::now();
                 self.shell.update_dnd_schedule((now.hour() * 60 + now.minute()) as u16);
+                self.save_settings();
+            }
+            Action::NightNow => {
+                self.night.toggle();
+                self.night.jump();
+                self.apply_night_shift();
+                self.save_settings();
+            }
+            Action::NightSchedule | Action::NightWindow => {
+                let windows = crate::night::WINDOWS;
+                self.night.prefs.schedule = match (action, self.night.prefs.schedule) {
+                    (Action::NightSchedule, Some(_)) => None,
+                    (Action::NightSchedule, None) => Some(windows[0]),
+                    (_, current) => Some(windows[current.and_then(|w| windows.iter().position(|o| *o == w)).map_or(0, |i| (i + 1) % windows.len())]),
+                };
+                self.night_tick();
+                self.night.jump();
+                self.apply_night_shift();
+                self.save_settings();
+            }
+            Action::NightWarmth => {
+                let w = crate::night::WARMTH;
+                let i = w.iter().position(|(k, _)| *k == self.night.prefs.kelvin).map_or(0, |i| (i + 1) % w.len());
+                self.night.prefs.kelvin = w[i].0;
+                self.night.jump();
+                self.apply_night_shift();
                 self.save_settings();
             }
             Action::HotCorner(i) => {
@@ -2118,6 +2168,8 @@ impl crate::FeatherCompositor {
         self.phys_w = target.width;
         self.phys_h = target.height;
         self.refresh_mhz = target.refresh;
+        // A modeset may bring back the identity gamma table
+        self.apply_night_shift();
         let scale = if confirm {
             self.scale_factor
                 .min((target.width as f64 / 640.0).min(target.height as f64 / 480.0))
@@ -2253,6 +2305,8 @@ mod tests {
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
             hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
+            night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
+            night_active: true,
             notify_apps: &apps,
         };
         let mut fonts = FontSystem::new();
@@ -2361,6 +2415,8 @@ mod tests {
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
             hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
+            night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
+            night_active: true,
             notify_apps: &[],
         };
         let mut p = Panel {

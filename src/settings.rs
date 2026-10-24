@@ -224,6 +224,7 @@ pub struct Settings {
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub notify_sounds: bool,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
+    pub night: crate::night::Preferences,
     pub dock: Option<Vec<String>>,
     pub animations: bool,
     pub keyboard: Keyboard,
@@ -248,6 +249,7 @@ impl Default for Settings {
             notify_apps: Vec::new(),
             notify_sounds: true,
             hot_corners: Default::default(),
+            night: Default::default(),
             dock: None,
             animations: true,
             keyboard: Keyboard::default(),
@@ -350,6 +352,20 @@ impl Settings {
                     let parsed = v.split_once('-').and_then(|(a, b)| Some((a.parse::<u16>().ok()?, b.parse::<u16>().ok()?)));
                     s.dnd_schedule = parsed.filter(|(a, b)| *a < 1440 && *b < 1440 && a != b);
                 }
+                "night_manual" => {
+                    if let Ok(v) = v.parse() {
+                        s.night.manual = v;
+                    }
+                }
+                "night_schedule" => {
+                    let parsed = v.split_once('-').and_then(|(a, b)| Some((a.parse::<u16>().ok()?, b.parse::<u16>().ok()?)));
+                    s.night.schedule = parsed.filter(|(a, b)| *a < 1440 && *b < 1440 && a != b);
+                }
+                "night_kelvin" => {
+                    if let Some(k) = v.parse::<u32>().ok().filter(|k| (1900..=6500).contains(k)) {
+                        s.night.kelvin = k;
+                    }
+                }
                 "hot_corners" => {
                     let parsed: Vec<_> = v.split(',').map(crate::hot_corners::HotAction::parse).collect();
                     if let [Some(a), Some(b), Some(c), Some(d)] = parsed[..] {
@@ -433,6 +449,10 @@ impl Settings {
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
         text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
         text.push_str(&format!("hot_corners={}\n", self.hot_corners.map(|a| a.id()).join(",")));
+        text.push_str(&format!("night_manual={}\nnight_kelvin={}\n", self.night.manual, self.night.kelvin));
+        if let Some((from, to)) = self.night.schedule {
+            text.push_str(&format!("night_schedule={from}-{to}\n"));
+        }
         if let Some((from, to)) = self.dnd_schedule {
             text.push_str(&format!("dnd_schedule={from}-{to}\n"));
         }
@@ -584,6 +604,10 @@ mod tests {
         s.hot_corners = [H::Launchpad, H::None, H::Lock, H::Notifications];
         assert_eq!(Settings::parse(&s.text()).hot_corners, s.hot_corners);
         assert_eq!(Settings::parse("hot_corners=lock,none").hot_corners, [H::None; 4], "incomplete");
+        s.night = crate::night::Preferences { manual: true, schedule: Some((1320, 420)), kelvin: 3400 };
+        assert_eq!(Settings::parse(&s.text()).night, s.night);
+        let bad = Settings::parse("night_kelvin=100\nnight_schedule=5-5\nnight_manual=yes");
+        assert_eq!(bad.night, crate::night::Preferences::default());
         assert_eq!(Settings::parse("hot_corners=lock,none,boom,none").hot_corners, [H::None; 4], "unknown action");
         s.dnd_schedule = Some((1320, 420));
         assert_eq!(Settings::parse(&s.text()).dnd_schedule, Some((1320, 420)));

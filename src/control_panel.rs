@@ -28,9 +28,17 @@ pub struct Panel {
     pub error: Option<String>,
     password: feather_ui::input::TextInput,
     selected: Option<Network>,
-    drag: Option<(String, R, f32)>,
+    drag: Option<(Slider, R, f32)>,
     /// Pointer (global logical) while it is over the panel
     pub hover: Option<(f32, f32)>,
+    /// Display brightness 0…1; None when no display can be controlled
+    pub brightness: Option<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Slider {
+    Volume(String),
+    Brightness,
 }
 impl Panel {
     pub fn close(&mut self) {
@@ -49,7 +57,7 @@ impl Panel {
         self.error = None;
     }
     pub fn volume(&self) -> f32 {
-        self.drag.as_ref().map(|d| d.2).unwrap_or_else(|| {
+        self.drag.as_ref().filter(|d| matches!(d.0, Slider::Volume(_))).map(|d| d.2).unwrap_or_else(|| {
             self.audio
                 .current()
                 .map_or(0.0, |s| s.volume().clamp(0.0, 1.0))
@@ -58,11 +66,28 @@ impl Panel {
     pub fn start_slider(&mut self, rect: R, x: f32) {
         if let Some(sink) = self.audio.current() {
             self.drag = Some((
-                sink.name.clone(),
+                Slider::Volume(sink.name.clone()),
                 rect,
                 ((x - rect.x) / rect.w).clamp(0.0, 1.0),
             ));
         }
+    }
+
+    /// Brightness shown: the dragged value while a drag is on
+    pub fn shown_brightness(&self) -> Option<f32> {
+        self.drag.as_ref().filter(|d| d.0 == Slider::Brightness).map(|d| d.2).or(self.brightness)
+    }
+
+    /// Starts a brightness drag; the value applies live (the worker keeps only the latest)
+    pub fn start_brightness(&mut self, rect: R, x: f32) -> Option<f32> {
+        self.brightness?;
+        let value = ((x - rect.x) / rect.w).clamp(0.0, 1.0);
+        self.drag = Some((Slider::Brightness, rect, value));
+        Some(value)
+    }
+
+    pub fn brightness_drag(&self) -> Option<f32> {
+        self.drag.as_ref().filter(|d| d.0 == Slider::Brightness).map(|d| d.2)
     }
     pub fn motion(&mut self, x: f32) -> bool {
         let Some((_, r, value)) = &mut self.drag else {
@@ -72,9 +97,10 @@ impl Panel {
         true
     }
     pub fn release(&mut self) -> Option<ShellClickAction> {
-        self.drag
-            .take()
-            .map(|(sink, _, value)| ShellClickAction::Control(Control::Volume { sink, value }))
+        self.drag.take().map(|(target, _, value)| match target {
+            Slider::Volume(sink) => ShellClickAction::Control(Control::Volume { sink, value }),
+            Slider::Brightness => ShellClickAction::SetBrightness(value),
+        })
     }
     pub fn scroll(&mut self, delta: f64) {
         let max = match self.page {

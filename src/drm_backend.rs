@@ -65,6 +65,9 @@ pub struct DrmBackend {
     pub modes: Vec<smithay::reexports::drm::control::Mode>,
     /// Session is active (not switched away to another VT)
     pub active: bool,
+    /// For the gamma table (Night Shift)
+    pub fd: DrmDeviceFd,
+    pub crtc: crtc::Handle,
 }
 
 fn pick_gpu(seat: &str) -> Option<PathBuf> {
@@ -262,6 +265,8 @@ pub fn init(
         connector_name,
         modes,
         active: true,
+        fd: fd.clone(),
+        crtc,
     })
 }
 
@@ -366,6 +371,8 @@ impl FeatherCompositor {
             d.output.reset_buffers();
             d.active = true;
         }
+        // Another DRM master may have reset the gamma table while we were away
+        self.apply_night_shift();
         self.frame_pending = false;
         self.needs_redraw = true;
         self.activity();self.rearm_idle();
