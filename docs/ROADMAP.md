@@ -62,7 +62,7 @@
 
 ## Совместимость
 
-- [ ] XWayland (запуск X11-программ)
+- [x] XWayland (запуск X11-программ) через xwayland-satellite по требованию — [XWAYLAND.md](XWAYLAND.md)
 - [ ] Глобальное меню GTK (`org.gtk.Menus` / `org.gtk.Actions`)
 
 ## Окна и рабочие столы
