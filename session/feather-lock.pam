@@ -1,0 +1,5 @@
+#%PAM-1.0
+# Arch Linux / distributions providing system-auth. Adapt to the distribution's
+# screen-lock PAM stack when packaging (for example common-auth on Debian).
+auth include system-auth
+account include system-auth

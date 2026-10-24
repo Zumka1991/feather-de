@@ -17,9 +17,10 @@ pub enum Page {
     Desktop,
     Defaults,
     DateTime,
+    Power,
 }
 impl Page {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Appearance,
         Self::Keyboard,
         Self::Pointer,
@@ -27,6 +28,7 @@ impl Page {
         Self::Desktop,
         Self::Defaults,
         Self::DateTime,
+        Self::Power,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -37,6 +39,7 @@ impl Page {
             Self::Desktop => "Рабочий стол и Dock",
             Self::Defaults => "Приложения",
             Self::DateTime => "Дата и время",
+            Self::Power => "Экран блокировки и энергосбережение",
         }
     }
     fn caption(self) -> &'static str {
@@ -48,12 +51,15 @@ impl Page {
             Self::Desktop => "Настройте рабочее пространство под себя.",
             Self::Defaults => "Выберите приложения для повседневных задач.",
             Self::DateTime => "Синхронизация часов и часовой пояс.",
+            Self::Power => "Пароль, выключение экрана и переход в сон.",
         }
     }
 }
 #[derive(Clone, Debug)]
 pub enum Action {
     Page(Page),
+    LockNow,
+    IdleTime(u8),
     Appearance(Appearance),
     Animations,
     DockZoom,
@@ -114,9 +120,9 @@ pub struct Panel {
     pub pointer: Option<(f32, f32)>,
     pub cursor_picker: bool,
     pub zone_picker: bool,
-    pub zone_query: String,
+    pub zone_query: feather_ui::input::TextInput,
     pub time_editing: bool,
-    pub time_input: String,
+    pub time_input: feather_ui::input::TextInput,
     pub wallpaper_busy: bool,
     pub page: Page,
     pub adding: bool,
@@ -131,6 +137,8 @@ pub struct Panel {
 pub struct Context<'a> {
     pub system: crate::system_preferences::State,
     pub pointer: crate::settings::Pointer,
+    pub power: crate::power::Preferences,
+    pub power_ready: bool,
     /// Mouse settings reach the hardware (DRM or our labwc host), not a nested window
     pub pointer_managed: bool,
     pub keyboard: &'a Keyboard,
@@ -149,6 +157,8 @@ pub struct Context<'a> {
 pub struct FrameJob {
     pub system: crate::system_preferences::State,
     pub pointer: crate::settings::Pointer,
+    pub power: crate::power::Preferences,
+    pub power_ready: bool,
     pub pointer_managed: bool,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub shadow: bool,
@@ -180,6 +190,7 @@ impl FrameJob {
         Self {
             system: c.system.clone(),
             pointer: c.pointer.clone(),
+            power: c.power,power_ready:c.power_ready,
             pointer_managed: c.pointer_managed,
             wallpaper_image: c.wallpaper_image.cloned(),
             shadow: win.settings_needs_shadow(),
@@ -206,6 +217,7 @@ impl FrameJob {
         Context {
             system: self.system.clone(),
             pointer: self.pointer.clone(),
+            power:self.power,power_ready:self.power_ready,
             pointer_managed: self.pointer_managed,
             keyboard: &self.keyboard,
             active: self.active,
@@ -227,7 +239,7 @@ const TOOLBAR_CLIP: f32 = 12.0;
 const SIDEBAR: [&[Page]; 3] = [
     &[Page::Appearance, Page::Desktop, Page::Displays],
     &[Page::Keyboard, Page::Pointer],
-    &[Page::Defaults, Page::DateTime],
+    &[Page::Defaults, Page::DateTime, Page::Power],
 ];
 fn side_width(w: f32) -> f32 {
     if w >= 720.0 {
@@ -364,6 +376,7 @@ fn page_color(page: Page) -> (tiny_skia::Color, tiny_skia::Color) {
         Page::Displays => (rgba(70, 175, 255, 255), rgba(20, 115, 235, 255)),
         Page::Desktop => (rgba(80, 200, 245, 255), rgba(20, 140, 220, 255)),
         Page::Defaults => (rgba(150, 120, 255, 255), rgba(100, 70, 225, 255)),
+        Page::Power => (rgba(90,165,220,255),rgba(45,95,175,255)),
         Page::DateTime => (rgba(255, 105, 105, 255), rgba(225, 55, 70, 255)),
     }
 }
@@ -422,6 +435,11 @@ fn draw_page_icon(pm: &mut PixmapMut, page: Page, x: f32, y: f32, size: f32) {
             stroke_rounded_rect(pm, x0, y0, 14.0 * k, 10.0 * k, 2.0 * k, 1.2 * k, white);
             let (a, b) = pt(7.0, 16.0);
             stroke_line(pm, a, b, a + 6.0 * k, b, 1.2 * k, white);
+        }
+        Page::Power => {
+            let (x0,y0)=pt(4.0,9.0);
+            stroke_rounded_rect(pm,x0,y0,12.0*k,9.0*k,2.0*k,1.3*k,white);
+            let (cx,cy)=pt(10.0,7.5);stroke_circle(pm,cx,cy,3.5*k,1.3*k,white);
         }
         Page::DateTime => {
             let (cx, cy) = pt(10.0, 10.0);
@@ -490,7 +508,7 @@ impl Panel {
     pub fn editing(&self) -> bool {
         self.page == Page::DateTime && (self.time_editing || self.zone_picker)
     }
-    pub fn edit_key(&mut self, sym: u32, ch: Option<char>, ctrl: bool) -> Option<Action> {
+    pub fn edit_key(&mut self, sym: u32, ch: Option<char>, ctrl: bool, shift: bool) -> Option<Action> {
         use smithay::input::keyboard::keysyms;
         if sym == keysyms::KEY_Escape {
             self.time_editing = false;
@@ -511,20 +529,10 @@ impl Panel {
         } else {
             &mut self.time_input
         };
-        if ctrl && matches!(sym, keysyms::KEY_a | keysyms::KEY_A) {
-            text.clear();
-        } else if sym == keysyms::KEY_BackSpace {
-            text.pop();
-        } else if !ctrl {
-            if let Some(ch) = ch.filter(|c| {
-                !c.is_control() && (query || c.is_ascii_digit() || matches!(c, '-' | ':' | ' '))
-            }) {
-                if text.chars().count() < if query { 64 } else { 16 } {
-                    text.push(ch);
-                }
-            }
-        }
-        if query {
+        let utf8 = ch.filter(|c| !c.is_control() && (query || c.is_ascii_digit() || matches!(c, '-' | ':' | ' '))).map(|c| c.to_string());
+        *text = std::mem::take(text).with_limit(if query { 64 } else { 16 });
+        let edit = text.key(sym, utf8.as_deref(), ctrl, shift);
+        if query && edit == feather_ui::input::Edit::Changed {
             self.scroll = 0.0;
         }
         None
@@ -546,7 +554,7 @@ impl Panel {
             for &page in group {
                 l.fixed(
                     R::new(15.0, y, side - 30.0, 30.0),
-                    page.title(),
+                    if page==Page::Power {"Блокировка и питание"}else{page.title()},
                     Style::Sidebar(page, self.page == page),
                     Some(Action::Page(page)),
                 );
@@ -558,6 +566,20 @@ impl Panel {
         let right = |r: R, w: f32, h: f32| R::new(r.x + r.w - 14.0 - w, r.y + (r.h - h) / 2.0, w, h);
         let kb = !self.keyboard_busy;
         match self.page {
+            Page::Power => {
+                l.hero(Page::Power);
+                l.begin();
+                l.row(52.0,"Заблокировать сейчас","Super + L · пароль учётной записи".into(),Style::Row,Some(Action::LockNow));
+                l.end();
+                l.header("При отсутствии активности");
+                l.begin();
+                for (index,title,value) in [(0,"Блокировать экран",c.power.lock),(1,"Выключать экран",c.power.blank),(2,"Переводить компьютер в сон",c.power.suspend)] {
+                    l.row(58.0,title,crate::power::Preferences::label(value),Style::Row,Some(Action::IdleTime(index)));
+                }
+                l.end();
+                l.footer("Нажмите на строку, чтобы выбрать время. Выключение экрана и сон всегда требуют пароль при возвращении.");
+                l.footer(if c.direct && c.power_ready {"После пробуждения экран блокируется автоматически. Видео в видимом окне может отложить действия по простою."} else if c.direct {"Служба питания недоступна. Блокировка работает; автоматический сон пока недоступен."} else {"В оконном режиме гаснет только окно Пёрышка. Сон компьютера доступен в прямой сессии DRM."});
+            }
             Page::Appearance => {
                 l.hero(Page::Appearance);
                 l.begin();
@@ -909,7 +931,7 @@ impl Panel {
                         "Начните вводить город или регион".into();
                     l.fixed(
                         R::new(sheet.x + 20.0, sheet.y + 52.0, sw - 40.0, 28.0),
-                        &format!("{}│", self.zone_query),
+                        self.zone_query.text(),
                         Style::TextField(true),
                         Some(Action::ZoneSearchFocus),
                     );
@@ -1078,6 +1100,9 @@ impl Panel {
             }
             (_, action) => action,
         }
+    }
+    fn text_rect(&self, x: f32, y: f32, w: f32, h: f32, c: &Context<'_>) -> Option<R> {
+        self.controls(w, h, c).into_iter().rev().find(|i| i.rect.contains(x, y) && matches!(i.style, Style::TextField(_))).map(|i| i.rect)
     }
     pub fn debug_point(
         &self,
@@ -1455,7 +1480,12 @@ impl Panel {
                 }
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 7.0, if dark { rgba(255, 255, 255, 18) } else { rgba(255, 255, 255, 255) });
                 stroke_rounded_rect(pm, r.x, r.y, r.w, r.h, 7.0, 0.5, if dark { rgba(255, 255, 255, 40) } else { rgba(0, 0, 0, 45) });
-                fonts.draw_text_clipped(pm, &control.label, r.x + 9.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 18.0, 13.0, if self.time_input.is_empty() && !active && !self.zone_picker { p.text_tertiary } else { fg }, false);
+                let input = if matches!(control.action, Some(Action::ZoneSearchFocus)) { &self.zone_query } else { &self.time_input };
+                if input.is_empty() && !active {
+                    fonts.draw_text_clipped(pm, &control.label, r.x + 9.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 18.0, 13.0, p.text_tertiary, false);
+                } else {
+                    input.draw(pm, fonts, r.x + 9.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 18.0, 13.0, false, fg, active, p.accent);
+                }
             }
             Style::Scrim(_) => {}
             Style::Sheet => {
@@ -1498,10 +1528,20 @@ impl Panel {
 }
 
 impl crate::FeatherCompositor {
+    pub fn settings_text_click(&mut self, action: &Action, x: f32, y: f32, w: f32, h: f32) {
+        if !matches!(action, Action::EditTime | Action::ZoneSearchFocus) { return; }
+        let Some(rect) = self.system_settings.text_rect(x, y, w, h, &self.settings_context()) else { return; };
+        let input = if matches!(action, Action::ZoneSearchFocus) { &mut self.system_settings.zone_query } else { &mut self.system_settings.time_input };
+        if matches!(action, Action::EditTime) && input.is_empty() {
+            input.set(&self.system_preferences.time.local_input);
+        }
+        input.click(&mut self.fonts, x - rect.x - 9.0, rect.w - 18.0, 13.0, false, self.keyboard.modifier_state().shift);
+    }
     pub fn settings_context(&self) -> Context<'_> {
         Context {
             system: self.system_preferences.clone(),
             pointer: self.pointer_config.clone(),
+            power:self.power.preferences,power_ready:self.power.ready,
             pointer_managed: self.pointer_managed,
             keyboard: &self.keyboard_config,
             active: self.active_layout_index,
@@ -1591,6 +1631,12 @@ impl crate::FeatherCompositor {
     pub fn apply_system_setting(&mut self, action: Action) {
         self.system_settings.error = None;
         match action {
+            Action::LockNow=>self.lock_session(),
+            Action::IdleTime(index)=>{
+                let p=&mut self.power.preferences;
+                let value=match index {0=>&mut p.lock,1=>&mut p.blank,_=>&mut p.suspend};
+                *value=crate::power::Preferences::next(*value);self.activity();self.rearm_idle();self.save_settings();
+            }
             Action::Page(page) => {
                 self.system_settings.apps_picker = None;
                 self.system_settings.cursor_picker = false;
@@ -1660,14 +1706,14 @@ impl crate::FeatherCompositor {
             Action::EditTime => {
                 if self.system_settings.time_input.is_empty() {
                     self.system_settings.time_input =
-                        self.system_preferences.time.local_input.clone();
+                        self.system_preferences.time.local_input.clone().into();
                 }
                 self.system_settings.time_editing = true;
             }
             Action::ApplyTime => {
                 self.system_settings.time_editing = false;
                 self.request_system_preference(crate::system_preferences::Command::SetTime(
-                    self.system_settings.time_input.clone(),
+                    self.system_settings.time_input.text().to_owned(),
                 ));
             }
             Action::Appearance(a) => {
@@ -2021,22 +2067,22 @@ mod tests {
             time_input: "old".into(),
             ..Default::default()
         };
-        panel.edit_key(keysyms::KEY_a, Some('a'), true);
-        assert!(panel.time_input.is_empty());
+        panel.edit_key(keysyms::KEY_a, Some('a'), true, false);
+        assert_eq!(panel.time_input.selected_text(), Some("old"));
         for ch in "2026-10-24 12:30".chars() {
-            panel.edit_key(0, Some(ch), false);
+            panel.edit_key(0, Some(ch), false, false);
         }
-        assert_eq!(panel.time_input, "2026-10-24 12:30");
-        panel.edit_key(0, Some('X'), false);
-        assert_eq!(panel.time_input, "2026-10-24 12:30");
+        assert_eq!(panel.time_input.text(), "2026-10-24 12:30");
+        panel.edit_key(0, Some('X'), false, false);
+        assert_eq!(panel.time_input.text(), "2026-10-24 12:30");
         assert!(matches!(
-            panel.edit_key(keysyms::KEY_Return, None, false),
+            panel.edit_key(keysyms::KEY_Return, None, false, false),
             Some(Action::ApplyTime)
         ));
         assert!(!panel.editing());
         panel.zone_picker = true;
         for ch in "Барнаул".chars() {
-            panel.edit_key(0, Some(ch), false);
+            panel.edit_key(0, Some(ch), false, false);
         }
         assert!(zone_matches(
             "Asia/Barnaul",
@@ -2046,7 +2092,7 @@ mod tests {
             "Europe/Moscow",
             &panel.zone_query.to_lowercase()
         ));
-        panel.edit_key(keysyms::KEY_Escape, None, false);
+        panel.edit_key(keysyms::KEY_Escape, None, false, false);
         assert!(!panel.editing());
     }
     #[test]
@@ -2060,6 +2106,7 @@ mod tests {
         let context = Context {
             system: Default::default(),
             pointer: Default::default(),
+            power:Default::default(),power_ready:false,
             pointer_managed: true,
             keyboard: &keyboard,
             active: 1,
@@ -2162,6 +2209,7 @@ mod tests {
         let c = Context {
             system: Default::default(),
             pointer: Default::default(),
+            power:Default::default(),power_ready:false,
             pointer_managed: true,
             keyboard: &keyboard,
             active: 0,

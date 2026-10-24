@@ -16,7 +16,7 @@ import tempfile
 import time
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('mode', choices=['resize', 'dock', 'slow'])
+parser.add_argument('mode', choices=['resize', 'dock', 'slow', 'pins'])
 parser.add_argument('--output', type=Path)
 parser.add_argument('--screenshot-ms', type=int, default=0)
 parser.add_argument('--scale', default='2')
@@ -30,7 +30,12 @@ for key in list(env):
 env.update(XDG_CONFIG_HOME=str(root/'config'), FEATHER_SCALE=args.scale,
            FEATHER_PROFILE='1', FEATHER_DEBUG_INPUT_ONLY='1', RUST_LOG='feather_de=debug,smithay=warn')
 command = ['target/release/feather-de', '--windowed']
-if args.mode == 'resize':
+if args.mode == 'pins':
+    config = root/'config'/'feather-de'
+    config.mkdir(parents=True, exist_ok=True)
+    (config/'settings.conf').write_text('show_about=false\ndock=builtin.launchpad,dolphin\n')
+    env['FEATHER_DEBUG_DOCK_PINS'] = '1'
+elif args.mode == 'resize':
     env['FEATHER_DEBUG_DND'] = 'resize-all'
     client = Path('target/release/feather-terminal').resolve()
     script = (f'echo $$ > {shlex.quote(str(root.resolve()/"terminal.pid"))}; '
@@ -88,6 +93,12 @@ with (root/'compositor.log').open('w') as log:
         if args.mode == 'resize':
             assert text.count('[feather-resize-check] pass=') == 16
             assert '[feather-resize-check] unaligned SHM size passed' in text
+        elif args.mode == 'pins':
+            assert text.count('[feather-dock-pins-check]') == 6
+            settings = (root/'config'/'feather-de'/'settings.conf').read_text()
+            assert 'dock_locked=true\n' in settings, 'Dock lock was not persisted'
+            pins = next(line[5:] for line in settings.splitlines() if line.startswith('dock='))
+            assert pins.split(',')[-1] == 'dolphin', 'Files position was not persisted'
         else:
             assert text.count('[feather-dock-check] same-point click') == 4
             assert '[feather-dock-check] three windows' in text

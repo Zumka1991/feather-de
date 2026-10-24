@@ -38,6 +38,7 @@ pub const BTN_FORWARD: u32 = 0x114;
 #[derive(Debug, PartialEq)]
 pub enum Effect {
     List(PathBuf, u64),
+    Preview(PathBuf, u64),
     Close,
     Minimize,
     ToggleMaximize,
@@ -162,7 +163,16 @@ pub struct Mods {
     pub alt: bool,
 }
 
+struct QuickPreview {
+    path: PathBuf,
+    generation: u64,
+    result: Option<Result<crate::preview::Content, String>>,
+    scroll: usize,
+}
+
 pub struct App {
+    preview: Option<QuickPreview>,
+    preview_generation: u64,
     picker:Option<PickerState>,
     pub w: f32,
     pub h: f32,
@@ -181,9 +191,9 @@ pub struct App {
     view: View,
     scroll: f32,
     show_hidden: bool,
-    search: String,
+    search: feather_ui::input::TextInput,
     search_focus: bool,
-    rename: Option<(PathBuf, String)>,
+    rename: Option<(PathBuf, feather_ui::input::TextInput)>,
     hover: Hit,
     pointer: (f32, f32),
     pressed: Option<(Hit, (f32, f32))>,
@@ -222,6 +232,8 @@ impl App {
     /// `reveal` selects that item once the folder is read; `rename` then starts renaming it
     pub fn new(fonts: FontSystem, start: PathBuf, reveal: Option<PathBuf>, rename: bool) -> (Self, Vec<Effect>) {
         let mut app = Self {
+            preview: None,
+            preview_generation: 0,
             picker:None,
             w: 1000.0,
             h: 640.0,
@@ -238,7 +250,7 @@ impl App {
             view: View::Icons,
             scroll: 0.0,
             show_hidden: false,
-            search: String::new(),
+            search: Default::default(),
             search_focus: false,
             rename: None,
             hover: Hit::Nothing,
@@ -326,6 +338,7 @@ impl App {
             self.history.push(dir.clone());
             self.hist_pos = self.history.len() - 1;
         }
+        self.preview = None;
         let previous = std::mem::replace(&mut self.dir, dir.clone());
         self.selected.clear();
         // Going up selects the folder we came from, as Finder does
@@ -493,10 +506,45 @@ impl App {
         self.dirty = true;
     }
 
+    fn open_preview(&mut self) -> Vec<Effect> {
+        let index = self.cursor.filter(|&i| i < self.visible.len() && self.selected.contains(&self.entry(i).path))
+            .or_else(|| (0..self.visible.len()).find(|&i| self.selected.contains(&self.entry(i).path)));
+        let Some(index) = index else { return Vec::new(); };
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+        let path = self.entry(index).path.clone();
+        self.preview = Some(QuickPreview { path: path.clone(), generation: self.preview_generation, result: None, scroll: 0 });
+        self.menu = None;
+        self.search_focus = false;
+        self.pressed = None;
+        self.drag_origin = None;
+        vec![Effect::Preview(path, self.preview_generation)]
+    }
+
+    pub fn preview_ready(&mut self, generation: u64, result: Result<crate::preview::Content, String>) {
+        if let Some(preview) = self.preview.as_mut().filter(|p| p.generation == generation) {
+            preview.result = Some(result);
+            self.dirty = true;
+        }
+    }
+
+    /// Opt-in checks in an owned client; never inject input into the host.
+    pub fn debug_preview(&mut self, path: &Path) -> Vec<Effect> {
+        let Some(index) = (0..self.visible.len()).find(|&i| self.entry(i).path == path) else { return Vec::new(); };
+        self.select_only(index);
+        self.key(0x20, Some(" "), Mods::default())
+    }
+
+    fn preview_rect(&self) -> (f32, f32, f32, f32) {
+        let (w, h) = ((self.w - 48.0).min(760.0), (self.h - 48.0).min(560.0));
+        ((self.w - w) * 0.5, (self.h - h) * 0.5, w, h)
+    }
+
     fn start_rename(&mut self) {
         if let Some(c) = self.cursor.filter(|_| self.selected.len() == 1) {
             let e = self.entry(c);
-            self.rename = Some((e.path.clone(), e.name.clone()));
+            let mut input = feather_ui::input::TextInput::new(&e.name);
+            input.select_all();
+            self.rename = Some((e.path.clone(), input));
             self.dirty = true;
         }
     }
@@ -542,7 +590,9 @@ impl App {
                 if let Some(i) = i {
                     self.scroll_to(i);
                 }
-                self.rename = Some((path, name));
+                let mut input = feather_ui::input::TextInput::new(&name);
+                input.select_all();
+                self.rename = Some((path, input));
                 self.dirty = true;
                 Vec::new()
             }
@@ -862,7 +912,12 @@ impl App {
             let (rx, ry, rw, rh) = self.item_rect(i);
             match self.view {
                 // Finder: the icon and the name are hot, not the whole cell
-                View::Icons => x >= rx + 12.0 && x < rx + rw - 12.0 && y >= ry + 2.0 && y < ry + rh - 4.0,
+                View::Icons => {
+                    let editing_name = self.rename.as_ref().is_some_and(|(p, _)| *p == self.entry(i).path)
+                        && x >= rx + 5.0 && x < rx + rw - 5.0
+                        && y >= ry + GRID_ICON + 8.0 && y < ry + GRID_ICON + 27.0;
+                    editing_name || (x >= rx + 12.0 && x < rx + rw - 12.0 && y >= ry + 2.0 && y < ry + rh - 4.0)
+                }
                 View::List => x >= rx && x < rx + rw && y >= ry && y < ry + rh,
             }
         })
@@ -887,6 +942,8 @@ impl App {
         }
         match self.hit(x, y) {
             Hit::Search => Cursor::Text,
+            Hit::Title if self.path_edit.is_some() => Cursor::Text,
+            Hit::Item(i) if self.rename.as_ref().is_some_and(|(p, _)| *p == self.entry(i).path) => Cursor::Text,
             _ => Cursor::Default,
         }
     }
@@ -972,9 +1029,22 @@ impl App {
 
     pub fn press(&mut self, button: u32, x: f32, y: f32, mods: Mods) -> Vec<Effect> {
         if self.picker.is_some()&&button==BTN_RIGHT{return Vec::new();}
-        let mods=if self.picker.as_ref().is_some_and(|p|!p.config.multiple){Mods{ctrl:false,shift:false,..mods}}else{mods};
+        let selection_mods=if self.picker.as_ref().is_some_and(|p|!p.config.multiple){Mods{ctrl:false,shift:false,..mods}}else{mods};
         self.pointer = (x, y);
         self.dirty = true;
+        if self.preview.is_some() {
+            if button == BTN_LEFT {
+                let (px, py, pw, ph) = self.preview_rect();
+                if x >= px + pw - 190.0 && x < px + pw - 16.0 && y >= py + ph - 39.0 && y < py + ph - 10.0 {
+                    self.preview = None;
+                    return self.open_selection();
+                }
+                if x < px || x >= px + pw || y < py || y >= py + ph || (x < px + 42.0 && y < py + 42.0) {
+                    self.preview = None;
+                }
+            }
+            return Vec::new();
+        }
         let edges = self.resize_edges(x, y);
         if button == BTN_LEFT && edges != 0 && self.menu.is_none() {
             return vec![Effect::Resize(edges)];
@@ -1019,6 +1089,25 @@ impl App {
             return Vec::new();
         }
         let mut effects = Vec::new();
+        if button == BTN_LEFT {
+            if let Hit::Item(i) = &hit {
+                if self.rename.as_ref().is_some_and(|(p, _)| *p == self.entry(*i).path) {
+                    let (rx, ry, rw, _) = self.item_rect(*i);
+                    let (tx, ty, width, size) = match self.view {
+                        View::Icons => (rx + 9.0, ry + 10.0 + GRID_ICON, rw - 18.0, 12.0),
+                        View::List => {
+                            let (cx, _, cw, _) = self.content();
+                            let nw = cw - 160.0 - 90.0 - if cw > 640.0 { 130.0 } else { 0.0 } - 40.0;
+                            (cx + 45.0, ry + 5.5, nw - 40.0, 13.0)
+                        }
+                    };
+                    if (ty - 3.0..ty + 18.0).contains(&y) {
+                        self.rename.as_mut().unwrap().1.click(&mut self.fonts, x - tx, width, size, false, mods.shift);
+                        return Vec::new();
+                    }
+                }
+            }
+        }
         if self.rename.is_some() && !matches!(&hit, Hit::Item(i) if self.rename.as_ref().is_some_and(|(p, _)| *p == self.entry(*i).path)) {
             effects = self.commit_rename();
         }
@@ -1063,7 +1152,11 @@ impl App {
             Hit::Forward => effects.extend(self.go_forward()),
             Hit::ViewIcons => self.set_view(View::Icons),
             Hit::ViewList => self.set_view(View::List),
-            Hit::Search => self.search_focus = true,
+            Hit::Search => {
+                self.search_focus = true;
+                let (sx, _, sw, _) = self.search_rect();
+                self.search.click(&mut self.fonts, x - sx - 28.0, sw - 40.0, 13.0, false, mods.shift);
+            },
             Hit::Place(i) => {
                 let path = self.places[i].path.clone();
                 if self.picker.is_none() && path == fsops::trash_files_dir() {
@@ -1078,7 +1171,7 @@ impl App {
                 self.last_click = None;
                 effects.extend(self.open(i));
             }
-            Hit::Item(i) => self.click_item(i, mods),
+            Hit::Item(i) => self.click_item(i, selection_mods),
             Hit::Content => {
                 if self.picker.as_ref().is_some_and(|p|!p.config.multiple){self.selected.clear();self.cursor=None;return effects;}
                 self.pressed = Some((Hit::Content, (x, y)));
@@ -1147,6 +1240,15 @@ impl App {
     }
 
     pub fn scroll(&mut self, dy: f32) {
+        if let Some(p) = self.preview.as_mut() {
+            if let Some(Ok(crate::preview::Content::Text(lines, _))) = &p.result {
+                let max = lines.len().saturating_sub(1);
+                let old = p.scroll;
+                p.scroll = (p.scroll as f32 + dy / 18.0).round().clamp(0.0, max as f32) as usize;
+                self.dirty |= p.scroll != old;
+            }
+            return;
+        }
         if self.menu.is_some() {
             return;
         }
@@ -1353,6 +1455,21 @@ impl App {
             }
             return Vec::new();
         }
+        if self.preview.is_some() {
+            match sym {
+                K::Escape | K::space => self.preview = None,
+                K::Return | K::KP_Enter => { self.preview = None; return self.open_selection(); }
+                K::Left | K::Right | K::Up | K::Down => {
+                    let key = if matches!(sym, K::Left | K::Up) { K::Left } else { K::Right };
+                    // Follow the visible list order in both icon and list views.
+                    let current = self.cursor.unwrap_or(0);
+                    let next = if key == K::Left { current.saturating_sub(1) } else { (current + 1).min(self.visible.len().saturating_sub(1)) };
+                    if !self.visible.is_empty() { self.select_only(next); return self.open_preview(); }
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
         if let Some(input) = self.path_edit.as_mut() {
             match sym {
                 K::Escape => self.path_edit = None,
@@ -1383,14 +1500,7 @@ impl App {
             match sym {
                 K::Return | K::KP_Enter => return self.commit_rename(),
                 K::Escape => self.rename = None,
-                K::BackSpace => {
-                    name.pop();
-                }
-                _ => {
-                    if let Some(t) = text.filter(|t| !t.chars().any(char::is_control) && !mods.ctrl) {
-                        name.push_str(t);
-                    }
-                }
+                _ => { name.key(raw, text, mods.ctrl, mods.shift); }
             }
             return Vec::new();
         }
@@ -1412,12 +1522,9 @@ impl App {
                         self.select_only(0);
                     }
                 }
-                K::BackSpace => {
-                    if mods.ctrl { self.search.clear() } else { self.search.pop(); }
-                }
                 _ => {
-                    if let Some(t) = text.filter(|t| !t.chars().any(char::is_control) && !mods.ctrl) {
-                        self.search.push_str(t);
+                    if self.search.key(raw, text, mods.ctrl, mods.shift) != feather_ui::input::Edit::Changed {
+                        return Vec::new();
                     }
                 }
             }
@@ -1427,6 +1534,7 @@ impl App {
         }
         let ctrl = mods.ctrl;
         match sym {
+            K::space if !mods.ctrl && !mods.alt => return self.open_preview(),
             K::Return | K::KP_Enter if mods.alt || self.selected.len() != 1 => return self.open_selection(),
             K::Return | K::KP_Enter => return self.open_selection(),
             K::F2 => self.start_rename(),
@@ -1549,6 +1657,7 @@ impl App {
         self.paint_confirm(pm);
         self.paint_props(pm);
         self.paint_picker(pm);
+        self.paint_preview(pm);
     }
 
     fn paint_sidebar(&mut self, pm: &mut PixmapMut) {
@@ -1558,7 +1667,7 @@ impl App {
         let hovered_traffic = matches!(self.hover, Hit::Close | Hit::Minimize | Hit::Zoom);
         for (hit, cx) in self.traffic() {
             let color = if !self.focused && !hovered_traffic {
-                rgba(205, 205, 210, 255)
+                colors::traffic_inactive()
             } else {
                 match hit {
                     Hit::Close => rgba(255, 95, 87, 255),
@@ -1635,7 +1744,7 @@ impl App {
         for (hit, (rx, ry, rw, rh)) in self.view_rects() {
             let active = (hit == Hit::ViewIcons) == (self.view == View::Icons);
             if active {
-                theme::fill_rrect(pm, rx + 2.0, ry + 2.0, rw - 4.0, rh - 4.0, 12.0, rgba(255, 255, 255, 255));
+                theme::fill_rrect(pm, rx + 2.0, ry + 2.0, rw - 4.0, rh - 4.0, 12.0, colors::window());
                 theme::stroke_rrect(pm, rx + 2.0, ry + 2.0, rw - 4.0, rh - 4.0, 12.0, 0.6, colors::separator());
             } else if self.hover == hit {
                 theme::fill_rrect(pm, rx + 2.0, ry + 2.0, rw - 4.0, rh - 4.0, 12.0, colors::hover());
@@ -1665,26 +1774,9 @@ impl App {
         if self.search.is_empty() && !self.search_focus {
             self.fonts.draw_text(pm, "Поиск", sx + 28.0, sy + 6.5, 13.0, colors::tertiary(), false);
         } else {
-            let shown = self.tail_fit(&self.search.clone(), sw - 40.0, 13.0);
-            let end = self.fonts.draw_text(pm, &shown, sx + 28.0, sy + 6.5, 13.0, colors::text(), false);
-            if self.search_focus {
-                let caret = (end / theme::ui_scale()).max(sx + 28.0);
-                theme::fill_rect(pm, caret + 1.0, sy + 6.0, 1.5, 16.0, colors::accent());
-            }
+            self.search.draw(pm, &mut self.fonts, sx + 28.0, sy + 6.5, sw - 40.0, 13.0, false, colors::text(), self.search_focus, colors::accent());
         }
         theme::fill_rect(pm, x, TOOLBAR_H - 1.0, self.w - x, 1.0, colors::separator());
-    }
-
-    /// The end of `text` that fits (fields show the caret end)
-    fn tail_fit(&mut self, text: &str, width: f32, size: f32) -> String {
-        let chars: Vec<char> = text.chars().collect();
-        for start in 0..chars.len() {
-            let tail: String = chars[start..].iter().collect();
-            if self.fonts.measure_text(&tail, size, false) <= width {
-                return tail;
-            }
-        }
-        String::new()
     }
 
     fn paint_content(&mut self, pm: &mut PixmapMut) {
@@ -1721,7 +1813,7 @@ impl App {
             let track = ch - 8.0;
             let thumb = (track * ch / total).max(28.0);
             let y = cy + 4.0 + (track - thumb) * self.scroll / (total - ch);
-            theme::fill_rrect(pm, self.w - 9.0, y, 5.0, thumb, 2.5, rgba(0, 0, 0, 70));
+            theme::fill_rrect(pm, self.w - 9.0, y, 5.0, thumb, 2.5, colors::secondary());
         }
     }
 
@@ -1767,11 +1859,9 @@ impl App {
             let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
             let name_y = y + 10.0 + GRID_ICON;
             if let Some(name) = renaming {
-                let shown = self.tail_fit(&name, w - 12.0, 12.0);
-                let tw = self.fonts.measure_text(&shown, 12.0, false);
-                theme::fill_rrect(pm, x + (w - tw) * 0.5 - 5.0, name_y - 2.0, tw + 10.0, 19.0, 4.0, rgba(255, 255, 255, 255));
-                theme::stroke_rrect(pm, x + (w - tw) * 0.5 - 5.0, name_y - 2.0, tw + 10.0, 19.0, 4.0, 2.0, rgba(10, 132, 255, 160));
-                self.fonts.draw_text_centered(pm, &shown, x + w * 0.5, name_y, 12.0, colors::text(), false);
+                theme::fill_rrect(pm, x + 5.0, name_y - 2.0, w - 10.0, 19.0, 4.0, colors::window());
+                theme::stroke_rrect(pm, x + 5.0, name_y - 2.0, w - 10.0, 19.0, 4.0, 2.0, rgba(10, 132, 255, 160));
+                name.draw(pm, &mut self.fonts, x + 9.0, name_y, w - 18.0, 12.0, false, colors::text(), true, colors::accent());
                 continue;
             }
             let lines = self.fonts.wrap_two_lines(&e.name, w - 10.0, 12.0, false);
@@ -1779,7 +1869,7 @@ impl App {
                 let ly = name_y + k as f32 * 15.0;
                 let tw = self.fonts.measure_text(line, 12.0, false);
                 let ink = if selected {
-                    theme::fill_rrect(pm, x + (w - tw) * 0.5 - 4.0, ly - 1.0, tw + 8.0, 16.0, 4.0, if self.focused { colors::accent() } else { rgba(200, 200, 205, 255) });
+                    theme::fill_rrect(pm, x + (w - tw) * 0.5 - 4.0, ly - 1.0, tw + 8.0, 16.0, 4.0, if self.focused { colors::accent() } else { colors::inactive_selection() });
                     if self.focused { rgba(255, 255, 255, 255) } else { colors::text() }
                 } else if e.hidden {
                     colors::secondary()
@@ -1808,7 +1898,7 @@ impl App {
             let e = self.entry(i).clone();
             let selected = self.selected.contains(&e.path) || self.drop_target.as_ref() == Some(&e.path);
             if selected {
-                let fill = if self.focused { colors::accent() } else { rgba(220, 220, 224, 255) };
+                let fill = if self.focused { colors::accent() } else { colors::inactive_selection() };
                 theme::fill_rrect(pm, cx + 8.0, y, cw - 16.0, ROW_H, 6.0, fill);
             } else if i % 2 == 1 {
                 theme::fill_rrect(pm, cx + 8.0, y, cw - 16.0, ROW_H, 6.0, colors::stripe());
@@ -1822,11 +1912,9 @@ impl App {
             self.icons.draw(pm, &mut self.fonts, &icon, cx + 18.0, y + 4.0, 18.0);
             let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
             if let Some(name) = renaming {
-                let shown = self.tail_fit(&name, name_w - 40.0, 13.0);
-                let tw = self.fonts.measure_text(&shown, 13.0, false);
-                theme::fill_rrect(pm, cx + 40.0, y + 3.0, tw + 10.0, ROW_H - 6.0, 4.0, rgba(255, 255, 255, 255));
-                theme::stroke_rrect(pm, cx + 40.0, y + 3.0, tw + 10.0, ROW_H - 6.0, 4.0, 2.0, rgba(10, 132, 255, 160));
-                self.fonts.draw_text(pm, &shown, cx + 45.0, y + 5.5, 13.0, colors::text(), false);
+                theme::fill_rrect(pm, cx + 40.0, y + 3.0, name_w - 30.0, ROW_H - 6.0, 4.0, colors::window());
+                theme::stroke_rrect(pm, cx + 40.0, y + 3.0, name_w - 30.0, ROW_H - 6.0, 4.0, 2.0, rgba(10, 132, 255, 160));
+                name.draw(pm, &mut self.fonts, cx + 45.0, y + 5.5, name_w - 40.0, 13.0, false, colors::text(), true, colors::accent());
             } else {
                 self.fonts.draw_text_clipped(pm, &e.name, cx + 44.0, y + 5.5, name_w - 30.0, 13.0, ink, false);
             }
@@ -1880,11 +1968,55 @@ impl App {
         let mut right = self.w - 14.0;
         if let Some((bx, by, bw, bh)) = self.empty_button() {
             let hover = self.hover == Hit::EmptyTrash;
-            theme::fill_rrect(pm, bx, by, bw, bh, bh / 2.0, if hover { rgba(0, 0, 0, 26) } else { rgba(0, 0, 0, 14) });
+            theme::fill_rrect(pm, bx, by, bw, bh, bh / 2.0, if hover { colors::selected_gray() } else { colors::control() });
             self.fonts.draw_text_centered(pm, "Очистить", bx + bw / 2.0, by + (bh - 11.5) / 2.0 - 1.0, 11.5, colors::text(), false);
             right = bx - 10.0;
         }
         self.fonts.draw_text_right(pm, &info, right, y + 7.5, 11.5, colors::secondary(), false);
+    }
+
+    fn paint_preview(&mut self, pm: &mut PixmapMut) {
+        let Some(preview) = self.preview.as_ref() else { return; };
+        let (x, y, w, h) = self.preview_rect();
+        theme::fill_rect(pm, 0.0, 0.0, self.w, self.h, rgba(0, 0, 0, 70));
+        for i in 1..=6 {
+            let e = i as f32 * 2.0;
+            theme::fill_rrect(pm, x - e, y - e + 6.0, w + e * 2.0, h + e * 2.0, 14.0 + e, rgba(0, 0, 0, 7));
+        }
+        theme::fill_rrect(pm, x, y, w, h, 14.0, colors::window());
+        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, colors::separator());
+        theme::line(pm, x + 20.0, y + 19.0, x + 28.0, y + 27.0, 1.5, colors::secondary());
+        theme::line(pm, x + 28.0, y + 19.0, x + 20.0, y + 27.0, 1.5, colors::secondary());
+        let name = preview.path.file_name().unwrap_or_default().to_string_lossy();
+        self.fonts.draw_text_clipped_centered(pm, &name, x + w * 0.5, y + 16.0, w - 100.0, 14.0, colors::text(), true);
+        theme::fill_rect(pm, x + 1.0, y + 46.0, w - 2.0, 1.0, colors::separator());
+        let (bx, by, bw, bh) = (x + 20.0, y + 60.0, w - 40.0, h - 116.0);
+        let mut detail = "Пробел — закрыть · ← → — другой файл".to_string();
+        match preview.result.as_ref() {
+            None => { self.fonts.draw_text_centered(pm, "Загрузка…", x + w * 0.5, y + h * 0.5, 14.0, colors::secondary(), false); }
+            Some(Err(error)) => { self.fonts.draw_text_clipped_centered(pm, error, x + w * 0.5, y + h * 0.5, bw, 13.0, colors::secondary(), false); }
+            Some(Ok(crate::preview::Content::Info(info))) => { self.fonts.draw_text_clipped_centered(pm, info, x + w * 0.5, y + h * 0.5, bw, 14.0, colors::secondary(), false); }
+            Some(Ok(crate::preview::Content::Text(lines, truncated))) => {
+                if lines.is_empty() { self.fonts.draw_text_centered(pm, "Пустой файл", x + w * 0.5, y + h * 0.5, 14.0, colors::secondary(), false); }
+                for (row, text) in lines.iter().skip(preview.scroll).take((bh / 18.0) as usize).enumerate() {
+                    self.fonts.draw_text_clipped(pm, text, bx, by + row as f32 * 18.0, bw, 12.5, colors::text(), false);
+                }
+                if *truncated { detail = "Показана начальная часть файла".into(); }
+            }
+            Some(Ok(crate::preview::Content::Image(image, iw, ih))) => {
+                let scale = (bw / image.width() as f32).min(bh / image.height() as f32);
+                let (dw, dh) = (image.width() as f32 * scale, image.height() as f32 * scale);
+                let (dx, dy) = (bx + (bw - dw) * 0.5, by + (bh - dh) * 0.5);
+                let paint = tiny_skia::Paint { shader: tiny_skia::Pattern::new(image.as_ref(), tiny_skia::SpreadMode::Pad, tiny_skia::FilterQuality::Bilinear, 1.0, tiny_skia::Transform::from_scale(scale, scale).post_translate(dx, dy)), ..Default::default() };
+                if let Some(rect) = tiny_skia::Rect::from_xywh(dx, dy, dw, dh) {
+                    pm.fill_rect(rect, &paint, tiny_skia::Transform::from_scale(theme::ui_scale(), theme::ui_scale()), None);
+                }
+                detail = format!("{iw} × {ih}");
+            }
+        }
+        self.fonts.draw_text_clipped(pm, &detail, x + 20.0, y + h - 29.0, w - 230.0, 10.5, colors::secondary(), false);
+        theme::fill_rrect(pm, x + w - 190.0, y + h - 39.0, 174.0, 29.0, 8.0, colors::control());
+        self.fonts.draw_text_centered(pm, if self.picker.is_some() { "Открыть" } else { "Открыть в приложении" }, x + w - 103.0, y + h - 32.0, 11.5, colors::text(), false);
     }
 
     fn paint_props(&mut self, pm: &mut PixmapMut) {
@@ -1896,7 +2028,7 @@ impl App {
             theme::fill_rrect(pm, x - e, y - e + 6.0, w + 2.0 * e, h + 2.0 * e, 14.0 + e, rgba(0, 0, 0, 7));
         }
         theme::fill_rrect(pm, x, y, w, h, 14.0, colors::glass());
-        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, rgba(0, 0, 0, 30));
+        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, colors::separator());
         let name = p.path.file_name().map_or_else(|| p.path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
         let glyph = if p.is_dir { Glyph::Folder } else { Glyph::Documents };
         draw_glyph(pm, glyph, x + 20.0, y + 20.0, 32.0, rgba(76, 155, 228, 255));
@@ -1949,7 +2081,7 @@ impl App {
             theme::fill_rrect(pm, x - e, y - e + 6.0, w + 2.0 * e, h + 2.0 * e, 14.0 + e, rgba(0, 0, 0, 7));
         }
         theme::fill_rrect(pm, x, y, w, h, 14.0, colors::glass());
-        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, rgba(0, 0, 0, 30));
+        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, colors::separator());
         let (title, body, action) = match &confirm {
             Confirm::Delete(paths) if paths.len() == 1 => (
                 format!("Удалить «{}» безвозвратно?", paths[0].file_name().unwrap_or_default().to_string_lossy()),
@@ -1972,7 +2104,7 @@ impl App {
             self.fonts.draw_text(pm, line, x + 20.0, y + 48.0 + i as f32 * 16.0, 12.0, colors::secondary(), false);
         }
         let (cx, cy, cw, ch) = cancel;
-        theme::fill_rrect(pm, cx, cy, cw, ch, ch / 2.0, rgba(0, 0, 0, 16));
+        theme::fill_rrect(pm, cx, cy, cw, ch, ch / 2.0, colors::control());
         self.fonts.draw_text_centered(pm, "Отменить", cx + cw / 2.0, cy + 7.5, 13.0, colors::text(), false);
         let (ax, ay, aw, ah) = ok;
         theme::fill_rrect(pm, ax, ay, aw, ah, ah / 2.0, colors::accent());
@@ -1985,7 +2117,7 @@ impl App {
         let items = menu.items.clone();
         theme::fill_rrect(pm, x, y + 3.0, w, h, 10.0, rgba(0, 0, 0, 30));
         theme::fill_rrect(pm, x, y, w, h, 10.0, colors::glass());
-        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 9.5, 1.0, rgba(0, 0, 0, 30));
+        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 9.5, 1.0, colors::separator());
         let mut iy = y + 6.0;
         for (i, (label, action)) in items.iter().enumerate() {
             if action.is_none() {
@@ -2143,6 +2275,136 @@ mod tests {
     #[test]
     fn plural_forms() {
         assert_eq!([objects(1), objects(3), objects(5), objects(11), objects(22)], ["1 объект", "3 объекта", "5 объектов", "11 объектов", "22 объекта"]);
+    }
+
+    #[test]
+    fn quick_look_space_arrows_stale_reply_and_text_editing_are_separate() {
+        feather_ui::scale::with_render_settings(1.0, feather_ui::scale::Appearance::Light, || {
+            let root = fixture("quick-look");
+            let mut app = app_in(&root);
+            app.resize(1000.0, 640.0);
+            let index = (0..app.visible.len()).find(|&i| app.entry(i).name == "file2.txt").unwrap();
+            app.select_only(index);
+            let effects = app.key(0x20, Some(" "), Mods::default());
+            let [Effect::Preview(path, generation)] = effects.as_slice() else { panic!("Space did not request preview") };
+            assert_eq!(path, &root.join("file2.txt"));
+            let first_generation = *generation;
+            app.preview_ready(first_generation, crate::preview::load(path));
+            assert!(matches!(app.preview.as_ref().unwrap().result, Some(Ok(crate::preview::Content::Text(_, _)))));
+            let mut image = tiny_skia::Pixmap::new(1000, 640).unwrap();
+            app.paint(&mut image.as_mut());
+            std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
+            image.save_png("/tmp/feather-inputs/quick-look-text.png").unwrap();
+            let effects = app.key(0xff53, None, Mods::default());
+            assert!(matches!(effects.as_slice(), [Effect::Preview(path, _)] if path == &root.join("file10.txt")));
+            app.preview_ready(first_generation, Ok(crate::preview::Content::Info("stale".into())));
+            assert!(app.preview.as_ref().unwrap().result.is_none());
+            app.key(0x20, Some(" "), Mods::default());
+            assert!(app.preview.is_none());
+            app.preview_ready(first_generation, Ok(crate::preview::Content::Info("closed".into())));
+            assert!(app.preview.is_none());
+            app.search_focus = true;
+            assert!(app.key(0x20, Some(" "), Mods::default()).is_empty());
+            assert_eq!(app.search.text(), " ");
+            assert!(app.preview.is_none());
+            app.key(0xff1b, None, Mods::default());
+            app.select_only(index);
+            app.start_rename();
+            app.key(0x20, Some(" "), Mods::default());
+            assert_eq!(app.rename.as_ref().unwrap().1.text(), " ");
+            assert!(app.preview.is_none());
+            app.key(0xff1b, None, Mods::default());
+            let image_path = root.join("photo.png");
+            image::RgbImage::from_fn(180, 120, |x, y| image::Rgb([x as u8, y as u8, 160])).save(&image_path).unwrap();
+            let index = (0..app.visible.len()).find(|&i| app.entry(i).name == "photo.png").unwrap();
+            app.select_only(index);
+            app.open_preview();
+            let generation = app.preview.as_ref().unwrap().generation;
+            app.preview_ready(generation, crate::preview::load(&image_path));
+            app.paint(&mut image.as_mut());
+            image.save_png("/tmp/feather-inputs/quick-look-image.png").unwrap();
+            app.key(0xff1b, None, Mods::default());
+            assert!(app.preview.is_none());
+            std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn dark_theme_paints_views_and_rename_at_fractional_scales() {
+        let root = fixture("dark-theme");
+        std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
+        for scale in [1.0, 1.25, 2.0] {
+            feather_ui::scale::with_render_settings(scale, feather_ui::scale::Appearance::Dark, || {
+                let mut app = app_in(&root);
+                app.resize(1000.0, 640.0);
+                for view in [View::Icons, View::List] {
+                    app.set_view(view);
+                    let index = (0..app.visible.len()).find(|&i| app.entry(i).name == "file2.txt").unwrap();
+                    app.select_only(index);
+                    app.start_rename();
+                    let mut image = tiny_skia::Pixmap::new((1000.0 * scale) as u32, (640.0 * scale) as u32).unwrap();
+                    app.paint(&mut image.as_mut());
+                    let bg = image.pixel((900.0 * scale) as u32, (550.0 * scale) as u32).unwrap();
+                    assert!(bg.red() < 60 && bg.green() < 60 && bg.blue() < 60, "white content in dark mode");
+                    image.save_png(format!("/tmp/feather-inputs/files-dark-{view:?}-{scale}.png")).unwrap();
+                    app.rename = None;
+                }
+            });
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn search_and_rename_edit_selection_caret_and_mouse_in_both_views() {
+        feather_ui::scale::with_render_settings(1.0, feather_ui::scale::Appearance::Light, || {
+        let root = fixture("text-inputs");
+        let mut app = app_in(&root);
+        app.resize(1000.0, 640.0);
+        let ctrl = Mods { ctrl: true, ..Default::default() };
+        app.key(0x66, Some("f"), ctrl);
+        app.key(0, Some("file"), Mods::default());
+        assert_eq!(app.visible.len(), 2);
+        app.key(0x61, Some("a"), ctrl);
+        assert_eq!(app.search.selected_text(), Some("file"));
+        assert_eq!(app.visible.len(), 2, "select-all changed the filter");
+        app.key(0, Some("photo"), Mods::default());
+        assert_eq!(app.visible.len(), 1);
+        let (x, y, _, _) = app.search_rect();
+        app.press(BTN_LEFT, x + 28.0, y + 12.0, Mods::default());
+        assert_eq!(app.search.caret(), 0);
+        app.key(0xffff, None, Mods::default());
+        assert_eq!(app.search.text(), "hoto");
+        app.key(0xff1b, None, Mods::default());
+        for view in [View::Icons, View::List] {
+            app.set_view(view);
+            let index = (0..app.visible.len()).find(|&i| app.entry(i).name == "file2.txt").unwrap();
+            app.select_only(index);
+            app.key(0xffbf, None, Mods::default()); // F2
+            assert_eq!(app.rename.as_ref().unwrap().1.selected_text(), Some("file2.txt"));
+            app.key(0, Some("имя.txt"), Mods::default());
+            let (rx, ry, _, _) = app.item_rect(index);
+            let (x, y) = if view == View::Icons { (rx + 9.0, ry + 10.0 + GRID_ICON) } else { (SIDEBAR_W + 45.0, ry + 5.5) };
+            app.press(BTN_LEFT, x, y + 2.0, Mods::default());
+            assert_eq!(app.rename.as_ref().unwrap().1.caret(), 0);
+            app.key(0xff53, None, Mods { shift: true, ..Default::default() });
+            assert_eq!(app.rename.as_ref().unwrap().1.selected_text(), Some("и"));
+            app.key(0, Some("И"), Mods::default());
+            assert_eq!(app.rename.as_ref().unwrap().1.text(), "Имя.txt");
+            assert!(root.join("file2.txt").exists(), "editing already renamed the file");
+            let mut image = tiny_skia::Pixmap::new(1000, 640).unwrap();
+            app.paint(&mut image.as_mut());
+            std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
+            image.save_png(format!("/tmp/feather-inputs/files-{view:?}.png")).unwrap();
+            app.key(0xff1b, None, Mods::default());
+            assert!(root.join("file2.txt").exists());
+        }
+        app.start_rename();
+        app.key(0, Some("Переименовано.txt"), Mods::default());
+        let effects = app.key(0xff0d, None, Mods::default());
+        run(&mut app, effects);
+        assert!(root.join("Переименовано.txt").exists());
+        std::fs::remove_dir_all(root).unwrap();
+        });
     }
 
     #[test]

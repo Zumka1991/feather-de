@@ -166,6 +166,7 @@ impl FeatherCompositor {
     }
 
     pub fn take_screenshot(&mut self, target: Target) {
+        if self.lock.active {return;}
         let (sw, sh, s) = (self.phys_w, self.phys_h, self.scale_factor);
         let (region, radius) = match target {
             Target::Screen => (Rectangle::<i32, smithay::utils::Physical>::from_size((sw, sh).into()), 0.0),
@@ -233,6 +234,7 @@ impl FeatherCompositor {
     }
 
     pub fn install_screenshot(&mut self, finished: Option<Finished>) {
+        if self.lock.active {return;}
         let Some(finished) = finished else {
             self.shell.notify("Снимок экрана", "Не удалось закодировать PNG");
             self.needs_redraw = true;

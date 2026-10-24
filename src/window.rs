@@ -1179,6 +1179,7 @@ mod settings_tests {
             let context = crate::system_settings::Context {
                 system: Default::default(),
                 pointer: Default::default(),
+                power:Default::default(),power_ready:false,
                 pointer_managed: true,
                 keyboard: &keyboard,
                 active: 0,

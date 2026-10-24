@@ -2,6 +2,7 @@
 //! behave identically everywhere.
 
 pub mod cpu_profile;
+pub mod appearance;
 pub mod draw;
 pub mod file_icons;
 pub mod file_kind;

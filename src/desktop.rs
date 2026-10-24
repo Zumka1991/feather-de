@@ -183,6 +183,16 @@ pub struct Desktop {
 }
 
 impl Desktop {
+    /// Invalidate pending drag paths too, so a late worker reply cannot finish a drop.
+    pub fn cancel_interaction(&mut self) {
+        self.drag = None;
+        self.dropped = None;
+        self.client_drag = None;
+        self.dnd_icon = None;
+        self.hover_folder = None;
+        self.rubber = None;
+        self.rubber_base.clear();
+    }
     pub fn new() -> Self {
         let pixel = |i: usize| {
             // Premultiplied: accent fill at 18 %, accent edge at 85 %
@@ -1151,6 +1161,20 @@ impl FeatherCompositor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn locking_cancels_drag_paths_and_pending_desktop_drops() {
+        use super::*;
+        let mut desktop = Desktop::new();
+        let path = PathBuf::from("/not-read/secret.txt");
+        desktop.drag = Some(IconDrag {start:(10.0,10.0),paths:vec![path.clone()],active:true});
+        desktop.dropped = desktop.drag.clone();
+        desktop.client_drag = Some(ClientDrag {id:7,paths:Some(vec![path.clone()]),drop_into:Some("/not-written".into())});
+        desktop.rubber = Some(((0.0,0.0),(20.0,20.0)));
+        desktop.rubber_base.insert(path);
+        desktop.cancel_interaction();
+        assert!(desktop.drag.is_none() && desktop.dropped.is_none() && desktop.client_drag.is_none());
+        assert!(desktop.rubber.is_none() && desktop.rubber_base.is_empty());
+    }
     use super::*;
 
     fn items(n: usize) -> Vec<Item> {

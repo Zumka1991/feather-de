@@ -209,6 +209,7 @@ pub fn valid_theme(name: &str) -> bool {
 pub struct Settings {
     /// Open «Об этом компьютере» at login
     pub show_about: bool,
+    pub power: crate::power::Preferences,
     pub pointer: Pointer,
     pub appearance: Appearance,
     pub wallpaper: WallpaperTheme,
@@ -217,6 +218,7 @@ pub struct Settings {
     pub default_terminal: Option<String>,
     pub scale: Option<f64>,
     pub dock_zoom: bool,
+    pub dock_locked: bool,
     pub dock: Option<Vec<String>>,
     pub animations: bool,
     pub keyboard: Keyboard,
@@ -226,6 +228,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             show_about: true,
+            power: Default::default(),
             pointer: Pointer::default(),
             appearance: Appearance::Light,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
@@ -234,6 +237,7 @@ impl Default for Settings {
             default_terminal: None,
             scale: None,
             dock_zoom: true,
+            dock_locked: false,
             dock: None,
             animations: true,
             keyboard: Keyboard::default(),
@@ -261,6 +265,12 @@ impl Settings {
             };
             let v = v.trim();
             match k.trim() {
+                "idle_lock_minutes" | "idle_blank_minutes" | "idle_suspend_minutes" => {
+                    if let Ok(minutes)=v.parse::<u32>() {if minutes<=1440 {
+                        match k.trim() {"idle_lock_minutes"=>s.power.lock=minutes,"idle_blank_minutes"=>s.power.blank=minutes,_=>s.power.suspend=minutes}
+                    }}
+                }
+
                 "appearance" => match v {
                     "dark" => s.appearance = Appearance::Dark,
                     "light" => s.appearance = Appearance::Light,
@@ -310,6 +320,11 @@ impl Settings {
                 "dock_zoom" => {
                     if let Ok(v) = v.parse() {
                         s.dock_zoom = v;
+                    }
+                }
+                "dock_locked" => {
+                    if let Ok(v) = v.parse() {
+                        s.dock_locked = v;
                     }
                 }
                 "animations" => {
@@ -373,7 +388,9 @@ impl Settings {
             if self.appearance==Appearance::Dark{"dark"}else{"light"},self.wallpaper.id(),self.scale.map(|v|format!("scale={v}\n")).unwrap_or_default(),
             self.dock_zoom,self.dock.as_ref().map(|d|format!("dock={}\n",d.join(","))).unwrap_or_default(),self.animations,self.keyboard.layouts.join(","),self.keyboard.shortcut.option(),
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
+        text.push_str(&format!("idle_lock_minutes={}\nidle_blank_minutes={}\nidle_suspend_minutes={}\n",self.power.lock,self.power.blank,self.power.suspend));
         text.push_str(&format!("show_about={}\n", self.show_about));
+        text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         let pt = &self.pointer;
         if let Some(theme) = pt.cursor_theme.as_deref().filter(|t| valid_theme(t)) {
             text.push_str(&format!("cursor_theme={theme}\n"));
@@ -489,7 +506,34 @@ impl Worker {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn idle_preferences_default_to_off_and_reject_invalid_intervals() {
+        use super::Settings;
+        assert_eq!(Settings::parse("").power, crate::power::Preferences::default());
+        let saved = Settings::parse("idle_lock_minutes=5\nidle_blank_minutes=10\nidle_suspend_minutes=30\n");
+        assert_eq!(Settings::parse(&saved.text()).power, crate::power::Preferences {lock:5,blank:10,suspend:30});
+        let invalid = Settings::parse("idle_lock_minutes=-1\nidle_blank_minutes=NaN\nidle_suspend_minutes=1441\n");
+        assert_eq!(invalid.power, crate::power::Preferences::default());
+    }
     use super::*;
+    #[test]
+    fn dock_pins_and_lock_survive_settings_round_trip() {
+        let old = Settings::parse("dock=konsole,firefox\n");
+        assert!(!old.dock_locked);
+        assert_eq!(old.dock.as_deref().unwrap(), ["konsole", "firefox"]);
+        let mut settings = old;
+        settings.dock_locked = true;
+        let restored = Settings::parse(&settings.text());
+        assert!(restored.dock_locked);
+        assert_eq!(restored.dock, settings.dock);
+        settings.dock_locked = false;
+        settings.dock = Some(Vec::new());
+        let restored = Settings::parse(&settings.text());
+        assert!(!restored.dock_locked);
+        assert_eq!(restored.dock, Some(Vec::new()));
+        assert!(!Settings::parse("dock_locked=invalid").dock_locked);
+    }
+
     #[test]
     fn pointer_settings_round_trip_and_reject_bad_values() {
         let mut settings = Settings::default();

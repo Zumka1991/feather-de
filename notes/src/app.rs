@@ -87,7 +87,7 @@ pub struct App {
     notes: Vec<Note>,
     selected: Option<u64>,
     loaded: bool,
-    search: String,
+    search: feather_ui::input::TextInput,
     search_focus: bool,
     caret: usize,
     anchor: Option<usize>,
@@ -177,7 +177,7 @@ impl App {
             notes: Vec::new(),
             selected: None,
             loaded: false,
-            search: String::new(),
+            search: Default::default(),
             search_focus: false,
             caret: 0,
             anchor: None,
@@ -601,6 +601,11 @@ impl App {
             Hit::Zoom => vec![Effect::ToggleMaximize],
             Hit::Toolbar if double => vec![Effect::ToggleMaximize],
             Hit::Toolbar => vec![Effect::Move],
+            Hit::Search => {
+                let (sx, _, sw, _) = self.search_rect();
+                self.search.click(&mut self.fonts, x - sx - 30.0, sw - 40.0, 13.0, false, mods.shift);
+                Vec::new()
+            }
             Hit::New => self.new_note(),
             Hit::Delete => self.delete_note(),
             Hit::Row(i) => {
@@ -662,7 +667,7 @@ impl App {
     pub fn paste_text(&mut self, text: &str) {
         if self.selected.is_none() || self.search_focus {
             if self.search_focus {
-                self.search.push_str(&text.replace(['\n', '\r'], " "));
+                self.search.insert(&text.replace(['\n', '\r'], " "));
                 self.dirty = true;
             }
             return;
@@ -696,13 +701,10 @@ impl App {
                     self.search_focus = false;
                 }
                 K::Return | K::KP_Enter | K::Down => self.search_focus = false,
-                K::BackSpace => {
-                    self.search.pop();
-                }
                 _ if mods.ctrl && latin('v') => return vec![Effect::Paste],
                 _ => {
-                    if let Some(t) = utf8.filter(|t| !mods.ctrl && !t.chars().any(char::is_control)) {
-                        self.search.push_str(t);
+                    if self.search.key(sym.raw(), utf8, mods.ctrl, mods.shift) != feather_ui::input::Edit::Changed {
+                        return Vec::new();
                     }
                 }
             }
@@ -849,7 +851,7 @@ impl App {
         let hovered_traffic = matches!(self.hover, Hit::Close | Hit::Minimize | Hit::Zoom);
         for (hit, cx) in self.traffic() {
             let color = if !self.focused && !hovered_traffic {
-                rgba(205, 205, 210, 255)
+                colors::traffic_inactive()
             } else {
                 match hit {
                     Hit::Close => rgba(255, 95, 87, 255),
@@ -892,10 +894,7 @@ impl App {
         if self.search.is_empty() && !self.search_focus {
             self.fonts.draw_text(pm, "Поиск", sx + 30.0, sy + 7.5, 13.0, colors::tertiary(), false);
         } else {
-            let end = self.fonts.draw_text(pm, &self.search.clone(), sx + 30.0, sy + 7.5, 13.0, colors::text(), false);
-            if self.search_focus {
-                theme::fill_rect(pm, sx + 31.0 + end, sy + 7.0, 1.5, 16.0, rgba(YELLOW.0, YELLOW.1, YELLOW.2, 255));
-            }
+            self.search.draw(pm, &mut self.fonts, sx + 30.0, sy + 7.5, sw - 40.0, 13.0, false, colors::text(), self.search_focus, rgba(YELLOW.0, YELLOW.1, YELLOW.2, 255));
         }
         // List
         let rows: Vec<(u64, String, String, i64)> = self
@@ -924,8 +923,7 @@ impl App {
             }
             let selected = Some(id) == self.selected;
             if selected {
-                let a = if self.focused { 255 } else { 120 };
-                theme::fill_rrect(pm, 16.0, y + 2.0, SIDEBAR_W - 32.0, ROW_H - 4.0, 9.0, rgba(YELLOW.0, YELLOW.1, YELLOW.2, a / 2 + 40));
+                theme::fill_rrect(pm, 16.0, y + 2.0, SIDEBAR_W - 32.0, ROW_H - 4.0, 9.0, colors::note_selection(self.focused));
             } else if self.hover == Hit::Row(i) {
                 theme::fill_rrect(pm, 16.0, y + 2.0, SIDEBAR_W - 32.0, ROW_H - 4.0, 9.0, colors::hover());
             } else if i > 0 && !matches!(self.hover, Hit::Row(h) if h + 1 == i) {
@@ -999,7 +997,7 @@ impl App {
                         ex += 6.0;
                     }
                     if ex > sx {
-                        let tint = if self.focused { rgba(YELLOW.0, YELLOW.1, YELLOW.2, 110) } else { rgba(0, 0, 0, 30) };
+                        let tint = if self.focused { rgba(YELLOW.0, YELLOW.1, YELLOW.2, 110) } else { colors::selected_gray() };
                         theme::fill_rect(pm, x0 + sx, y + 1.0, ex - sx, line.height - 2.0, tint);
                     }
                 }
@@ -1035,6 +1033,51 @@ mod tests {
         for c in s.chars() {
             let t = c.to_string();
             app.key(0, Some(&t), Mods::default());
+        }
+    }
+
+    #[test]
+    fn search_selection_mouse_and_paste_do_not_edit_the_note() {
+        feather_ui::scale::with_render_settings(1.0, feather_ui::scale::Appearance::Light, || {
+        let mut app = app_with("Список покупок");
+        let ctrl = Mods { ctrl: true, ..Default::default() };
+        app.key(0x66, Some("f"), ctrl);
+        typing(&mut app, "покупок");
+        app.key(0x61, Some("a"), ctrl);
+        assert_eq!(app.search.selected_text(), Some("покупок"));
+        assert_eq!(app.search.text(), "покупок");
+        app.paste_text("Список");
+        assert_eq!(app.search.text(), "Список");
+        let (x, y, _, _) = app.search_rect();
+        app.press(BTN_LEFT, x + 30.0, y + 12.0, Mods::default());
+        assert_eq!(app.search.caret(), 0);
+        app.key(0xff53, None, Mods { shift: true, ..Default::default() });
+        assert_eq!(app.search.selected_text(), Some("С"));
+        typing(&mut app, "с");
+        assert_eq!(app.search.text(), "список");
+        assert_eq!(app.text(), "Список покупок");
+        let mut image = tiny_skia::Pixmap::new(app.w as u32, app.h as u32).unwrap();
+        app.paint(&mut image.as_mut());
+        std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
+        image.save_png("/tmp/feather-inputs/notes.png").unwrap();
+        });
+    }
+
+    #[test]
+    fn dark_theme_keeps_note_and_search_readable_at_fractional_scales() {
+        std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
+        for scale in [1.0, 1.25, 2.0] {
+            feather_ui::scale::with_render_settings(scale, feather_ui::scale::Appearance::Dark, || {
+                let mut app = app_with("Планы на день\nПроверить тёмную тему и выделение текста.");
+                app.search_focus = true;
+                app.search.set("Планы");
+                app.search.select_all();
+                let mut image = tiny_skia::Pixmap::new((app.w * scale) as u32, (app.h * scale) as u32).unwrap();
+                app.paint(&mut image.as_mut());
+                let bg = image.pixel((800.0 * scale) as u32, (500.0 * scale) as u32).unwrap();
+                assert!(bg.red() < 60 && bg.green() < 60 && bg.blue() < 60, "white editor in dark mode");
+                image.save_png(format!("/tmp/feather-inputs/notes-dark-{scale}.png")).unwrap();
+            });
         }
     }
 

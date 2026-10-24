@@ -45,6 +45,8 @@ enum KeyAction {
     /// Print: screen, Shift+Print: region/window selection, Alt+Print: active window
     Screenshot { shift: bool, alt: bool },
     Auth(crate::auth_dialog::Cmd),
+    Lock,
+    Unlock,
 }
 
 /// Delay before the Alt+Tab panel appears: short enough to feel instant when Alt is held,
@@ -65,6 +67,9 @@ fn cursor_for_edges(edges: Edges) -> CursorIcon {
 impl FeatherCompositor {
     /// Input from either backend (winit when nested, libinput on DRM)
     pub fn handle_input<B: InputBackend>(&mut self, event: InputEvent<B>) {
+        // The event which wakes a blank screen is consumed in full.
+        let activity=matches!(&event,InputEvent::Keyboard{..}|InputEvent::PointerMotion{..}|InputEvent::PointerMotionAbsolute{..}|InputEvent::PointerButton{..}|InputEvent::PointerAxis{..});
+        if activity && self.activity(){return;}
         self.needs_redraw = true;
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
@@ -110,6 +115,31 @@ impl FeatherCompositor {
 
         let keyboard = self.keyboard.clone();
         keyboard.input::<(), _>(self, keycode, key_state, serial, time, |st, mods, keysym_handle| {
+            let layout_idx = keysym_handle.xkb().lock().unwrap().active_layout().0;
+            if st.active_layout_index!=layout_idx as usize{st.refresh_input_source(layout_idx as usize);}
+            // Nothing in the desktop (including emergency quit and screenshots) runs locked.
+            if st.lock.active {
+                if key_state==KeyState::Pressed && mods.ctrl && mods.alt {
+                    let sym=keysym_handle.modified_sym().raw();
+                    if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&sym) {
+                        deferred=Some(KeyAction::SwitchVt((sym-keysyms::KEY_XF86Switch_VT_1+1) as i32));return FilterResult::Intercept(());
+                    }
+                    if (keysyms::KEY_F1..=keysyms::KEY_F12).contains(&sym) {
+                        deferred=Some(KeyAction::SwitchVt((sym-keysyms::KEY_F1+1) as i32));
+                        return FilterResult::Intercept(());
+                    }
+                }
+                if st.lock.external() {return FilterResult::Forward;}
+                if key_state==KeyState::Pressed {
+                    let sym=keysym_handle.modified_sym();
+                    if st.lock.key(sym.raw(),sym.key_char(),mods.ctrl,mods.shift,mods.caps_lock) {deferred=Some(KeyAction::Unlock);}
+                    st.needs_redraw=true;
+                }
+                return FilterResult::Intercept(());
+            }
+            if key_state==KeyState::Pressed && mods.logo && keysym_handle.raw_latin_sym_or_raw_current_sym().is_some_and(|sym|sym.raw()==keysyms::KEY_l) {
+                deferred=Some(KeyAction::Lock);return FilterResult::Intercept(());
+            }
             let system_chord=mods.ctrl&&mods.alt;
             // The password dialog owns the keyboard; only VT/system chords pass.
             if st.auth.is_open() && !system_chord {
@@ -123,7 +153,7 @@ impl FeatherCompositor {
             if st.shell.control_center_open && st.shell.cc.page==crate::control_panel::Page::Password && !system_chord {
                 if key_state==KeyState::Pressed {
                     let sym=keysym_handle.modified_sym();
-                    if let Some(action)=st.shell.cc.key(sym.raw(),sym.key_char()) {deferred=Some(KeyAction::Shell(action));}
+                    if let Some(action)=st.shell.cc.key(sym.raw(),sym.key_char(),mods.ctrl,mods.shift) {deferred=Some(KeyAction::Shell(action));}
                     st.shell.overlay_dirty=true;
                 }
                 return FilterResult::Intercept(());
@@ -202,8 +232,6 @@ impl FeatherCompositor {
                 }
             }
 
-            let layout_idx = keysym_handle.xkb().lock().unwrap().active_layout().0;
-            if st.active_layout_index!=layout_idx as usize{st.refresh_input_source(layout_idx as usize);}
 
             if key_state != KeyState::Pressed {
                 return FilterResult::Forward;
@@ -402,7 +430,7 @@ impl FeatherCompositor {
 
             // Built-in Notes window receives text when it is the focused (topmost) window
             if st.system_settings.editing()&&st.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|matches!(w.backend,WindowBackend::Builtin(BuiltinWindowKind::SystemSettings))){
-                if let Some(action)=st.system_settings.edit_key(if mods.ctrl{latin_sym.raw()}else{sym.raw()},sym.key_char(),mods.ctrl){deferred=Some(KeyAction::Shell(ShellClickAction::SystemSettings(action)));}
+                if let Some(action)=st.system_settings.edit_key(if mods.ctrl{latin_sym.raw()}else{sym.raw()},sym.key_char(),mods.ctrl,mods.shift){deferred=Some(KeyAction::Shell(ShellClickAction::SystemSettings(action)));}
                 st.mark_settings_dirty();st.needs_redraw=true;return FilterResult::Intercept(());
             }
             if let Some(top_win) = st.windows.iter_mut().rev().find(|w| w.is_visible()) {
@@ -435,6 +463,8 @@ impl FeatherCompositor {
         });
 
         match deferred {
+            Some(KeyAction::Lock)=>self.lock_session(),
+            Some(KeyAction::Unlock)=>self.lock_submit(),
             Some(KeyAction::Auth(cmd)) => self.auth_command(cmd),
             Some(KeyAction::SwitcherStep { reverse }) => self.switcher_step(reverse),
             Some(KeyAction::SwitcherCommit) => self.switcher_commit(),
@@ -560,6 +590,11 @@ impl FeatherCompositor {
 
     fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer_location = pos;
+        if self.lock.active {
+            let under=self.surface_under_pointer(pos.x,pos.y);let pointer=self.pointer.clone();
+            pointer.motion(self,under,&MotionEvent{location:pos,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);return;
+        }
+
         if self.shell.switcher.as_ref().is_some_and(|s|s.visible){
             if let Some(index)=self.shell.switcher_hit(pos.x,pos.y){
                 if let Some(sw)=self.shell.switcher.as_mut(){if sw.selected!=index{sw.selected=index;self.shell.switcher_dirty=true;self.needs_redraw=true;}}
@@ -730,6 +765,23 @@ impl FeatherCompositor {
     }
 
     fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
+        if self.lock.active {
+            if self.lock.external() {
+                if btn_state==ButtonState::Pressed {if !self.pressed_buttons.contains(&button){self.pressed_buttons.push(button);}}
+                else {self.pressed_buttons.retain(|held|*held!=button);}
+                let pointer=self.pointer.clone();
+                pointer.button(self,&ButtonEvent{button,state:btn_state,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);
+            } else if button==BTN_LEFT && btn_state==ButtonState::Pressed {
+                let x=self.pointer_location.x-(self.shell.screen_w as f64-400.0)/2.0;
+                let y=self.pointer_location.y-(self.shell.screen_h as f64-260.0)/2.0;
+                if (34.0..366.0).contains(&x) && (119.0..157.0).contains(&y) {
+                    self.lock.click_field(&mut self.fonts,x as f32,self.keyboard.modifier_state().shift);self.needs_redraw=true;
+                }
+                if (115.0..285.0).contains(&x) && (204.0..236.0).contains(&y) {self.lock_submit();}
+            }
+            return;
+        }
+
         // A release of a press that started before the selection still belongs to the client
         let earlier_press = btn_state == ButtonState::Released && self.pressed_buttons.contains(&button);
         if !earlier_press && self.screenshot_button(button == BTN_LEFT, btn_state == ButtonState::Pressed) {
@@ -837,6 +889,11 @@ impl FeatherCompositor {
                 self.open_dock_menu_for(target, anchor);
                 return;
             }
+            if self.shell.dock_contains(pos.x, pos.y) {
+                self.consumed_buttons.push(button);
+                self.open_dock_background_menu();
+                return;
+            }
         }
 
         // Launchpad covers the desktop; the menu bar and the Dock stay usable above it
@@ -872,6 +929,10 @@ impl FeatherCompositor {
             return;
         }
 
+        if button == BTN_LEFT && self.shell.control_center_open && self.shell.cc.page == crate::control_panel::Page::Password {
+            let panel = self.shell.control_panel_rect();
+            self.shell.cc.click_password(panel, pos.x as f32, pos.y as f32, &mut self.fonts, self.keyboard.modifier_state().shift);
+        }
         if !fullscreen_top || self.shell.has_visible_overlay() {
             if let Some(action) = self
                 .shell
@@ -979,7 +1040,12 @@ impl FeatherCompositor {
                     }
                 }
                 BuiltinWindowKind::SystemSettings => {
-                    builtin_action=self.system_settings.hit(lx,ly,win.width as f32,win.height as f32,&self.settings_context()).map(ShellClickAction::SystemSettings);
+                    let (width, height) = (win.width as f32, win.height as f32);
+                    let action = self.system_settings.hit(lx, ly, width, height, &self.settings_context());
+                    if let Some(action) = &action {
+                        self.settings_text_click(action, lx, ly, width, height);
+                    }
+                    builtin_action = action.map(ShellClickAction::SystemSettings);
                 }
                 _ => {}
             }
@@ -1107,6 +1173,10 @@ impl FeatherCompositor {
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
+        if self.lock.active {
+            if self.lock.external(){self.forward_pointer_axis::<B>(event);}
+            return;
+        }
         let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|w.fullscreen);
         if !fullscreen&&self.shell.launchpad.is_none() {
             if let Some(key)=self.shell.tray_hit(self.pointer_location.x,self.pointer_location.y).map(|(i,_)|i.key.clone()) {
@@ -1150,6 +1220,9 @@ impl FeatherCompositor {
             if changed{self.mark_settings_dirty();self.needs_redraw=true;}
             return;
         }
+        self.forward_pointer_axis::<B>(event);
+    }
+    fn forward_pointer_axis<B: InputBackend>(&mut self,event:B::PointerAxisEvent){
         let source = event.source();
         let horizontal_amount = event
             .amount(Axis::Horizontal)

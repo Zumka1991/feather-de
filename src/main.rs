@@ -23,6 +23,9 @@ mod wallpaper;
 mod file_portal;
 mod polkit_agent;
 mod auth_dialog;
+mod session_lock;
+mod lock_auth;
+mod power;
 mod trash;
 mod labwc;
 mod shell;
@@ -144,6 +147,10 @@ pub struct FeatherCompositor {
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
     pub polkit: Option<crate::polkit_agent::Agent>,
+    pub lock: crate::session_lock::Lock,
+    pub power: crate::power::Power,
+    pub idle_notifier: smithay::wayland::idle_notify::IdleNotifierState<Self>,
+    pub session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     pub trash_full: bool,
     pub pointer_config: crate::settings::Pointer,
     pub show_about: bool,
@@ -221,6 +228,8 @@ pub struct FeatherCompositor {
     pub dock_model_dirty: bool,
     /// Pinned Dock apps (registry ids), in Dock order
     pub dock_pins: Vec<String>,
+    /// Prevent dragging apps into, out of, or within the Dock (menu edits still work).
+    pub dock_locked: bool,
     /// App icon being pressed/dragged from the Dock or Launchpad
     pub icon_drag: Option<IconDrag>,
 
@@ -251,10 +260,10 @@ impl FeatherCompositor {
         }
         let desktop = self.shell.desktop.focused;
         for (i, w) in self.windows.iter_mut().enumerate() {
-            w.set_activated(!desktop && Some(i) == top);
+            w.set_activated(!self.lock.active && !desktop && Some(i) == top);
         }
         let password = self.auth.is_open() || (self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password);
-        let target = if password || desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
+        let target = if self.lock.active {self.lock.focus()} else if password || desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus() != target {
             keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
@@ -625,6 +634,7 @@ impl FeatherCompositor {
     pub fn save_settings(&self) {
         let settings=crate::settings::Settings {
             show_about: self.show_about,
+            power: self.power.preferences,
             pointer: self.pointer_config.clone(),
             appearance: appearance(),
             wallpaper: self.shell.theme,
@@ -633,6 +643,7 @@ impl FeatherCompositor {
             default_terminal: Some(self.system_preferences.terminal.clone()),
             scale: self.explicit_scale,
             dock_zoom: self.shell.dock_zoom_enabled,
+            dock_locked: self.dock_locked,
             dock: Some(self.dock_pins.clone()),
             animations: self.animations.enabled(),
             keyboard: self.keyboard_config.clone(),
@@ -644,14 +655,14 @@ impl FeatherCompositor {
     /// Registry indices of pinned apps, in Dock order (unknown ids are skipped)
     pub fn pinned_indices(&self) -> Vec<usize> {
         let permanent = self.app_registry.index_of(crate::apps::AppRegistry::PERMANENT);
-        // Files first and always present, even if an older config removed it
+        // Old configs may omit Files; otherwise its saved position is authoritative.
         permanent
+            .filter(|_| !self.dock_pins.iter().any(|id| id == crate::apps::AppRegistry::PERMANENT))
             .into_iter()
             .chain(
                 self.dock_pins
                     .iter()
-                    .filter_map(|id| self.app_registry.index_of(id))
-                    .filter(|&i| Some(i) != permanent),
+                    .filter_map(|id| self.app_registry.index_of(id)),
             )
             .collect()
     }
@@ -698,6 +709,10 @@ impl FeatherCompositor {
         if matches!(drag.source, DragSource::DockOther) {
             return;
         }
+        // Keep normal click handling on release, without a ghost or a drop target.
+        if self.dock_locked {
+            return;
+        }
         if !drag.active {
             let moved = ((pos.x - drag.start.0).powi(2) + (pos.y - drag.start.1).powi(2)).sqrt();
             if moved < 6.0 {
@@ -716,9 +731,9 @@ impl FeatherCompositor {
             }
             self.dock_model_dirty = true;
         }
-        let gap = self
-            .shell
-            .dock_in_drop_zone(pos.x, pos.y)
+        let can_pin = !matches!(drag.source, DragSource::DockApp { pinned: false, .. })
+            || self.shell.dock_in_pinned_section(pos.x);
+        let gap = (can_pin && self.shell.dock_in_drop_zone(pos.x, pos.y))
             .then(|| self.shell.dock_insert_index(pos.x));
         self.shell.set_dock_gap(gap);
         self.needs_redraw = true;
@@ -734,17 +749,21 @@ impl FeatherCompositor {
         self.dock_model_dirty = true;
         self.needs_redraw = true;
 
+        // A blocked drag must not turn into a launch/activation at its release point.
+        let pos = self.pointer_location;
+        if self.dock_locked && ((pos.x - drag.start.0).hypot(pos.y - drag.start.1) >= 6.0 || drag.active) {
+            return;
+        }
         if !drag.active {
             self.execute_shell_action(drag.click);
             return;
         }
-        let pos = self.pointer_location;
         let in_dock = self.shell.dock_in_drop_zone(pos.x, pos.y);
         match drag.source {
             DragSource::DockApp { id, pinned } => {
-                if in_dock {
+                if in_dock && gap.is_some() {
                     self.pin_app(&id, gap);
-                } else if pinned {
+                } else if pinned && id != crate::apps::AppRegistry::PERMANENT {
                     self.unpin_app(&id);
                     self.shell.notify("Удалено из Dock", drag.ghost.label);
                 }
@@ -812,6 +831,7 @@ impl FeatherCompositor {
             if self.trash_full {
                 items.push(("Очистить Корзину…".to_string(), DockMenuAction::EmptyTrash));
             }
+            items.push(self.dock_lock_menu_item());
             self.shell.open_dock_menu(target, anchor, items, &mut self.fonts);
             return;
         }
@@ -841,15 +861,32 @@ impl FeatherCompositor {
             if self.app_registry.apps[i].id == crate::apps::AppRegistry::PERMANENT {
                 // Files stays in the Dock, as Finder does
             } else if self.is_pinned(i) {
-                items.push(("Удалить из Dock".to_string(), DockMenuAction::RemoveFromDock));
+                items.push(("Открепить от Dock".to_string(), DockMenuAction::RemoveFromDock));
             } else {
-                items.push(("Оставить в Dock".to_string(), DockMenuAction::KeepInDock));
+                items.push(("Закрепить в Dock".to_string(), DockMenuAction::KeepInDock));
             }
         }
         if running {
             items.push(("Завершить".to_string(), DockMenuAction::Quit));
         }
+        items.push(self.dock_lock_menu_item());
         self.shell.open_dock_menu(target, anchor, items, &mut self.fonts);
+    }
+
+    fn dock_lock_menu_item(&self) -> (String, DockMenuAction) {
+        (
+            if self.dock_locked { "✓ Заблокировать Dock" } else { "Заблокировать Dock" }.into(),
+            DockMenuAction::ToggleDockLock,
+        )
+    }
+
+    pub fn open_dock_background_menu(&mut self) {
+        self.shell.open_context_menu(
+            vec![self.dock_lock_menu_item()],
+            self.pointer_location.x as f32,
+            self.pointer_location.y as f32,
+            &mut self.fonts,
+        );
     }
 
     fn dock_target_key(&self, target: DockTarget) -> Option<AppKey> {
@@ -993,6 +1030,10 @@ impl FeatherCompositor {
                 }
                 DockMenuAction::Open if target == DockTarget::Trash => self.open_trash(),
                 DockMenuAction::EmptyTrash => self.confirm_empty_trash(),
+                DockMenuAction::ToggleDockLock => {
+                    self.dock_locked = !self.dock_locked;
+                    self.save_settings();
+                }
                 DockMenuAction::Open => {
                     if let Some(key) = self.dock_target_key(target) {
                         self.activate_app(key);
@@ -1227,7 +1268,7 @@ impl FeatherCompositor {
 
     pub fn handle_winit_event(&mut self, event: WinitEvent) {
         match event {
-            WinitEvent::Resized { size, scale_factor } => self.on_resized(size, scale_factor),
+            WinitEvent::Resized { size, scale_factor } => {self.on_resized(size, scale_factor);self.lock_resized();},
             WinitEvent::Input(event) if !self.debug_input_only => self.handle_input(event),
             WinitEvent::Input(_) => {},
             // Rendering is driven by our own damage; the host's redraw event only tells us
@@ -1360,6 +1401,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let display: Display<FeatherCompositor> = Display::new()?;
     let dh = display.handle();
 
+    let _idle_inhibit = smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<FeatherCompositor>(&dh);
     let compositor_state = CompositorState::new::<FeatherCompositor>(&dh);
     let xdg_shell_state = XdgShellState::new::<FeatherCompositor>(&dh);
     let xdg_decoration_state = XdgDecorationState::new::<FeatherCompositor>(&dh);
@@ -1535,6 +1577,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         controls_password_focus: false,
         auth: Default::default(),
         polkit: None,
+        lock: Default::default(),
+        power: crate::power::Power::new(saved.power),
+        idle_notifier: smithay::wayland::idle_notify::IdleNotifierState::new(&dh,event_loop.handle()),
+        session_lock_state: smithay::wayland::session_lock::SessionLockManagerState::new::<FeatherCompositor,_>(&dh, |_|true),
         trash_full: false,
         trash_watcher: None,
         trash_tx: None,
@@ -1611,6 +1657,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         user_interacted: false,
         dock_model_dirty: true,
         dock_pins: Vec::new(),
+        dock_locked: saved.dock_locked,
         icon_drag: None,
         active_layout_name: "EN".to_string(),
         active_layout_index: 0,
@@ -1668,6 +1715,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     state.dock_pins = saved.dock.clone().unwrap_or_else(|| state.app_registry.default_pins());
+    // Keep insertion indices identical to the visible pinned order for legacy configs.
+    if !state.dock_pins.iter().any(|id| id == crate::apps::AppRegistry::PERMANENT) {
+        state.dock_pins.insert(0, crate::apps::AppRegistry::PERMANENT.into());
+    }
 
     state.pointer_managed = state.backend.is_drm() || crate::labwc::host_pid().is_some();
     if state.show_about {
@@ -1850,6 +1901,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             TimeoutAction::Drop
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_LOCK").is_some() {state.lock_session();}
     // Visual tests: FEATHER_DEBUG_SCREENSHOT=/path.png captures our own output after 2.5 s
     if let Some(path) = std::env::var_os("FEATHER_DEBUG_SCREENSHOT") {
         let path = std::path::PathBuf::from(path);
@@ -1883,6 +1935,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     }
 
 
+    state.start_power();
     // Event-driven main loop: sleeps until input, a client request or a timer fires,
     // and only renders when something actually changed.
     event_loop.run(None, &mut state, |state| {
@@ -1897,6 +1950,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         if state.pointer_focus_dirty {
             state.refresh_pointer_focus();
         }
+        state.refresh_lock();
+        state.sync_idle_inhibit();
         state.flush_display_mode();
         state.render_if_needed();
         if let Err(err) = state.display_handle.flush_clients() {

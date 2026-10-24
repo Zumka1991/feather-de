@@ -4,6 +4,7 @@
 //! chosen so the caret stays in view.
 use crate::{draw, text::FontSystem};
 use tiny_skia::{Color, PixmapMut};
+use zeroize::Zeroizing;
 
 const LEFT: u32 = 0xff51;
 const RIGHT: u32 = 0xff53;
@@ -24,10 +25,28 @@ pub enum Edit {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextInput {
-    text: String,
+    // Password fields share the same editor; storage and insertion scratch are wiped.
+    text: Zeroizing<String>,
     caret: usize,
     anchor: Option<usize>,
     max_chars: Option<usize>,
+    max_bytes: Option<usize>,
+}
+
+impl std::ops::Deref for TextInput {
+    type Target = str;
+    fn deref(&self) -> &str { self.text() }
+}
+
+impl From<&str> for TextInput {
+    fn from(text: &str) -> Self { Self::new(text) }
+}
+
+impl From<String> for TextInput {
+    fn from(text: String) -> Self {
+        let caret = text.len();
+        Self { text: text.into(), caret, ..Self::default() }
+    }
 }
 
 fn prev(s: &str, i: usize) -> usize {
@@ -71,6 +90,18 @@ impl TextInput {
         self
     }
 
+    pub fn with_byte_limit(mut self, max: usize) -> Self {
+        self.max_bytes = Some(max);
+        self
+    }
+
+    /// Transfer a password to its worker without making a plaintext copy.
+    pub fn take_text(&mut self) -> Zeroizing<String> {
+        self.caret = 0;
+        self.anchor = None;
+        std::mem::take(&mut self.text)
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }
@@ -81,7 +112,7 @@ impl TextInput {
 
     /// Replaces the text; the caret goes to the end.
     pub fn set(&mut self, text: &str) {
-        self.text = text.to_owned();
+        self.text = text.to_owned().into();
         self.caret = self.text.len();
         self.anchor = None;
     }
@@ -110,12 +141,17 @@ impl TextInput {
 
     /// Inserts at the caret, replacing the selection; control characters are dropped.
     pub fn insert(&mut self, s: &str) {
-        let clean: String = s.chars().filter(|c| !c.is_control()).collect();
         let (a, b) = self.selection().unwrap_or((self.caret, self.caret));
         let room = self
             .max_chars
             .map_or(usize::MAX, |m| m.saturating_sub(self.text.chars().count() - self.text[a..b].chars().count()));
-        let clean: String = clean.chars().take(room).collect();
+        let bytes = self.max_bytes.map_or(usize::MAX, |m| m.saturating_sub(self.text.len() - (b - a)));
+        let mut clean = Zeroizing::new(String::new());
+        for c in s.chars().filter(|c| !c.is_control()).take(room) {
+            if clean.len() + c.len_utf8() > bytes { break; }
+            clean.push(c);
+        }
+        if clean.is_empty() { return; }
         self.text.replace_range(a..b, &clean);
         self.caret = a + clean.len();
         self.anchor = None;
@@ -144,7 +180,7 @@ impl TextInput {
     pub fn key(&mut self, sym: u32, utf8: Option<&str>, ctrl: bool, shift: bool) -> Edit {
         let t = &self.text;
         match sym {
-            0x61 | 0x41 if ctrl => {
+            0x61 | 0x41 | 0x06c6 | 0x06e6 if ctrl => {
                 self.select_all();
                 Edit::Moved
             }
@@ -226,6 +262,26 @@ impl TextInput {
         self.move_to(best.0, extend);
     }
 
+    fn masked(&self) -> Self {
+        let mut mask = Self::new(&"•".repeat(self.text.chars().count()));
+        mask.caret = self.text[..self.caret].chars().count() * '•'.len_utf8();
+        mask.anchor = self.anchor.map(|a| self.text[..a].chars().count() * '•'.len_utf8());
+        mask
+    }
+
+    pub fn click_masked(&mut self, fonts: &mut FontSystem, x: f32, width: f32, size: f32, extend: bool) {
+        let mut mask = self.masked();
+        mask.click(fonts, x, width, size, false, extend);
+        let index = mask.caret / '•'.len_utf8();
+        let byte = self.text.char_indices().nth(index).map_or(self.text.len(), |(i, _)| i);
+        self.move_to(byte, extend);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_masked(&self, pm: &mut PixmapMut, fonts: &mut FontSystem, x: f32, y: f32, width: f32, size: f32, color: Color, accent: Color) {
+        self.masked().draw(pm, fonts, x, y, width, size, false, color, true, accent);
+    }
+
     /// Text, selection and (when `focused`) the caret inside `[x, x + width)`.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
@@ -270,6 +326,27 @@ impl TextInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_limited_mask_keeps_unicode_caret_and_never_exposes_text_in_debug() {
+        let mut field = TextInput::default().with_byte_limit(8);
+        field.insert("пароль");
+        assert_eq!(field.text(), "паро");
+        assert!(!format!("{field:?}").contains("паро"));
+        field.key(HOME, None, false, false);
+        field.key(RIGHT, None, false, true);
+        let masked = field.masked();
+        assert_eq!(masked.selected_text(), Some("•"));
+        assert_eq!(field.selected_text(), Some("п"));
+        field.insert("я");
+        assert_eq!(field.text(), "яаро");
+        field.select_all();
+        field.insert("12345678");
+        assert_eq!(&*field.take_text(), "12345678");
+        assert!(field.is_empty());
+        assert_eq!(field.caret(), 0);
+        assert!(field.selection().is_none());
+    }
 
     #[test]
     fn caret_selection_words_and_limits() {

@@ -186,6 +186,7 @@ pub enum DockMenuAction {
     Open,
     KeepInDock,
     RemoveFromDock,
+    ToggleDockLock,
     Quit,
     /// Raise this window of the app (window list in the menu)
     Window(u64),
@@ -882,6 +883,12 @@ impl MacShell {
             .map(|s| (s.target, R::new(s.x + ox, s.y + oy, s.size, s.size)))
     }
 
+    /// The visible Dock background, without the wider app drop margin.
+    pub fn dock_contains(&self, px: f64, py: f64) -> bool {
+        let (ox, oy) = self.dock_origin();
+        self.dock_bar.contains(px as f32 - ox, py as f32 - oy)
+    }
+
     /// Area where dropping a dragged app pins it
     pub fn dock_in_drop_zone(&self, px: f64, py: f64) -> bool {
         let (ox, oy) = self.dock_origin();
@@ -900,6 +907,15 @@ impl MacShell {
             .filter(|(_, item)| item.pinned)
             .filter(|(slot, _)| slot.x + slot.size * 0.5 < lx)
             .count()
+    }
+
+    /// Running apps become pinned only when deliberately moved into the pinned section.
+    pub fn dock_in_pinned_section(&self, px: f64) -> bool {
+        let (ox, _) = self.dock_origin();
+        self.dock_slots.iter().zip(&self.dock_items)
+            .filter(|(_, item)| item.pinned)
+            .next_back()
+            .is_some_and(|(slot, _)| px as f32 <= ox + slot.x + slot.size + DOCK_ICON_GAP * 0.5)
     }
 
     pub fn set_dock_gap(&mut self, gap: Option<usize>) {
@@ -1398,6 +1414,10 @@ impl MacShell {
             .iter()
             .find(|(x0, x1, _)| px >= *x0 && px < *x1)
             .map(|(_, _, item)| *item)
+    }
+
+    pub(crate) fn control_panel_rect(&self) -> R {
+        self.cc_layout().0
     }
 
     fn cc_layout(&self) -> (R, Vec<(R, CcItem)>) {

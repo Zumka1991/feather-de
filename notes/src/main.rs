@@ -63,11 +63,13 @@ const TEXT_TYPES: [&str; 5] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/
 const SAVE_DELAY: Duration = Duration::from_millis(600);
 
 enum Msg {
+    Appearance(feather_ui::scale::Appearance),
     Loaded(Vec<store::Note>),
     Paste(String),
 }
 
 struct Notes {
+    _appearance_watch: Option<feather_ui::appearance::Watcher>,
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
@@ -102,6 +104,7 @@ struct Notes {
 }
 
 fn main() {
+    feather_ui::appearance::init();
     let started = Instant::now();
     let conn = Connection::connect_to_env().expect("Нет Wayland-композитора (WAYLAND_DISPLAY)");
     let (globals, queue) = registry_queue_init(&conn).expect("Реестр Wayland недоступен");
@@ -131,6 +134,13 @@ fn main() {
         .insert_source(rx, |event, _, notes| {
             if let channel::Event::Msg(msg) = event {
                 match msg {
+                    Msg::Appearance(appearance) => {
+                        if std::env::var_os("FEATHER_CLIENT_UI_CHECK").is_some() { eprintln!("[feather-notes-ui-check] appearance={appearance:?}"); }
+                        if feather_ui::scale::appearance() != appearance {
+                            feather_ui::scale::set_appearance(appearance);
+                            notes.app.dirty = true;
+                        }
+                    }
                     Msg::Loaded(list) => notes.app.loaded(list),
                     Msg::Paste(text) => notes.app.paste_text(&text),
                 }
@@ -146,6 +156,10 @@ fn main() {
 
     let rgba = shm.formats().contains(&wl_shm::Format::Abgr8888);
     let mut notes = Notes {
+        _appearance_watch: {
+            let tx = tx.clone();
+            feather_ui::appearance::watch(move |a| tx.send(Msg::Appearance(a)).is_ok()).ok()
+        },
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),

@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import shutil
 import subprocess
 import tempfile
 import time
@@ -25,8 +26,9 @@ p.add_argument('--screenshot-ms',type=int,default=0)
 p.add_argument('--dark',action='store_true')
 p.add_argument('--no-screenshot',action='store_true')
 p.add_argument('--compositor',default='target/release/feather-de')
-p.add_argument('--page',choices=['appearance','keyboard','displays','desktop','input','defaults','date'],default='appearance')
+p.add_argument('--page',choices=['appearance','keyboard','displays','desktop','input','defaults','date','power'],default='appearance')
 p.add_argument('--restore-from',type=Path)
+p.add_argument('--replace-compositor',action='store_true',help='replace only a private copy of the running wallpaper-test binary')
 a=p.parse_args()
 root=(a.output or Path(tempfile.mkdtemp(prefix='feather-session-'))).resolve()
 root.mkdir(parents=True,exist_ok=True)
@@ -41,7 +43,18 @@ if a.restore_from:
 if a.dark and not a.restore_from:
     settings=root/'config/feather-de/settings.conf';settings.parent.mkdir(parents=True,exist_ok=True)
     settings.write_text('appearance=dark\n')
-command=[str(Path(a.compositor).resolve()),'--windowed']
+binary=Path(a.compositor).resolve()
+if a.replace_compositor:
+    assert a.mode=='wallpaper', '--replace-compositor needs wallpaper mode'
+    private_bin=root/'updating-bin'
+    private_bin.mkdir(exist_ok=True)
+    for name in ('feather-files','feather-terminal','feather-notes'):
+        link=private_bin/name
+        if not link.exists():link.symlink_to(binary.parent/name)
+    owned_binary=private_bin/'feather-de'
+    shutil.copy2(binary,owned_binary)
+else:owned_binary=binary
+command=[str(owned_binary),'--windowed']
 if a.mode in ('search','copy'):
     fixture=root/'fixture.py'
     fixture.write_text('''import base64, os, time
@@ -103,6 +116,15 @@ with (root/'session.log').open('w') as log:
             if (root/'compositor.pid').exists():break
             time.sleep(.02)
         pid=int((root/'compositor.pid').read_text())
+        if a.replace_compositor:
+            for _ in range(100):
+                if os.readlink(f'/proc/{pid}/exe')==str(owned_binary):break
+                time.sleep(.01)
+            assert os.readlink(f'/proc/{pid}/exe')==str(owned_binary), 'private executable did not start'
+            replacement=owned_binary.with_suffix('.next')
+            shutil.copy2(binary,replacement)
+            replacement.replace(owned_binary)
+            assert os.readlink(f'/proc/{pid}/exe')==str(owned_binary)+' (deleted)'
         if env.get('HYPRLAND_INSTANCE_SIGNATURE'):
             for _ in range(40):
                 clients=json.loads(subprocess.check_output(['hyprctl','clients','-j']))
@@ -158,7 +180,7 @@ with (root/'session.log').open('w') as log:
             terminal_pids=[int(t) for t in (root/'terminal.pids').read_text().split()];assert len(set(terminal_pids))==2
             for terminal_pid in terminal_pids:sample(terminal_pid)
         report={'mode':a.mode,'scale':a.scale,'compositor_pid':pid,'idle_ticks_5s':samples[-1]['ticks']-samples[-6]['ticks'],'peak_sampled_anon_kib':peak_anon_kib,'sample_interval_ms':50,'screenshot':(root/'frame.png').exists(),'samples':samples}
-        if a.mode=='wallpaper':report.update(peak_decoder_anon_kib=peak_decoder_anon_kib,peak_combined_anon_kib=peak_combined_anon_kib)
+        if a.mode=='wallpaper':report.update(peak_decoder_anon_kib=peak_decoder_anon_kib,peak_combined_anon_kib=peak_combined_anon_kib,replaced_compositor=a.replace_compositor)
         if a.mode in ('copy','search','settings'):report['terminal_idle_ticks_5s']=samples[-1]['terminal']['ticks']-samples[-6]['terminal']['ticks']
         (root/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
         print({k:v for k,v in report.items() if k!='samples'},flush=True);print(root,flush=True)

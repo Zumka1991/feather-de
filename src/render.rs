@@ -172,7 +172,7 @@ const HOST_FRAME_TIMEOUT: Duration = Duration::from_millis(40);
 /// Wayland surface elements are produced at scale 1.0 (logical size at a physical location) and
 /// rescaled around their own origin, so the whole scene renders with a single damage tracker
 /// at scale 1.0 next to our physical-pixel shell buffers.
-fn push_surface_tree(
+pub(crate) fn push_surface_tree(
     out: &mut Vec<FeatherElement>,
     renderer: &mut GlesRenderer,
     surface: &WlSurface,
@@ -556,6 +556,7 @@ impl FeatherCompositor {
     /// Rasterizes dirty shell/decoration buffers on the CPU (only when something changed)
     fn update_cpu_buffers(&mut self) {
         let mut profile = crate::cpu_profile::Batch::new();
+        if self.lock.active {self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name);profile.step("lock");return;}
         let active_title = self.active_window_title();
         self.shell.ensure_wallpaper_rendered();
         self.shell.ensure_cc_backdrop();
@@ -592,7 +593,7 @@ impl FeatherCompositor {
         let visible_count = self.windows.iter().filter(|w| w.is_visible()).count();
         let ctx = BuiltinContext {
             settings: &self.system_settings,
-            settings_context: crate::system_settings::Context {system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref()},
+            settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref()},
             notes_text: &self.notes_buffer,
             rss_mb: self.shell.last_rss_mb,
             window_count: visible_count,
@@ -623,7 +624,7 @@ impl FeatherCompositor {
         // One frame in flight at a time: the next one is rendered when the previous one
         // reached the screen (host frame event / DRM vblank), so a burst of input or commits
         // never blocks the loop while a client frame is waiting.
-        if !self.needs_redraw || self.frame_pending {
+        if (self.power.blanked && self.backend.is_drm()) || !self.needs_redraw || self.frame_pending {
             return;
         }
         if let crate::backend::Backend::Drm(d) = &self.backend {
@@ -636,16 +637,18 @@ impl FeatherCompositor {
         let t_cpu = Instant::now();
         self.shell.release_closed_launchpad();
         self.update_cpu_buffers();
-        self.shell.upload_wallpaper(self.backend.renderer());
-        self.shell.desktop.ensure_layout((self.shell.screen_w, self.shell.screen_h));
-        self.shell.desktop.request_tiles(self.shell.raster.as_ref());
-        if self.shell.desktop.upload(self.backend.renderer()) {
-            if let Some(worker) = self.shell.raster.as_ref() {
-                worker.submit(crate::raster::Job::Reclaim);
+        if !self.lock.active {
+            self.shell.upload_wallpaper(self.backend.renderer());
+            self.shell.desktop.ensure_layout((self.shell.screen_w, self.shell.screen_h));
+            self.shell.desktop.request_tiles(self.shell.raster.as_ref());
+            if self.shell.desktop.upload(self.backend.renderer()) {
+                if let Some(worker) = self.shell.raster.as_ref() {
+                    worker.submit(crate::raster::Job::Reclaim);
+                }
             }
+            self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now()) || self.auth.animating();
+            self.advance_bounce();
         }
-        self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now()) || self.auth.animating();
-        self.advance_bounce();
         let cpu_time = t_cpu.elapsed();
         let t_gpu = Instant::now();
 
@@ -659,12 +662,18 @@ impl FeatherCompositor {
         let gpu_time = t_gpu.elapsed();
         let swap_time = match presented {
             Some(swap) => {
+                if self.lock.active {self.lock.protected_frame=true;}
                 self.mark_frame_in_flight();
                 // Clients start their next frame while ours is being presented
                 self.send_frame_callbacks();
                 Some(swap)
             }
             None => {
+                if self.lock.active && !self.lock.display_protected {
+                    if let crate::backend::Backend::Drm(d)=&mut self.backend {
+                        if let Err(e)=d.output.with_compositor(|c|c.clear()){tracing::error!("Не удалось скрыть вывод при ошибке блокировки: {e}");}
+                    }
+                }
                 self.schedule_idle_frame_callbacks();
                 None
             }
@@ -722,21 +731,26 @@ impl FeatherCompositor {
                 }
             } }
             let pointer = (self.pointer_location.x, self.pointer_location.y);
-            let mut elements = self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h));
-            elements.extend(crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
-            drag_overlay(&mut elements, renderer, &self.shell, pointer, scale);
-            elements.extend(build_scene(
-                renderer,
-                &self.shell,
-                &self.windows,
-                scale,
-                pointer,
-                self.rounded_program.as_ref(),
-                &self.animations,
-            ));
+            let elements = if self.power.blanked {Vec::new()} else if self.lock.active {
+                self.lock.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h))
+            } else {
+                let mut elements = self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h));
+                elements.extend(crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
+                drag_overlay(&mut elements, renderer, &self.shell, pointer, scale);
+                elements.extend(build_scene(
+                    renderer,
+                    &self.shell,
+                    &self.windows,
+                    scale,
+                    pointer,
+                    self.rounded_program.as_ref(),
+                    &self.animations,
+                ));
+                elements
+            };
             let result = match self
                 .damage_tracker
-                .render_output(renderer, &mut framebuffer, age.max(0) as usize, &elements, CLEAR_COLOR)
+                .render_output(renderer, &mut framebuffer, age.max(0) as usize, &elements, if self.power.blanked {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR})
             {
                 Ok(res) => res.damage.cloned(),
                 Err(err) => {
@@ -760,6 +774,7 @@ impl FeatherCompositor {
                 let t_swap = Instant::now();
                 if let Err(err) = backend.submit(Some(&damage)) {
                     tracing::warn!("Ошибка submit: {err:?}");
+                    return None;
                 }
                 backend.window().request_redraw();
                 Some(t_swap.elapsed())
@@ -776,18 +791,23 @@ impl FeatherCompositor {
         let scale = self.scale_factor;
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let mut elements = cursor_elements(&mut d.renderer, &mut self.cursor, pointer, scale);
-        elements.extend(self.auth.elements(&mut d.renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h)));
-        elements.extend(crate::screenshot::overlay(&mut d.renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
-        drag_overlay(&mut elements, &mut d.renderer, &self.shell, pointer, scale);
-        elements.extend(build_scene(
-            &mut d.renderer,
-            &self.shell,
-            &self.windows,
-            scale,
-            pointer,
-            self.rounded_program.as_ref(),
-            &self.animations,
-        ));
+        if self.lock.active {
+            elements.extend(self.lock.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));
+        } else {
+            elements.extend(self.auth.elements(&mut d.renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h)));
+            elements.extend(crate::screenshot::overlay(&mut d.renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
+            drag_overlay(&mut elements, &mut d.renderer, &self.shell, pointer, scale);
+            elements.extend(build_scene(
+                &mut d.renderer,
+                &self.shell,
+                &self.windows,
+                scale,
+                pointer,
+                self.rounded_program.as_ref(),
+                &self.animations,
+            ));
+
+        }
 
         let t = Instant::now();
         match d.output.render_frame(
@@ -831,11 +851,13 @@ impl FeatherCompositor {
 
     /// The host compositor presented our last frame: the next one may be rendered
     pub fn on_host_frame(&mut self) {
+        self.lock_presented();
         self.frame_pending = false;
     }
 
     pub fn send_frame_callbacks(&mut self) {
         let time = self.start_time.elapsed().as_millis() as u32;
+        if self.lock.active {if let Some(surface)=self.lock.focus() {send_frames_surface_tree(&surface,time);}return;}
         if let smithay::input::pointer::CursorImageStatus::Surface(ref s) = self.cursor.status {
             send_frames_surface_tree(s, time);
         }
@@ -875,6 +897,9 @@ impl FeatherCompositor {
         px: f64,
         py: f64,
     ) -> Option<(WlSurface, Point<f64, smithay::utils::Logical>)> {
+        if self.lock.active {
+            return self.lock.focus().and_then(|surface|smithay::desktop::utils::under_from_surface_tree(&surface,(px,py).into(),(0,0),WindowSurfaceType::ALL).map(|(s,p)|(s,p.to_f64())));
+        }
         if self.shell.launchpad.is_some() || self.shell.switcher.as_ref().is_some_and(|s|s.visible) || self.icon_drag.as_ref().is_some_and(|d| d.active) {
             // Launchpad covers all windows; while dragging an app nothing below gets the pointer
             return None;

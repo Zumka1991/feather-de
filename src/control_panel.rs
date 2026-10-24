@@ -26,7 +26,7 @@ pub struct Panel {
     pub page: Page,
     pub scroll: usize,
     pub error: Option<String>,
-    password: crate::controls::Secret,
+    password: feather_ui::input::TextInput,
     selected: Option<Network>,
     drag: Option<(String, R, f32)>,
     /// Pointer (global logical) while it is over the panel
@@ -36,13 +36,13 @@ impl Panel {
     pub fn close(&mut self) {
         self.page = Page::Main;
         self.scroll = 0;
-        self.password.zeroize();
+        self.password.clear();
         self.selected = None;
         self.drag = None;
         self.error = None;
     }
     pub fn open(&mut self, page: Page) {
-        self.password.zeroize();
+        self.password.clear();
         self.selected = None;
         self.page = page;
         self.scroll = 0;
@@ -96,30 +96,32 @@ impl Panel {
             })
         })
     }
-    pub fn key(&mut self, sym: u32, ch: Option<char>) -> Option<ShellClickAction> {
+    pub fn key(&mut self, sym: u32, ch: Option<char>, ctrl: bool, shift: bool) -> Option<ShellClickAction> {
         use smithay::input::keyboard::keysyms;
         match sym {
             keysyms::KEY_Escape => {
                 self.open(Page::Wifi);
             }
-            keysyms::KEY_BackSpace => {
-                self.password.pop();
-            }
             keysyms::KEY_Return | keysyms::KEY_KP_Enter => return self.submit_password(),
             _ => {
-                if let Some(c) = ch.filter(|c| !c.is_control()) {
-                    if self.password.len() + c.len_utf8() <= 64 {
-                        self.password.push(c);
-                    }
-                }
+                let mut utf8 = [0; 4];
+                let text = ch.map(|c| c.encode_utf8(&mut utf8) as &str);
+                self.password = std::mem::take(&mut self.password).with_byte_limit(64);
+                self.password.key(sym, text, ctrl, shift);
+                utf8.zeroize();
             }
         }
         None
     }
+    pub fn click_password(&mut self, p: R, x: f32, y: f32, fonts: &mut FontSystem, shift: bool) {
+        if self.page == Page::Password && R::new(p.x + 18.0, p.y + 129.0, p.w - 36.0, 36.0).contains(x, y) {
+            self.password.click_masked(fonts, x - p.x - 28.0, p.w - 56.0, 13.0, shift);
+        }
+    }
     fn submit_password(&mut self) -> Option<ShellClickAction> {
         if !crate::controls::network::valid_password(
             self.selected.as_ref()?.security,
-            &self.password,
+            self.password.text(),
         ) {
             self.error = Some(
                 if self.selected.as_ref()?.security == Security::Sae {
@@ -132,7 +134,7 @@ impl Panel {
             return None;
         }
         let n = self.selected.take()?;
-        let password = std::mem::take(&mut self.password);
+        let password = self.password.take_text();
         self.page = Page::Wifi;
         Some(ShellClickAction::Control(Control::Connect {
             network: n,
@@ -223,7 +225,7 @@ impl Panel {
                     }
                     if n.security.password() {
                         self.selected = Some(n);
-                        self.password.zeroize();
+                        self.password.clear();
                         self.page = Page::Password;
                         return ShellClickAction::None;
                     }
@@ -502,16 +504,7 @@ impl Panel {
                 9.0,
                 pal.control_fill,
             );
-            fonts.draw_text_clipped(
-                pm,
-                &"•".repeat(self.password.chars().count()),
-                p.x + 28.0,
-                p.y + 139.0,
-                p.w - 56.0,
-                13.0,
-                pal.text,
-                false,
-            );
+            self.password.draw_masked(pm, fonts, p.x + 28.0, p.y + 139.0, p.w - 56.0, 13.0, pal.text, pal.accent);
             fonts.draw_text(
                 pm,
                 "Enter — подключить · Esc — отмена",
@@ -720,12 +713,12 @@ mod tests {
         let mut panel = Panel::default();
         panel.page = Page::Password;
         panel.selected = Some(network());
-        panel.password.push_str("short");
+        panel.password.insert("short");
         assert!(panel.submit_password().is_none());
         assert!(panel.page == Page::Password);
         assert!(panel.selected.is_some());
-        panel.password.zeroize();
-        panel.password.push_str("valid password");
+        panel.password.clear();
+        panel.password.insert("valid password");
         let action = panel.submit_password().unwrap();
         assert!(panel.page == Page::Wifi);
         assert!(panel.password.is_empty());
@@ -749,6 +742,33 @@ mod tests {
         assert!(panel.release().is_none());
         panel.close();
         assert!(panel.selected.is_none());
+        assert!(panel.password.is_empty());
+    }
+
+    #[test]
+    fn password_editing_uses_masked_positions_selection_and_byte_limit() {
+        use smithay::input::keyboard::keysyms as K;
+        let mut panel = Panel::default();
+        panel.page = Page::Password;
+        panel.selected = Some(network());
+        for ch in "старый пароль".chars() { panel.key(0, Some(ch), false, false); }
+        panel.key(K::KEY_a, Some('a'), true, false);
+        assert_eq!(panel.password.selected_text(), Some("старый пароль"));
+        for ch in "new-password".chars() { panel.key(0, Some(ch), false, false); }
+        let rect = R::new(0.0, 0.0, 324.0, 384.0);
+        panel.click_password(rect, 28.0, 140.0, &mut FontSystem::new(), false);
+        assert_eq!(panel.password.caret(), 0);
+        panel.key(K::KEY_Right, None, false, true);
+        assert_eq!(panel.password.selected_text(), Some("n"));
+        panel.key(0, Some('N'), false, false);
+        let action = panel.submit_password().unwrap();
+        assert!(panel.password.is_empty());
+        assert!(!format!("{action:?}").contains("New-password"));
+        assert!(matches!(action, ShellClickAction::Control(Control::Connect { password: Some(p), .. }) if &*p == "New-password"));
+        panel.open(Page::Password);
+        for _ in 0..40 { panel.key(0, Some('я'), false, false); }
+        assert_eq!(panel.password.len(), 64);
+        panel.close();
         assert!(panel.password.is_empty());
     }
     #[test]
@@ -802,14 +822,14 @@ mod tests {
             ] {
                 panel.page = page;
                 panel.selected = Some(network());
-                panel.password.push_str("example");
+                panel.password.insert("example");
                 std::fs::create_dir_all("/tmp/feather-controls").unwrap();
                 let mut image = tiny_skia::Pixmap::new(648, 768).unwrap();
                 panel.paint(&mut image.as_mut(), &mut fonts, R::new(0., 0., 324., 384.));
                 image
                     .save_png(format!("/tmp/feather-controls/fixture-{name}.png"))
                     .unwrap();
-                panel.password.zeroize();
+                panel.password.clear();
             }
         });
     }

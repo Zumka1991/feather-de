@@ -143,7 +143,7 @@ impl FeatherCompositor {
     fn drop_keyboard_focus_if(&mut self, surface: &WlSurface) {
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus().as_ref() == Some(surface) {
-            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+            self.refresh_focus();
         }
     }
 
@@ -167,6 +167,7 @@ impl FeatherCompositor {
     }
 
     fn begin_client_drag(&mut self, surface: &ToplevelSurface, edges: Option<Edges>) {
+        if self.lock.active {return;}
         if self.pressed_buttons.is_empty() {
             return;
         }
@@ -488,6 +489,7 @@ impl CompositorHandler for FeatherCompositor {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        self.lock_surface_commit(surface);
         self.needs_redraw = true;
         if let Some(stats) = self.frame_stats.as_mut() {
             stats.record_commit();
@@ -545,7 +547,7 @@ impl SeatHandler for FeatherCompositor {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         // Clipboard / primary selection follow keyboard focus
         let dh = &self.display_handle;
-        let client = focused.and_then(|s| dh.get_client(s.id()).ok());
+        let client = if self.lock.active {None}else{focused.and_then(|s| dh.get_client(s.id()).ok())};
         smithay::wayland::selection::data_device::set_data_device_focus(dh, seat, client.clone());
         smithay::wayland::selection::primary_selection::set_primary_focus(dh, seat, client);
     }

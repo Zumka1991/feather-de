@@ -5,6 +5,7 @@
 mod app;
 mod fsops;
 mod theme;
+mod preview;
 
 use feather_ui::{draw as ui, file_icons as icons, text};
 
@@ -65,6 +66,8 @@ const URI_LIST: &str = "text/uri-list";
 
 /// Results of worker threads
 enum Msg {
+    Appearance(feather_ui::scale::Appearance),
+    Preview(u64, Result<preview::Content, String>),
     SaveChecked(PathBuf,Result<Option<bool>,String>),
     Listed(u64, Result<Vec<fsops::Entry>, String>),
     Done(usize, &'static str),
@@ -75,6 +78,11 @@ enum Msg {
 }
 
 struct Files {
+    preview_debug_armed: bool,
+    _appearance_watch: Option<feather_ui::appearance::Watcher>,
+    preview_tx: std::sync::mpsc::SyncSender<(u64, PathBuf)>,
+    preview_pending: Option<(u64, PathBuf)>,
+    preview_newest: std::sync::Arc<std::sync::atomic::AtomicU64>,
     picker_test_armed:bool,
     registry_state: RegistryState,
     seat_state: SeatState,
@@ -121,6 +129,7 @@ struct Files {
 }
 
 fn main() {
+    feather_ui::appearance::init();
     // Children (xdg-open, terminals) are reaped by the kernel; we never wait for them
     unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
     let started = Instant::now();
@@ -165,6 +174,20 @@ fn main() {
         .insert_source(rx, |event, _, files| {
             if let channel::Event::Msg(msg) = event {
                 let effects = match msg {
+                    Msg::Appearance(appearance) => {
+                        if std::env::var_os("FEATHER_CLIENT_UI_CHECK").is_some() { eprintln!("[feather-files-ui-check] appearance={appearance:?}"); }
+                        if feather_ui::scale::appearance() != appearance {
+                            feather_ui::scale::set_appearance(appearance);
+                            files.app.dirty = true;
+                        }
+                        Vec::new()
+                    }
+                    Msg::Preview(generation, result) => {
+                        if std::env::var_os("FEATHER_CLIENT_UI_CHECK").is_some() { eprintln!("[feather-files-ui-check] preview-ready generation={generation} ok={}", result.is_ok()); }
+                        files.app.preview_ready(generation, result);
+                        files.flush_preview();
+                        Vec::new()
+                    }
                     Msg::SaveChecked(path,result)=>files.app.save_checked(path,result),
                     Msg::Listed(generation, result) => {
                         files.app.listed(generation, result);
@@ -175,7 +198,12 @@ fn main() {
                                 let _=files.handle.insert_source(Timer::from_duration(std::time::Duration::from_millis(delay)),move|_,_,files|{let effects=files.app.debug_picker_choose(&path);files.apply(effects);TimeoutAction::Drop});
                             }
                         }
-                        Vec::new()
+                        if !files.preview_debug_armed {
+                            if let Some(path) = std::env::var_os("FEATHER_FILES_DEBUG_PREVIEW") {
+                                files.preview_debug_armed = true;
+                                files.app.debug_preview(&PathBuf::from(path))
+                            } else { Vec::new() }
+                        } else { Vec::new() }
                     }
                     Msg::Done(failed, what) => files.app.operation_done(failed, what),
                     Msg::Props(props) => {
@@ -201,6 +229,20 @@ fn main() {
         .expect("канал результатов");
 
     let fonts = text::FontSystem::new();
+    let (preview_tx, preview_rx) = std::sync::mpsc::sync_channel::<(u64, PathBuf)>(1);
+    let preview_newest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    {
+        let tx = tx.clone();
+        let newest = preview_newest.clone();
+        std::thread::Builder::new().name("feather-preview".into()).stack_size(256 * 1024).spawn(move || {
+            while let Ok((generation, path)) = preview_rx.recv() {
+                let result = if newest.load(std::sync::atomic::Ordering::Relaxed) == generation {
+                    preview::load(&path)
+                } else { Err(String::new()) };
+                if tx.send(Msg::Preview(generation, result)).is_err() { break; }
+            }
+        }).expect("поток предпросмотра");
+    }
     let (mut app, effects) = App::new(fonts, start, reveal, rename);
     if let Some(config)=picker_config{app.set_picker(config);window.set_title(app.window_title());window.set_min_size(Some((640,(app.picker_height() as u32+160).max(320))));}
     let watcher = fsops::Watcher::new();
@@ -219,6 +261,14 @@ fn main() {
     }
     let rgba = shm.formats().contains(&wl_shm::Format::Abgr8888);
     let mut files = Files {
+        preview_debug_armed: false,
+        _appearance_watch: {
+            let tx = tx.clone();
+            feather_ui::appearance::watch(move |a| tx.send(Msg::Appearance(a)).is_ok()).ok()
+        },
+        preview_tx,
+        preview_pending: None,
+        preview_newest,
         picker_test_armed:false,
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
@@ -280,9 +330,22 @@ fn main() {
 }
 
 impl Files {
+    fn flush_preview(&mut self) {
+        if let Some(request) = self.preview_pending.take() {
+            if let Err(std::sync::mpsc::TrySendError::Full(request)) = self.preview_tx.try_send(request) {
+                self.preview_pending = Some(request);
+            }
+        }
+    }
+
     fn apply(&mut self, effects: Vec<Effect>) {
         for effect in effects {
             match effect {
+                Effect::Preview(path, generation) => {
+                    self.preview_newest.store(generation, std::sync::atomic::Ordering::Relaxed);
+                    self.preview_pending = Some((generation, path));
+                    self.flush_preview();
+                }
                 Effect::Picked(selection)=>{if let Err(error)=feather_ui::picker::write_selection(&selection){eprintln!("{error}");}self.exit=true;},
                 Effect::CheckSave(path)=>{let tx=self.tx.clone();std::thread::spawn(move||{let result=match std::fs::metadata(&path){Ok(meta)=>Ok(Some(meta.is_dir())),Err(e)if e.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(e)=>Err(e.to_string())};let _=tx.send(Msg::SaveChecked(path,result));});},
                 Effect::List(dir, generation) => {

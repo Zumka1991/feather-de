@@ -340,8 +340,10 @@ impl FeatherCompositor {
     pub fn on_session_pause(&mut self) {
         tracing::info!("Сессия приостановлена (переключение VT)");
         self.release_all_input();
+        self.lock_sleep_barrier();
         if let crate::backend::Backend::Drm(d) = &mut self.backend {
             d.libinput.suspend();
+            if let Err(e)=d.output.with_compositor(|c|c.clear()) {tracing::warn!("Не удалось погасить вывод перед сменой VT: {e}");}
             d.manager.pause();
             d.active = false;
         }
@@ -349,18 +351,24 @@ impl FeatherCompositor {
 
     pub fn on_session_activate(&mut self) {
         tracing::info!("Сессия активна");
+        self.power.sleeping=false;
+        self.lock_session();
+        self.wake_screen();
         if let crate::backend::Backend::Drm(d) = &mut self.backend {
             if d.libinput.resume().is_err() {
                 tracing::warn!("libinput: не удалось возобновить");
             }
-            if let Err(err) = d.manager.activate(false) {
+            // Disable old scanout before any new frame: never restore an unlocked framebuffer.
+            if let Err(err) = d.manager.activate(true) {
                 tracing::warn!("DRM: не удалось активировать: {err}");
+                return;
             }
             d.output.reset_buffers();
             d.active = true;
         }
         self.frame_pending = false;
         self.needs_redraw = true;
+        self.activity();self.rearm_idle();
     }
 
     pub fn switch_vt(&mut self, vt: i32) {

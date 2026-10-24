@@ -21,6 +21,9 @@ fn at(
     Ok(())
 }
 
+fn tap(st:&mut FeatherCompositor,key:u32){st.debug_keyboard_key(key,true);st.debug_keyboard_key(key,false);}
+fn chord(st:&mut FeatherCompositor,modifier:u32,key:u32){st.debug_keyboard_key(modifier,true);tap(st,key);st.debug_keyboard_key(modifier,false);}
+
 /// Fake socket helper for the nested polkit check: accepts only "feather".
 fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Write};
@@ -49,6 +52,229 @@ fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("FEATHER_DEBUG_EXTERNAL_LOCK_CHECK").is_some(){
+        if state.backend.is_drm() || !state.debug_input_only {return Err("external lock check requires isolated windowed input".into());}
+        at(state,2500,|st|{
+            assert!(st.lock.external());
+            st.debug_pointer_motion(100.0,100.0);st.debug_pointer_button(0x110,true);
+            assert!(st.pressed_buttons.contains(&0x110));
+            st.debug_pointer_motion(130.0,140.0);st.debug_pointer_button(0x110,false);
+            assert!(st.pressed_buttons.is_empty());
+            eprintln!("[feather-lock-check] external client receives motion while button held; releases tracked");
+        })?;
+    }
+
+    if std::env::var_os("FEATHER_DEBUG_LOCK_CHECK").is_some(){
+        if state.backend.is_drm() || !state.debug_input_only {return Err("lock check requires isolated windowed input".into());}
+        at(state,2000,|st|{
+            assert!(!st.lock.active);assert!(!st.windows.is_empty());
+            chord(st,125,38); // Super+L through the ordinary keyboard filter
+            assert!(st.lock.active);assert!(st.keyboard.current_focus().is_none());
+            let layout=st.active_layout_index;chord(st,56,42);assert_ne!(st.active_layout_index,layout);
+            chord(st,56,42);assert_eq!(st.active_layout_index,layout);
+            assert!(st.surface_under_pointer(200.0,200.0).is_none());
+            tap(st,1);chord(st,56,15);tap(st,99);chord(st,125,18);
+            assert!(st.lock.active && st.shell.switcher.is_none());
+            st.debug_pointer_motion(100.0,100.0);st.debug_pointer_button(0x110,true);st.debug_pointer_button(0x110,false);
+            assert!(st.active_drag.is_none());assert!(st.keyboard.current_focus().is_none());
+            eprintln!("[feather-lock-check] Super+L captures keyboard/pointer, Escape/Alt+Tab/Print/Super+E cannot escape");
+        })?;
+        at(state,3000,|st|st.debug_power_check())?;
+    }
+
+    if std::env::var_os("FEATHER_DEBUG_DOCK_RESTORE").is_some() {
+        assert!(state.dock_locked, "saved Dock lock was not restored");
+        let files = state.app_registry.index_of(crate::apps::AppRegistry::PERMANENT).unwrap();
+        assert_eq!(state.pinned_indices().last(), Some(&files), "saved Files position was not restored");
+        at(state, 1000, move |s| {
+            let target = DockTarget::App(files);
+            let (x, y, size) = s.shell.dock_slot_global(target).unwrap();
+            s.open_dock_menu_for(target, R::new(x, y, size, size));
+            eprintln!("[feather-dock-restore-check] saved lock and Files position restored");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_DOCK_PINS").is_some() {
+        assert!(std::env::var("XDG_CONFIG_HOME").unwrap_or_default().starts_with("/tmp/"));
+        fn point(s: &mut FeatherCompositor, target: DockTarget) -> (f64, f64) {
+            let items = s.build_dock_items();
+            s.shell.set_dock_items(items);
+            s.shell.ensure_dock_rendered(&mut s.fonts);
+            let (x, y, size) = s.shell.dock_slot_global(target).expect("Dock icon missing");
+            ((x + size * 0.5) as f64, (y + size * 0.5) as f64)
+        }
+        fn menu(s: &mut FeatherCompositor, target: DockTarget, action: DockMenuAction) {
+            let (x, y) = point(s, target);
+            s.debug_pointer_motion(x, y);
+            // Hover can resize the icon before the press in a real frame, too.
+            let (x, y) = point(s, target);
+            s.debug_pointer_motion(x, y);
+            s.debug_pointer_button(0x111, true);
+            s.debug_pointer_button(0x111, false);
+            let m = s.shell.dock_menu.as_ref().expect("right-click did not open menu");
+            let row = m.items.iter().position(|(_, a)| *a == action).expect("menu action missing");
+            let x = (m.rect.x + m.rect.w * 0.5) as f64;
+            let y = (m.rect.y + 5.0 + (row as f32 + 0.5) * ((m.rect.h - 10.0) / m.items.len() as f32)) as f64;
+            s.debug_pointer_motion(x, y);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+            assert!(s.shell.dock_menu.is_none());
+        }
+        fn drag(s: &mut FeatherCompositor, target: DockTarget, to: (f64, f64)) {
+            let (x, y) = point(s, target);
+            s.debug_pointer_motion(x, y);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_motion(to.0, to.1);
+            if s.dock_locked {
+                assert!(!s.icon_drag.as_ref().unwrap().active);
+                assert!(s.shell.dock_gap.is_none());
+                assert!(s.shell.ghost.is_none());
+            }
+            s.debug_pointer_button(0x110, false);
+        }
+        let app = state.app_registry.index_of("konsole").unwrap();
+        let target = DockTarget::App(app);
+        state.unpin_app("konsole");
+        at(state, 600, move |s| s.launch_app_instance(app))?;
+        at(state, 1000, move |s| s.launch_app_instance(app))?;
+        at(state, 2000, move |s| {
+            assert!(!s.is_pinned(app), "launch pinned an app");
+            assert_eq!(s.windows.iter().filter(|w| w.mapped && s.app_key(w) == crate::shell::AppKey::App(app)).count(), 2);
+            let (x, y) = point(s, target);
+            // A small move within the running section must not silently pin the app.
+            drag(s, target, (x + 8.0, y));
+            assert!(!s.is_pinned(app), "motion within running apps pinned the app");
+            s.execute_shell_action(ShellClickAction::CloseFocused);
+        })?;
+        at(state, 2800, move |s| {
+            assert_eq!(s.windows.iter().filter(|w| w.mapped && s.app_key(w) == crate::shell::AppKey::App(app)).count(), 1);
+            point(s, target);
+            s.execute_shell_action(ShellClickAction::MinimizeFocused);
+            assert!(s.build_dock_items().iter().any(|i| i.target == target));
+            menu(s, target, DockMenuAction::Quit);
+        })?;
+        at(state, 3600, move |s| {
+            assert!(!s.build_dock_items().iter().any(|i| i.target == target), "unpinned app remained after its last window closed");
+            eprintln!("[feather-dock-pins-check] two windows, incidental motion, minimize, last close passed");
+            s.launch_app_instance(app);
+        })?;
+        at(state, 4500, move |s| {
+            menu(s, target, DockMenuAction::KeepInDock);
+            assert!(s.is_pinned(app));
+            menu(s, target, DockMenuAction::Quit);
+        })?;
+        at(state, 5300, move |s| {
+            assert!(!s.windows.iter().any(|w| w.mapped && s.app_key(w) == crate::shell::AppKey::App(app)));
+            point(s, target);
+            menu(s, target, DockMenuAction::RemoveFromDock);
+            assert!(!s.build_dock_items().iter().any(|i| i.target == target));
+            s.launch_app_instance(app);
+            eprintln!("[feather-dock-pins-check] pin survives last close, unpin removes closed app passed");
+        })?;
+        at(state, 6200, move |s| {
+            menu(s, target, DockMenuAction::ToggleDockLock);
+            assert!(s.dock_locked);
+            let before = s.dock_pins.clone();
+            drag(s, target, (20.0, 90.0));
+            assert_eq!(s.dock_pins, before);
+            menu(s, target, DockMenuAction::KeepInDock);
+            assert!(s.is_pinned(app), "manual pin should work while dragging is locked");
+            let before = s.dock_pins.clone();
+            drag(s, target, (20.0, 90.0));
+            assert_eq!(s.dock_pins, before, "locked drag removed pin");
+            let first = DockTarget::App(s.app_registry.index_of(crate::apps::AppRegistry::PERMANENT).unwrap());
+            let to = point(s, first);
+            drag(s, target, to);
+            assert_eq!(s.dock_pins, before, "locked drag reordered pins");
+            menu(s, target, DockMenuAction::RemoveFromDock);
+            assert!(!s.is_pinned(app));
+            s.execute_shell_action(ShellClickAction::DockPress(target));
+            assert!(s.windows.iter().filter(|w| s.app_key(w) == crate::shell::AppKey::App(app)).all(|w| w.minimized));
+            s.execute_shell_action(ShellClickAction::DockPress(target));
+            assert!(s.windows.iter().filter(|w| s.app_key(w) == crate::shell::AppKey::App(app)).all(|w| !w.minimized));
+            s.toggle_launchpad();
+        })?;
+        at(state, 7100, move |s| {
+            let (app, cell) = s.shell.launchpad.as_ref().unwrap().page_cells().into_iter()
+                .find(|(i, _)| !s.is_pinned(*i)).unwrap();
+            let before = s.dock_pins.clone();
+            s.debug_pointer_motion((cell.x + cell.w * 0.5) as f64, (cell.y + 20.0) as f64);
+            s.debug_pointer_button(0x110, true);
+            assert!(matches!(s.icon_drag.as_ref().unwrap().source, crate::DragSource::Launchpad { app: i } if i == app));
+            let (x, y) = point(s, target);
+            s.debug_pointer_motion(x, y);
+            assert!(s.shell.ghost.is_none());
+            assert!(s.shell.dock_gap.is_none());
+            s.debug_pointer_button(0x110, false);
+            assert_eq!(s.dock_pins, before, "locked Launchpad drop pinned an app");
+            assert!(s.shell.launchpad.is_some(), "blocked drag turned into a launch");
+            s.toggle_launchpad();
+            menu(s, target, DockMenuAction::ToggleDockLock);
+            assert!(!s.dock_locked);
+            eprintln!("[feather-dock-pins-check] locked Dock out/reorder, Launchpad in, clicks and manual pins passed");
+        })?;
+        at(state, 8000, move |s| {
+            menu(s, target, DockMenuAction::KeepInDock);
+            drag(s, target, (20.0, 90.0));
+            assert!(!s.is_pinned(app), "unlock did not restore drag out");
+            s.toggle_launchpad();
+        })?;
+        at(state, 8800, move |s| {
+            let (app, cell) = s.shell.launchpad.as_ref().unwrap().page_cells().into_iter()
+                .find(|(i, _)| !s.is_pinned(*i)).unwrap();
+            s.debug_pointer_motion((cell.x + cell.w * 0.5) as f64, (cell.y + 20.0) as f64);
+            s.debug_pointer_button(0x110, true);
+            let (x, y) = point(s, target);
+            s.debug_pointer_motion(x, y);
+            assert!(s.shell.ghost.is_some());
+            s.debug_pointer_button(0x110, false);
+            assert!(s.is_pinned(app), "unlock did not restore Launchpad drop");
+            menu(s, target, DockMenuAction::ToggleDockLock);
+            assert!(s.dock_locked);
+            eprintln!("[feather-dock-pins-check] unlock restores drag in/out; final lock saved");
+        })?;
+        at(state, 9500, move |s| {
+            let (x, y) = point(s, DockTarget::Trash);
+            s.debug_pointer_motion(x, y);
+            s.debug_pointer_button(0x111, true);
+            s.debug_pointer_button(0x111, false);
+            let m = s.shell.dock_menu.as_ref().unwrap();
+            assert!(m.items.iter().any(|(label, a)| *a == DockMenuAction::ToggleDockLock && label.starts_with('✓')));
+            eprintln!("[feather-dock-pins-check] checked lock in Trash menu passed");
+        })?;
+        at(state, 11000, |s| {
+            s.shell.close_menus();
+            let p = (0..s.shell.screen_w).flat_map(|x| (s.shell.screen_h - 100..s.shell.screen_h).map(move |y| (x, y)))
+                .find(|&(x, y)| s.shell.dock_contains(x as f64, y as f64) && s.shell.dock_target_at(x as f64, y as f64).is_none())
+                .expect("Dock background point");
+            s.debug_pointer_motion(p.0 as f64, p.1 as f64);
+            s.debug_pointer_button(0x111, true);
+            s.debug_pointer_button(0x111, false);
+            let m = s.shell.dock_menu.as_ref().expect("right-click Dock background");
+            assert_eq!(m.items.len(), 1);
+            assert_eq!(m.items[0].1, DockMenuAction::ToggleDockLock);
+            s.shell.close_menus();
+            s.debug_pointer_motion(20.0, 90.0);
+        })?;
+        at(state, 12000, move |s| {
+            let files = s.app_registry.index_of(crate::apps::AppRegistry::PERMANENT).unwrap();
+            let target = DockTarget::App(files);
+            menu(s, target, DockMenuAction::ToggleDockLock);
+            assert!(!s.dock_locked);
+            let to = point(s, DockTarget::App(app));
+            drag(s, target, (to.0 + 25.0, to.1));
+            assert_eq!(s.pinned_indices().last(), Some(&files), "Files forced back to first position");
+            let before = s.dock_pins.clone();
+            drag(s, target, (20.0, 90.0));
+            assert_eq!(s.dock_pins, before, "Files must remain pinned when dragged out");
+            menu(s, target, DockMenuAction::ToggleDockLock);
+            let to = point(s, DockTarget::App(s.pinned_indices()[0]));
+            drag(s, target, to);
+            assert_eq!(s.dock_pins, before, "locked Files moved");
+            assert_eq!(s.pinned_indices().last(), Some(&files));
+            s.debug_pointer_motion(20.0, 90.0);
+            eprintln!("[feather-dock-pins-check] Files keeps chosen position, remains pinned, obeys lock");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_TRASH").is_some() {
         // Empties a trash for real: only ever a throwaway XDG_DATA_HOME under /tmp.
         let data = std::env::var("XDG_DATA_HOME").unwrap_or_default();
@@ -424,6 +650,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
                 Ok("desktop") => Page::Desktop,
                 Ok("defaults") => Page::Defaults,
                 Ok("date") => Page::DateTime,
+                Ok("power") => Page::Power,
                 _ => Page::Appearance,
             };
             s.apply_system_setting(A::Page(page));

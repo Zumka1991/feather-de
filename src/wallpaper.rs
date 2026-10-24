@@ -83,7 +83,9 @@ pub fn image_size(w: i32, h: i32) -> (i32, i32) {
 /// the compositor and its raster queue. No GUI/Wayland/GL is initialized there.
 pub fn decode(source: &ImageSource, w: i32, h: i32) -> Result<Vec<u8>, String> {
     let length = w as usize * h as usize * 4;
-    let mut child = Command::new(std::env::current_exe().map_err(|e| e.to_string())?)
+    // Run this exact executable even after an update replaces/unlinks its pathname.
+    // current_exe() then contains " (deleted)" on Linux and cannot be spawned.
+    let mut child = Command::new("/proc/self/exe")
         .args([
             "--decode-wallpaper",
             &source.id(),
