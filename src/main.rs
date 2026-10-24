@@ -803,6 +803,9 @@ impl FeatherCompositor {
                 if in_dock {
                     let id = self.app_registry.apps[app].id.clone();
                     self.pin_app(&id, gap);
+                } else if self.over_bare_desktop(pos.x, pos.y) {
+                    // Onto the desktop (or a folder icon on it): a launcher, like macOS aliases
+                    self.add_launcher(app, pos.x, pos.y);
                 }
             }
             DragSource::DockOther => {}

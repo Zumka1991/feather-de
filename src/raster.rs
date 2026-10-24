@@ -294,7 +294,7 @@ impl RasterSender {
                                     .map(crate::icons::IconPixels::new),
                             ),
                             Job::DesktopTile(tile) => Asset::DesktopTile(
-                                crate::desktop::raster_tile(tile, &mut fonts, &mut file_icons),
+                                crate::desktop::raster_tile(tile, &mut fonts, &mut file_icons, &mut icons),
                             ),
                             Job::Tile(tile) => Asset::Tile {
                                 ticket: tile.ticket.clone(),

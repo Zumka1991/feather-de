@@ -700,7 +700,7 @@ impl FeatherCompositor {
         self.shell.upload_wallpaper(self.backend.renderer());
         if !self.lock.active {
             self.shell.desktop.ensure_layout((self.shell.screen_w, self.shell.screen_h));
-            self.shell.desktop.request_tiles(self.shell.raster.as_ref());
+            self.shell.desktop.request_tiles(self.shell.raster.as_ref(), &self.app_registry);
             if self.shell.desktop.upload(self.backend.renderer()) {
                 if let Some(worker) = self.shell.raster.as_ref() {
                     worker.submit(crate::raster::Job::Reclaim);

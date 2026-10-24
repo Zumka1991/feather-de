@@ -74,6 +74,78 @@ pub struct Item {
     pub is_dir: bool,
     pub kind: Kind,
     pub ext: String,
+    /// An application launcher (.desktop): shown with the app's name and icon
+    pub launcher: Option<Launcher>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Launcher {
+    pub name: String,
+    pub icon: Option<String>,
+    pub exec: String,
+    /// The app it was made from in Launchpad (X-Feather-App), for its exact icon
+    pub app: Option<String>,
+    /// Runs only when executable, like GNOME/KDE: a downloaded .desktop is not a program
+    pub executable: bool,
+}
+
+/// `[Desktop Entry]` of an application launcher; Russian name preferred
+pub fn parse_launcher(text: &str, executable: bool) -> Option<Launcher> {
+    let mut section = false;
+    let (mut name, mut name_ru, mut icon, mut exec, mut app, mut kind) = (None, None, None, None, None, None);
+    for line in text.lines().take(400) {
+        let line = line.trim();
+        if line.starts_with('[') {
+            section = line == "[Desktop Entry]";
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=').filter(|_| section) else { continue };
+        let v = v.trim().to_string();
+        match k.trim() {
+            "Type" => kind = Some(v),
+            "Name" => name = Some(v),
+            "Name[ru]" | "Name[ru_RU]" => name_ru = Some(v),
+            "Icon" => icon = Some(v),
+            "Exec" => exec = Some(v),
+            "X-Feather-App" => app = Some(v),
+            _ => {}
+        }
+    }
+    (kind.as_deref() == Some("Application")).then_some(())?;
+    let name: String = name_ru.or(name)?.chars().take(128).collect();
+    Some(Launcher { name, icon: icon.filter(|i| !i.is_empty()), exec: exec.filter(|e| !e.is_empty())?, app, executable })
+}
+
+/// The command of an Exec line: field codes (%f, %U…) dropped, %% kept as %
+pub fn launcher_command(exec: &str) -> String {
+    let mut out = String::new();
+    let mut chars = exec.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            match chars.next() {
+                Some('%') => out.push('%'),
+                _ => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A launcher file for an app (what dragging it out of Launchpad creates)
+pub fn launcher_text(entry: &crate::apps::AppEntry) -> Option<String> {
+    let crate::apps::AppAction::Exec(cmd) = &entry.action else { return None };
+    let clean = |s: &str| s.replace(['\n', '\r'], " ");
+    let mut text = format!("[Desktop Entry]\nType=Application\nName={}\nExec={}\n", clean(&entry.name), clean(cmd));
+    if let Some(icon) = &entry.icon_name {
+        text.push_str(&format!("Icon={}\n", clean(icon)));
+    }
+    if !entry.subtitle.is_empty() {
+        text.push_str(&format!("Comment={}\n", clean(&entry.subtitle)));
+    }
+    text.push_str(&format!("X-Feather-App={}\n", clean(&entry.id)));
+    Some(text)
 }
 
 impl Item {
@@ -87,6 +159,8 @@ pub struct TileJob {
     pub path: PathBuf,
     pub name: String,
     pub icon: Icon,
+    /// Launchers are drawn with their app's icon instead of a file icon
+    pub app: Option<crate::shell::AppIcon>,
 }
 
 /// Worker result: two RGBA images of the cell size
@@ -149,7 +223,7 @@ pub enum MenuAction {
 
 pub struct Desktop {
     pub dir: PathBuf,
-    items: Vec<Item>,
+    pub items: Vec<Item>,
     pub selected: HashSet<PathBuf>,
     tiles: HashMap<PathBuf, Tile>,
     uploads: Vec<TilePixels>,
@@ -368,13 +442,17 @@ impl Desktop {
     }
 
     /// Queues missing tiles on the raster worker
-    pub fn request_tiles(&mut self, worker: Option<&crate::raster::RasterSender>) {
+    pub fn request_tiles(&mut self, worker: Option<&crate::raster::RasterSender>, apps: &crate::apps::AppRegistry) {
         let Some(worker) = worker else { return };
         for item in &self.items {
             if self.tiles.contains_key(&item.path) || self.requested.contains(&item.path) {
                 continue;
             }
-            let job = TileJob { path: item.path.clone(), name: item.name.clone(), icon: item.icon() };
+            let app = item.launcher.as_ref().map(|l| {
+                l.app.as_deref().and_then(|id| apps.index_of(id)).map(|i| crate::shell::AppIcon::of(&apps.apps[i])).unwrap_or(crate::shell::AppIcon { kind: crate::apps::IconKind::GenericApp, name: l.icon.clone() })
+            });
+            let name = item.launcher.as_ref().map_or_else(|| item.name.clone(), |l| l.name.clone());
+            let job = TileJob { path: item.path.clone(), name, icon: item.icon(), app };
             if !worker.submit(crate::raster::Job::DesktopTile(job)) {
                 break; // queue full: retried on the next frame
             }
@@ -487,10 +565,13 @@ impl Desktop {
 
 /// Worker side: icon and a two-line label, plain (white text with a soft shadow) and
 /// selected (grey plate behind the icon, accent pill behind the label)
-pub fn raster_tile(job: &TileJob, fonts: &mut crate::text::FontSystem, icons: &mut IconCache) -> TilePixels {
+pub fn raster_tile(job: &TileJob, fonts: &mut crate::text::FontSystem, icons: &mut IconCache, apps: &mut crate::icons::IconLoader) -> TilePixels {
     let s = ui_scale();
     let (w, h) = ((CELL_W * s).round() as i32, (CELL_H * s).round() as i32);
     let lines = fonts.wrap_two_lines(&job.name, CELL_W - 10.0, 12.0, false);
+    let app_icon = job.app.as_ref().and_then(|a| a.name.as_deref()).and_then(|name| {
+        apps.load(name, crate::icons::icon_bucket((ICON * s).ceil() as u32), crate::theme::appearance() == crate::theme::Appearance::Dark)
+    });
     let draw = |selected: bool, fonts: &mut crate::text::FontSystem, icons: &mut IconCache| {
         let mut pm = tiny_skia::Pixmap::new(w as u32, h as u32).expect("tile size");
         let mut m = pm.as_mut();
@@ -498,7 +579,11 @@ pub fn raster_tile(job: &TileJob, fonts: &mut crate::text::FontSystem, icons: &m
         if selected {
             crate::theme::fill_rounded_rect(&mut m, ix - 6.0, 0.0, ICON + 12.0, ICON + 8.0, 8.0, rgba(0, 0, 0, 64));
         }
-        icons.draw(&mut m, fonts, &job.icon, ix, 4.0, ICON);
+        match (&job.app, &app_icon) {
+            (_, Some(icon)) => crate::icons::draw_icon(&mut m, icon, ix, 4.0, ICON),
+            (Some(app), None) => crate::apps::draw_app_icon(&mut m, fonts, app.kind, &job.name, ix, 4.0, ICON),
+            (None, _) => icons.draw(&mut m, fonts, &job.icon, ix, 4.0, ICON),
+        }
         if !selected {
             // macOS-like soft drop shadow: the label as a mask, blurred, slightly lower
             let mut shadow = tiny_skia::Pixmap::new(w as u32, h as u32).expect("tile size");
@@ -614,8 +699,13 @@ fn list(dir: &Path) -> Vec<Item> {
             let path = entry.path();
             let meta = std::fs::metadata(&path).ok()?;
             use std::os::unix::fs::MetadataExt;
-            let (kind, ext) = kind_of(&name, meta.is_dir(), meta.mode() & 0o111 != 0);
-            Some(Item { name, path, is_dir: meta.is_dir(), kind, ext })
+            let executable = meta.mode() & 0o111 != 0;
+            let (kind, ext) = kind_of(&name, meta.is_dir(), executable);
+            let launcher = (!meta.is_dir() && name.ends_with(".desktop") && meta.len() <= 64 * 1024)
+                .then(|| std::fs::read_to_string(&path).ok())
+                .flatten()
+                .and_then(|text| parse_launcher(&text, executable));
+            Some(Item { name, path, is_dir: meta.is_dir(), kind, ext, launcher })
         })
         .collect();
     items.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| fileops::natural_cmp(&a.name, &b.name)));
@@ -738,11 +828,54 @@ impl FeatherCompositor {
     }
 
     /// No window, Dock or menu bar under the point
-    fn over_bare_desktop(&self, x: f64, y: f64) -> bool {
+    pub fn over_bare_desktop(&self, x: f64, y: f64) -> bool {
         y >= TOP_BAR_HEIGHT as f64
             && !self.windows.iter().any(|w| w.is_visible() && w.contains_point(x, y))
             && self.shell.dock_target_at(x, y).is_none()
             && !self.shell.dock_in_drop_zone(x, y)
+    }
+
+    /// An app dropped from Launchpad: a launcher in the folder icon under the pointer, or
+    /// on the desktop at the pointer's cell. Position first, then the file, on one thread,
+    /// so the listing that the new file triggers already knows where it goes.
+    pub fn add_launcher(&mut self, app: usize, x: f64, y: f64) {
+        let entry = &self.app_registry.apps[app];
+        let Some(text) = launcher_text(entry) else {
+            self.shell.notify("Ярлык не создан", format!("«{}» — встроенное окно Пёрышка", entry.name));
+            return;
+        };
+        let screen = self.screen();
+        let desktop = &mut self.shell.desktop;
+        desktop.ensure_layout(screen);
+        let folder = desktop.item_at(x, y, screen).map(|i| desktop.items[i].clone()).filter(|i| i.is_dir);
+        let dir = folder.as_ref().map_or_else(|| desktop.dir.clone(), |f| f.path.clone());
+        let stem: String = entry.name.chars().filter(|c| *c != '/' && !c.is_control()).take(80).collect();
+        let stem = if stem.trim().is_empty() { "Программа".to_string() } else { stem };
+        let name = (1..1000)
+            .map(|n| if n == 1 { format!("{stem}.desktop") } else { format!("{stem} {n}.desktop") })
+            .find(|n| !dir.join(n).exists())
+            .unwrap_or_else(|| format!("{stem}.desktop"));
+        let positions = folder.is_none().then(|| {
+            let mut p = desktop.positions.clone();
+            p.insert(name.clone(), Desktop::cell_at(x, y, screen));
+            desktop.positions = p.clone();
+            p
+        });
+        let path = dir.join(&name);
+        let _ = std::thread::Builder::new().name("feather-launcher".into()).spawn(move || {
+            if let (Some(positions), Some(conf)) = (positions, positions_path()) {
+                if let Some(parent) = conf.parent() { let _ = std::fs::create_dir_all(parent); }
+                let tmp = conf.with_extension("conf.tmp");
+                if std::fs::write(&tmp, format_positions(&positions)).is_ok() { let _ = std::fs::rename(tmp, conf); }
+            }
+            use std::os::unix::fs::OpenOptionsExt;
+            let written = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o755).open(&path)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
+            if let Err(e) = written {
+                tracing::warn!("Ярлык {}: {e}", path.display());
+            }
+        });
+        self.needs_redraw = true;
     }
 
     /// Left/right press on the bare desktop; returns true when handled
@@ -1025,6 +1158,15 @@ impl FeatherCompositor {
     pub fn open_desktop_selection(&mut self) {
         let ours = crate::apps::files_command() != "dolphin";
         for path in self.shell.desktop.selected_paths() {
+            let launcher = self.shell.desktop.items.iter().find(|i| i.path == path).and_then(|i| i.launcher.clone());
+            if let Some(l) = launcher {
+                if l.executable {
+                    self.spawn(&launcher_command(&l.exec));
+                } else {
+                    self.shell.notify("Ярлык не запущен", format!("«{}» не помечен как исполняемый. Разрешите запуск в его свойствах.", l.name));
+                }
+                continue;
+            }
             if path.is_dir() && ours {
                 self.files(&shell_quote(&path));
             } else {
@@ -1161,9 +1303,29 @@ impl FeatherCompositor {
 
 #[cfg(test)]
 mod tests {
+    use super::{launcher_command, launcher_text, parse_launcher};
+    #[test]
+    fn launchers_parse_build_commands_and_round_trip() {
+        let text = "[Desktop Entry]\nType=Application\nName=Firefox\nName[ru]=Фаерфокс\nExec=firefox %u\nIcon=firefox\n[Desktop Action new]\nName=Other\nExec=other\n";
+        let l = parse_launcher(text, true).unwrap();
+        assert_eq!((l.name.as_str(), l.exec.as_str(), l.icon.as_deref()), ("Фаерфокс", "firefox %u", Some("firefox")));
+        assert!(l.executable);
+        assert!(parse_launcher("[Desktop Entry]\nType=Link\nName=x\nURL=y", true).is_none(), "only applications");
+        assert!(parse_launcher("[Desktop Entry]\nType=Application\nName=x\n", true).is_none(), "an Exec is required");
+        assert_eq!(launcher_command("env A=1 app --open %F --x=%% %i"), "env A=1 app --open --x=%");
+        let registry = crate::apps::AppRegistry::new();
+        let firefox = registry.apps.iter().find(|a| matches!(a.action, crate::apps::AppAction::Exec(_))).unwrap();
+        let made = parse_launcher(&launcher_text(firefox).unwrap(), true).unwrap();
+        assert_eq!(made.name, firefox.name);
+        assert_eq!(made.app.as_deref(), Some(firefox.id.as_str()));
+        let builtin = registry.apps.iter().find(|a| matches!(a.action, crate::apps::AppAction::BuiltinWindow(_)));
+        assert!(builtin.is_none_or(|b| launcher_text(b).is_none()), "built-in windows have no command");
+    }
+
     #[test]
     fn locking_cancels_drag_paths_and_pending_desktop_drops() {
         use super::*;
+
         let mut desktop = Desktop::new();
         let path = PathBuf::from("/not-read/secret.txt");
         desktop.drag = Some(IconDrag {start:(10.0,10.0),paths:vec![path.clone()],active:true});
@@ -1179,7 +1341,7 @@ mod tests {
 
     fn items(n: usize) -> Vec<Item> {
         (0..n)
-            .map(|i| Item { name: format!("f{i}"), path: PathBuf::from(format!("/d/f{i}")), is_dir: false, kind: Kind::Text, ext: "txt".into() })
+            .map(|i| Item { name: format!("f{i}"), path: PathBuf::from(format!("/d/f{i}")), is_dir: false, kind: Kind::Text, ext: "txt".into(), launcher: None })
             .collect()
     }
 
@@ -1260,8 +1422,8 @@ mod tests {
     fn tile_raster_has_both_states() {
         let mut fonts = crate::text::FontSystem::new();
         let mut icons = IconCache::default();
-        let job = TileJob { path: "/d/Отчёт за квартал.pdf".into(), name: "Отчёт за квартал.pdf".into(), icon: Icon::File(Kind::Pdf, "pdf".into()) };
-        let tile = crate::theme::with_render_settings(2.0, crate::theme::Appearance::Light, || raster_tile(&job, &mut fonts, &mut icons));
+        let job = TileJob { path: "/d/Отчёт за квартал.pdf".into(), name: "Отчёт за квартал.pdf".into(), icon: Icon::File(Kind::Pdf, "pdf".into()), app: None };
+        let tile = crate::theme::with_render_settings(2.0, crate::theme::Appearance::Light, || raster_tile(&job, &mut fonts, &mut icons, &mut crate::icons::IconLoader::new()));
         assert_eq!(tile.size, (192, 216));
         assert_eq!(tile.plain.len(), 192 * 216 * 4);
         assert_ne!(tile.plain, tile.selected);

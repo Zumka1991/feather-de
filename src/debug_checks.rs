@@ -52,6 +52,28 @@ fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("FEATHER_DEBUG_LAUNCHER").is_some() {
+        // Drag an app out of Launchpad onto the bare desktop: a launcher file appears there
+        at(state, 1500, |s| {
+            let app = s.app_registry.apps.iter().position(|a| matches!(a.action, crate::apps::AppAction::Exec(_)) && a.id != crate::apps::AppRegistry::PERMANENT).unwrap();
+            let entry = s.app_registry.apps[app].clone();
+            s.pointer_location = (120.0, 220.0).into();
+            s.begin_icon_press(crate::DragSource::Launchpad { app }, crate::shell::AppIcon::of(&entry), entry.name.clone(), crate::shell::ShellClickAction::None);
+            for (x, y) in [(135.0, 235.0), (150.0, 260.0)] {
+                s.pointer_location = (x, y).into();
+                s.update_icon_drag();
+            }
+            assert!(s.icon_drag.as_ref().unwrap().active);
+            s.finish_icon_press();
+            eprintln!("[feather-launcher-check] dropped {} on the desktop", entry.name);
+        })?;
+        at(state, 3200, |s| {
+            let item = s.shell.desktop.items.iter().find(|i| i.launcher.is_some()).expect("launcher listed");
+            let l = item.launcher.as_ref().unwrap();
+            assert!(l.executable && item.name.ends_with(".desktop"));
+            eprintln!("[feather-launcher-check] listed «{}» → {}: ok", l.name, crate::desktop::launcher_command(&l.exec));
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_MISSION").is_some() {
         // Mission Control without host input: spread, drag a window onto «+», pick a desktop
         at(state, 1200, |s| {
