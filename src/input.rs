@@ -705,7 +705,7 @@ impl FeatherCompositor {
         }
     }
 
-    fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
+    pub(crate) fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         self.pointer_location = pos;
         if self.mission_open() {
             self.mission_motion(pos.x, pos.y);
@@ -905,7 +905,7 @@ impl FeatherCompositor {
         });
     }
 
-    fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
+    pub(crate) fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
         if self.mission_open() && !self.lock.active {
             let (x, y) = (self.pointer_location.x, self.pointer_location.y);
             if btn_state == ButtonState::Pressed && self.shell.dock_contains(x, y) {

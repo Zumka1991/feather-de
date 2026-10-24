@@ -52,6 +52,42 @@ fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("FEATHER_DEBUG_MINIMIZE").is_some() {
+        // A Tauri-like client (bench/tauri-like.py): its own HTML titlebar buttons must keep
+        // working after it minimizes itself and comes back from the Dock.
+        fn click(s: &mut FeatherCompositor, dx: f64, dy: f64) {
+            let Some(w) = s.windows.iter().find(|w| w.app_id.contains("tauri") && w.mapped) else { return eprintln!("[feather-minimize-check] no window") };
+            let (cx, cy) = w.client_origin();
+            let p: smithay::utils::Point<f64, smithay::utils::Logical> = (cx as f64 + dx, cy as f64 + dy).into();
+            let t = s.start_time.elapsed().as_millis() as u32;
+            s.on_pointer_motion(p, t);
+            s.on_pointer_button(0x110, smithay::backend::input::ButtonState::Pressed, t + 1);
+            s.on_pointer_button(0x110, smithay::backend::input::ButtonState::Released, t + 40);
+        }
+        at(state, 4000, |s| { click(s, 110.0, 20.0); eprintln!("[feather-minimize-check] ping"); })?;
+        at(state, 4600, |s| { click(s, 40.0, 20.0); eprintln!("[feather-minimize-check] minimize"); })?;
+        at(state, 5400, |s| {
+            let w = s.windows.iter().find(|w| w.app_id.contains("tauri")).unwrap();
+            eprintln!("[feather-minimize-check] minimized={}", w.minimized);
+            let (id, key) = (w.id, s.app_key(w));
+            match std::env::var("FEATHER_DEBUG_MINIMIZE").as_deref() {
+                // Dock icon click and Alt+Tab both go through activate_app
+                Ok("dock") => s.activate_app(key),
+                // The app restores itself (tray): nothing to do here
+                Ok("present") => {}
+                _ => s.execute_shell_action(crate::shell::ShellClickAction::RestoreMinimizedWindow(id)),
+            }
+            let w = s.windows.iter().find(|w| w.id == id).unwrap();
+            eprintln!("[feather-minimize-check] restored: minimized={}", w.minimized);
+        })?;
+        at(state, 6400, |s| {
+            let w = s.windows.iter().find(|w| w.app_id.contains("tauri")).unwrap();
+            eprintln!("[feather-minimize-check] before ping: minimized={} visible={}", w.minimized, w.is_visible());
+            click(s, 110.0, 20.0);
+            eprintln!("[feather-minimize-check] ping after restore");
+        })?;
+        at(state, 7000, |s| { click(s, 180.0, 20.0); eprintln!("[feather-minimize-check] close"); })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_LAUNCHER").is_some() {
         // Drag an app out of Launchpad onto the bare desktop: a launcher file appears there
         at(state, 1500, |s| {
