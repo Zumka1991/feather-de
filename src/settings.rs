@@ -292,6 +292,7 @@ pub struct Settings {
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub notify_sounds: bool,
+    pub sounds: crate::sounds::Preferences,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
     pub dock: Option<Vec<String>>,
@@ -323,6 +324,7 @@ impl Default for Settings {
             dnd_schedule: None,
             notify_apps: Vec::new(),
             notify_sounds: true,
+            sounds: Default::default(),
             hot_corners: Default::default(),
             night: Default::default(),
             dock: None,
@@ -449,6 +451,13 @@ impl Settings {
                         s.hot_corners = [a, b, c, d];
                     }
                 }
+                "alert_sound" => {if let Some(tone)=crate::sounds::Tone::parse(v) {s.sounds.tone=tone;}}
+                "alert_volume" => {if let Some(volume)=v.parse::<u8>().ok().filter(|v|*v<=100) {s.sounds.volume=volume;}}
+                "alert_sounds" | "interface_sounds" | "volume_feedback" => {
+                    if let Ok(on)=v.parse() {match k.trim() {
+                        "alert_sounds"=>s.sounds.alerts=on,"interface_sounds"=>s.sounds.interface=on,_=>s.sounds.volume_feedback=on,
+                    }}
+                }
                 "notify_sounds" => {
                     if let Ok(v) = v.parse() {
                         s.notify_sounds = v;
@@ -574,6 +583,8 @@ impl Settings {
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
         text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_edge={}\ngtk_theme={}\n", self.dock_size, self.dock_autohide, self.dock_edge.id(), self.gtk_theme));
         text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
+        text.push_str(&format!("alert_sounds={}\nalert_sound={}\nalert_volume={}\ninterface_sounds={}\nvolume_feedback={}\n",
+            self.sounds.alerts,self.sounds.tone.id(),self.sounds.volume,self.sounds.interface,self.sounds.volume_feedback));
         text.push_str(&format!("hot_corners={}\n", self.hot_corners.map(|a| a.id()).join(",")));
         text.push_str(&format!("night_manual={}\nnight_kelvin={}\n", self.night.manual, self.night.kelvin));
         if let Some((from, to)) = self.night.schedule {
@@ -714,6 +725,14 @@ mod tests {
         assert_eq!(invalid.power, crate::power::Preferences::default());
     }
     use super::*;
+    #[test]
+    fn system_sound_preferences_round_trip_and_validate() {
+        let mut s=Settings::parse("");assert_eq!(s.sounds,crate::sounds::Preferences::default());
+        s.sounds=crate::sounds::Preferences {alerts:false,tone:crate::sounds::Tone::Drop,volume:75,interface:false,volume_feedback:true};
+        assert_eq!(Settings::parse(&s.text()).sounds,s.sounds);
+        assert_eq!(Settings::parse("alert_volume=101\nalert_volume=-1\nalert_volume=NaN\nalert_sound=../x\nalert_sounds=yes\ninterface_sounds=no\nvolume_feedback=1").sounds,crate::sounds::Preferences::default());
+        assert_eq!(Settings::parse("alert_volume=0").sounds.volume,0);
+    }
     #[test]
     fn notification_preferences_round_trip_and_reject_bad_lines() {
         use crate::notifications::{AppPolicy, Delivery};

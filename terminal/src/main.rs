@@ -68,6 +68,7 @@ use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
 };
 
+use smithay_client_toolkit::reexports::protocols::xdg::system_bell::v1::client::xdg_system_bell_v1::XdgSystemBellV1;
 use keys::{MouseEvent, Mods};
 use pty::Pty;
 use view::{Frame, Grid, Palette, SelRange};
@@ -121,6 +122,7 @@ enum Msg {
 
 struct App {
     registry_state: RegistryState,
+    system_bell: Option<XdgSystemBellV1>,
     seat_state: SeatState,
     output_state: OutputState,
     compositor: CompositorState,
@@ -291,6 +293,7 @@ fn main() {
     let dark = system_dark();
     let mut app = App {
         registry_state: RegistryState::new(&globals),
+        system_bell: globals.bind(&qh, 1..=1, ()).ok(),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
         data_devices: DataDeviceManagerState::bind(&globals, &qh).ok(),
@@ -541,7 +544,7 @@ impl App {
     }
 
     fn bell(&mut self) {
-        // Visual bell: a short flash of the title bar
+        if let Some(bell)=&self.system_bell {bell.ring(Some(self.window.wl_surface()));}
         self.damage_chrome();
     }
 
@@ -1579,7 +1582,7 @@ macro_rules! no_events {
         }
     )*};
 }
-no_events!(WpFractionalScaleManagerV1, WpViewporter, WpViewport);
+no_events!(WpFractionalScaleManagerV1, WpViewporter, WpViewport, XdgSystemBellV1);
 
 delegate_compositor!(App);
 delegate_output!(App);

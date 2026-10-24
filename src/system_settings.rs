@@ -58,7 +58,7 @@ impl Page {
             Self::Defaults => "Выберите приложения для повседневных задач.",
             Self::DateTime => "Синхронизация часов и часовой пояс.",
             Self::Power => "Пароль, выключение экрана и переход в сон.",
-            Self::Sound => "Устройства вывода и микрофоны, громкость и запись.",
+            Self::Sound => "Системные сигналы, устройства вывода и микрофоны.",
             Self::Notifications => "Баннеры, центр уведомлений и «Не беспокоить».",
         }
     }
@@ -72,6 +72,12 @@ pub enum Action {
     DndSchedule,
     DndWindow,
     NotifySounds,
+    AlertSounds,
+    AlertTone,
+    AlertVolume(u8),
+    PreviewAlert,
+    InterfaceSounds,
+    VolumeFeedback,
     Audio(crate::controls::Control),
     /// Next action of this corner (0 top-left … 3 bottom-right)
     HotCorner(usize),
@@ -192,6 +198,7 @@ pub struct Context<'a> {
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
+    pub sounds: crate::sounds::Preferences,
     pub audio: crate::controls::Audio,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
@@ -223,6 +230,7 @@ pub struct FrameJob {
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
+    pub sounds: crate::sounds::Preferences,
     pub audio: crate::controls::Audio,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
@@ -264,6 +272,7 @@ impl FrameJob {
             dnd: c.dnd,
             dnd_schedule: c.dnd_schedule,
             notify_sounds: c.notify_sounds,
+            sounds: c.sounds,
             audio: c.audio.clone(),
             hot_corners: c.hot_corners,
             night: c.night,
@@ -297,6 +306,7 @@ impl FrameJob {
             dnd: self.dnd,
             dnd_schedule: self.dnd_schedule,
             notify_sounds: self.notify_sounds,
+            sounds: self.sounds,
             audio: self.audio.clone(),
             hot_corners: self.hot_corners,
             night: self.night,
@@ -681,6 +691,21 @@ impl Panel {
             Page::Sound => {
                 use crate::controls::Control as Audio;
                 l.hero(Page::Sound);
+                l.header("Сигналы и звуки интерфейса");
+                l.begin();
+                l.row(52.0,"Звуки предупреждений","Системный сигнал и запросы программ".into(),Style::Toggle(c.sounds.alerts),Some(Action::AlertSounds));
+                l.row(52.0,"Сигнал предупреждения",c.sounds.tone.label().into(),Style::Row,Some(Action::AlertTone));
+                let r=l.row(82.0,"Громкость сигналов",format!("{} % от громкости устройства",c.sounds.volume),Style::Row,None);
+                for (i,volume) in [0,25,50,75,100].into_iter().enumerate() {
+                    let width=(r.w-28.0)/5.0;
+                    l.push(R::new(r.x+14.0+i as f32*width,r.y+48.0,width,26.0),&format!("{volume} %"),Style::Segment(c.sounds.volume==volume),Some(Action::AlertVolume(volume)));
+                }
+                l.row(44.0,"Прослушать сигнал",String::new(),Style::Row,Some(Action::PreviewAlert));
+                l.row(52.0,"Звуки интерфейса","Короткий звук после снимка экрана".into(),Style::Toggle(c.sounds.interface),Some(Action::InterfaceSounds));
+                l.row(52.0,"Звук при изменении громкости","Отклик клавиш громкости, кроме выключенного звука".into(),Style::Toggle(c.sounds.volume_feedback),Some(Action::VolumeFeedback));
+                l.row(52.0,"Звук уведомлений","Короткий сигнал при появлении баннера".into(),Style::Toggle(c.notify_sounds),Some(Action::NotifySounds));
+                l.end();
+                l.footer("«Не беспокоить» отключает автоматические сигналы. Прослушивание доступно при выключенных предупреждениях; уведомления настраиваются отдельно.");
                 for input in [true, false] {
                     l.header(if input { "Микрофон" } else { "Вывод звука" });
                     let audio = &c.audio;
@@ -1870,6 +1895,7 @@ impl crate::FeatherCompositor {
             dnd: self.shell.dnd_active(),
             dnd_schedule: self.shell.dnd_schedule,
             notify_sounds: self.shell.notify_sounds,
+            sounds: self.sound_preferences,
             audio: self.shell.cc.audio.clone(),
             hot_corners: self.hot_corners.actions,
             night: self.night.prefs,
@@ -2066,6 +2092,24 @@ impl crate::FeatherCompositor {
                     self.save_settings();
                 }
             }
+            Action::AlertSounds | Action::InterfaceSounds | Action::VolumeFeedback => {
+                match action {
+                    Action::AlertSounds=>self.sound_preferences.alerts=!self.sound_preferences.alerts,
+                    Action::InterfaceSounds=>self.sound_preferences.interface=!self.sound_preferences.interface,
+                    _=>self.sound_preferences.volume_feedback=!self.sound_preferences.volume_feedback,
+                }
+                self.save_settings();
+            }
+            Action::AlertTone => {
+                self.sound_preferences.tone=self.sound_preferences.tone.next();
+                self.save_settings();
+                self.play_effect(crate::sounds::Effect::Alert(self.sound_preferences.tone),true);
+            }
+            Action::AlertVolume(value) => {
+                self.sound_preferences.volume=value.min(100);self.save_settings();
+                self.play_effect(crate::sounds::Effect::Alert(self.sound_preferences.tone),true);
+            }
+            Action::PreviewAlert => {self.play_effect(crate::sounds::Effect::Alert(self.sound_preferences.tone),true);}
             Action::NotifySounds => {
                 self.shell.notify_sounds = !self.shell.notify_sounds;
                 self.save_settings();
@@ -2336,6 +2380,7 @@ impl crate::FeatherCompositor {
                 }
             }
         }
+        if self.system_settings.error.is_some() {self.play_effect(crate::sounds::Effect::Alert(self.sound_preferences.tone),false);}
         self.mark_settings_dirty();
         self.needs_redraw = true;
     }
@@ -2608,6 +2653,7 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            sounds: Default::default(),
             audio: Default::default(),
             hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
             night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
@@ -2631,7 +2677,9 @@ mod tests {
             let controls = panel.controls(800.0, 540.0, &context);
             assert!(controls.iter().any(|c| c.detail.contains("разъём не подключён")));
             let volume = controls.iter().find(|c| matches!(c.action, Some(Action::Audio(Audio::InputVolume { .. })))).unwrap();
-            let r = volume.rect;
+            panel.scroll=(volume.rect.y-300.0).max(0.0);
+            let controls=panel.controls(800.0,540.0,&context);
+            let r=controls.iter().find(|c| matches!(c.action,Some(Action::Audio(Audio::InputVolume { .. })))).unwrap().rect;
             for (fraction, expected) in [(0.0,0.0),(0.4,0.4),(1.0,1.0)] {
                 let action = panel.hit(r.x+10.0+(r.w-20.0)*fraction, r.y+10.0, 800.0,540.0,&context);
                 assert!(matches!(action, Some(Action::Audio(Audio::InputVolume { source, value })) if source=="builtin" && (value-expected).abs()<0.001));
@@ -2671,6 +2719,7 @@ mod tests {
                             Panel { page: Page::DateTime, zone_picker: true, ..Default::default() },
                             // Hover: sidebar «Дисплеи» and, below, nothing else lit
                             Panel { page: Page::Desktop, pointer: Some((100.0, 100.0)), ..Default::default() },
+                            Panel { page: Page::Sound, scroll: 440.0, ..Default::default() },
                         ];
                         for (n, panel) in Page::ALL
                             .into_iter()
@@ -2760,6 +2809,7 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            sounds: Default::default(),
             audio: Default::default(),
             hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
             night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },

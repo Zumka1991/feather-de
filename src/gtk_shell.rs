@@ -45,10 +45,11 @@ impl GlobalDispatch<GtkShell1, ()> for FeatherCompositor {
 }
 
 impl Dispatch<GtkShell1, ()> for FeatherCompositor {
-    fn request(_: &mut Self, _: &Client, _: &GtkShell1, request: gtk_shell1::Request, _: &(), _: &DisplayHandle, data_init: &mut DataInit<'_, Self>) {
-        // set_startup_id / system_bell: nothing to do (activation goes through xdg-activation)
-        if let gtk_shell1::Request::GetGtkSurface { gtk_surface, surface } = request {
-            data_init.init(gtk_surface, surface);
+    fn request(state: &mut Self, _: &Client, _: &GtkShell1, request: gtk_shell1::Request, _: &(), _: &DisplayHandle, data_init: &mut DataInit<'_, Self>) {
+        match request {
+            gtk_shell1::Request::GetGtkSurface { gtk_surface, surface } => {data_init.init(gtk_surface, surface);}
+            gtk_shell1::Request::SystemBell { surface } => state.system_bell(surface.and_then(|s|s.data::<WlSurface>().cloned())),
+            _ => {} // Activation goes through xdg-activation.
         }
     }
 }

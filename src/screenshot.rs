@@ -240,6 +240,7 @@ impl FeatherCompositor {
             self.needs_redraw = true;
             return;
         };
+        self.play_effect(crate::sounds::Effect::Screenshot,false);
         self.set_clipboard(vec![(PNG_MIME.into(), finished.png)]);
         let body = match finished.saved.as_ref().and_then(|p| p.file_name()) {
             Some(name) => format!("В буфере обмена и в файле {}", name.to_string_lossy()),

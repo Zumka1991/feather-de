@@ -196,6 +196,9 @@ impl FeatherCompositor {
             self.loop_handle.remove(token);
         }
         let sink = audio.current();
+        if sink.is_some_and(|s| !s.muted && s.volume()>0.0) && audio.error.is_none() {
+            self.play_effect(crate::sounds::Effect::Volume,false);
+        }
         self.audio_hud.visible = true;
         self.audio_hud.available = sink.is_some();
         self.audio_hud.percent =

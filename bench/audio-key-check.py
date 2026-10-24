@@ -20,6 +20,8 @@ from collections import Counter
 
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--host',required=True)
+p.add_argument('--system-sounds',action='store_true',help='exercise sound preferences and fake shared player')
+p.add_argument('--restore-sounds',action='store_true',help='reuse system-sounds settings and check persistence')
 p.add_argument('--microphone',action='store_true',help='exercise Sound settings and microphone hotplug instead of media keys')
 p.add_argument('--scale',default='2')
 p.add_argument('--output',type=Path)
@@ -27,6 +29,8 @@ p.add_argument('--screenshot',action='store_true')
 p.add_argument('--duration',type=float,default=24)
 p.add_argument('--protocol-summary',action='store_true',help='count host protocol method names; discard all arguments')
 a=p.parse_args()
+if a.restore_sounds and not a.system_sounds:p.error('--restore-sounds requires --system-sounds')
+if a.system_sounds and a.microphone:p.error('select one sound scenario')
 if a.duration < 18:p.error("--duration must be at least 18 seconds")
 sources=[
     {'index':2,'name':'builtin mic','description':'Встроенный микрофон','mute':False,'monitor_source':'',
@@ -104,6 +108,22 @@ with (root/'audio.lock').open('a') as lock:
     else:raise SystemExit('unexpected fake pactl args: '+repr(args))
 ''')
 helper.chmod(0o755)
+if a.system_sounds:
+    player=fixture/'pw-play'
+    player.write_text('''#!/usr/bin/python3
+import json,os,sys,time,wave
+from pathlib import Path
+root=Path(os.environ['FEATHER_FAKE_AUDIO'])
+with wave.open(sys.argv[1],'rb') as sound:
+    frames=sound.getnframes();pcm=sound.readframes(frames)
+import struct
+values=struct.unpack('<'+'h'*(len(pcm)//2),pcm)
+with (root/'played.jsonl').open('a') as log:
+    log.write(json.dumps({'frames':frames,'peak':max(abs(v) for v in values),'time':time.monotonic()})+'\\n')
+time.sleep(.15)
+''')
+    player.chmod(0o755)
+    (root/'played.jsonl').write_text('')
 env={k:v for k,v in os.environ.items() if not k.startswith('FEATHER_DEBUG_')}
 env.pop('WAYLAND_DEBUG',None)
 env.update(WAYLAND_DISPLAY=a.host,PATH=str(fixture)+os.pathsep+env['PATH'],
@@ -114,11 +134,26 @@ env.update(WAYLAND_DISPLAY=a.host,PATH=str(fixture)+os.pathsep+env['PATH'],
 if a.microphone:
     env.pop('FEATHER_DEBUG_AUDIO_KEYS',None)
     env['FEATHER_DEBUG_AUDIO_SETTINGS']='1'
+if a.system_sounds:
+    env.pop('FEATHER_DEBUG_AUDIO_KEYS',None)
+    env.update(FEATHER_DEBUG_NOTIFY='1',XDG_DATA_DIRS=str(root/'empty-data'))
+    env['FEATHER_DEBUG_SYSTEM_SOUNDS_RESTORE' if a.restore_sounds else 'FEATHER_DEBUG_SYSTEM_SOUNDS']='1'
 if a.protocol_summary:env['WAYLAND_DEBUG']='client'
-if a.screenshot:env.update(FEATHER_DEBUG_SCREENSHOT=str(root/'frame.png'),FEATHER_DEBUG_SCREENSHOT_MS='6900' if a.microphone else '4550')
+if a.screenshot:env.update(FEATHER_DEBUG_SCREENSHOT=str(root/'frame.png'),FEATHER_DEBUG_SCREENSHOT_MS='9500' if a.system_sounds else '6900' if a.microphone else '4550')
 (root/'pid').unlink(missing_ok=True)
-command=['dbus-run-session','--','sh','-c','echo $$ > "$1"; exec "$2" --windowed',
+terminal=Path('target/release/feather-terminal').resolve()
+if a.system_sounds and not a.restore_sounds:
+    client=root/'bell.py'
+    client.write_text("import time\ntime.sleep(7.8)\nprint('\\a',flush=True)\ntime.sleep(100)\n")
+    notify=root/'notify.sh'
+    notify.write_text('#!/bin/sh\nsleep 7.1\nexec notify-send Test Sound\n')
+command=['dbus-run-session' ,'--','sh','-c','echo $$ > "$1"; exec "$2" --windowed',
          'audio-key-check',str(root/'pid'),str(Path('target/release/feather-de').resolve())]
+if a.system_sounds and not a.restore_sounds:
+    import shlex
+    # $3 is passed directly to exec; all clients inherit this private D-Bus/Wayland session.
+    command[4]='echo $$ > "$1"; exec "$2" --windowed --autostart "$3"'
+    command.append('sh '+shlex.quote(str(notify))+' & exec '+shlex.quote(str(terminal))+' -e python3 '+shlex.quote(str(client)))
 
 def read_sample(pid):
     proc=Path(f'/proc/{pid}')
@@ -154,7 +189,8 @@ with (root/'compositor.log').open('w') as log:
         while time.monotonic()-start<a.duration:
             elapsed=time.monotonic()-start
             if process.poll() is not None:raise RuntimeError((root/'compositor.log').read_text()[-7000:])
-            if a.microphone:
+            if a.system_sounds:pass
+            elif a.microphone:
                 if elapsed>=6 and not switched:
                     def external(state):
                         state['default_source']='builtin mic'
@@ -182,9 +218,17 @@ with (root/'compositor.log').open('w') as log:
 
             time.sleep(0.05)
         text=(root/'compositor.log').read_text()
-        assert ('[feather-microphone-check] complete: ok' if a.microphone else '[feather-audio-key-check] complete: ok') in text,text[-7000:]
+        assert ('[feather-system-sounds-check] restored: ok' if a.restore_sounds else '[feather-system-sounds-check] complete: ok' if a.system_sounds else '[feather-microphone-check] complete: ok' if a.microphone else '[feather-audio-key-check] complete: ok') in text,text[-7000:]
         calls=[json.loads(l) for l in (root/'calls.jsonl').read_text().splitlines()]
-        if a.microphone:
+        if a.system_sounds:
+            played=[json.loads(l) for l in (root/'played.jsonl').read_text().splitlines()]
+            if a.restore_sounds:assert not played,'restoring must not play a sound'
+            else:
+                assert [r['frames'] for r in played]==[15360,15360,15360,4320,3120,15360,10560,15360],played
+                assert played[0]['peak']<played[1]['peak'],'volume must scale the PCM'
+                assert not calls,'sound settings must never change hardware volume'
+            print('System sound samples:',played)
+        elif a.microphone:
             assert ['set-default-source','usb mic'] in calls
             assert ['set-source-volume','usb mic','50.000%'] in calls
             assert ['set-source-mute','usb mic','1'] in calls
@@ -204,7 +248,7 @@ with (root/'compositor.log').open('w') as log:
         host_input=sum(count for row in protocol_samples if row['seconds']>=idle['seconds']
                        for method,count in row['counts'].items()
                        if method.startswith(('wl_pointer.','wl_keyboard.','wl_touch.')))
-        report={'pid':int((root/'pid').read_text()),'scale':a.scale,'microphone':a.microphone,'peak_anon_kib':max(s['anon_kib'] for s in samples),
+        report={'pid':int((root/'pid').read_text()),'scale':a.scale,'microphone':a.microphone,'system_sounds':a.system_sounds,'peak_anon_kib':max(s['anon_kib'] for s in samples),
                 'steady_anon_kib':end['anon_kib'],'idle_ticks_5s':end['ticks']-idle['ticks'],
                 'idle_window_seconds':round(end['seconds']-idle['seconds'],3),
                 'idle_host_input_events':host_input if a.protocol_summary else None,

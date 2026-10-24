@@ -134,6 +134,61 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
         at(state,6500,|s| {tap(s,1);finish(s);})?;
     }
+    if std::env::var_os("FEATHER_DEBUG_SYSTEM_SOUNDS").is_some() {
+        use crate::{sounds::{Effect,Tone},system_settings::{Action as A,Page}};
+        if state.backend.is_drm() || !state.debug_input_only {return Err("sounds check requires isolated windowed input".into());}
+        fn click(s:&mut FeatherCompositor,predicate:impl Fn(&A)->bool) {
+            let w=s.windows.iter().find(|w|w.app_id=="builtin.settings").unwrap();
+            let (width,height)=(w.width as f32,w.height as f32);
+            let (_,y)=s.system_settings.debug_point(width,height,&s.settings_context(),&predicate).unwrap();
+            s.system_settings.scroll+=(y-height*0.6).max(0.0);
+            let (x,y)=s.system_settings.debug_point(width,height,&s.settings_context(),&predicate).unwrap();
+            let w=s.windows.iter().find(|w|w.app_id=="builtin.settings").unwrap();
+            let (gx,gy)=(w.x as f64+x as f64,(w.y+w.titlebar_h()) as f64+y as f64);
+            assert!(y>12.0 && y<height-20.0);
+            s.debug_pointer_motion(gx,gy);s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);
+        }
+        at(state,1000,|s|s.apply_system_setting(A::Page(Page::Sound)))?;
+        at(state,1600,|s| {click(s,|a|matches!(a,A::AlertTone));assert_eq!(s.sound_preferences.tone,Tone::Glass);})?;
+        at(state,2200,|s| {click(s,|a|matches!(a,A::AlertVolume(75)));assert_eq!(s.sound_preferences.volume,75);})?;
+        at(state,2800,|s| {
+            click(s,|a|matches!(a,A::AlertSounds));assert!(!s.sound_preferences.alerts);
+            assert!(!s.play_effect(Effect::Alert(Tone::Glass),false));
+            eprintln!("[feather-system-sounds-check] real clicks/tone/volume/disabled alerts: ok");
+        })?;
+        at(state,3400,|s|click(s,|a|matches!(a,A::PreviewAlert)))?;
+        at(state,4000,|s| {
+            click(s,|a|matches!(a,A::InterfaceSounds));assert!(!s.play_effect(Effect::Screenshot,false));
+            click(s,|a|matches!(a,A::InterfaceSounds));assert!(s.play_effect(Effect::Screenshot,false));
+        })?;
+        at(state,4600,|s| {
+            click(s,|a|matches!(a,A::VolumeFeedback));assert!(s.sound_preferences.volume_feedback);
+            let audio=s.shell.cc.audio.clone();assert!(audio.current().is_some());s.show_audio_feedback(&audio);
+        })?;
+        at(state,5200,|s| {
+            s.shell.dnd_enabled=true;
+            for effect in [Effect::Screenshot,Effect::Volume,Effect::Alert(Tone::Glass)] {assert!(!s.play_effect(effect,false));}
+            assert!(s.play_effect(Effect::Alert(Tone::Glass),true));s.shell.dnd_enabled=false;
+        })?;
+        at(state,5800,|s| {
+            s.lock.active=true;assert!(!s.play_effect(Effect::Alert(Tone::Glass),true));s.lock.active=false;
+            s.sound_preferences.volume=0;assert!(!s.play_effect(Effect::Alert(Tone::Glass),true));s.sound_preferences.volume=75;
+            s.apply_system_setting(A::AlertSounds);assert!(s.sound_preferences.alerts);
+            eprintln!("[feather-system-sounds-check] preview/interface/volume feedback/DND/lock/zero volume: ok");
+        })?;
+        at(state,8500,|s| {
+            s.system_settings.scroll=0.0;s.mark_settings_dirty();s.needs_redraw=true;
+            eprintln!("[feather-system-sounds-check] complete: ok");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_SYSTEM_SOUNDS_RESTORE").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only {return Err("sounds restore requires isolated windowed input".into());}
+        at(state,1200,|s| {
+            assert_eq!(s.sound_preferences,crate::sounds::Preferences {alerts:true,tone:crate::sounds::Tone::Glass,volume:75,interface:true,volume_feedback:true});
+            s.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Sound));
+            eprintln!("[feather-system-sounds-check] restored: ok");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_AUDIO_SETTINGS").is_some() {
         use crate::{controls::Control as C, system_settings::{Action as A, Page}};
         if state.backend.is_drm() || !state.debug_input_only { return Err("audio settings check requires isolated windowed input".into()); }

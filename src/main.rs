@@ -6,6 +6,7 @@ mod cursor;
 mod desktop;
 mod tray;
 mod notifications;
+mod sounds;
 mod xwayland;
 mod gtk_menu;
 mod hot_corners;
@@ -158,6 +159,8 @@ pub struct FeatherCompositor {
     pub appmenus: crate::appmenu::AppMenus,
     pub tray: Option<crate::tray::Tray>,
     pub notifications: Option<crate::notifications::Notifications>,
+    pub sounds: Option<crate::sounds::Sounds>,
+    pub sound_preferences: crate::sounds::Preferences,
     pub xwayland: Option<crate::xwayland::Xwayland>,
     pub hot_corners: crate::hot_corners::HotCorners,
     pub spaces: crate::spaces::Spaces,
@@ -694,6 +697,7 @@ impl FeatherCompositor {
             dnd_schedule: self.shell.dnd_schedule,
             notify_apps: self.shell.notify_apps.clone(),
             notify_sounds: self.shell.notify_sounds,
+            sounds: self.sound_preferences,
             hot_corners: self.hot_corners.actions,
             night: self.night.prefs,
             dock: Some(self.dock_pins.clone()),
@@ -1016,10 +1020,16 @@ impl FeatherCompositor {
     /// token first so the app may raise its window.
     pub fn flush_notification_events(&mut self) {
         for event in std::mem::take(&mut self.shell.notification_events) {
+            if let crate::shell::NotificationEvent::Sound(sound) = event {
+                if !self.lock.active && !self.shell.dnd_active() && self.shell.notify_sounds {
+                    if let Some(sounds)=&self.sounds {sounds.play(sound,100);}
+                }
+                continue;
+            }
             let Some(server) = &self.notifications else { continue };
             match event {
                 crate::shell::NotificationEvent::Closed(id, reason) => server.closed(id, reason),
-                crate::shell::NotificationEvent::Sound(file) => server.play(file),
+                crate::shell::NotificationEvent::Sound(_) => unreachable!(),
                 crate::shell::NotificationEvent::Invoked(id, key) => {
                     let token = self.xdg_activation_state.create_external_token(None).0.clone();
                     let value = token.as_str().to_string();
@@ -1683,6 +1693,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let damage_tracker = OutputDamageTracker::new(initial_size, 1.0, Transform::Flipped180);
 
     crate::gtk_shell::create_global(&dh);
+    smithay::wayland::xdg_system_bell::XdgSystemBellState::new::<FeatherCompositor>(&dh);
     let appmenus = crate::appmenu::AppMenus::new(
         &dh, &handle, is_standalone || use_drm || std::env::var_os("FEATHER_APPMENU_REGISTRAR").is_some(),
     )?;
@@ -1719,6 +1730,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         appmenus,
         tray: None,
         notifications: None,
+        sounds: None,
+        sound_preferences: saved.sounds,
         xwayland: None,
         hot_corners: crate::hot_corners::HotCorners::new(saved.hot_corners),
         spaces: Default::default(),
@@ -1841,6 +1854,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         crate::labwc::apply(state.pointer_config.clone(), state.scale_factor);
     }
     state.controls=Some(crate::controls::Controls::new(&state.loop_handle)?);
+    state.sounds=Some(crate::sounds::Sounds::new(&state.loop_handle)?);
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_TRAY").is_some() {
         state.tray=Some(crate::tray::Tray::new(&state.loop_handle)?);
     }

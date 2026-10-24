@@ -367,7 +367,7 @@ enum ToastPart {
 pub enum NotificationEvent {
     Closed(u32, crate::notifications::Reason),
     Invoked(u32, String),
-    Sound(std::path::PathBuf),
+    Sound(crate::sounds::Sound),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

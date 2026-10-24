@@ -76,6 +76,7 @@ calloop EventLoop (один поток)
 | `raster.rs` | CPU worker: ограниченные очереди, снимки масштаба/темы, отмена устаревших результатов; никаких EGL/Wayland объектов |
 | `render.rs` | Сцена (front-to-back), damage tracking, темп кадров, frame callbacks, профайлер |
 | `window.rs` | Модель окна: geometry, SSD/CSD, mapped, maximize/fullscreen, 9-slice тень, встроенные окна |
+| `sounds.rs` | Общий спящий worker системных сигналов/уведомлений: короткий PCM в memfd, один ограниченный по времени проигрыватель, без очереди звуков |
 | `notifications.rs` | Сервер `org.freedesktop.Notifications` на worker: разбор подсказок, картинки ≤ 96 px, сигналы закрытия/действий; имя чужого демона не перехватывается |
 | `xwayland.rs` | Свой X-дисплей: lock и сокеты, xwayland-satellite по первому X-клиенту через `-listenfd`, перезапуск и очистка |
 | `gtk_shell.rs`, `gtk_menu.rs` | `gtk_shell1` v1 (адрес меню GTK, capability глобального меню-бара) и загрузка `org.gtk.Menus`/`org.gtk.Actions` в общее дерево меню |

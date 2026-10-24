@@ -90,7 +90,7 @@ pub struct Incoming {
     /// Not kept in the notification center
     pub transient: bool,
     /// Resolved sound (hint or theme default); None with `suppress-sound`
-    pub sound: Option<std::path::PathBuf>,
+    pub sound: Option<crate::sounds::Sound>,
 }
 
 pub enum Update {
@@ -107,7 +107,6 @@ pub enum Reason {
 }
 
 enum Command {
-    Sound(std::path::PathBuf),
     Closed(u32, Reason),
     Invoked { id: u32, key: String, token: Option<String> },
 }
@@ -140,10 +139,6 @@ impl Notifications {
 
     pub fn closed(&self, id: u32, reason: Reason) {
         let _ = self.tx.try_send(Command::Closed(id, reason));
-    }
-
-    pub fn play(&self, sound: std::path::PathBuf) {
-        let _ = self.tx.try_send(Command::Sound(sound));
     }
 
     pub fn invoked(&self, id: u32, key: String, token: Option<String>) {
@@ -263,7 +258,8 @@ fn parse(
         critical,
         resident: flag("resident"),
         transient: flag("transient"),
-        sound: if flag("suppress-sound") { None } else { sound_path(&string("sound-file"), &string("sound-name")) },
+        sound: if flag("suppress-sound") { None } else { Some(sound_path(&string("sound-file"), &string("sound-name")).map(crate::sounds::Sound::File)
+            .unwrap_or(crate::sounds::Sound::Effect(crate::sounds::Effect::Notification))) },
     }
 }
 
@@ -291,28 +287,6 @@ fn sound_in(file: &str, name: &str, dirs: &[std::path::PathBuf]) -> Option<std::
     [name, "message-new-instant"].into_iter().filter(|n| valid(n)).find_map(|n| {
         dirs.iter().find_map(|d| SOUND_EXT.iter().map(|e| d.join(format!("sounds/freedesktop/stereo/{n}.{e}"))).find(|p| ok(p)))
     })
-}
-
-/// One sound at a time on its own thread; sounds arriving meanwhile are dropped, so a
-/// burst of notifications never queues a minute of chimes or a pile of processes.
-fn sound_thread() -> Option<std::sync::mpsc::SyncSender<std::path::PathBuf>> {
-    let player = ["pw-play", "paplay", "canberra-gtk-play"].into_iter().find_map(|p| {
-        std::env::var_os("PATH")?.to_str()?.split(':').map(|d| std::path::Path::new(d).join(p)).find(|f| f.is_file())
-    })?;
-    player_thread(player)
-}
-
-fn player_thread(player: std::path::PathBuf) -> Option<std::sync::mpsc::SyncSender<std::path::PathBuf>> {
-    let canberra = player.ends_with("canberra-gtk-play");
-    let (tx, rx) = std::sync::mpsc::sync_channel::<std::path::PathBuf>(0);
-    std::thread::Builder::new().name("feather-sound".into()).stack_size(128 * 1024).spawn(move || {
-        while let Ok(file) = rx.recv() {
-            let mut cmd = std::process::Command::new(&player);
-            if canberra { cmd.arg("-f"); }
-            let _ = cmd.arg(file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-        }
-    }).ok()?;
-    Some(tx)
 }
 
 /// The body-markup subset (b, i, u, a, img) is shown as plain text: tags are removed,
@@ -404,13 +378,8 @@ async fn serve(conn: &Connection, commands: async_channel::Receiver<Command>, up
         return Ok(());
     }
     let emitter = SignalEmitter::new(conn, PATH)?;
-    let mut sounds = None;
     while let Ok(command) = commands.recv().await {
         match command {
-            Command::Sound(file) => {
-                let tx = sounds.get_or_insert_with(sound_thread);
-                if let Some(tx) = tx { let _ = tx.try_send(file); }
-            }
             Command::Closed(id, reason) => {
                 let _ = Server::notification_closed(&emitter, id, reason as u32).await;
             }
@@ -459,35 +428,6 @@ mod tests {
     }
 
     #[test]
-    fn player_plays_one_sound_at_a_time_and_drops_the_burst() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("feather-player-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = dir.join("played.log");
-        let player = dir.join("pw-play");
-        std::fs::write(&player, format!("#!/bin/sh\necho \"$1\" >> {}\nsleep 0.3\n", log.display())).unwrap();
-        std::fs::set_permissions(&player, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let tx = player_thread(player).unwrap();
-        let send = |name: &str| {
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            // The thread may still be starting: wait until it takes the first sound
-            while tx.try_send(dir.join(name)).is_err() {
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        };
-        send("a.oga");
-        assert!(tx.try_send(dir.join("b.oga")).is_err(), "busy player drops the next sound");
-        std::thread::sleep(Duration::from_millis(500));
-        send("c.oga");
-        std::thread::sleep(Duration::from_millis(500));
-        let played = std::fs::read_to_string(&log).unwrap();
-        let names: Vec<_> = played.lines().map(|l| l.rsplit('/').next().unwrap()).collect();
-        assert_eq!(names, ["a.oga", "c.oga"]);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn hint_images_are_validated_premultiplied_and_bounded() {
         let rgba = [255, 0, 0, 128, 0, 255, 0, 255];
         let img = image_from_raw(2, 1, 8, true, 8, 4, &rgba).unwrap();
@@ -513,6 +453,10 @@ mod tests {
         assert_eq!(n.timeout, Some(DEFAULT_TIMEOUT));
         assert_eq!(n.app_icon, "/x.png");
         assert_eq!(n.summary, "S");
+        assert!(n.sound.is_some(),"a built-in chime is available even without a theme");
+        hints.insert("suppress-sound".into(),Value::Bool(true).try_into().unwrap());
+        assert!(p(&hints,-1,&[]).sound.is_none());
+        hints.remove("suppress-sound");
         assert_eq!(n.actions, vec![("default".into(), "".into()), ("reply".into(), "Ответить".into())]);
         assert_eq!(p(&hints, 0, &[]).timeout, None);
         assert_eq!(p(&hints, 10, &[]).timeout, Some(Duration::from_secs(1)));
