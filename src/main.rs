@@ -2156,6 +2156,17 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             TimeoutAction::Drop
         })?;
     }
+    if (args.iter().any(|a| a == "--boot-splash")
+        || ((is_standalone || use_drm) && std::env::var_os("FEATHER_NO_BOOT_SPLASH").is_none()))
+        && std::env::var_os("FEATHER_DEBUG_OPEN").is_none()
+    {
+        state.start_boot_splash(None);
+    }
+    if args.iter().any(|a| a == "--login" || a == "--greeter")
+        || std::env::var_os("FEATHER_LOGIN").is_some()
+    {
+        state.open_login_screen();
+    }
     if std::env::var_os("FEATHER_DEBUG_LOCK").is_some() {state.lock_session();}
     // Visual tests: FEATHER_DEBUG_SCREENSHOT=/path.png captures our own output after 2.5 s
     if let Some(path) = std::env::var_os("FEATHER_DEBUG_SCREENSHOT") {
@@ -2173,6 +2184,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Development aid for screenshot tests: FEATHER_DEBUG_OPEN=launchpad
     match std::env::var("FEATHER_DEBUG_OPEN").as_deref() {
         Ok("launchpad") => state.toggle_launchpad(),
+        Ok("boot-splash") => state.start_boot_splash(Some(0.68)),
+        Ok("login") => state.open_login_screen(),
         Ok("menu-feather") => state.shell.open_menu = Some(crate::shell::TopMenu::Feather),
         Ok("menu-app") => state.shell.open_menu = Some(crate::shell::TopMenu::App),
         Ok("menu-window") => state.shell.open_menu = Some(crate::shell::TopMenu::Window),

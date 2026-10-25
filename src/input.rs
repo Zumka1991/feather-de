@@ -791,6 +791,9 @@ impl FeatherCompositor {
             return;
         }
         if self.lock.active {
+            if !self.lock.external() && self.lock.motion(pos.x, pos.y, (self.shell.screen_w, self.shell.screen_h)) {
+                self.needs_redraw = true;
+            }
             self.refresh_focus();
             let under=self.surface_under_pointer(pos.x,pos.y);let pointer=self.pointer.clone();
             pointer.motion(self,under,&MotionEvent{location:pos,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);return;
@@ -1016,9 +1019,9 @@ impl FeatherCompositor {
                 pointer.button(self,&ButtonEvent{button,state:btn_state,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);
             } else if button==BTN_LEFT && btn_state==ButtonState::Pressed {
                 let (x,y)=(self.pointer_location.x,self.pointer_location.y);
-                let submit=self.lock.click(&mut self.fonts,x,y,(self.shell.screen_w,self.shell.screen_h),self.keyboard.modifier_state().shift);
+                let act=self.lock.click_action(&mut self.fonts,x,y,(self.shell.screen_w,self.shell.screen_h),self.keyboard.modifier_state().shift);
                 self.needs_redraw=true;
-                if submit {self.lock_submit();}
+                self.handle_lock_click_action(act);
             }
             return;
         }

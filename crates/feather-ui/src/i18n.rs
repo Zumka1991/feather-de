@@ -1071,12 +1071,23 @@ static TABLE: &[Entry] = &[
     ("Темп кадров", "Frame Pacing", "Ritmo de fotogramas", "Bildrate", "Cadence d’images", "帧率同步"),
     ("Дробный масштаб", "Fractional Scale", "Escala fraccionaria", "Skalierung", "Échelle fractionnaire", "分数缩放"),
 
-    // ── Lock Screen ──
+    // ── Lock & Login Screen + Boot Splash ──
     ("Введите пароль", "Enter Password", "Introduce la contraseña", "Passwort eingeben", "Saisissez le mot de passe", "输入密码"),
     ("Неверный пароль", "Incorrect Password", "Contraseña incorrecta", "Falsches Passwort", "Mot de passe incorrect", "密码不正确"),
     ("Разблокировка…", "Unlocking…", "Desbloqueando…", "Entsperren…", "Déverrouillage…", "正在解锁…"),
     ("Заблокировать экран сейчас", "Lock Screen Now", "Bloquear pantalla ahora", "Bildschirm jetzt sperren", "Verrouiller l’écran maintenant", "立即锁定屏幕"),
     ("Заблокировать", "Lock", "Bloquear", "Sperren", "Verrouiller", "锁定"),
+    ("Запуск графической среды…", "Starting desktop environment…", "Iniciando entorno gráfico…", "Grafische Umgebung wird gestartet…", "Démarrage de l’environnement graphique…", "正在启动图形桌面环境…"),
+    ("Вход в систему Пёрышко", "Log In to Feather", "Iniciar sesión en Feather", "Bei Feather anmelden", "Connexion à Feather", "登录轻羽桌面"),
+    ("Сеанс Пёрышко · Wayland", "Feather Session · Wayland", "Sesión Feather · Wayland", "Feather-Sitzung · Wayland", "Session Feather · Wayland", "轻羽会话 · Wayland"),
+    ("Пёрышко DE", "Feather DE", "Feather DE", "Feather DE", "Feather DE", "轻羽桌面"),
+    ("Сон", "Sleep", "Reposo", "Ruhezustand", "Suspendre", "睡眠"),
+    ("Перезагрузить", "Restart", "Reiniciar", "Neustart", "Redémarrer", "重新启动"),
+    ("Переход в режим сна…", "Entering sleep mode…", "Entrando en modo de reposo…", "Ruhezustand wird aktiviert…", "Mise en veille…", "正在进入睡眠模式…"),
+    ("Перезагрузка…", "Restarting…", "Reiniciando…", "Neustart…", "Redémarrage…", "正在重新启动…"),
+    ("Выключение…", "Shutting down…", "Apagando…", "Herunterfahren…", "Extinction…", "正在关机…"),
+    ("Перезагрузка доступна в основном сеансе", "Restart is available in the primary session", "El reinicio está disponible en la sesión principal", "Neustart ist in der Hauptsitzung verfügbar", "Le redémarrage est disponible dans la session principale", "重新启动仅在主会话中可用"),
+    ("Выключение доступно в основном сеансе", "Shut down is available in the primary session", "El apagado está disponible en la sesión principal", "Herunterfahren ist in der Hauptsitzung verfügbar", "L’extinction est disponible dans la session principale", "关机仅在主会话中可用"),
 
     // ── Files, Notes & File Picker ──
     ("Избранное", "Favorites", "Favoritos", "Favoriten", "Favoris", "个人收藏"),

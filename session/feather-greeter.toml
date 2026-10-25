@@ -1,0 +1,13 @@
+# Конфигурация greetd для экрана входа Пёрышка (Feather DE)
+# Установка: sudo cp session/feather-greeter.toml /etc/greetd/config.toml
+#
+# Пёрышко запускается на DRM/KMS с фирменной заставкой загрузки (--boot-splash)
+# и экраном входа в стиле macOS Tahoe (--login). После успешной проверки пароля
+# через PAM экран входа мгновенно переходит в рабочий сеанс без перезапуска GPU.
+
+[terminal]
+vt = 1
+
+[default_session]
+command = "/home/zumka/Documents/antigravity/silly-tesla/session/start-feather-drm.sh --boot-splash --login"
+user = "zumka"

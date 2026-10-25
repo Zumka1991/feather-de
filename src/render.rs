@@ -640,6 +640,10 @@ impl FeatherCompositor {
     /// Rasterizes dirty shell/decoration buffers on the CPU (only when something changed)
     fn update_cpu_buffers(&mut self) {
         let mut profile = crate::cpu_profile::Batch::new();
+        if self.lock.splash.active {
+            self.lock.splash.paint(&mut self.fonts, self.scale_factor);
+            profile.step("boot-splash");
+        }
         if self.lock.active {self.shell.ensure_wallpaper_rendered();self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name,(self.shell.screen_w,self.shell.screen_h));profile.step("lock");return;}
         self.audio_hud.paint(&mut self.fonts,self.scale_factor);
         profile.step("audio-hud");
@@ -738,6 +742,9 @@ impl FeatherCompositor {
             self.finish_mission();
             self.advance_bounce();
         }
+        if self.lock.splash.active && self.lock.splash.advance(Instant::now()) {
+            self.needs_redraw = true;
+        }
         let cpu_time = t_cpu.elapsed();
         let t_gpu = Instant::now();
 
@@ -824,7 +831,9 @@ impl FeatherCompositor {
                 }
             } }
             let pointer = (self.pointer_location.x, self.pointer_location.y);
-            let elements = if self.power.blanked {Vec::new()} else if self.lock.active {
+            let now = Instant::now();
+            let splash_opaque = self.lock.splash.is_opaque(now);
+            let elements = if self.power.blanked || splash_opaque {Vec::new()} else if self.lock.active {
                 self.lock.monitor_elements(renderer,scale,&view,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size)))
             } else {
                 let mut elements = if view.primary {self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h))}else{Vec::new()};
@@ -843,10 +852,19 @@ impl FeatherCompositor {
                 ));
                 elements
             };
-            let elements=if self.lock.active {output_elements(elements,crate::monitors::Rect{x:0,y:0,..view.rect},scale)}else{output_elements(elements,view.rect,scale)};
+            let mut elements=if self.lock.active {output_elements(elements,crate::monitors::Rect{x:0,y:0,..view.rect},scale)}else{output_elements(elements,view.rect,scale)};
+            if !self.power.blanked && self.lock.splash.active {
+                let mut sp = output_elements(
+                    self.lock.splash.elements(renderer, scale, (view.rect.w, view.rect.h), now),
+                    crate::monitors::Rect { x: 0, y: 0, ..view.rect },
+                    scale,
+                );
+                sp.extend(elements);
+                elements = sp;
+            }
             let result = match self
                 .damage_tracker
-                .render_output(renderer, &mut framebuffer, age.max(0) as usize, &elements, if self.power.blanked||self.lock.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR})
+                .render_output(renderer, &mut framebuffer, age.max(0) as usize, &elements, if self.power.blanked||self.lock.active||self.lock.splash.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR})
             {
                 Ok(res) => res.damage.cloned(),
                 Err(err) => {
@@ -888,7 +906,11 @@ impl FeatherCompositor {
             if head.pending {continue;}
             let Some(m)=self.monitors.iter().find(|m|m.info.name==head.name)else{continue};
             let info=&m.info;
-            let elements=if self.lock.active {
+            let now=Instant::now();
+            let splash_opaque=self.lock.splash.is_opaque(now);
+            let mut elements=if splash_opaque {
+                Vec::new()
+            } else if self.lock.active {
                 let mut e=cursor_elements(&mut d.renderer,&mut self.cursor,(pointer.0-info.rect.x as f64,pointer.1-info.rect.y as f64),scale);
                 e.extend(self.lock.monitor_elements(&mut d.renderer,scale,info,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size))));
                 output_elements(e,crate::monitors::Rect{x:0,y:0,..info.rect},scale)
@@ -903,7 +925,12 @@ impl FeatherCompositor {
                 e.extend(build_scene(&mut d.renderer,&self.shell,&self.windows,scale,pointer,self.rounded_program.as_ref(),&self.animations,info.rect));
                 output_elements(e,info.rect,scale)
             };
-            match head.output.render_frame(&mut d.renderer,&elements,if self.lock.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR},smithay::backend::drm::compositor::FrameFlags::DEFAULT){
+            if self.lock.splash.active {
+                let mut sp=output_elements(self.lock.splash.elements(&mut d.renderer,scale,(info.rect.w,info.rect.h),now),crate::monitors::Rect{x:0,y:0,..info.rect},scale);
+                sp.extend(elements);
+                elements=sp;
+            }
+            match head.output.render_frame(&mut d.renderer,&elements,if self.lock.active||self.lock.splash.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR},smithay::backend::drm::compositor::FrameFlags::DEFAULT){
                 Ok(r) if !r.is_empty=>match head.output.queue_frame(()){
                     Ok(())=>{head.pending=true;head.queued_protected=self.lock.active;submitted=true;},
                     Err(e)=>tracing::warn!("DRM {} queue: {e:?}",head.name),
