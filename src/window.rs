@@ -401,7 +401,7 @@ impl ManagedWindow {
     pub fn new_builtin(id: u64, kind: BuiltinWindowKind, x: i32, y: i32) -> Self {
         let (title, app_id, width, height) = match kind {
             BuiltinWindowKind::AboutFeather => {
-                ("О системе Пёрышко (Feather DE)", "builtin.about", 540, 340)
+                ("О системе Пёрышко (Feather DE)", "builtin.about", 560, 430)
             }
             BuiltinWindowKind::ActivityMonitor => {
                 ("Монитор системы — Пёрышко", "builtin.monitor", 620, 380)
@@ -1017,13 +1017,13 @@ impl ManagedWindow {
     ) {
         let p = palette();
         let row = |pm: &mut PixmapMut, fonts: &mut FontSystem, y: f32, k: &str, v: &str| {
-            fonts.draw_text_right(pm, k, cx + cw * 0.5 - 8.0, y, 13.0, p.text_secondary, false);
+            fonts.draw_text_right(pm, k, cx + 162.0, y, 13.0, p.text_secondary, false);
             fonts.draw_text_clipped(
                 pm,
                 v,
-                cx + cw * 0.5 + 8.0,
+                cx + 176.0,
                 y,
-                cw * 0.5 - 30.0,
+                (cw - 198.0).max(80.0),
                 13.0,
                 p.text,
                 false,
@@ -1031,11 +1031,11 @@ impl ManagedWindow {
         };
         match kind {
             BuiltinWindowKind::AboutFeather => {
-                let size = 92.0;
+                let size = 82.0;
                 fill_squircle_gradient(
                     pm,
                     cx + cw * 0.5 - size * 0.5,
-                    cy + 22.0,
+                    cy + 14.0,
                     size,
                     rgba(120, 205, 255, 255),
                     rgba(20, 105, 235, 255),
@@ -1043,15 +1043,15 @@ impl ManagedWindow {
                 draw_feather_logo(
                     pm,
                     cx + cw * 0.5,
-                    cy + 22.0 + size * 0.5,
-                    3.6,
+                    cy + 14.0 + size * 0.5,
+                    3.25,
                     rgba(255, 255, 255, 255),
                 );
                 fonts.draw_text_centered(
                     pm,
                     "Пёрышко",
                     cx + cw * 0.5,
-                    cy + 128.0,
+                    cy + 106.0,
                     24.0,
                     p.text,
                     true,
@@ -1060,11 +1060,12 @@ impl ManagedWindow {
                     pm,
                     "Версия 0.2 • Tahoe",
                     cx + cw * 0.5,
-                    cy + 160.0,
+                    cy + 136.0,
                     12.0,
                     p.text_secondary,
                     false,
                 );
+                let hw = &ctx.settings_context.system.hardware;
                 let scale = format!(
                     "{}% ({})",
                     (ctx.scale_factor * 100.0).round() as i32,
@@ -1072,16 +1073,23 @@ impl ManagedWindow {
                 );
                 let mem = format!("{:.1} МБ", ctx.rss_mb);
                 let lines = [
-                    ("Оформление", appearance().name().to_string()),
-                    ("Масштаб", scale),
-                    ("Память оболочки", mem),
+                    ("Процессор", hw.cpu.as_str()),
+                    ("Память", hw.memory.as_str()),
+                    ("Видеокарта", hw.gpu.as_str()),
+                    ("Диски", hw.disks.as_str()),
+                    ("Память оболочки", mem.as_str()),
+                    ("Оформление", appearance().name()),
+                    ("Масштаб", scale.as_str()),
                     (
                         "Раскладка",
-                        format!("{} ({})", ctx.active_layout, ctx.input_shortcut),
+                        &format!("{} ({})", ctx.active_layout, ctx.input_shortcut),
                     ),
                 ];
+                let card_y = cy + 162.0;
+                let card_h = lines.len() as f32 * 21.0 + 16.0;
+                fill_rounded_rect(pm, cx + 20.0, card_y, cw - 40.0, card_h, 12.0, p.card);
                 for (i, (k, v)) in lines.iter().enumerate() {
-                    row(pm, fonts, cy + 190.0 + i as f32 * 21.0, k, v);
+                    row(pm, fonts, card_y + 10.0 + i as f32 * 21.0, k, v);
                 }
                 let (bw, bh) = (150.0, 26.0);
                 let bx = cx + cw - bw - 20.0;
@@ -1356,6 +1364,93 @@ mod settings_tests {
                 ),
                 "late frame painted over a newer edit"
             );
+
+            for (dark, suffix) in [(false, "light"), (true, "dark")] {
+                crate::theme::with_render_settings(
+                    2.0,
+                    if dark {
+                        Appearance::Dark
+                    } else {
+                        Appearance::Light
+                    },
+                    || {
+                        let mut system = crate::system_preferences::State::default();
+                        system.hardware = std::sync::Arc::new(
+                            crate::system_preferences::HardwareInfo {
+                                cpu: "Intel Core i5-8600K · 3,60 ГГц (6 ядер)".into(),
+                                memory: "15,5 ГБ (доступно 4,5 ГБ)".into(),
+                                gpu: "AMD Radeon RX 570 Pulse · 8 ГБ".into(),
+                                disks: "228 ГБ (свободно 4,7 ГБ) · Samsung SSD 970 EVO 250GB (+ ещё 3)".into(),
+                            },
+                        );
+                        let context = crate::system_settings::Context {
+                            system,
+                            pointer: Default::default(),
+                            power: Default::default(),
+                            power_ready: false,
+                            pointer_managed: false,
+                            keyboard: &keyboard,
+                            active: 0,
+                            animations: true,
+                            dock_zoom: true,
+                            scale: 2.0,
+                            display_name: "DP-1",
+                            monitors: Vec::new(),
+                            modes: &[mode],
+                            current: mode,
+                            direct: false,
+                            wallpaper: crate::theme::WallpaperTheme::for_appearance(if dark {
+                                Appearance::Dark
+                            } else {
+                                Appearance::Light
+                            }),
+                            wallpaper_image: None,
+                            dnd: false,
+                            dnd_schedule: None,
+                            notify_sounds: true,
+                            sounds: Default::default(),
+                            audio: Default::default(),
+                            wifi: Default::default(),
+                            bluetooth: Default::default(),
+                            hot_corners: Default::default(),
+                            night: Default::default(),
+                            night_active: false,
+                            notify_apps: &[],
+                        };
+                        let ctx = BuiltinContext {
+                            settings: &panel,
+                            settings_context: context,
+                            notes_text: "",
+                            rss_mb: 24.6,
+                            window_count: 1,
+                            wayland_socket: "wayland-1",
+                            active_layout: "EN",
+                            input_shortcut: "Alt+Shift",
+                            scale_factor: 2.0,
+                            show_about: true,
+                        };
+                        let mut about = ManagedWindow::new_builtin(
+                            3,
+                            BuiltinWindowKind::AboutFeather,
+                            0,
+                            0,
+                        );
+                        about.activated = true;
+                        about.ensure_rendered(&mut fonts, true, &ctx);
+                        let data = bytes(&mut about.decoration_buffer);
+                        assert!(data.iter().any(|&b| b != 0));
+                        if let Some(dir) = std::env::var_os("FEATHER_ABOUT_FIXTURES") {
+                            let dir = std::path::PathBuf::from(dir);
+                            std::fs::create_dir_all(&dir).unwrap();
+                            let (w, h) = (about.phys_buf_w as u32, about.phys_buf_h as u32);
+                            let pm = tiny_skia::PixmapRef::from_bytes(&data, w, h).unwrap();
+                            pm.to_owned()
+                                .save_png(dir.join(format!("about-{suffix}.png")))
+                                .unwrap();
+                        }
+                    },
+                );
+            }
         });
     }
 }

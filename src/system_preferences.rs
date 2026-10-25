@@ -22,6 +22,23 @@ pub struct AutostartItem {
     pub exec: String,
     pub enabled: bool,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HardwareInfo {
+    pub cpu: String,
+    pub memory: String,
+    pub gpu: String,
+    pub disks: String,
+}
+impl Default for HardwareInfo {
+    fn default() -> Self {
+        Self {
+            cpu: "Не определено".into(),
+            memory: "Не определено".into(),
+            gpu: "Не определено".into(),
+            disks: "Не определено".into(),
+        }
+    }
+}
 #[derive(Clone, Default, Debug)]
 pub struct TimeState {
     pub available: bool,
@@ -35,6 +52,7 @@ pub struct TimeState {
 pub struct State {
     pub apps: Arc<Vec<DesktopApp>>,
     pub autostart: Arc<Vec<AutostartItem>>,
+    pub hardware: Arc<HardwareInfo>,
     pub loaded: bool,
     pub browser: Option<String>,
     pub terminal: String,
@@ -50,6 +68,7 @@ impl Default for State {
         Self {
             apps: Arc::new(Vec::new()),
             autostart: Arc::new(Vec::new()),
+            hardware: Arc::new(HardwareInfo::default()),
             loaded: false,
             browser: None,
             terminal: "feather-terminal.desktop".into(),
@@ -583,6 +602,397 @@ async fn set_time(proxy: &Proxy<'_>, command: &Command, zones: &[String]) -> Res
         _ => Ok(()),
     }
 }
+fn format_bytes_ru(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * MIB;
+    const TIB: f64 = 1024.0 * GIB;
+    let b = bytes as f64;
+    if b >= TIB {
+        format!("{:.1} ТБ", b / TIB).replace('.', ",")
+    } else if b >= 100.0 * GIB {
+        format!("{:.0} ГБ", (b / GIB).round())
+    } else if b >= GIB {
+        let g = b / GIB;
+        if (g - g.round()).abs() < 0.05 {
+            format!("{:.0} ГБ", g.round())
+        } else {
+            format!("{:.1} ГБ", g).replace('.', ",")
+        }
+    } else {
+        format!("{:.0} МБ", (b / MIB).max(1.0).round())
+    }
+}
+
+fn cores_ru(n: usize) -> String {
+    let rem100 = n % 100;
+    let rem10 = n % 10;
+    let word = if (11..=19).contains(&rem100) {
+        "ядер"
+    } else {
+        match rem10 {
+            1 => "ядро",
+            2..=4 => "ядра",
+            _ => "ядер",
+        }
+    };
+    format!("{n} {word}")
+}
+
+fn collapse_spaces(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn parse_cpu_info(text: &str) -> String {
+    let mut model = None;
+    let mut phys_cores: Option<usize> = None;
+    let mut logical_threads = 0usize;
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        let k = k.trim();
+        let v = v.trim();
+        if k.eq_ignore_ascii_case("processor") {
+            logical_threads += 1;
+        } else if model.is_none()
+            && (k.eq_ignore_ascii_case("model name")
+                || k.eq_ignore_ascii_case("Hardware")
+                || k.eq_ignore_ascii_case("Processor")
+                || k.eq_ignore_ascii_case("uarch"))
+            && !v.is_empty()
+        {
+            model = Some(v.to_string());
+        } else if phys_cores.is_none() && k.eq_ignore_ascii_case("cpu cores") {
+            phys_cores = v.parse::<usize>().ok().filter(|&n| n > 0);
+        }
+    }
+    let raw = model.unwrap_or_else(|| std::env::consts::ARCH.to_string());
+    let cleaned = raw
+        .replace("(R)", "")
+        .replace("(r)", "")
+        .replace("(TM)", "")
+        .replace("(tm)", "")
+        .replace("CPU ", "")
+        .replace("Processor ", "");
+    let cleaned = if let Some((left, right)) = cleaned.split_once('@') {
+        let freq = right
+            .trim()
+            .replace("GHz", " ГГц")
+            .replace("MHz", " МГц")
+            .replace('.', ",");
+        format!("{} · {}", collapse_spaces(left), collapse_spaces(&freq))
+    } else {
+        collapse_spaces(&cleaned)
+    };
+    let cores = phys_cores.or((logical_threads > 0).then_some(logical_threads));
+    match cores {
+        Some(n) => format!("{cleaned} ({})", cores_ru(n)),
+        None => cleaned,
+    }
+}
+
+fn parse_mem_info(text: &str) -> String {
+    let mut total_kib = None;
+    let mut avail_kib = None;
+    let mut free_kib = None;
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        let val = v
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse::<u64>().ok());
+        match k.trim() {
+            "MemTotal" => total_kib = val,
+            "MemAvailable" => avail_kib = val,
+            "MemFree" => free_kib = val,
+            _ => {}
+        }
+    }
+    let Some(total) = total_kib.filter(|&t| t > 0) else {
+        return "Не определено".into();
+    };
+    let total_str = format_bytes_ru(total * 1024);
+    if let Some(avail) = avail_kib.or(free_kib) {
+        let avail_str = format_bytes_ru(avail.min(total) * 1024);
+        format!("{total_str} (доступно {avail_str})")
+    } else {
+        total_str
+    }
+}
+
+fn strip_vram_suffix(name: &str) -> &str {
+    let trimmed = name.trim();
+    for suffix in [" 2GB", " 4GB", " 6GB", " 8GB", " 10GB", " 12GB", " 16GB", " 24GB", " 32GB"] {
+        if let Some(prefix) = trimmed.strip_suffix(suffix) {
+            return prefix.trim();
+        }
+    }
+    trimmed
+}
+
+fn lookup_pci_gpu<R: std::io::BufRead>(
+    reader: R,
+    vendor_hex: &str,
+    device_hex: &str,
+    subsys: Option<(&str, &str)>,
+    vram_bytes: Option<u64>,
+) -> Option<String> {
+    let mut in_vendor = false;
+    let mut in_device = false;
+    let mut vendor_name = String::new();
+    let mut device_name = None::<String>;
+    let mut subsys_name = None::<String>;
+    let subsys_prefix = subsys.map(|(sv, sd)| format!("{} {}", sv.to_ascii_lowercase(), sd.to_ascii_lowercase()));
+
+    for line in reader.lines().map_while(Result::ok) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if !line.starts_with('\t') {
+            if in_vendor {
+                break;
+            }
+            if let Some((code, name)) = line.split_once("  ") {
+                if code.trim().eq_ignore_ascii_case(vendor_hex) {
+                    in_vendor = true;
+                    vendor_name = name.trim().to_string();
+                }
+            }
+        } else if in_vendor && !line.starts_with("\t\t") {
+            if in_device {
+                break;
+            }
+            let rest = &line[1..];
+            if let Some((code, name)) = rest.split_once("  ") {
+                if code.trim().eq_ignore_ascii_case(device_hex) {
+                    in_device = true;
+                    device_name = Some(name.trim().to_string());
+                    if subsys_prefix.is_none() {
+                        break;
+                    }
+                }
+            }
+        } else if in_device && line.starts_with("\t\t") {
+            if let Some(prefix) = &subsys_prefix {
+                let rest = &line[2..];
+                if rest.len() > prefix.len()
+                    && rest[..prefix.len()].eq_ignore_ascii_case(prefix)
+                {
+                    if let Some((_, name)) = rest.split_once("  ") {
+                        subsys_name = Some(name.trim().to_string());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let dev = device_name?;
+    let short_vendor = match vendor_hex.to_ascii_lowercase().as_str() {
+        "1002" | "1022" => "AMD",
+        "10de" => "NVIDIA",
+        "8086" => "Intel",
+        _ => vendor_name.split_whitespace().next().unwrap_or(""),
+    };
+    let chosen = if let Some(sub) = subsys_name.filter(|s| !s.is_empty()) {
+        if vram_bytes.is_some_and(|b| b >= 128 * 1024 * 1024) {
+            strip_vram_suffix(&sub).to_string()
+        } else {
+            sub
+        }
+    } else if let Some((_, inside)) = dev.split_once('[') {
+        inside.trim_end_matches(']').trim().to_string()
+    } else {
+        dev
+    };
+    let mut full = if !short_vendor.is_empty()
+        && !chosen
+            .to_ascii_lowercase()
+            .starts_with(&short_vendor.to_ascii_lowercase())
+    {
+        format!("{short_vendor} {chosen}")
+    } else {
+        chosen
+    };
+    if let Some(vram) = vram_bytes.filter(|&b| b >= 128 * 1024 * 1024) {
+        full = format!("{full} · {}", format_bytes_ru(vram));
+    }
+    Some(full)
+}
+
+fn scan_gpu_info() -> String {
+    let Ok(entries) = std::fs::read_dir("/sys/class/drm") else {
+        return "OpenGL ES".into();
+    };
+    let mut cards: Vec<(u64, String, String, Option<(String, String)>, Option<u64>, String)> =
+        Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("card") || !name[4..].chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let dev_dir = entry.path().join("device");
+        let Ok(uevent) = std::fs::read_to_string(dev_dir.join("uevent")) else {
+            continue;
+        };
+        let mut pci_id = None::<(String, String)>;
+        let mut subsys_id = None::<(String, String)>;
+        let mut driver = String::new();
+        for line in uevent.lines() {
+            if let Some(v) = line.strip_prefix("PCI_ID=") {
+                if let Some((ven, dev)) = v.trim().split_once(':') {
+                    pci_id = Some((ven.to_string(), dev.to_string()));
+                }
+            } else if let Some(v) = line.strip_prefix("PCI_SUBSYS_ID=") {
+                if let Some((sv, sd)) = v.trim().split_once(':') {
+                    subsys_id = Some((sv.to_string(), sd.to_string()));
+                }
+            } else if let Some(v) = line.strip_prefix("DRIVER=") {
+                driver = v.trim().to_string();
+            }
+        }
+        let vram = std::fs::read_to_string(dev_dir.join("mem_info_vram_total"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        let Some((ven, dev)) = pci_id else {
+            continue;
+        };
+        let priority = vram.unwrap_or(0)
+            + if matches!(driver.as_str(), "amdgpu" | "nvidia" | "nouveau" | "xe") {
+                1
+            } else {
+                0
+            };
+        cards.push((priority, ven, dev, subsys_id, vram, driver));
+    }
+    cards.sort_by(|a, b| b.0.cmp(&a.0));
+    let Some((_, ven, dev, subsys, vram, driver)) = cards.into_iter().next() else {
+        return "OpenGL ES".into();
+    };
+    for path in ["/usr/share/hwdata/pci.ids", "/usr/share/misc/pci.ids"] {
+        if let Ok(file) = std::fs::File::open(path) {
+            let reader = std::io::BufReader::new(file);
+            let sub = subsys.as_ref().map(|(sv, sd)| (sv.as_str(), sd.as_str()));
+            if let Some(label) = lookup_pci_gpu(reader, &ven, &dev, sub, vram) {
+                return label;
+            }
+        }
+    }
+    let vendor = match ven.to_ascii_lowercase().as_str() {
+        "1002" | "1022" => "AMD",
+        "10de" => "NVIDIA",
+        "8086" => "Intel",
+        _ => &ven,
+    };
+    match vram.filter(|&b| b >= 128 * 1024 * 1024) {
+        Some(b) => format!("{vendor} ({driver}) · {}", format_bytes_ru(b)),
+        None if !driver.is_empty() => format!("{vendor} ({driver})"),
+        None => format!("{vendor}:{dev}"),
+    }
+}
+
+fn format_disks_info(root_total_avail: Option<(u64, u64)>, models: &[String]) -> String {
+    let root_part = root_total_avail.and_then(|(total, avail)| {
+        (total > 0).then(|| {
+            format!(
+                "{} (свободно {})",
+                format_bytes_ru(total),
+                format_bytes_ru(avail.min(total))
+            )
+        })
+    });
+    let drives_part = match models {
+        [] => None,
+        [only] => Some(only.clone()),
+        [first, rest @ ..] => Some(format!("{first} (+ ещё {})", rest.len())),
+    };
+    match (root_part, drives_part) {
+        (Some(r), Some(d)) => format!("{r} · {d}"),
+        (Some(r), None) => r,
+        (None, Some(d)) => d,
+        (None, None) => "Не определено".into(),
+    }
+}
+
+fn scan_disks_info() -> String {
+    let root_stats = unsafe {
+        let mut st: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c"/".as_ptr(), &mut st) == 0 {
+            let frsize = if st.f_frsize > 0 {
+                st.f_frsize as u64
+            } else {
+                st.f_bsize as u64
+            };
+            Some((st.f_blocks as u64 * frsize, st.f_bavail as u64 * frsize))
+        } else {
+            None
+        }
+    };
+    let mut drives: Vec<(String, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/sys/block") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !(name.starts_with("nvme")
+                || name.starts_with("sd")
+                || name.starts_with("vd")
+                || name.starts_with("mmcblk"))
+            {
+                continue;
+            }
+            let path = entry.path();
+            let sectors = std::fs::read_to_string(path.join("size"))
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            if sectors == 0 {
+                continue;
+            }
+            let model = std::fs::read_to_string(path.join("device/model"))
+                .ok()
+                .map(|m| collapse_spaces(&m))
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| name.to_string());
+            drives.push((name.to_string(), model));
+        }
+    }
+    drives.sort_by(|a, b| a.0.cmp(&b.0));
+    let models: Vec<String> = drives.into_iter().map(|(_, m)| m).collect();
+    format_disks_info(root_stats, &models)
+}
+
+fn scan_hardware(prev: Option<&HardwareInfo>) -> HardwareInfo {
+    let cpu = prev
+        .map(|p| p.cpu.clone())
+        .filter(|s| s != "Не определено")
+        .unwrap_or_else(|| {
+            std::fs::read_to_string("/proc/cpuinfo")
+                .map(|s| parse_cpu_info(&s))
+                .unwrap_or_else(|_| std::env::consts::ARCH.into())
+        });
+    let gpu = prev
+        .map(|p| p.gpu.clone())
+        .filter(|s| s != "Не определено")
+        .unwrap_or_else(scan_gpu_info);
+    let memory = std::fs::read_to_string("/proc/meminfo")
+        .map(|s| parse_mem_info(&s))
+        .unwrap_or_else(|_| "Не определено".into());
+    let disks = scan_disks_info();
+    HardwareInfo {
+        cpu,
+        memory,
+        gpu,
+        disks,
+    }
+}
+
 impl Worker {
     pub fn new(
         handle: &LoopHandle<'static, crate::FeatherCompositor>,
@@ -599,7 +1009,7 @@ impl Worker {
                     state.system_settings.error = Some(error.clone());
                 }
                 state.maybe_launch_autostart();
-                state.mark_settings_dirty();
+                state.mark_builtin_windows_dirty();
                 state.save_settings();
                 state.needs_redraw = true;
             }
@@ -612,6 +1022,7 @@ impl Worker {
                     let mut state = State::default();
                     state.apps = Arc::new(scan_apps());
                     state.autostart = Arc::new(scan_autostart(&config_home()));
+                    state.hardware = Arc::new(scan_hardware(None));
                     state.loaded = true;
                     state.browser = default_browser().or(browser);
                     if let Some(id) =
@@ -684,6 +1095,7 @@ impl Worker {
                             Command::Refresh => {
                                 state.apps = Arc::new(scan_apps());
                                 state.autostart = Arc::new(scan_autostart(&config_home()));
+                                state.hardware = Arc::new(scan_hardware(Some(&state.hardware)));
                                 state.cursor_themes = Arc::new(scan_cursor_themes());
                                 state.browser = default_browser().or(state.browser);
                                 Ok(())
@@ -912,5 +1324,47 @@ mod tests {
         remove_autostart(&config, "feather-notes.desktop").unwrap();
         assert!(scan_autostart(&config).is_empty());
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn hardware_parsers_format_cpu_memory_gpu_and_disks() {
+        let cpu = parse_cpu_info(
+            "processor\t: 0\nmodel name\t: Intel(R) Core(TM) i5-8600K CPU @ 3.60GHz\ncpu cores\t: 6\n",
+        );
+        assert_eq!(cpu, "Intel Core i5-8600K · 3,60 ГГц (6 ядер)");
+
+        let mem = parse_mem_info("MemTotal:       16298440 kB\nMemAvailable:    4690664 kB\n");
+        assert_eq!(mem, "15,5 ГБ (доступно 4,5 ГБ)");
+
+        let pci_ids = "\
+1002  Advanced Micro Devices, Inc. [AMD/ATI]\n\
+\t67df  Ellesmere [Radeon RX 470/480/570/570X/580/580X/590]\n\
+\t\t1da2 e353  Radeon RX 570 Pulse 4GB\n";
+        let gpu = lookup_pci_gpu(
+            std::io::Cursor::new(pci_ids),
+            "1002",
+            "67DF",
+            Some(("1DA2", "E353")),
+            Some(8 * 1024 * 1024 * 1024),
+        )
+        .unwrap();
+        assert_eq!(gpu, "AMD Radeon RX 570 Pulse · 8 ГБ");
+
+        let disks = format_disks_info(
+            Some((228 * 1024 * 1024 * 1024, 48 * 1024 * 1024 * 1024)),
+            &[
+                "Samsung SSD 970 EVO 250GB".into(),
+                "WDC WD10EZEX-08W".into(),
+            ],
+        );
+        assert_eq!(
+            disks,
+            "228 ГБ (свободно 48 ГБ) · Samsung SSD 970 EVO 250GB (+ ещё 1)"
+        );
+
+        let live = scan_hardware(None);
+        assert!(!live.cpu.is_empty() && live.cpu != "Не определено");
+        assert!(!live.memory.is_empty() && live.memory != "Не определено");
+        assert!(!live.gpu.is_empty() && live.gpu != "Не определено");
+        assert!(!live.disks.is_empty() && live.disks != "Не определено");
     }
 }

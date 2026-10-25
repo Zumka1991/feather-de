@@ -6,6 +6,15 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**«Об этом компьютере» (процессор, память, видеокарта, диски), 2026-10-25 (Gemini/agy):**
+в `src/system_preferences.rs` добавлен сбор `HardwareInfo` на фоновом потоке `feather-system`
+(`/proc/cpuinfo`, `/proc/meminfo`, `/sys/class/drm` + потоковый поиск в `pci.ids` + `mem_info_vram_total`,
+`statvfs("/")` + модели накопителей `/sys/block`) с обновлением памяти и дисков по `Command::Refresh`.
+В `src/window.rs` (`BuiltinWindowKind::AboutFeather`) оформлена карточка характеристик с новыми
+полями и поддержан `FEATHER_DEBUG_OPEN=about`. 190 тестов и `cargo build --release` без
+предупреждений; вложенная проверка с открытым окном: 0 тиков CPU за 5 с, `RssAnon` композитора
+33,57 МиБ.
+
 **Автозапуск программ при входе (XDG Autostart), 2026-10-25 (Gemini/agy):** реализовано чтение,
 добавление, включение/выключение (`Hidden` / `X-GNOME-Autostart-enabled`) и удаление записей
 `$XDG_CONFIG_HOME/autostart/*.desktop` (с учётом `OnlyShowIn` / `NotShowIn` для `FeatherDE`) на

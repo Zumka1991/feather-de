@@ -2,6 +2,28 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-25 — «Об этом компьютере»: процессор, память, видеокарта и диски (Gemini/agy)
+
+- В `system_preferences::State` (`src/system_preferences.rs`) добавлена структура `HardwareInfo`
+  (`cpu`, `memory`, `gpu`, `disks`), заполняемая в фоновом потоке `feather-system` без дочерних
+  процессов и без блокировки цикла событий:
+  - `parse_cpu_info`: читает `/proc/cpuinfo` (модель, частота и число ядер с русским склонением);
+  - `parse_mem_info`: читает `/proc/meminfo` (`MemTotal` и `MemAvailable`);
+  - `scan_gpu_info` и `lookup_pci_gpu`: определяют активную видеокарту через `/sys/class/drm/card*/device`
+    (`uevent`, `mem_info_vram_total`) и потоковый поиск модели/подсистемы в `pci.ids`;
+  - `scan_disks_info` и `format_disks_info`: запрашивают объём и свободное место корневого раздела
+    через `statvfs("/")` и список физических накопителей из `/sys/block` (`nvme*`, `sd*`, `vd*`, `mmcblk*`).
+  При повторном открытии окна «Об этом компьютере» (`open_or_focus_builtin`) запрашивается
+  `Command::Refresh` для обновления доступной памяти и свободного места на диске.
+- Обновлено окно «Об этом компьютере» (`BuiltinWindowKind::AboutFeather` в `src/window.rs`):
+  добавлена карточка характеристик (Процессор, Память, Видеокарта, Диски, Память оболочки,
+  Оформление, Масштаб, Раскладка), расширена колонка значений и поддержан ключ
+  `FEATHER_DEBUG_OPEN=about`.
+- `cargo build --release` без предупреждений, все 190 тестов workspace прошли (включая модульные
+  тесты парсеров `hardware_parsers_format_cpu_memory_gpu_and_disks` и рендер светлой/тёмной
+  фикстур окна `AboutFeather`). Вложенная проверка с открытым окном «Об этом компьютере»:
+  0 тиков CPU за 5 с в простое, `RssAnon` композитора — 33,57 МиБ (бюджет ≤ 60 МБ).
+
 ## 2026-10-25 — Автозапуск программ при входе по стандарту XDG Autostart (Gemini/agy)
 
 - Реализована поддержка стандарта Linux XDG Autostart (`$XDG_CONFIG_HOME/autostart/*.desktop`,

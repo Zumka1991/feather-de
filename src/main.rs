@@ -421,6 +421,9 @@ impl FeatherCompositor {
             win.resize_client(win.width.min(r.w-32),win.height.min(r.h-TOP_BAR_HEIGHT-48));
             win.x=win.x.clamp(r.x,(r.x+r.w-win.width).max(r.x));
         }
+        if kind == BuiltinWindowKind::AboutFeather && self.system_preferences.loaded {
+            self.request_system_preference(crate::system_preferences::Command::Refresh);
+        }
         self.refresh_focus();
     }
 
@@ -2152,6 +2155,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("settings-network") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Network)),
         Ok("settings-bluetooth") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth)),
         Ok("settings-defaults") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults)),
+        Ok("about") => state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather),
         _ => {}
     }
 
