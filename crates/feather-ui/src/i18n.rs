@@ -1177,6 +1177,22 @@ static TABLE: &[Entry] = &[
     ("Заменено", "Replaced", "Reemplazado", "Ersetzt", "Remplacé", "已替换"),
     ("TOML / Конфиг", "TOML / Config", "TOML / Config.", "TOML / Konfig.", "TOML / Config.", "TOML / 配置"),
     ("Скрипт", "Script", "Script", "Skript", "Script", "脚本"),
+
+    // ── Calculator («Калькулятор») ──
+    ("Калькулятор", "Calculator", "Calculadora", "Rechner", "Calculette", "计算器"),
+    ("Обычный, инженерный и программистский калькулятор", "Basic, Scientific, and Programmer Calculator", "Calculadora básica, científica y de programador", "Standard-, wissenschaftlicher und Programmierer-Rechner", "Calculette standard, scientifique et programmeur", "标准、科学型与编程器计算器"),
+    ("Обычный", "Basic", "Básica", "Standard", "Standard", "标准"),
+    ("Инженерный", "Scientific", "Científica", "Wissenschaftlich", "Scientifique", "科学型"),
+    ("Программист", "Programmer", "Programador", "Programmierer", "Programmeur", "编程器"),
+    ("Журнал", "History", "Historial", "Verlauf", "Historique", "历史记录"),
+    ("Нет записей", "No History", "Sin historial", "Kein Verlauf", "Aucun historique", "无记录"),
+    ("Не число", "Not a Number", "No es un número", "Keine Zahl", "Pas un nombre", "非数值"),
+    ("Деление на 0", "Divide by Zero", "División por cero", "Division durch 0", "Division par zéro", "除以零"),
+    ("Ошибка", "Error", "Error", "Fehler", "Erreur", "错误"),
+    ("64 бит", "64-bit", "64 bits", "64-Bit", "64 bits", "64 位"),
+    ("32 бит", "32-bit", "32 bits", "32-Bit", "32 bits", "32 位"),
+    ("16 бит", "16-bit", "16 bits", "16-Bit", "16 bits", "16 位"),
+    ("8 бит", "8-bit", "8 bits", "8-Bit", "8 bits", "8 位"),
 ];
 
 fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {

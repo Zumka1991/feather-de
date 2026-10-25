@@ -1,0 +1,16 @@
+[package]
+name = "feather-calc"
+version = "0.1.0"
+edition = "2021"
+description = "Калькулятор — обычный, инженерный и программистский калькулятор Пёрышка в стиле macOS Tahoe"
+
+[[bin]]
+name = "feather-calc"
+path = "src/main.rs"
+
+[dependencies]
+smithay-client-toolkit = { version = "0.19.2", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
+tiny-skia = "0.12.0"
+feather-ui = { path = "../crates/feather-ui" }
+libc = "0.2"

@@ -6,6 +6,16 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Калькулятор (`feather-calc`), 2026-10-25 (Gemini/agy):**
+в `calc/` (`main.rs`, `app.rs`, `theme.rs`), `src/apps.rs`, `src/main.rs` и
+`crates/feather-ui/src/i18n.rs` реализовано собственное Wayland-приложение «Калькулятор»
+(`feather-calc`) в стиле macOS Tahoe Calculator с тремя режимами («Обычный», «Инженерный»,
+«Программист»), лентой истории вычислений («Журнал»), одновременным отображением `HEX`/`DEC`/`OCT`/`BIN`
+и переключением разрядности (`64`/`32`/`16`/`8 бит`), буфером обмена Wayland (`Ctrl+C`/`Ctrl+V`),
+процедурной иконкой в Dock/Launchpad/Spotlight и локализацией на 6 языков. 198 тестов и
+`cargo build --release` без предупреждений; вложенная проверка `FEATHER_DEBUG_OPEN=calc`: 0 тиков CPU
+за 5 с в простое, `RssAnon` композитора 35,89 МиБ (клиента — 1,09 МиБ).
+
 **Текстовый редактор (`feather-textedit`), 2026-10-25 (Gemini/agy):**
 в `textedit/` (`main.rs`, `app.rs`, `theme.rs`), `src/apps.rs`, `src/desktop.rs`, `src/main.rs`,
 `files/src/fsops.rs` и `crates/feather-ui/src/i18n.rs` реализовано собственное Wayland-приложение

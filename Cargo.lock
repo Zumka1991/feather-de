@@ -703,6 +703,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "feather-calc"
+version = "0.1.0"
+dependencies = [
+ "feather-ui",
+ "libc",
+ "smithay-client-toolkit",
+ "tiny-skia",
+ "wayland-client",
+]
+
+[[package]]
 name = "feather-de"
 version = "0.1.0"
 dependencies = [

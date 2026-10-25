@@ -2216,6 +2216,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Ok("calc") => {
+            if let Some(cmd) = crate::apps::calc_command() {
+                crate::apps::spawn_wayland_command(
+                    &format!("{cmd} --demo"),
+                    &state.wayland_socket_name,
+                );
+            }
+        }
         _ => {}
     }
 

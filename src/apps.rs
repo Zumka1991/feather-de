@@ -19,6 +19,7 @@ pub enum IconKind {
     Notes,
     Preview,
     TextEdit,
+    Calculator,
     ActivityMonitor,
     Settings,
     Launchpad,
@@ -157,6 +158,11 @@ pub fn textedit_command() -> Option<String> {
     own_program("feather-textedit")
 }
 
+/// Feather's Calculator app when built next to the compositor binary
+pub fn calc_command() -> Option<String> {
+    own_program("feather-calc")
+}
+
 pub struct AppRegistry {
     pub apps: Vec<AppEntry>,
 }
@@ -218,6 +224,16 @@ impl AppRegistry {
                 true,
             )
             .with_aliases(&["feather-textedit"])
+            .with_own_icon(),
+            AppEntry::new(
+                "builtin.calc",
+                "Калькулятор",
+                "Обычный, инженерный и программистский калькулятор",
+                IconKind::Calculator,
+                Exec(calc_command().unwrap_or_else(|| "feather-calc".into())),
+                true,
+            )
+            .with_aliases(&["feather-calc"])
             .with_own_icon(),
             AppEntry::new(
                 "builtin.monitor",
@@ -1029,6 +1045,44 @@ pub fn draw_app_icon(
                 size * 0.022,
                 rgba(45, 50, 60, 255),
             );
+        }
+        IconKind::Calculator => {
+            // Calculator («Калькулятор»): dark slate Tahoe body, upper display with "42", and round keys with orange operators
+            tile(pixmap, rgba(64, 66, 74, 255), rgba(28, 30, 36, 255));
+            fill_rounded_rect(
+                pixmap,
+                x + size * 0.16,
+                y + size * 0.14,
+                size * 0.68,
+                size * 0.24,
+                size * 0.055,
+                rgba(18, 20, 24, 240),
+            );
+            fonts.draw_text(
+                pixmap,
+                "42",
+                x + size * 0.50,
+                y + size * 0.175,
+                size * 0.17,
+                Color::WHITE,
+                true,
+            );
+            let cols = [0.26_f32, 0.50, 0.74];
+            let rows = [0.51_f32, 0.67, 0.82];
+            for (ri, &ry) in rows.iter().enumerate() {
+                for (ci, &cx) in cols.iter().enumerate() {
+                    let is_op = ci == 2;
+                    let is_top = ri == 0 && !is_op;
+                    let col = if is_op {
+                        rgba(255, 159, 10, 255)
+                    } else if is_top {
+                        rgba(148, 152, 162, 255)
+                    } else {
+                        rgba(92, 95, 106, 255)
+                    };
+                    fill_circle(pixmap, x + size * cx, y + size * ry, size * 0.068, col);
+                }
+            }
         }
         IconKind::ActivityMonitor => {
             tile(pixmap, rgba(58, 58, 64, 255), rgba(22, 22, 26, 255));
