@@ -2,6 +2,44 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-25 — Первый запуск (мастер приветствия) и система упаковки/установки (Gemini/agy)
+
+- **Первый запуск: приветствие и начальная настройка** (`src/first_run.rs`, `src/settings.rs`,
+  `src/apps.rs`, `src/window.rs`, `src/shell.rs`, `src/input.rs`, `src/render.rs`, `src/main.rs`,
+  `crates/feather-ui/src/i18n.rs`):
+  - Реализовано встроенное системное окно `BuiltinWindowKind::FirstRun` («Добро пожаловать в Пёрышко»,
+    `640×496`, `app_id = "builtin.welcome"`) в стиле ассистента настройки macOS Tahoe из 4 шагов:
+    1. **Язык и регион**: карточки выбора языка интерфейса (`RU`, `EN`, `ES`, `DE`, `FR`, `ZH`),
+       переключатели 8 региональных профилей (`Россия`, `США`, `Великобритания`, `Германия`, `Франция`,
+       `Испания`, `Китай`, `Казахстан`) и переключатель `24‑часовой формат` с живым примером даты и
+       времени.
+    2. **Оформление**: парные карточки с миниатюрами рабочего стола для тем «Светлое» и «Тёмное»,
+       кружки всех 8 цветов акцента macOS Tahoe и выбор размера текста интерфейса.
+    3. **Клавиатура и ввод**: выбор сочетания клавиш смены раскладки (`Alt+Shift`, `Ctrl+Shift`,
+       `Super+Space`) и сетка включения/выключения источников ввода (`us`, `ru`, `de`, `fr`, `es`, `gb`,
+       `ua`, `by`).
+    4. **Пёрышко готово к работе**: итоговая сводка выбранных параметров, памятка по главным сочетаниям
+       клавиш (`Super+Space`, `Super+A`, `Ctrl+Alt+↑`, `Super+Ctrl+Q`) и кнопка «Начать работу».
+  - В `settings.conf` добавлен ключ `first_run_completed` (`false` при чистом первом запуске без
+    файла настроек, `true` после нажатия «Пропустить» / «Начать работу» или для уже существующих
+    конфигов); в меню `🪶` верхней панели добавлен пункт «Мастер приветствия…», поддержаны флаги
+    `--first-run` и `FEATHER_DEBUG_OPEN=first-run|welcome|first-run-0..3`.
+- **Пакет и установка (выпуск)** (`Makefile`, `README.md`, `packaging/PKGBUILD`,
+  `packaging/install.sh`, `packaging/uninstall.sh`, `packaging/build-release.sh`,
+  `packaging/desktop/*.desktop`, `packaging/portal/*`):
+  - Созданы: корневой `Makefile` (`build`, `test`, `install`, `uninstall`, `release`, `clean`),
+    описание пакета Arch Linux `packaging/PKGBUILD`, универсальные скрипты установки и удаления
+    (`PREFIX`, `DESTDIR`, `--user`), скрипт сборки релизного архива и стейджинга
+    `packaging/build-release.sh`, системные `.desktop`-файлы всех 6 приложений Пёрышка
+    (`feather-files`, `feather-terminal`, `feather-notes`, `feather-preview`, `feather-textedit`,
+    `feather-calc`), обёртка сеанса `feather-session` и конфигурация портала
+    `feather.portal` / `featherde-portals.conf`.
+- `cargo build --release --workspace` без предупреждений, все 200 тестов workspace прошли (включая
+  `first_run::tests::first_run_wizard_paints_all_steps_and_hits_controls`). Вложенная проверка
+  `FEATHER_DEBUG_OPEN=first-run`: `RssAnon = 41,28 МиБ` (`42272 kB`, бюджет ≤ 60 МБ), 0 тиков CPU за
+  5 с в простое; стейджинг `./packaging/build-release.sh --stage-only` раскладывает все 23 файла
+  выпуска без ошибок.
+
 ## 2026-10-25 — Экран входа и заставка загрузки в стиле Пёрышка (Gemini/agy)
 
 - Реализованы фирменная заставка загрузки (`BootSplash`) и экран входа / блокировки (`Lock`) в стиле

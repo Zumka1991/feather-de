@@ -6,6 +6,20 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Первый запуск (мастер приветствия) и система упаковки/установки, 2026-10-25 (Gemini/agy):**
+в `src/first_run.rs`, `src/settings.rs`, `src/apps.rs`, `src/window.rs`, `src/shell.rs`, `src/input.rs`,
+`src/render.rs`, `src/main.rs` и `crates/feather-ui/src/i18n.rs` реализован 4‑шаговый мастер первого
+запуска `BuiltinWindowKind::FirstRun` («Добро пожаловать в Пёрышко»: язык и регион + 24‑часовой формат,
+светлая/тёмная тема + цвет акцента + размер текста, раскладки клавиатуры и клавиши переключения, сводка
+и шпаргалка горячих клавиш) с сохранением `first_run_completed` в `settings.conf`, вызовом из меню `🪶`
+(«Мастер приветствия…») и локализацией на 6 языков. В `Makefile`, `README.md`, `packaging/PKGBUILD`,
+`packaging/install.sh`, `packaging/uninstall.sh`, `packaging/build-release.sh`,
+`packaging/desktop/*.desktop` и `packaging/portal/*` оформлена полная система сборки, упаковки (Arch
+`makepkg` + `tar.gz` с `SHA-256`) и установки (`PREFIX`, `DESTDIR`, `--user`) всех 7 бинарников,
+сеанса DRM/KMS, PAM, `greetd` и `xdg-desktop-portal`. Все функциональные разделы `docs/ROADMAP.md`
+закрыты; 200 тестов и `cargo build --release --workspace` без предупреждений; вложенная проверка
+`FEATHER_DEBUG_OPEN=first-run`: 0 тиков CPU за 5 с в простое, `RssAnon` 41,28 МиБ.
+
 **Экран входа и заставка загрузки в стиле Пёрышка, 2026-10-25 (Gemini/agy):**
 в `src/session_lock.rs`, `src/render.rs`, `src/input.rs`, `src/main.rs`,
 `crates/feather-ui/src/i18n.rs`, `session/feather-greeter.toml` и `session/install-session.sh`

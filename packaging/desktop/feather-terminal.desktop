@@ -1,0 +1,16 @@
+[Desktop Entry]
+Name=Терминал
+Name[en]=Terminal
+Name[es]=Terminal
+Name[de]=Terminal
+Name[fr]=Terminal
+Name[zh_CN]=终端
+Comment=Быстрый эмулятор терминала Пёрышка
+Comment[en]=Fast Feather DE terminal emulator
+Exec=feather-terminal
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+StartupWMClass=feather-terminal
+Keywords=terminal;shell;console;терминал;консоль;

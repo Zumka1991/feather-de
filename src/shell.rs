@@ -594,6 +594,7 @@ pub enum ShellClickAction {
     TogglePinFocused,
     ToggleDoNotDisturb,
     SetBrightness(f32),
+    FirstRun(crate::first_run::Action),
 }
 
 /// Menus of the menu bar
@@ -672,6 +673,7 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
         TopMenu::Client(_) | TopMenu::Tray(_) | TopMenu::Input => Vec::new(),
         TopMenu::Feather => vec![
             item("Об этом компьютере", "", builtin(BuiltinWindowKind::AboutFeather, "Об этом компьютере")),
+            item("Мастер приветствия…", "", builtin(BuiltinWindowKind::FirstRun, "Добро пожаловать в Пёрышко")),
             Separator,
             item("Системные настройки…", "", builtin(BuiltinWindowKind::SystemSettings, "Системные настройки")),
             item("Мониторинг системы", "", builtin(BuiltinWindowKind::ActivityMonitor, "Мониторинг системы")),

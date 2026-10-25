@@ -1,0 +1,17 @@
+[Desktop Entry]
+Name=Просмотр
+Name[en]=Preview
+Name[es]=Vista Previa
+Name[de]=Vorschau
+Name[fr]=Aperçu
+Name[zh_CN]=预览
+Comment=Просмотр изображений PNG, JPEG, WebP, SVG и документов PDF
+Comment[en]=Image and PDF viewer for Feather DE
+Exec=feather-preview %F
+Icon=document-viewer
+Terminal=false
+Type=Application
+Categories=Graphics;Viewer;Office;
+MimeType=application/pdf;image/png;image/jpeg;image/webp;image/svg+xml;image/bmp;image/gif;
+StartupWMClass=feather-preview
+Keywords=preview;pdf;image;viewer;просмотр;изображения;

@@ -1204,6 +1204,29 @@ static TABLE: &[Entry] = &[
     ("32 бит", "32-bit", "32 bits", "32-Bit", "32 bits", "32 位"),
     ("16 бит", "16-bit", "16 bits", "16-Bit", "16 bits", "16 位"),
     ("8 бит", "8-bit", "8 bits", "8-Bit", "8 bits", "8 位"),
+
+    // ── First-Run Setup Assistant («Добро пожаловать в Пёрышко») ──
+    ("Добро пожаловать в Пёрышко", "Welcome to Feather", "Bienvenido a Feather", "Willkommen bei Feather", "Bienvenue dans Feather", "欢迎使用轻羽"),
+    ("Мастер приветствия…", "Welcome Assistant…", "Asistente de bienvenida…", "Willkommensassistent…", "Assistant de bienvenue…", "欢迎助理…"),
+    ("Выберите язык интерфейса и региональные форматы.", "Choose your interface language and regional formats.", "Elige el idioma de la interfaz y los formatos regionales.", "Wählen Sie die Oberflächensprache und regionale Formate.", "Choisissez la langue de l’interface et les formats régionaux.", "选择界面语言与地区格式。"),
+    ("Выберите тему оформления", "Choose Your Appearance", "Elige tu apariencia", "Erscheinungsbild wählen", "Choisissez votre apparence", "选择外观"),
+    ("Настройте светлый или тёмный вид, цвет акцента и размер текста.", "Customize light or dark mode, accent color, and text size.", "Personaliza el modo claro u oscuro, el color de acento y el tamaño del texto.", "Passen Sie hellen oder dunklen Modus, Akzentfarbe und Textgröße an.", "Personnalisez le mode clair ou sombre, la couleur d’accentuation et la taille du texte.", "自定义浅色或深色外观、强调色和文字大小。"),
+    ("Раскладка клавиатуры", "Keyboard Layouts", "Distribución del teclado", "Tastaturbelegung", "Disposition du clavier", "键盘布局"),
+    ("Выберите используемые языки ввода и клавиши переключения.", "Select your input languages and layout switching shortcut.", "Selecciona tus idiomas de entrada y el atajo para cambiar de teclado.", "Wählen Sie Ihre Eingabesprachen und das Tastenkürzel zum Umschalten.", "Sélectionnez vos langues de saisie et le raccourci de changement de clavier.", "选择输入语言与切换布局的快捷键。"),
+    ("Пёрышко готово к работе", "Feather Is Ready", "Feather está listo", "Feather ist bereit", "Feather est prêt", "轻羽已准备就绪"),
+    ("Ваше окружение настроено — быстрый обзор главных возможностей.", "Your desktop is configured — here is a quick tour of key features.", "Tu entorno está configurado: un vistazo rápido a las funciones principales.", " Ihre Arbeitsumgebung ist eingerichtet — die wichtigsten Funktionen im Überblick.", "Votre environnement est configuré — aperçu rapide des fonctions clés.", "您的桌面环境已配置完成 — 快速了解核心功能。"),
+    ("Шаг", "Step", "Paso", "Schritt", "Étape", "步骤"),
+    ("Назад", "Back", "Atrás", "Zurück", "Retour", "返回"),
+    ("Пропустить", "Skip", "Omitir", "Überspringen", "Ignorer", "跳过"),
+    ("Продолжить", "Continue", "Continuar", "Fortfahren", "Continuer", "继续"),
+    ("Начать работу", "Get Started", "Empezar", "Loslegen", "Commencer", "开始使用"),
+    ("Регион и формат времени", "Region & Time Format", "Región y formato de hora", "Region & Zeitformat", "Région et format de l’heure", "地区与时间格式"),
+    ("24‑часовой формат", "24-Hour Time", "Formato de 24 horas", "24-Stunden-Format", "Format 24 heures", "24 小时制"),
+    ("Переключение языка", "Switch Input Source", "Cambiar idioma de entrada", "Eingabequelle wechseln", "Changer de source de saisie", "切换输入源"),
+    ("Spotlight — мгновенный поиск программ и файлов", "Spotlight — instant search for apps and files", "Spotlight — búsqueda instantánea de apps y archivos", "Spotlight — Sofortsuche nach Programmen und Dateien", "Spotlight — recherche instantanée d’apps et de fichiers", "Spotlight — 即时搜索应用和文件"),
+    ("Launchpad — сетка всех приложений", "Launchpad — full-screen application grid", "Launchpad — cuadrícula de todas las aplicaciones", "Launchpad — Vollbild-Programmübersicht", "Launchpad — grille de toutes les applications", "启动台 — 全屏应用网格"),
+    ("Mission Control — обзор окон и рабочих столов", "Mission Control — overview of windows and desktops", "Mission Control — vista general de ventanas y escritorios", "Mission Control — Übersicht über Fenster und Schreibtische", "Mission Control — aperçu des fenêtres et bureaux", "调度中心 — 窗口与桌面概览"),
+    ("Мгновенная блокировка экрана", "Lock screen immediately", "Bloquear pantalla al instante", "Bildschirm sofort sperren", "Verrouiller l’écran immédiatement", "立即锁定屏幕"),
 ];
 
 fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {

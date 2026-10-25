@@ -1,0 +1,17 @@
+[Desktop Entry]
+Name=Текстовый редактор
+Name[en]=TextEdit
+Name[es]=Editor de Texto
+Name[de]=TextEdit
+Name[fr]=TextEdit
+Name[zh_CN]=文本编辑
+Comment=Редактор текстовых документов и исходного кода с подсветкой синтаксиса
+Comment[en]=Text and source code editor with syntax highlighting
+Exec=feather-textedit %F
+Icon=accessories-text-editor
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;Development;
+MimeType=text/plain;text/markdown;text/x-rust;text/x-python;application/json;application/toml;
+StartupWMClass=feather-textedit
+Keywords=text;editor;code;markdown;редактор;текст;код;

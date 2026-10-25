@@ -1,0 +1,52 @@
+# Maintainer: Feather DE Team <feather@local>
+pkgname=feather-de
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Пёрышко (Feather DE) — сверхбыстрое окружение рабочего стола Wayland в стиле macOS Tahoe на Rust"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Withaire/silly-tesla"
+license=('MIT')
+depends=(
+    'glibc'
+    'gcc-libs'
+    'libinput'
+    'libxkbcommon'
+    'libseat'
+    'mesa'
+    'pam'
+    'systemd-libs'
+    'wayland'
+)
+optdepends=(
+    'labwc: запуск в режиме совместимости (nested/kiosk)'
+    'xwayland-satellite: поддержка X11-программ без корневого Xwayland'
+    'xdg-desktop-portal: системные диалоги выбора файлов и захвата экрана'
+    'pipewire: управление звуком в Центре управления'
+    'networkmanager: управление Wi-Fi в Центре управления и Настройках'
+    'bluez: управление Bluetooth в Центре управления и Настройках'
+    'greetd: экран входа Пёрышка (--login)'
+    'mupdf-tools: рендеринг документов PDF в Просмотре (feather-preview)'
+)
+makedepends=('cargo' 'rust' 'pkgconf')
+backup=(
+    'etc/pam.d/feather-lock'
+    'etc/greetd/feather-greeter.toml'
+)
+source=()
+sha256sums=()
+
+build() {
+    cd "$startdir/.."
+    CARGO_TARGET_DIR="$srcdir/target" cargo build --release --locked --workspace
+}
+
+check() {
+    cd "$startdir/.."
+    CARGO_TARGET_DIR="$srcdir/target" cargo test --release --locked --bin feather-de first_run
+}
+
+package() {
+    cd "$startdir/.."
+    CARGO_TARGET_DIR="$srcdir/target" DESTDIR="$pkgdir" PREFIX="/usr" SYSCONFDIR="/etc" \
+        ./packaging/install.sh --no-build --target-dir "$srcdir/target/release"
+}

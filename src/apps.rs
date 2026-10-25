@@ -46,6 +46,7 @@ pub enum BuiltinWindowKind {
     ActivityMonitor,
     QuickNotes,
     SystemSettings,
+    FirstRun,
 }
 
 #[derive(Debug, Clone)]

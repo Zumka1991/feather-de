@@ -1,0 +1,17 @@
+[Desktop Entry]
+Name=Файлы
+Name[en]=Files
+Name[es]=Archivos
+Name[de]=Dateien
+Name[fr]=Fichiers
+Name[zh_CN]=文件
+Comment=Файловый менеджер Пёрышка в стиле Finder
+Comment[en]=Feather DE file manager in Finder style
+Exec=feather-files %U
+Icon=system-file-manager
+Terminal=false
+Type=Application
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+StartupWMClass=feather-files
+Keywords=files;finder;folders;файлы;папки;

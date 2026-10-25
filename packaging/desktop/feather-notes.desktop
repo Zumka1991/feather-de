@@ -1,0 +1,16 @@
+[Desktop Entry]
+Name=Заметки
+Name[en]=Notes
+Name[es]=Notas
+Name[de]=Notizen
+Name[fr]=Notes
+Name[zh_CN]=备忘录
+Comment=Быстрые заметки Пёрышка с мгновенным автосохранением
+Comment[en]=Feather DE notes app with instant autosave
+Exec=feather-notes
+Icon=accessories-text-editor
+Terminal=false
+Type=Application
+Categories=Utility;TextEditor;
+StartupWMClass=feather-notes
+Keywords=notes;memo;заметки;блокнот;

@@ -38,6 +38,7 @@ mod wallpaper;
 mod file_portal;
 mod polkit_agent;
 mod auth_dialog;
+mod first_run;
 mod session_lock;
 mod lock_auth;
 mod power;
@@ -280,6 +281,8 @@ pub struct FeatherCompositor {
     pub preferences: Option<crate::settings::Worker>,
     pub wallpaper_picker: Option<crate::wallpaper::Picker>,
     pub system_settings: crate::system_settings::Panel,
+    pub first_run: crate::first_run::Wizard,
+    pub first_run_completed: bool,
     pub system_preferences: crate::system_preferences::State,
     pub system_worker: Option<crate::system_preferences::Worker>,
     pub display_modes: Vec<crate::system_settings::Mode>,
@@ -709,6 +712,7 @@ impl FeatherCompositor {
     pub fn save_settings(&self) {
         let settings=crate::settings::Settings {
             show_about: self.show_about,
+            first_run_completed: self.first_run_completed,
             power: self.power.preferences,
             pointer: self.pointer_config.clone(),
             appearance: appearance(),
@@ -1367,6 +1371,76 @@ impl FeatherCompositor {
                 "Горячие клавиши",
                 "Super+Space поиск • Super+A приложения • Alt+Tab • Alt+` окна программы • Ctrl+Alt+←/→ столы • Ctrl+Alt+↑ Mission Control • Super+Q/W/H/M/F",
             ),
+            ShellClickAction::FirstRun(action) => {
+                use crate::first_run::Action as FA;
+                match action {
+                    FA::Next => {
+                        self.first_run.step = (self.first_run.step + 1).min(crate::first_run::STEP_COUNT - 1);
+                        self.mark_builtin_windows_dirty();
+                        self.needs_redraw = true;
+                    }
+                    FA::Back => {
+                        self.first_run.step = self.first_run.step.saturating_sub(1);
+                        self.mark_builtin_windows_dirty();
+                        self.needs_redraw = true;
+                    }
+                    FA::Step(s) => {
+                        self.first_run.step = s.min(crate::first_run::STEP_COUNT - 1);
+                        self.mark_builtin_windows_dirty();
+                        self.needs_redraw = true;
+                    }
+                    FA::Finish => {
+                        self.first_run_completed = true;
+                        self.first_run.step = 0;
+                        self.save_settings();
+                        if let Some(pos) = self.windows.iter().position(|w| w.app_id == "builtin.welcome") {
+                            self.windows.remove(pos);
+                            self.dock_model_dirty = true;
+                            self.refresh_focus();
+                        }
+                        self.needs_redraw = true;
+                    }
+                    FA::Language(lang) => {
+                        self.apply_system_setting(crate::system_settings::Action::Language(lang));
+                    }
+                    FA::Region(reg) => {
+                        if crate::theme::region() != reg {
+                            crate::theme::set_region(reg);
+                            self.shell.last_clock_str = crate::shell::MacShell::format_ru_clock();
+                            self.shell.topbar_dirty = true;
+                            self.mark_builtin_windows_dirty();
+                            self.lock.repaint();
+                            self.save_settings();
+                            self.needs_redraw = true;
+                        }
+                    }
+                    FA::Toggle24h => {
+                        self.apply_system_setting(crate::system_settings::Action::Use24HourTime);
+                        self.mark_builtin_windows_dirty();
+                    }
+                    FA::Appearance(app) => {
+                        self.apply_system_setting(crate::system_settings::Action::Appearance(app));
+                    }
+                    FA::Accent(ac) => {
+                        self.apply_system_setting(crate::system_settings::Action::AccentColor(ac));
+                    }
+                    FA::TextSize(ts) => {
+                        self.apply_system_setting(crate::system_settings::Action::TextSize(ts));
+                    }
+                    FA::Shortcut(sc) => {
+                        self.apply_system_setting(crate::system_settings::Action::Shortcut(sc));
+                    }
+                    FA::ToggleLayout(id) => {
+                        if let Some(pos) = self.keyboard_config.layouts.iter().position(|s| *s == id) {
+                            if self.keyboard_config.layouts.len() > 1 {
+                                self.apply_system_setting(crate::system_settings::Action::RemoveSource(pos));
+                            }
+                        } else {
+                            self.apply_system_setting(crate::system_settings::Action::AddSource(id.to_string()));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1887,6 +1961,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         preferences: None,
         wallpaper_picker: None,
         system_settings: crate::system_settings::Panel {keybindings:saved.keybindings.clone(),..Default::default()},
+        first_run: Default::default(),
+        first_run_completed: saved.first_run_completed,
         system_preferences: crate::system_preferences::State{browser:saved.default_browser.clone(),terminal:saved.default_terminal.clone().unwrap_or_else(||"feather-terminal.desktop".into()),..Default::default()},
         system_worker: None,
         display_modes: Vec::new(),display_name: String::new(),pending_display: None,display_generation: 0,
@@ -1978,6 +2054,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.pointer_managed = state.backend.is_drm() || crate::labwc::host_pid().is_some();
     if state.show_about {
         state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather);
+    }
+    if !state.first_run_completed
+        && (state.own_session
+            || args.iter().any(|a| a == "--first-run")
+            || std::env::var_os("FEATHER_FIRST_RUN").is_some())
+        && std::env::var_os("FEATHER_DEBUG_OPEN").is_none()
+    {
+        state.open_or_focus_builtin(BuiltinWindowKind::FirstRun);
     }
     if std::env::var_os("FEATHER_DEBUG_ANIMATIONS").is_some() {
         // Deterministic lifecycle exercise in our own compositor; no synthetic host input.
@@ -2213,6 +2297,22 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             state.mark_settings_dirty();
         }
         Ok("about") => state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather),
+        Ok("first-run" | "welcome" | "first-run-0") => {
+            state.first_run.step = 0;
+            state.open_or_focus_builtin(BuiltinWindowKind::FirstRun);
+        }
+        Ok("first-run-1") => {
+            state.first_run.step = 1;
+            state.open_or_focus_builtin(BuiltinWindowKind::FirstRun);
+        }
+        Ok("first-run-2") => {
+            state.first_run.step = 2;
+            state.open_or_focus_builtin(BuiltinWindowKind::FirstRun);
+        }
+        Ok("first-run-3") => {
+            state.first_run.step = 3;
+            state.open_or_focus_builtin(BuiltinWindowKind::FirstRun);
+        }
         Ok("preview") => {
             if let Some(cmd) = crate::apps::preview_command() {
                 crate::apps::spawn_wayland_command(

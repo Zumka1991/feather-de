@@ -272,6 +272,8 @@ pub fn valid_theme(name: &str) -> bool {
 
 #[derive(Clone, Debug)]
 pub struct Settings {
+    /// Whether the first-run Setup Assistant has been completed
+    pub first_run_completed: bool,
     /// Open «Об этом компьютере» at login
     pub show_about: bool,
     pub power: crate::power::Preferences,
@@ -321,6 +323,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            first_run_completed: false,
             show_about: true,
             power: Default::default(),
             pointer: Pointer::default(),
@@ -382,6 +385,7 @@ impl Settings {
     }
     fn parse(text: &str) -> Self {
         let mut s = Self::default();
+        s.first_run_completed = true;
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else {
                 continue;
@@ -488,6 +492,11 @@ impl Settings {
                     }
                 }
                 "wallpaper_image" => s.wallpaper_image = crate::wallpaper::ImageSource::parse(v),
+                "first_run_completed" => {
+                    if let Ok(b) = v.parse() {
+                        s.first_run_completed = b;
+                    }
+                }
                 "show_about" => {
                     if let Ok(b) = v.parse() {
                         s.show_about = b;
@@ -706,6 +715,7 @@ impl Settings {
         text.push_str(&format!("keyboard_caps={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\n", self.keyboard.caps.id(), self.keyboard.repeat_delay, self.keyboard.repeat_rate));
         for line in self.keybindings.lines() { text.push_str(&line); }
         text.push_str(&format!("show_about={}\n", self.show_about));
+        text.push_str(&format!("first_run_completed={}\n", self.first_run_completed));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
         text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_edge={}\ngtk_theme={}\n", self.dock_size, self.dock_autohide, self.dock_edge.id(), self.gtk_theme));

@@ -245,6 +245,7 @@ pub struct ManagedWindow {
 
 pub struct BuiltinContext<'a> {
     pub settings: &'a crate::system_settings::Panel,
+    pub first_run: &'a crate::first_run::Wizard,
     pub settings_context: crate::system_settings::Context<'a>,
     pub notes_text: &'a str,
     pub rss_mb: f32,
@@ -302,8 +303,10 @@ impl ManagedWindow {
             ));
         }
         let context = job.context();
+        let first_run = crate::first_run::Wizard::default();
         let ctx = BuiltinContext {
             settings: &job.panel,
+            first_run: &first_run,
             settings_context: context,
             notes_text: "",
             rss_mb: 0.0,
@@ -411,6 +414,9 @@ impl ManagedWindow {
             }
             BuiltinWindowKind::SystemSettings => {
                 ("Системные настройки", "builtin.settings", 800, 540)
+            }
+            BuiltinWindowKind::FirstRun => {
+                ("Добро пожаловать в Пёрышко", "builtin.welcome", 640, 496)
             }
         };
 
@@ -1210,6 +1216,10 @@ impl ManagedWindow {
                 ctx.settings
                     .paint(pm, fonts, (cx, cy), (cw, ch), cy, &ctx.settings_context);
             }
+            BuiltinWindowKind::FirstRun => {
+                ctx.first_run
+                    .paint(pm, fonts, (cx, cy, cw, ch), &ctx.settings_context);
+            }
         }
     }
 }
@@ -1321,10 +1331,12 @@ mod settings_tests {
                 screen_capture_apps: &[],
                 sticky_keys: false,
             };
+            let first_run = crate::first_run::Wizard::default();
             let mut direct = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 0, 0);
             direct.activated = true;
             let ctx = BuiltinContext {
                 settings: &panel,
+                first_run: &first_run,
                 settings_context: context,
                 notes_text: "",
                 rss_mb: 0.0,
@@ -1427,6 +1439,7 @@ mod settings_tests {
                         };
                         let ctx = BuiltinContext {
                             settings: &panel,
+                            first_run: &first_run,
                             settings_context: context,
                             notes_text: "",
                             rss_mb: 24.6,

@@ -1289,6 +1289,13 @@ impl FeatherCompositor {
                     }
                     builtin_action = action.map(ShellClickAction::SystemSettings);
                 }
+                BuiltinWindowKind::FirstRun => {
+                    let (width, height) = (win.width as f32, win.height as f32);
+                    builtin_action = self
+                        .first_run
+                        .hit(lx, ly, width, height, &self.settings_context())
+                        .map(ShellClickAction::FirstRun);
+                }
                 _ => {}
             }
         } else {
