@@ -152,6 +152,9 @@ impl Item {
     fn icon(&self) -> Icon {
         if self.is_dir { Icon::Folder(None) } else { Icon::File(self.kind, self.ext.clone()) }
     }
+    fn label(&self) -> &str {
+        self.launcher.as_ref().map_or(self.name.as_str(), |l| l.name.as_str())
+    }
 }
 
 /// Raster worker job: one item drawn plain and selected at the current scale
@@ -351,7 +354,7 @@ impl Desktop {
         self.requested.retain(|p| keep.contains(p));
         // A renamed item keeps its path only if the name is the same; otherwise redraw it
         for item in &items {
-            if self.tiles.get(&item.path).is_some_and(|t| t.name != item.name) {
+            if self.tiles.get(&item.path).is_some_and(|t| t.name != item.label()) {
                 self.tiles.remove(&item.path);
                 self.requested.remove(&item.path);
             }
@@ -475,7 +478,7 @@ impl Desktop {
             let app = item.launcher.as_ref().map(|l| {
                 l.app.as_deref().and_then(|id| apps.index_of(id)).map(|i| crate::shell::AppIcon::of(&apps.apps[i])).unwrap_or(crate::shell::AppIcon { kind: crate::apps::IconKind::GenericApp, name: l.icon.clone() })
             });
-            let name = item.launcher.as_ref().map_or_else(|| item.name.clone(), |l| l.name.clone());
+            let name = item.label().to_string();
             let job = TileJob { path: item.path.clone(), name, icon: item.icon(), app };
             if !worker.submit(crate::raster::Job::DesktopTile(job)) {
                 break; // queue full: retried on the next frame
@@ -485,7 +488,7 @@ impl Desktop {
     }
 
     pub fn install(&mut self, pixels: TilePixels) -> bool {
-        if !self.items.iter().any(|i| i.path == pixels.path && i.name == pixels.name) {
+        if !self.items.iter().any(|i| i.path == pixels.path && i.label() == pixels.name) {
             self.requested.remove(&pixels.path);
             return false;
         }
@@ -1492,12 +1495,24 @@ mod tests {
         d.set_items(items(3), HashMap::new());
         d.requested.insert(PathBuf::from("/d/f2"));
         d.selected.insert(PathBuf::from("/d/f2"));
-        d.set_items(items(2), HashMap::new());
+        let mut list = items(2);
+        list.push(Item {
+            name: "Google Chrome.desktop".into(),
+            path: PathBuf::from("/d/Google Chrome.desktop"),
+            is_dir: false,
+            kind: Kind::Text,
+            ext: "desktop".into(),
+            launcher: parse_launcher("[Desktop Entry]\nType=Application\nName=Google Chrome\nExec=google-chrome\n", true),
+        });
+        d.set_items(list, HashMap::new());
         assert!(d.selected.is_empty() && d.requested.is_empty());
         // A result for an item that is gone is not kept
         let px = TilePixels { path: PathBuf::from("/d/f9"), name: "f9".into(), size: (1, 1), plain: vec![0; 4], selected: vec![0; 4] };
         assert!(!d.install(px));
         let px = TilePixels { path: PathBuf::from("/d/f1"), name: "f1".into(), size: (1, 1), plain: vec![0; 4], selected: vec![0; 4] };
+        assert!(d.install(px));
+        // Launcher tiles use the parsed Name= rather than the .desktop filename
+        let px = TilePixels { path: PathBuf::from("/d/Google Chrome.desktop"), name: "Google Chrome".into(), size: (1, 1), plain: vec![0; 4], selected: vec![0; 4] };
         assert!(d.install(px));
     }
 

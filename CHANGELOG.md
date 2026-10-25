@@ -2,6 +2,24 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-26 — Кэширование плиток `.desktop`-ярлыков рабочего стола и разгрузка `feather-raster` (Gemini/agy)
+
+- **Что сделано** (`src/desktop.rs`):
+  - Добавлен метод `Item::label(&self)` (возвращающий отображаемое имя ярлыка `Launcher::name`,
+    а для обычных файлов и папок — `Item::name`), который единообразно используется в
+    `Desktop::set_items`, `Desktop::request_tiles` и `Desktop::install`.
+- **Почему**:
+  - Для `.desktop`-ярлыков на рабочем столе (`~/Рабочий стол`) `request_tiles` передавал в
+    `TileJob::name` отображаемое имя из поля `Name=` (например, `Google Chrome`), а
+    `Desktop::install` и `Desktop::set_items` сверяли результат воркера с именем файла на диске
+    (`Google Chrome.desktop`). Из-за этого готовые плитки `.desktop`-ярлыков отбрасывались при
+    установке, не появлялись на рабочем столе и повторно ставились в очередь `feather-raster` на
+    каждом кадре, нагружая фоновый поток растеризации.
+- **Как проверено**:
+  - `cargo build --release` — без ошибок и предупреждений.
+  - `cargo test --release desktop` — 11 passed (включая регрессионную проверку установки плитки
+    `.desktop`-ярлыка в `tiles_are_dropped_with_their_items_and_renames_redraw`).
+
 ## 2026-10-26 — Жесты трекпада, VRR / explicit sync / direct scanout и приёмка бюджетов памяти и CPU (Gemini/agy)
 
 - **Жесты трекпада: столы, Mission Control и Launchpad** (`src/input.rs`, `src/main.rs`):
