@@ -1302,6 +1302,8 @@ mod settings_tests {
                 notify_sounds: true,
                 sounds: Default::default(),
                 audio: Default::default(),
+                wifi: Default::default(),
+                bluetooth: Default::default(),
                 hot_corners: Default::default(),
                 night: Default::default(),
                 night_active: false,

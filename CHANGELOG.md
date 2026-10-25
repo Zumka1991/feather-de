@@ -2,6 +2,104 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-25 — Автозапуск программ при входе по стандарту XDG Autostart (Gemini/agy)
+
+- Реализована поддержка стандарта Linux XDG Autostart (`$XDG_CONFIG_HOME/autostart/*.desktop`,
+  обычно `~/.config/autostart/`):
+  - Фоновый рабочий поток `feather-system` (`src/system_preferences.rs`) сканирует все видимые
+    установленные приложения (`Type=Application`), собственные программы Пёрышка
+    (`feather-files.desktop`, `feather-terminal.desktop`, `feather-notes.desktop`) и каталог
+    `$XDG_CONFIG_HOME/autostart/*.desktop`, учитывая `Hidden`, `X-GNOME-Autostart-enabled`,
+    `OnlyShowIn` и `NotShowIn` (`FeatherDE`).
+  - Поддержаны команды добавления (`Command::AddAutostart`), включения/отключения без потери
+    файла (`Command::ToggleAutostart`, меняющий `Hidden=true` и `X-GNOME-Autostart-enabled=false`)
+    и удаления записи (`Command::RemoveAutostart`).
+- При входе в сессию Пёрышка (`FeatherCompositor::maybe_launch_autostart` в `src/main.rs`) после
+  готовности каталога приложений (`appmenu::Update::Ready`) и снимка `feather-system`
+  автоматически запускаются все включённые записи из `~/.config/autostart` без чтения диска на
+  цикле событий композитора.
+- На странице «Системные настройки → Приложения» (`Page::Defaults` в `src/system_settings.rs`)
+  добавлен раздел «Автозапуск при входе» со списком записей, переключением «Вкл. / Выкл.»,
+  удалением и модальным листом выбора установленного приложения с живым поиском
+  (`Action::AutostartPicker`). В `Layout::push` добавлен автоматический расчёт `right_reserve`
+  для правых кнопок в строках `Style::Row`.
+- `cargo build --release` без предупреждений, все 189 тестов workspace прошли (включая тесты
+  чтения/записи/фильтрации `OnlyShowIn`/`NotShowIn`/переключения/удаления `.desktop` в
+  `system_preferences::tests` и проверки геометрии/поиска в `system_settings::tests`).
+  Вложенная E2E-проверка с `FEATHER_AUTOSTART=1` подтвердила автоматический старт
+  `feather-notes.desktop` из `$XDG_CONFIG_HOME/autostart`: 0 тиков CPU за 5 с в простое,
+  `RssAnon` композитора 32,88 МиБ, клиента — 1,04 МиБ.
+
+## 2026-10-25 — «Оформление»: цвет акцента, цвет выделения и размер текста интерфейса (Gemini/agy)
+
+- В `feather-ui::scale` и `settings.conf` добавлены настройки:
+  - `AccentColor` (`accent_color`: 8 цветов macOS Tahoe — Синий, Фиолетовый, Розовый, Красный,
+    Оранжевый, Жёлтый, Зелёный, Графитовый), применяемый к системной палитре (`Palette::accent`),
+    плиткам рабочего стола (`src/desktop.rs`), стилям GTK 3/4 (`src/gtk_theme.rs`), а также
+    клиентам «Файлы» и «Заметки» (`feather_ui::appearance::colors::accent()`).
+  - `Option<AccentColor>` (`highlight_color`: «Как цвет акцента» либо один из 8 цветов),
+    применяемый к `Palette::highlight`, выделению текста во всех полях ввода `TextInput`
+    (`crates/feather-ui/src/input.rs`) и редакторе «Заметок» (`notes/src/app.rs`), а также к
+    прямоугольнику выделения мышью на рабочем столе (`Desktop::band_buffers`) и в «Файлах»
+    (`files/src/app.rs`).
+  - `TextSize` (`text_size`: «Мелкий» 92 %, «Обычный» 100 %, «Крупный» 110 %, «Очень крупный»
+    120 %), масштабирующий измерение, усечение и отрисовку шрифта интерфейса в
+    `crates/feather-ui/src/text.rs` без затрагивания моноширинной сетки «Терминала».
+- На странице «Системные настройки → Оформление» (`Page::Appearance`) добавлены строки
+  «Цвет акцента» (8 кружков `Style::ColorSwatch`), «Цвет выделения» (9 кружков: «Как цвет акцента»
+  с двойным кольцом + 8 цветов) и сегментный переключатель «Размер текста интерфейса»
+  («Мелкий / Обычный / Крупный / Макс.»). Наблюдатель `feather-appearance`
+  (`crates/feather-ui/src/appearance.rs`) отслеживает все 4 параметра в `settings.conf` через
+  `inotify` и атомарно применяет их на потоке цикла событий клиента (`appearance::sync`).
+- `cargo build --release` без предупреждений, все 189 тестов workspace прошли (включая новые
+  тесты сохранения/загрузки `settings.conf`, живого отслеживания `feather-appearance` и
+  проверку геометрии кликов и фикстур `Page::Appearance` на масштабах ×1 / ×1,25 / ×2).
+  Вложенные проверки `bench/client-ui-check.py` (×1,25): для «Файлов» пик `RssAnon` композитора
+  24,59 МиБ, клиента — 4,38 МиБ, 0 тиков CPU за 5 с; для «Заметок» пик композитора 24,66 МиБ,
+  клиента — 1,04 МиБ, 0 тиков CPU за 5 с.
+
+## 2026-10-25 — Bluetooth (BlueZ): включение, поиск и подключение (Gemini/agy)
+
+- Добавлены фоновый поток `feather-bluetooth` (`src/controls/bluetooth.rs`, стек 256 КиБ,
+  событийная подписка на `org.bluez` через `ObjectManager` без опроса по таймерам),
+  живая карточка и подпанель Bluetooth в Пункте управления (`control_panel::Page::Bluetooth`),
+  а также страница «Системные настройки → Bluetooth» (`system_settings::Page::Bluetooth`).
+- Поддержаны включение/выключение адаптера (`org.bluez.Adapter1.Powered`), поиск устройств
+  (`StartDiscovery` / `StopDiscovery` с автоматической остановкой при закрытии UI Bluetooth),
+  подключение и сопряжение (`Pair` + `Trusted = true` + `Connect`), отключение (`Disconnect`),
+  удаление сохранённых устройств (`RemoveDevice`), отображение заряда батареи
+  (`org.bluez.Battery1.Percentage`) и фильтрация безымянных BLE-устройств с MAC-заглушками.
+  В закрытом состоянии изменения `RSSI` игнорируются, обеспечивая 0 % CPU в простое.
+- `cargo build --release` без предупреждений, все 188 тестов workspace прошли (включая
+  приватный D‑Bus тест `private_bus_bluez_object_manager_and_device_actions`, модульный тест
+  подпанели Пункта управления и фикстуры светлой/тёмной тем на масштабах ×1 / ×1,25 / ×2).
+  Сквозной вложенный сценарий `bench/bluetooth-settings-check.py` (×2, `FEATHER_DEBUG_INPUT_ONLY=1`,
+  приватная шина D‑Bus): без снимка пик `RssAnon` 47,96 МиБ, установившийся 38,10 МиБ,
+  0 тиков CPU за 5,04 с; со снимком пик 92,62 МиБ, установившийся 53,06 МиБ (≤ 60 МБ),
+  0 тиков CPU за 5,03 с. [BLUETOOTH.md](docs/BLUETOOTH.md).
+
+## 2026-10-25 — раздел «Сеть»: сохранённые Wi‑Fi, Ethernet и VPN (Gemini/agy)
+
+- Добавлен раздел «Системные настройки → Сеть» (`Page::Network`) и расширен фоновый
+  поток `feather-network`: отображение и управление Wi‑Fi (включая встроенную шторку
+  ввода пароля WPA2/WPA3 с маскированием `draw_masked` и `Zeroizing<String>`),
+  сохранёнными профилями Wi‑Fi (`SavedWifi`: статус, переключение «Авто»/«Вручную»
+  через `GetSettings` + `GetSecrets` + `Update` без потери пароля, удаление через `Delete`),
+  проводными адаптерами Ethernet (`Device.Wired`: наличие кабеля, скорость в Мбит/с,
+  подключение/отключение) и профилями VPN / WireGuard (`ActivateConnection` /
+  `DeactivateConnection`).
+- Детальный снимок (`detailed = true`) запрашивается только при открытой подпанели Wi‑Fi
+  Пункта управления или открытой странице «Сеть»; кнопка «Настройки сети…» в Пункте
+  управления переводит прямо в «Системные настройки → Сеть». Ошибки команд сохраняются
+  на странице до следующего явного действия и не стираются фоновыми снимками.
+- `cargo build --release` без предупреждений, все 184 теста workspace прошли (включая
+  расширенный приватный D‑Bus тест `controls::network::tests` и фикстуры светлой/тёмной
+  тем на масштабах ×1 / ×1,25 / ×2). Сквозной вложенный сценарий
+  `bench/network-settings-check.py` (×2, `FEATHER_DEBUG_INPUT_ONLY=1`, приватная шина
+  D‑Bus): без снимка пик `RssAnon` 47,48 МиБ, установившийся 37,46 МиБ, 0 тиков CPU за
+  5,03 с; со снимком пик 97,68 МиБ, установившийся 58,12 МиБ (≤ 60 МБ), 0 тиков CPU за
+  5,03 с. [NETWORK.md](docs/NETWORK.md).
+
 ## 2026-10-25 — системные звуки и настройки сигналов (Codex)
 
 - «Звук»: предупреждения с тремя собственными сигналами и предпрослушиванием,

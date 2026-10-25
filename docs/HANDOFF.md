@@ -6,6 +6,50 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Автозапуск программ при входе (XDG Autostart), 2026-10-25 (Gemini/agy):** реализовано чтение,
+добавление, включение/выключение (`Hidden` / `X-GNOME-Autostart-enabled`) и удаление записей
+`$XDG_CONFIG_HOME/autostart/*.desktop` (с учётом `OnlyShowIn` / `NotShowIn` для `FeatherDE`) на
+потоке `feather-system` (`src/system_preferences.rs`), раздел «Автозапуск при входе» с поиском
+приложений на странице «Системные настройки → Приложения» (`Page::Defaults` в
+`src/system_settings.rs`) и однократный старт включённых программ при входе в сессию
+(`FeatherCompositor::maybe_launch_autostart` в `src/main.rs`). 189 тестов и `cargo build --release`
+без предупреждений; вложенная проверка `FEATHER_AUTOSTART=1` со стартом `feather-notes.desktop`:
+0 тиков CPU за 5 с, `RssAnon` композитора 32,88 МиБ, клиента — 1,04 МиБ.
+
+**Оформление (цвет акцента, цвет выделения, размер текста интерфейса), 2026-10-25 (Gemini/agy):**
+добавлены `AccentColor` (8 цветов macOS Tahoe), `highlight_color` («Как цвет акцента» + 8 цветов)
+и `TextSize` (92 % / 100 % / 110 % / 120 %) в `feather-ui::scale`, `settings.conf`, палитру
+композитора (`Palette::accent` / `Palette::highlight`), рабочий стол, тему GTK 3/4 и страницу
+«Системные настройки → Оформление» (`Page::Appearance`). Наблюдатель `feather-appearance`
+доставляет изменения всех четырёх параметров живьём в «Файлы» и «Заметки» через `appearance::sync`.
+189 тестов и `cargo build --release` без предупреждений; `bench/client-ui-check.py` (×1,25):
+«Файлы» — пик композитора 24,59 МиБ, клиента 4,38 МиБ, 0 тиков/5 с; «Заметки» — пик композитора
+24,66 МиБ, клиента 1,04 МиБ, 0 тиков/5 с.
+
+**Bluetooth (BlueZ: включение, поиск, подключение), 2026-10-25 (Gemini/agy):** реализованы
+фоновый D‑Bus worker `feather-bluetooth` (`org.bluez` `ObjectManager`), живая плитка и
+подпанель Bluetooth в Пункте управления (`control_panel::Page::Bluetooth`), а также страница
+«Системные настройки → Bluetooth» (`system_settings::Page::Bluetooth`). Поддержаны
+включение/выключение адаптера (`Powered`), сканирование (`StartDiscovery` / `StopDiscovery` с
+автоостановкой при закрытии UI), сопряжение и подключение (`Pair` + `Trusted = true` + `Connect`),
+отключение (`Disconnect`), удаление («Забыть» через `RemoveDevice`), индикация батареи
+(`Battery1.Percentage`) и фильтрация шума `RSSI` в фоне. 188 тестов и `cargo build --release`
+без предупреждений. Вложенный прогон `bench/bluetooth-settings-check.py` на приватной шине
+D‑Bus (×2, `FEATHER_DEBUG_INPUT_ONLY=1`): без снимка пик 47,96 МиБ, установившийся 38,10 МиБ,
+0 тиков/5,04 с; со снимком пик 92,62 МиБ, установившийся 53,06 МиБ, 0 тиков/5,03 с.
+Подробности: [BLUETOOTH.md](BLUETOOTH.md).
+
+**Сеть (Wi‑Fi, сохранённые профили, Ethernet, VPN), 2026-10-25 (Gemini/agy):** реализована
+страница «Системные настройки → Сеть» (`Page::Network`) и расширен worker `feather-network`.
+Поддержаны сохранённые профили Wi‑Fi (автоподключение с сохранением секретов через
+`GetSecrets` + `Update`, удаление через `Delete`), проводные адаптеры Ethernet (линк,
+скорость Мбит/с, подключение/отключение), профили VPN / WireGuard (`ActivateConnection` /
+`DeactivateConnection`), встроенная шторка пароля WPA2/WPA3 и переход из Пункта управления.
+184 теста и `cargo build --release` без предупреждений. Вложенный прогон `bench/network-settings-check.py`
+на приватной шине D‑Bus (×2, `FEATHER_DEBUG_INPUT_ONLY=1`): без снимка пик 47,48 МиБ,
+установившийся 37,46 МиБ, 0 тиков/5,03 с; со снимком пик 97,68 МиБ, установившийся 58,12 МиБ,
+0 тиков/5,03 с. Подробности: [NETWORK.md](NETWORK.md).
+
 **Системные звуки, 2026-10-25 (Codex):** завершены открытые пункты звуков
 предупреждений/интерфейса. Три собственных сигнала, предпрослушивание, уровень,
 выключатели предупреждений/снимка экрана/отклика громкости, общий worker с уведомлениями.

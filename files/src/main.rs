@@ -176,8 +176,7 @@ fn main() {
                 let effects = match msg {
                     Msg::Appearance(appearance) => {
                         if std::env::var_os("FEATHER_CLIENT_UI_CHECK").is_some() { eprintln!("[feather-files-ui-check] appearance={appearance:?}"); }
-                        if feather_ui::scale::appearance() != appearance {
-                            feather_ui::scale::set_appearance(appearance);
+                        if feather_ui::appearance::sync(appearance) {
                             files.app.dirty = true;
                         }
                         Vec::new()

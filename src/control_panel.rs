@@ -1,6 +1,7 @@
 //! Control Center view model: service snapshots, detail pages and local slider preview.
 use crate::{
     controls::{
+        bluetooth::Bluetooth,
         network::{Network, Security, Wifi},
         Audio, Control,
     },
@@ -16,12 +17,14 @@ pub enum Page {
     #[default]
     Main,
     Wifi,
+    Bluetooth,
     Sound,
     Password,
 }
 #[derive(Default)]
 pub struct Panel {
     pub wifi: Wifi,
+    pub bluetooth: Bluetooth,
     pub audio: Audio,
     pub page: Page,
     pub scroll: usize,
@@ -144,6 +147,7 @@ impl Panel {
     pub fn scroll(&mut self, delta: f64) {
         let max = match self.page {
             Page::Wifi => self.wifi.networks.len().saturating_sub(5),
+            Page::Bluetooth => self.bluetooth.devices.len().saturating_sub(5),
             Page::Sound => self.audio.sinks.len().saturating_sub(3),
             _ => 0,
         };
@@ -216,7 +220,7 @@ impl Panel {
         }
         match self.page {
             Page::Password => (y > p.h - 65.0).then(|| (5, row(p.h - 60.0, 40.0))),
-            _ if y > p.h - 43.0 => (self.page == Page::Wifi).then(|| (4, row(p.h - 42.0, 34.0))),
+            _ if y > p.h - 43.0 => matches!(self.page, Page::Wifi | Page::Bluetooth).then(|| (4, row(p.h - 42.0, 34.0))),
             Page::Wifi => {
                 if (50.0..85.0).contains(&y) && self.wifi.enabled {
                     return Some((3, row(50.0, 34.0)));
@@ -225,6 +229,18 @@ impl Panel {
                     let i = ((y - 88.0) / 38.0) as usize;
                     if self.wifi.networks.len() > i + self.scroll {
                         return Some((100 + (i + self.scroll) as u32, row(88.0 + i as f32 * 38.0, 34.0)));
+                    }
+                }
+                None
+            }
+            Page::Bluetooth => {
+                if (50.0..85.0).contains(&y) && self.bluetooth.powered {
+                    return Some((3, row(50.0, 34.0)));
+                }
+                if (88.0..278.0).contains(&y) && self.bluetooth.powered {
+                    let i = ((y - 88.0) / 38.0) as usize;
+                    if self.bluetooth.devices.len() > i + self.scroll {
+                        return Some((300 + (i + self.scroll) as u32, row(88.0 + i as f32 * 38.0, 34.0)));
                     }
                 }
                 None
@@ -263,10 +279,10 @@ impl Panel {
             return ShellClickAction::None;
         }
         if y > p.h - 43.0 {
-            return if self.page == Page::Wifi {
-                ShellClickAction::NetworkSettings
-            } else {
-                ShellClickAction::None
+            return match self.page {
+                Page::Wifi => ShellClickAction::NetworkSettings,
+                Page::Bluetooth => ShellClickAction::BluetoothSettings,
+                _ => ShellClickAction::None,
             };
         }
         if self.page == Page::Wifi {
@@ -297,6 +313,23 @@ impl Panel {
                     return ShellClickAction::NetworkSettings;
                 }
             }
+        } else if self.page == Page::Bluetooth {
+            if y < 48.0 && x > p.w - 65.0 && self.bluetooth.available {
+                return ShellClickAction::Control(Control::Bluetooth(!self.bluetooth.powered));
+            }
+            if (50.0..85.0).contains(&y) && self.bluetooth.powered {
+                return ShellClickAction::Control(Control::ScanBluetooth);
+            }
+            if (88.0..278.0).contains(&y) && self.bluetooth.powered {
+                let i = ((y - 88.0) / 38.0) as usize + self.scroll;
+                if let Some(d) = self.bluetooth.devices.get(i).cloned() {
+                    if d.connected {
+                        return ShellClickAction::Control(Control::DisconnectBluetooth(d.path));
+                    }
+                    self.bluetooth.connecting = Some(d.path.clone());
+                    return ShellClickAction::Control(Control::ConnectBluetooth(d.path));
+                }
+            }
         } else if self.page == Page::Sound {
             if (50.0..85.0).contains(&y) {
                 return self.mute();
@@ -324,6 +357,7 @@ impl Panel {
         fonts.draw_text(pm, "‹", p.x + 16.0, p.y + 10.0, 24.0, pal.text, false);
         let title = match self.page {
             Page::Wifi => "Wi‑Fi",
+            Page::Bluetooth => "Bluetooth",
             Page::Sound => "Звук",
             Page::Password => "Подключение",
             _ => "",
@@ -444,6 +478,133 @@ impl Panel {
             fonts.draw_text(
                 pm,
                 "Настройки сети…",
+                p.x + 18.0,
+                p.y + p.h - 29.0,
+                12.0,
+                pal.accent,
+                false,
+            );
+        } else if self.page == Page::Bluetooth {
+            let can = self.bluetooth.available;
+            fill_rounded_rect(
+                pm,
+                p.x + p.w - 59.0,
+                p.y + 15.0,
+                40.0,
+                22.0,
+                11.0,
+                if can && self.bluetooth.powered {
+                    pal.accent
+                } else {
+                    pal.control_fill
+                },
+            );
+            fill_circle(
+                pm,
+                p.x + p.w - if self.bluetooth.powered { 29.0 } else { 49.0 },
+                p.y + 26.0,
+                8.0,
+                pal.on_accent,
+            );
+            fonts.draw_text_clipped(
+                pm,
+                if self.bluetooth.powered && self.bluetooth.available {
+                    if self.bluetooth.discovering {
+                        "Поиск устройств… (нажмите, чтобы остановить)"
+                    } else {
+                        "Поиск устройств ↻"
+                    }
+                } else {
+                    self.bluetooth.subtitle()
+                },
+                p.x + 18.0,
+                p.y + 58.0,
+                p.w - 36.0,
+                12.0,
+                pal.text_secondary,
+                false,
+            );
+            if self.bluetooth.powered && self.bluetooth.available {
+                for (row, d) in self
+                    .bluetooth
+                    .devices
+                    .iter()
+                    .skip(self.scroll)
+                    .take(5)
+                    .enumerate()
+                {
+                    let y = p.y + 88.0 + row as f32 * 38.0;
+                    if y + 38.0 > p.y + p.h - 90.0 {
+                        break;
+                    }
+                    if d.connected {
+                        fill_rounded_rect(
+                            pm,
+                            p.x + 10.0,
+                            y,
+                            p.w - 20.0,
+                            34.0,
+                            8.0,
+                            with_alpha(pal.accent, 0.14),
+                        );
+                    }
+                    icon(pm, Icon::Bluetooth, p.x + 28.0, y + 17.0, pal.text, false);
+                    fonts.draw_text_clipped(
+                        pm,
+                        &d.name,
+                        p.x + 49.0,
+                        y + 3.0,
+                        p.w - 104.0,
+                        13.0,
+                        pal.text,
+                        d.connected,
+                    );
+                    let sub = if d.connected {
+                        "Подключено · нажмите, чтобы отключить"
+                    } else if self.bluetooth.connecting.as_deref() == Some(d.path.as_str()) {
+                        "Подключение…"
+                    } else if d.paired {
+                        "Сопряжено"
+                    } else {
+                        d.kind_label()
+                    };
+                    fonts.draw_text_clipped(
+                        pm,
+                        sub,
+                        p.x + 49.0,
+                        y + 19.0,
+                        p.w - 69.0,
+                        10.0,
+                        pal.text_secondary,
+                        false,
+                    );
+                    if let Some(battery) = d.battery {
+                        fonts.draw_text_right(
+                            pm,
+                            &format!("{battery}%"),
+                            p.x + p.w - 18.0,
+                            y + 4.0,
+                            10.0,
+                            pal.text_secondary,
+                            false,
+                        );
+                    }
+                }
+                if self.bluetooth.devices.is_empty() {
+                    fonts.draw_text(
+                        pm,
+                        "Устройства пока не найдены",
+                        p.x + 18.0,
+                        p.y + 100.0,
+                        12.0,
+                        pal.text_secondary,
+                        false,
+                    );
+                }
+            }
+            fonts.draw_text(
+                pm,
+                "Настройки Bluetooth…",
                 p.x + 18.0,
                 p.y + p.h - 29.0,
                 12.0,
@@ -611,10 +772,10 @@ impl Panel {
             );
         }
         if self.page != Page::Password {
-            let err = self.error.as_deref().or(if self.page == Page::Wifi {
-                self.wifi.error.as_deref()
-            } else {
-                self.audio.error.as_deref()
+            let err = self.error.as_deref().or(match self.page {
+                Page::Wifi => self.wifi.error.as_deref(),
+                Page::Bluetooth => self.bluetooth.error.as_deref(),
+                _ => self.audio.error.as_deref(),
             });
             if let Some(err) = err {
                 fonts.draw_text_clipped(
@@ -885,6 +1046,56 @@ mod tests {
         ));
     }
     #[test]
+    fn bluetooth_page_toggles_scans_and_connects_devices() {
+        use crate::controls::bluetooth::BtDevice;
+        let mut panel = Panel::default();
+        panel.page = Page::Bluetooth;
+        panel.bluetooth = Bluetooth {
+            available: true,
+            powered: true,
+            discovering: false,
+            devices: vec![
+                BtDevice {
+                    path: "/org/bluez/hci0/dev_1".into(),
+                    name: "AirPods Pro".into(),
+                    paired: true,
+                    connected: true,
+                    battery: Some(85),
+                    ..Default::default()
+                },
+                BtDevice {
+                    path: "/org/bluez/hci0/dev_2".into(),
+                    name: "Magic Keyboard".into(),
+                    paired: true,
+                    connected: false,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let rect = R::new(0., 0., 324., 384.);
+        assert!(matches!(
+            panel.click(rect, 300., 25.),
+            ShellClickAction::Control(Control::Bluetooth(false))
+        ));
+        assert!(matches!(
+            panel.click(rect, 50., 65.),
+            ShellClickAction::Control(Control::ScanBluetooth)
+        ));
+        assert!(matches!(
+            panel.click(rect, 50., 105.),
+            ShellClickAction::Control(Control::DisconnectBluetooth(p)) if p == "/org/bluez/hci0/dev_1"
+        ));
+        assert!(matches!(
+            panel.click(rect, 50., 143.),
+            ShellClickAction::Control(Control::ConnectBluetooth(p)) if p == "/org/bluez/hci0/dev_2"
+        ));
+        assert!(matches!(
+            panel.click(rect, 50., 360.),
+            ShellClickAction::BluetoothSettings
+        ));
+    }
+    #[test]
     #[ignore = "Explicit fixture screenshots; no system controls are touched"]
     fn render_fixtures() {
         with_render_settings(2.0, Appearance::Light, || {
@@ -894,6 +1105,22 @@ mod tests {
                 enabled: true,
                 hardware: true,
                 networks: vec![network()],
+                ..Default::default()
+            };
+            panel.bluetooth = Bluetooth {
+                available: true,
+                powered: true,
+                discovering: false,
+                connected: Some("AirPods Pro".into()),
+                devices: vec![crate::controls::bluetooth::BtDevice {
+                    path: "/org/bluez/hci0/dev_1".into(),
+                    name: "AirPods Pro".into(),
+                    icon: "audio-headphones".into(),
+                    paired: true,
+                    connected: true,
+                    battery: Some(85),
+                    ..Default::default()
+                }],
                 ..Default::default()
             };
             panel.audio = Audio {
@@ -909,6 +1136,7 @@ mod tests {
             let mut fonts = FontSystem::new();
             for (name, page) in [
                 ("wifi", Page::Wifi),
+                ("bluetooth", Page::Bluetooth),
                 ("sound", Page::Sound),
                 ("password", Page::Password),
             ] {

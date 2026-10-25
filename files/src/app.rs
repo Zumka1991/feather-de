@@ -1754,10 +1754,13 @@ impl App {
             let cx = bx + 16.0;
             theme::polyline(pm, &[(cx - 2.5 * dir, 21.0), (cx + 2.5 * dir, 26.0), (cx - 2.5 * dir, 31.0)], 1.8, ink);
         }
+        let with_alpha = |c: tiny_skia::Color, a: u8| {
+            tiny_skia::Color::from_rgba(c.red(), c.green(), c.blue(), a as f32 / 255.0).unwrap_or(c)
+        };
         if let Some(input) = self.path_edit.clone() {
             let (tx, ty, tw, th) = self.title_rect();
             theme::fill_rrect(pm, tx, ty, tw, th, 8.0, colors::window());
-            theme::stroke_rrect(pm, tx - 1.0, ty - 1.0, tw + 2.0, th + 2.0, 9.0, 2.5, rgba(10, 132, 255, 110));
+            theme::stroke_rrect(pm, tx - 1.0, ty - 1.0, tw + 2.0, th + 2.0, 9.0, 2.5, with_alpha(colors::accent(), 110));
             theme::stroke_rrect(pm, tx, ty, tw, th, 8.0, 0.6, colors::separator());
             input.draw(pm, &mut self.fonts, tx + 10.0, ty + 7.0, tw - 20.0, 13.0, false, colors::text(), true, colors::accent());
         } else {
@@ -1793,7 +1796,7 @@ impl App {
         let (sx, sy, sw, sh) = self.search_rect();
         theme::fill_rrect(pm, sx, sy, sw, sh, 14.0, colors::control());
         if self.search_focus {
-            theme::stroke_rrect(pm, sx - 1.0, sy - 1.0, sw + 2.0, sh + 2.0, 15.0, 2.5, rgba(10, 132, 255, 110));
+            theme::stroke_rrect(pm, sx - 1.0, sy - 1.0, sw + 2.0, sh + 2.0, 15.0, 2.5, with_alpha(colors::accent(), 110));
         }
         let ink = colors::secondary();
         theme::stroke_circle(pm, sx + 15.0, sy + 13.0, 4.5, 1.5, ink);
@@ -1807,6 +1810,9 @@ impl App {
     }
 
     fn paint_content(&mut self, pm: &mut PixmapMut) {
+        let with_alpha = |c: tiny_skia::Color, a: u8| {
+            tiny_skia::Color::from_rgba(c.red(), c.green(), c.blue(), a as f32 / 255.0).unwrap_or(c)
+        };
         let (cx, cy, cw, ch) = self.content();
         if let Some(err) = self.error.clone() {
             self.fonts.draw_text_centered(pm, "Не удаётся открыть папку", cx + cw * 0.5, cy + ch * 0.4, 15.0, colors::secondary(), true);
@@ -1827,12 +1833,13 @@ impl App {
             let sy = start.1 - self.scroll;
             let (y0, y1) = (sy.min(end.1).max(cy), sy.max(end.1).min(cy + ch));
             if y1 > y0 {
-                theme::fill_rect(pm, x0, y0, x1 - x0, y1 - y0, rgba(10, 132, 255, 38));
-                theme::stroke_rrect(pm, x0 + 0.5, y0 + 0.5, x1 - x0 - 1.0, y1 - y0 - 1.0, 0.0, 1.0, rgba(10, 132, 255, 170));
+                let hl = colors::highlight();
+                theme::fill_rect(pm, x0, y0, x1 - x0, y1 - y0, with_alpha(hl, 38));
+                theme::stroke_rrect(pm, x0 + 0.5, y0 + 0.5, x1 - x0 - 1.0, y1 - y0 - 1.0, 0.0, 1.0, with_alpha(hl, 170));
             }
         }
         if self.drop_target.as_ref() == Some(&self.dir) {
-            theme::stroke_rrect(pm, cx + 4.0, cy + 4.0, cw - 8.0, ch - 8.0, 10.0, 3.0, rgba(10, 132, 255, 150));
+            theme::stroke_rrect(pm, cx + 4.0, cy + 4.0, cw - 8.0, ch - 8.0, 10.0, 3.0, with_alpha(colors::accent(), 150));
         }
         // Thin overlay scrollbar when the folder does not fit
         let total = self.content_height();
@@ -1869,6 +1876,9 @@ impl App {
     }
 
     fn paint_icons(&mut self, pm: &mut PixmapMut) {
+        let with_alpha = |c: tiny_skia::Color, a: u8| {
+            tiny_skia::Color::from_rgba(c.red(), c.green(), c.blue(), a as f32 / 255.0).unwrap_or(c)
+        };
         let (_, cy, _, ch) = self.content();
         for i in self.visible_range() {
             let (x, y, w, _) = self.item_rect(i);
@@ -1887,7 +1897,7 @@ impl App {
             let name_y = y + 10.0 + GRID_ICON;
             if let Some(name) = renaming {
                 theme::fill_rrect(pm, x + 5.0, name_y - 2.0, w - 10.0, 19.0, 4.0, colors::window());
-                theme::stroke_rrect(pm, x + 5.0, name_y - 2.0, w - 10.0, 19.0, 4.0, 2.0, rgba(10, 132, 255, 160));
+                theme::stroke_rrect(pm, x + 5.0, name_y - 2.0, w - 10.0, 19.0, 4.0, 2.0, with_alpha(colors::accent(), 160));
                 name.draw(pm, &mut self.fonts, x + 9.0, name_y, w - 18.0, 12.0, false, colors::text(), true, colors::accent());
                 continue;
             }
@@ -1909,6 +1919,9 @@ impl App {
     }
 
     fn paint_list(&mut self, pm: &mut PixmapMut) {
+        let with_alpha = |c: tiny_skia::Color, a: u8| {
+            tiny_skia::Color::from_rgba(c.red(), c.green(), c.blue(), a as f32 / 255.0).unwrap_or(c)
+        };
         let (cx, cy, cw, ch) = self.content();
         let date_w = 160.0;
         let size_w = 90.0;
@@ -1940,7 +1953,7 @@ impl App {
             let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
             if let Some(name) = renaming {
                 theme::fill_rrect(pm, cx + 40.0, y + 3.0, name_w - 30.0, ROW_H - 6.0, 4.0, colors::window());
-                theme::stroke_rrect(pm, cx + 40.0, y + 3.0, name_w - 30.0, ROW_H - 6.0, 4.0, 2.0, rgba(10, 132, 255, 160));
+                theme::stroke_rrect(pm, cx + 40.0, y + 3.0, name_w - 30.0, ROW_H - 6.0, 4.0, 2.0, with_alpha(colors::accent(), 160));
                 name.draw(pm, &mut self.fonts, cx + 45.0, y + 5.5, name_w - 40.0, 13.0, false, colors::text(), true, colors::accent());
             } else {
                 self.fonts.draw_text_clipped(pm, &e.name, cx + 44.0, y + 5.5, name_w - 30.0, 13.0, ink, false);

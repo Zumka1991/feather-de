@@ -14,6 +14,7 @@ use zbus::{
 };
 pub type Secret = zeroize::Zeroizing<String>;
 
+pub mod bluetooth;
 pub mod network;
 
 #[derive(Clone, Default, Debug, PartialEq)]
@@ -89,14 +90,33 @@ impl AudioKey {
 pub enum Control {
     Refresh,
     RefreshAudio,
+    RefreshNetwork,
+    RefreshBluetooth,
     Scan,
+    ScanBluetooth,
     WatchWifi(bool),
+    WatchBluetooth(bool),
     Wifi(bool),
+    Bluetooth(bool),
     Connect {
         network: network::Network,
         password: Option<Secret>,
     },
     Disconnect(String),
+    ConnectEthernet {
+        device: String,
+        profile: Option<String>,
+    },
+    SetAutoconnect {
+        profile: String,
+        autoconnect: bool,
+    },
+    ForgetConnection(String),
+    ConnectVpn(String),
+    DisconnectVpn(String),
+    ConnectBluetooth(String),
+    DisconnectBluetooth(String),
+    ForgetBluetooth(String),
     Volume {
         sink: String,
         value: f32,
@@ -122,11 +142,24 @@ impl std::fmt::Debug for Control {
         f.write_str(match self {
             Self::Refresh => "Refresh",
             Self::RefreshAudio => "RefreshAudio",
+            Self::RefreshNetwork => "RefreshNetwork",
+            Self::RefreshBluetooth => "RefreshBluetooth",
             Self::Scan => "Scan",
+            Self::ScanBluetooth => "ScanBluetooth",
             Self::WatchWifi(_) => "WatchWifi",
+            Self::WatchBluetooth(_) => "WatchBluetooth",
             Self::Wifi(_) => "Wifi",
+            Self::Bluetooth(_) => "Bluetooth",
             Self::Connect { .. } => "Connect(redacted)",
             Self::Disconnect(_) => "Disconnect",
+            Self::ConnectEthernet { .. } => "ConnectEthernet",
+            Self::SetAutoconnect { .. } => "SetAutoconnect",
+            Self::ForgetConnection(_) => "ForgetConnection",
+            Self::ConnectVpn(_) => "ConnectVpn",
+            Self::DisconnectVpn(_) => "DisconnectVpn",
+            Self::ConnectBluetooth(_) => "ConnectBluetooth",
+            Self::DisconnectBluetooth(_) => "DisconnectBluetooth",
+            Self::ForgetBluetooth(_) => "ForgetBluetooth",
             Self::Volume { .. } => "Volume",
             Self::Mute { .. } => "Mute",
             Self::Output(_) => "Output",
@@ -139,6 +172,7 @@ impl std::fmt::Debug for Control {
 }
 pub enum Update {
     Wifi(network::Wifi),
+    Bluetooth(bluetooth::Bluetooth),
     Audio(Audio),
     AudioFeedback(Audio),
     Error(&'static str, String),
@@ -146,24 +180,37 @@ pub enum Update {
 
 pub struct Controls {
     wifi: async_channel::Sender<Control>,
+    bluetooth: async_channel::Sender<Control>,
     audio: async_channel::Sender<Control>,
     wifi_open: bool,
+    bluetooth_open: bool,
     audio_open: bool,
     detailed: bool,
+    bluetooth_detailed: bool,
 }
 impl Controls {
     pub fn new(
         handle: &LoopHandle<'static, crate::FeatherCompositor>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let (updates, source) = channel::sync_channel(4);
+        let (updates, source) = channel::sync_channel(8);
         handle.insert_source(source, |event, _, state| {
             if let channel::Event::Msg(update) = event {
                 if let Update::AudioFeedback(ref audio) = update {
                     state.show_audio_feedback(audio);
                 }
-                let sound_page = state.system_settings.page == crate::system_settings::Page::Sound
-                    && state.windows.iter().any(|w| w.app_id == "builtin.settings" && w.is_visible());
+                let settings_visible = state
+                    .windows
+                    .iter()
+                    .any(|w| w.app_id == "builtin.settings" && w.is_visible());
+                let sound_page =
+                    settings_visible && state.system_settings.page == crate::system_settings::Page::Sound;
+                let network_page =
+                    settings_visible && state.system_settings.page == crate::system_settings::Page::Network;
+                let bluetooth_page =
+                    settings_visible && state.system_settings.page == crate::system_settings::Page::Bluetooth;
                 let audio_update = matches!(update, Update::Audio(_) | Update::AudioFeedback(_));
+                let wifi_update = matches!(update, Update::Wifi(_));
+                let bt_update = matches!(update, Update::Bluetooth(_));
                 if sound_page {
                     if let Update::Error("Звук", ref error) = update {
                         state.system_settings.error = Some(error.clone());
@@ -172,11 +219,53 @@ impl Controls {
                         return;
                     }
                 }
-                let previous = if sound_page && audio_update { Some(state.shell.cc.audio.clone()) } else { None };
+                if network_page && !state.shell.control_center_open {
+                    if let Update::Error("Wi‑Fi", ref error) = update {
+                        state.system_settings.error = Some(error.clone());
+                        state.play_effect(
+                            crate::sounds::Effect::Alert(state.sound_preferences.tone),
+                            false,
+                        );
+                        state.mark_settings_dirty();
+                        state.needs_redraw = true;
+                        return;
+                    }
+                }
+                if bluetooth_page && !state.shell.control_center_open {
+                    if let Update::Error("Bluetooth", ref error) = update {
+                        state.shell.cc.bluetooth.connecting = None;
+                        state.system_settings.error = Some(error.clone());
+                        state.play_effect(
+                            crate::sounds::Effect::Alert(state.sound_preferences.tone),
+                            false,
+                        );
+                        state.mark_settings_dirty();
+                        state.needs_redraw = true;
+                        return;
+                    }
+                }
+                let previous = if sound_page && audio_update {
+                    Some(state.shell.cc.audio.clone())
+                } else {
+                    None
+                };
+                let previous_wifi = if network_page && wifi_update {
+                    Some(state.shell.cc.wifi.clone())
+                } else {
+                    None
+                };
+                let previous_bt = if bluetooth_page && bt_update {
+                    Some(state.shell.cc.bluetooth.clone())
+                } else {
+                    None
+                };
                 if state.shell.install_controls(update) {
                     state.needs_redraw = true;
                 }
-                if previous.as_ref().is_some_and(|old| *old != state.shell.cc.audio) {
+                if previous.as_ref().is_some_and(|old| *old != state.shell.cc.audio)
+                    || previous_wifi.as_ref().is_some_and(|old| *old != state.shell.cc.wifi)
+                    || previous_bt.as_ref().is_some_and(|old| *old != state.shell.cc.bluetooth)
+                {
                     if state.system_settings.audio_drag.as_ref().is_some_and(|(_, command)| match command {
                         Control::InputVolume { source, .. } => state.shell.cc.audio.current_source().is_none_or(|s| s.name != *source),
                         Control::Volume { sink, .. } => state.shell.cc.audio.current().is_none_or(|s| s.name != *sink),
@@ -195,6 +284,14 @@ impl Controls {
             .spawn(move || {
                 future::block_on(network::run(rx, out));
             })?;
+        let (bluetooth, rx) = async_channel::bounded(16);
+        let out = updates.clone();
+        std::thread::Builder::new()
+            .name("feather-bluetooth".into())
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                future::block_on(bluetooth::run(rx, out));
+            })?;
         let (audio, rx) = async_channel::bounded(16);
         std::thread::Builder::new()
             .name("feather-audio".into())
@@ -202,46 +299,75 @@ impl Controls {
             .spawn(move || audio_run(rx, updates))?;
         Ok(Self {
             wifi,
+            bluetooth,
             audio,
             wifi_open: false,
+            bluetooth_open: false,
             audio_open: false,
             detailed: false,
+            bluetooth_detailed: false,
         })
     }
-    pub fn sync(&mut self, open: bool, detailed: bool) {
+    pub fn sync(&mut self, open: bool, detailed: bool, bluetooth_detailed: bool) {
         if open && !self.wifi_open && self.wifi.try_send(Control::Refresh).is_ok() {
             self.wifi_open = true;
+        }
+        if open && !self.bluetooth_open && self.bluetooth.try_send(Control::Refresh).is_ok() {
+            self.bluetooth_open = true;
         }
         if open && !self.audio_open && self.audio.try_send(Control::Refresh).is_ok() {
             self.audio_open = true;
         }
         if !open {
             self.wifi_open = false;
+            self.bluetooth_open = false;
             self.audio_open = false;
         }
         if detailed != self.detailed && self.send(Control::WatchWifi(detailed)).is_ok() {
             self.detailed = detailed;
+        }
+        if bluetooth_detailed != self.bluetooth_detailed
+            && self.send(Control::WatchBluetooth(bluetooth_detailed)).is_ok()
+        {
+            self.bluetooth_detailed = bluetooth_detailed;
         }
     }
     pub fn send(&self, command: Control) -> Result<(), &'static str> {
         match command {
             Control::Refresh => {
                 let a = self.wifi.try_send(Control::Refresh);
-                let b = self.audio.try_send(Control::Refresh);
-                if a.is_err() || b.is_err() {
+                let b = self.bluetooth.try_send(Control::Refresh);
+                let c = self.audio.try_send(Control::Refresh);
+                if a.is_err() || b.is_err() || c.is_err() {
                     Err("Служба занята. Повторите действие.")
                 } else {
                     Ok(())
                 }
             }
-            Control::Scan
+            Control::RefreshNetwork
+            | Control::Scan
             | Control::WatchWifi(_)
             | Control::Wifi(_)
             | Control::Connect { .. }
-            | Control::Disconnect(_) => self
+            | Control::Disconnect(_)
+            | Control::ConnectEthernet { .. }
+            | Control::SetAutoconnect { .. }
+            | Control::ForgetConnection(_)
+            | Control::ConnectVpn(_)
+            | Control::DisconnectVpn(_) => self
                 .wifi
                 .try_send(command)
                 .map_err(|_| "Сеть занята. Повторите действие."),
+            Control::RefreshBluetooth
+            | Control::ScanBluetooth
+            | Control::WatchBluetooth(_)
+            | Control::Bluetooth(_)
+            | Control::ConnectBluetooth(_)
+            | Control::DisconnectBluetooth(_)
+            | Control::ForgetBluetooth(_) => self
+                .bluetooth
+                .try_send(command)
+                .map_err(|_| "Bluetooth занят. Повторите действие."),
             _ => self
                 .audio
                 .try_send(command)

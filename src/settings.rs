@@ -277,6 +277,9 @@ pub struct Settings {
     pub power: crate::power::Preferences,
     pub pointer: Pointer,
     pub appearance: Appearance,
+    pub accent_color: crate::theme::AccentColor,
+    pub highlight_color: Option<crate::theme::AccentColor>,
+    pub text_size: crate::theme::TextSize,
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub default_browser: Option<String>,
@@ -309,6 +312,9 @@ impl Default for Settings {
             power: Default::default(),
             pointer: Pointer::default(),
             appearance: Appearance::Light,
+            accent_color: crate::theme::AccentColor::Blue,
+            highlight_color: None,
+            text_size: crate::theme::TextSize::Default,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             default_browser: None,
@@ -367,6 +373,24 @@ impl Settings {
                     "light" => s.appearance = Appearance::Light,
                     _ => {}
                 },
+                "accent_color" => {
+                    if let Some(c) = crate::theme::AccentColor::parse(v) {
+                        s.accent_color = c;
+                    }
+                }
+                "highlight_color" => match v {
+                    "accent" | "default" | "" => s.highlight_color = None,
+                    other => {
+                        if let Some(c) = crate::theme::AccentColor::parse(other) {
+                            s.highlight_color = Some(c);
+                        }
+                    }
+                },
+                "text_size" => {
+                    if let Some(ts) = crate::theme::TextSize::parse(v) {
+                        s.text_size = ts;
+                    }
+                }
                 "wallpaper" => {
                     if let Some(t) = WallpaperTheme::from_id(v) {
                         s.wallpaper = t;
@@ -571,8 +595,12 @@ impl Settings {
         s
     }
     fn text(&self) -> String {
-        let mut text=format!("appearance={}\nwallpaper={}\n{}dock_zoom={}\n{}animations={}\nkeyboard_layouts={}\nkeyboard_shortcut={}\n{}",
-            if self.appearance==Appearance::Dark{"dark"}else{"light"},self.wallpaper.id(),self.scale.map(|v|format!("scale={v}\n")).unwrap_or_default(),
+        let mut text=format!("appearance={}\naccent_color={}\nhighlight_color={}\ntext_size={}\nwallpaper={}\n{}dock_zoom={}\n{}animations={}\nkeyboard_layouts={}\nkeyboard_shortcut={}\n{}",
+            if self.appearance==Appearance::Dark{"dark"}else{"light"},
+            self.accent_color.id(),
+            self.highlight_color.map_or("accent", |c| c.id()),
+            self.text_size.id(),
+            self.wallpaper.id(),self.scale.map(|v|format!("scale={v}\n")).unwrap_or_default(),
             self.dock_zoom,self.dock.as_ref().map(|d|format!("dock={}\n",d.join(","))).unwrap_or_default(),self.animations,self.keyboard.layouts.join(","),self.keyboard.shortcut.option(),
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
         text.push_str(&format!("idle_lock_minutes={}\nidle_blank_minutes={}\nidle_suspend_minutes={}\n",self.power.lock,self.power.blank,self.power.suspend));
@@ -864,6 +892,33 @@ mod tests {
         assert_eq!(
             Settings::parse("keyboard_layouts=,,bogus").keyboard,
             Keyboard::default()
+        );
+    }
+    #[test]
+    fn appearance_accent_highlight_and_text_size_round_trip() {
+        use crate::theme::{AccentColor, TextSize};
+        let mut s = Settings::default();
+        assert_eq!(
+            (s.accent_color, s.highlight_color, s.text_size),
+            (AccentColor::Blue, None, TextSize::Default)
+        );
+        for accent in AccentColor::ALL {
+            for ts in TextSize::ALL {
+                s.accent_color = accent;
+                s.highlight_color = Some(AccentColor::Pink);
+                s.text_size = ts;
+                let back = Settings::parse(&s.text());
+                assert_eq!(back.accent_color, accent);
+                assert_eq!(back.highlight_color, Some(AccentColor::Pink));
+                assert_eq!(back.text_size, ts);
+            }
+        }
+        s.highlight_color = None;
+        assert_eq!(Settings::parse(&s.text()).highlight_color, None);
+        let bad = Settings::parse("accent_color=neon\nhighlight_color=bogus\ntext_size=huge\n");
+        assert_eq!(
+            (bad.accent_color, bad.highlight_color, bad.text_size),
+            (AccentColor::Blue, None, TextSize::Default)
         );
     }
     #[test]

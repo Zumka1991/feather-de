@@ -189,6 +189,8 @@ pub struct FeatherCompositor {
     trash_watcher: Option<feather_ui::fileops::Watcher>,
     trash_tx: Option<smithay::reexports::calloop::channel::Sender<crate::trash::Msg>>,
     pub pending_autostart: Option<String>,
+    pub appmenu_ready: bool,
+    pub autostart_launched: bool,
     pub idle_frame_timer_armed: bool,
     pub frame_pending: bool,
     pub frame_seq: u64,
@@ -315,6 +317,24 @@ impl FeatherCompositor {
         for w in &mut self.windows {
             if w.is_builtin() {
                 w.dirty = true;
+            }
+        }
+    }
+
+    pub fn maybe_launch_autostart(&mut self) {
+        if !self.appmenu_ready {
+            return;
+        }
+        if let Some(cmd) = self.pending_autostart.take() {
+            crate::apps::spawn_wayland_command(&cmd, &self.wayland_socket_name);
+        }
+        if !self.autostart_launched
+            && self.system_preferences.loaded
+            && (self.own_session || std::env::var_os("FEATHER_AUTOSTART").is_some())
+        {
+            self.autostart_launched = true;
+            for item in self.system_preferences.autostart.iter().filter(|i| i.enabled) {
+                crate::apps::spawn_wayland_command(&item.exec, &self.wayland_socket_name);
             }
         }
     }
@@ -682,6 +702,9 @@ impl FeatherCompositor {
             power: self.power.preferences,
             pointer: self.pointer_config.clone(),
             appearance: appearance(),
+            accent_color: crate::theme::accent_color(),
+            highlight_color: crate::theme::highlight_choice(),
+            text_size: crate::theme::text_size(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.clone(),
             default_browser: self.system_preferences.browser.clone(),
@@ -1084,8 +1107,14 @@ impl FeatherCompositor {
                     if let Err(e)=controls.send(command) { self.shell.cc.error=Some(e.into()); self.shell.overlay_dirty=true; }
                 }
             }
-            ShellClickAction::NetworkSettings => self.execute_shell_action(ShellClickAction::LaunchApp(AppAction::Exec("nm-connection-editor".into()),"Настройки сети".into())),
-            ShellClickAction::BluetoothSettings => self.execute_shell_action(ShellClickAction::LaunchApp(AppAction::Exec("blueman-manager".into()),"Bluetooth".into())),
+            ShellClickAction::NetworkSettings => {
+                self.shell.close_menus();
+                self.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Network));
+            }
+            ShellClickAction::BluetoothSettings => {
+                self.shell.close_menus();
+                self.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth));
+            }
             ShellClickAction::AppMenuActivate { generation, id } => {
                 self.appmenus.click(generation, id, self.start_time.elapsed().as_millis() as u32);
             }
@@ -1581,6 +1610,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let phys_h = initial_size.h.max(480);
 
     set_appearance(saved.appearance);
+    crate::theme::set_accent_color(saved.accent_color);
+    crate::theme::set_highlight_choice(saved.highlight_color);
+    crate::theme::set_text_size(saved.text_size);
     let explicit_scale = parse_explicit_scale().or(saved.scale);
     let init_scale =
         explicit_scale.unwrap_or_else(|| auto_scale_for_resolution(phys_w, host_scale));
@@ -1741,6 +1773,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         gtk_theme: saved.gtk_theme,
         own_session: false,
         pending_autostart,
+        appmenu_ready: false,
+        autostart_launched: false,
         idle_frame_timer_armed: false,
         frame_pending: false,
         frame_seq: 0,
@@ -2113,7 +2147,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             state.refresh_focus();
         }
         Ok("cc-wifi") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Wifi);}
+        Ok("cc-bluetooth") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Bluetooth);}
         Ok("cc-sound") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Sound);}
+        Ok("settings-network") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Network)),
+        Ok("settings-bluetooth") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth)),
+        Ok("settings-defaults") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults)),
         _ => {}
     }
 
@@ -2122,8 +2160,32 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Event-driven main loop: sleeps until input, a client request or a timer fires,
     // and only renders when something actually changed.
     event_loop.run(None, &mut state, |state| {
+        let settings_visible = state
+            .windows
+            .iter()
+            .any(|w| w.app_id == "builtin.settings" && w.is_visible());
+        let network_settings_open =
+            settings_visible && state.system_settings.page == crate::system_settings::Page::Network;
+        let bluetooth_settings_open =
+            settings_visible && state.system_settings.page == crate::system_settings::Page::Bluetooth;
+        let defaults_settings_open =
+            settings_visible && state.system_settings.page == crate::system_settings::Page::Defaults;
+        if !network_settings_open && state.system_settings.wifi_target.is_some() {
+            state.system_settings.wifi_target = None;
+            state.system_settings.wifi_password.clear();
+        }
+        if !defaults_settings_open && state.system_settings.autostart_picker {
+            state.system_settings.autostart_picker = false;
+            state.system_settings.autostart_query.clear();
+        }
         if let Some(controls)=&mut state.controls {
-            controls.sync(state.shell.control_center_open,state.shell.control_center_open && matches!(state.shell.cc.page,crate::control_panel::Page::Wifi|crate::control_panel::Page::Password));
+            let wifi_open = (state.shell.control_center_open
+                && matches!(state.shell.cc.page, crate::control_panel::Page::Wifi | crate::control_panel::Page::Password))
+                || network_settings_open;
+            let bluetooth_open = (state.shell.control_center_open
+                && state.shell.cc.page == crate::control_panel::Page::Bluetooth)
+                || bluetooth_settings_open;
+            controls.sync(state.shell.control_center_open, wifi_open, bluetooth_open);
         }
         if !state.shell.control_center_open {state.shell.cc.close();}
         let password=state.shell.control_center_open && state.shell.cc.page==crate::control_panel::Page::Password;

@@ -8,7 +8,7 @@ use tiny_skia::{Color, PixmapMut};
 use tiny_skia::{FillRule, Mask, PathBuilder, Transform};
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
-use crate::scale::ui_scale;
+use crate::scale::{text_scale, ui_scale};
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy)]
 struct GlyphKey {
@@ -482,10 +482,11 @@ impl FontSystem {
         width
     }
 
-    /// Measures text width in logical points (HiDPI scale-aware)
+    /// Measures text width in logical points (HiDPI scale-aware and text-size-aware)
     pub fn measure_text(&mut self, text: &str, logical_size: f32, is_bold: bool) -> f32 {
         let s = ui_scale();
-        self.advance_phys(text, logical_size * s, is_bold) / s
+        let ts = text_scale();
+        self.advance_phys(text, logical_size * ts * s, is_bold) / s
     }
 
     /// Cell size for a monospace font at `phys_size` pixels: the advance of "M" and the
@@ -548,10 +549,11 @@ impl FontSystem {
     ) -> f32 {
         let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Text);
         let s = ui_scale();
-        let phys_size = logical_size * s;
+        let ts = text_scale();
+        let phys_size = logical_size * ts * s;
         let start_x = logical_x * s;
         let mut pen_x = start_x;
-        let baseline_y = (logical_y * s) + phys_size * 0.82;
+        let baseline_y = (logical_y * s) + (logical_size * s) * (0.46 + 0.36 * ts);
         let pw = pixmap.width() as i32;
         let ph = pixmap.height() as i32;
 
@@ -652,16 +654,17 @@ impl FontSystem {
             return text.to_string();
         }
         let scale = ui_scale();
-        let limit = max_width * scale - self.advance_phys("…", size * scale, is_bold);
+        let phys_size = size * text_scale() * scale;
+        let limit = max_width * scale - self.advance_phys("…", phys_size, is_bold);
         let mut out = String::new();
         let mut width = 0.0;
         let mut prev: Option<(char, bool)> = None;
         for ch in text.chars() {
-            let glyph = self.get_glyph(ch, size * scale, is_bold);
+            let glyph = self.get_glyph(ch, phys_size, is_bold);
             let (advance, fallback) = (glyph.metrics.advance_width, glyph.from_fallback);
             let kerning = prev
                 .filter(|(_, fb)| !*fb && !fallback)
-                .map_or(0.0, |(p, _)| self.kern(p, ch, size * scale, is_bold));
+                .map_or(0.0, |(p, _)| self.kern(p, ch, phys_size, is_bold));
             width += kerning + advance;
             if width > limit {
                 break;

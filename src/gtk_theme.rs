@@ -59,6 +59,12 @@ pub fn theme_name(dark: bool) -> &'static str {
     if dark { "Feather-Dark" } else { "Feather" }
 }
 
+fn colors_css(dark: bool) -> String {
+    let raw = if dark { COLORS_DARK } else { COLORS_LIGHT };
+    let hex = crate::theme::accent_color().hex(dark);
+    raw.replace("#0a84ff", hex)
+}
+
 /// One stylesheet of the theme
 pub fn css(gtk4: bool, dark: bool) -> String {
     let base = match (gtk4, dark) {
@@ -67,12 +73,16 @@ pub fn css(gtk4: bool, dark: bool) -> String {
         (true, false) => "resource:///org/gtk/libgtk/theme/Default/Default-light.css",
         (true, true) => "resource:///org/gtk/libgtk/theme/Default/Default-dark.css",
     };
-    format!("{MARK}\n@import url(\"{base}\");\n{}\n{}", if dark { COLORS_DARK } else { COLORS_LIGHT }, if gtk4 { GTK4 } else { GTK3 })
+    format!(
+        "{MARK}\n@import url(\"{base}\");\n{}\n{}",
+        colors_css(dark),
+        if gtk4 { GTK4 } else { GTK3 }
+    )
 }
 
 /// The libadwaita user stylesheet: only our rules, no base theme
 pub fn user_css(dark: bool) -> String {
-    format!("{MARK}\n{}\n{}", if dark { COLORS_DARK } else { COLORS_LIGHT }, GTK4)
+    format!("{MARK}\n{}\n{}", colors_css(dark), GTK4)
 }
 
 /// Value of `key` in the [Settings] group of a GTK settings.ini

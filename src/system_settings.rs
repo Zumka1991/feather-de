@@ -11,6 +11,8 @@ use tiny_skia::PixmapMut;
 pub enum Page {
     #[default]
     Appearance,
+    Network,
+    Bluetooth,
     Keyboard,
     Pointer,
     Displays,
@@ -22,8 +24,10 @@ pub enum Page {
     Sound,
 }
 impl Page {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 12] = [
         Self::Appearance,
+        Self::Network,
+        Self::Bluetooth,
         Self::Keyboard,
         Self::Pointer,
         Self::Displays,
@@ -37,6 +41,8 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Оформление",
+            Self::Network => "Сеть",
+            Self::Bluetooth => "Bluetooth",
             Self::Keyboard => "Клавиатура",
             Self::Pointer => "Мышь и трекпад",
             Self::Displays => "Дисплеи",
@@ -51,11 +57,13 @@ impl Page {
     fn caption(self) -> &'static str {
         match self {
             Self::Appearance => "Выберите внешний вид и поведение интерфейса.",
+            Self::Network => "Wi‑Fi, проводная сеть, VPN и сохранённые профили.",
+            Self::Bluetooth => "Беспроводные наушники, клавиатуры, мыши и другие устройства.",
             Self::Keyboard => "Источники ввода и переключение языка.",
             Self::Pointer => "Курсор, скорость, прокрутка и нажатие.",
             Self::Displays => "Размер интерфейса, разрешение и частота экрана.",
             Self::Desktop => "Настройте рабочее пространство под себя.",
-            Self::Defaults => "Выберите приложения для повседневных задач.",
+            Self::Defaults => "Приложения по умолчанию и автозапуск при входе.",
             Self::DateTime => "Синхронизация часов и часовой пояс.",
             Self::Power => "Пароль, выключение экрана и переход в сон.",
             Self::Sound => "Системные сигналы, устройства вывода и микрофоны.",
@@ -79,6 +87,14 @@ pub enum Action {
     InterfaceSounds,
     VolumeFeedback,
     Audio(crate::controls::Control),
+    Network(crate::controls::Control),
+    Bluetooth(crate::controls::Control),
+    WifiPassword(crate::controls::network::Network),
+    WifiPasswordFocus,
+    WifiPasswordSubmit,
+    WifiPasswordCancel,
+    OpenConnectionEditor,
+    OpenBluetoothManager,
     /// Next action of this corner (0 top-left … 3 bottom-right)
     HotCorner(usize),
     NightNow,
@@ -88,6 +104,9 @@ pub enum Action {
     /// Next delivery mode of the program at this index
     NotifyDelivery(usize),
     Appearance(Appearance),
+    AccentColor(crate::theme::AccentColor),
+    HighlightColor(Option<crate::theme::AccentColor>),
+    TextSize(crate::theme::TextSize),
     Animations,
     DockZoom,
     DockSize(u32),
@@ -99,6 +118,12 @@ pub enum Action {
     ChooseWallpaper,
     AppPicker(bool),
     DefaultApp { browser: bool, id: String },
+    AutostartPicker(bool),
+    AutostartSearchFocus,
+    AutostartSearchSubmit,
+    AddAutostart(String),
+    ToggleAutostart { id: String, enabled: bool },
+    RemoveAutostart(String),
     RefreshSystem,
     Ntp,
     ZonePicker,
@@ -154,6 +179,8 @@ impl Mode {
 pub struct Panel {
     pub app_count: usize,
     pub apps_picker: Option<bool>,
+    pub autostart_picker: bool,
+    pub autostart_query: feather_ui::input::TextInput,
     /// Pointer over the window (content coordinates), for hover highlights
     pub pointer: Option<(f32, f32)>,
     pub cursor_picker: bool,
@@ -161,6 +188,8 @@ pub struct Panel {
     pub zone_query: feather_ui::input::TextInput,
     pub time_editing: bool,
     pub time_input: feather_ui::input::TextInput,
+    pub wifi_target: Option<crate::controls::network::Network>,
+    pub wifi_password: feather_ui::input::TextInput,
     pub wallpaper_busy: bool,
     pub page: Page,
     pub adding: bool,
@@ -200,6 +229,8 @@ pub struct Context<'a> {
     pub notify_sounds: bool,
     pub sounds: crate::sounds::Preferences,
     pub audio: crate::controls::Audio,
+    pub wifi: crate::controls::network::Wifi,
+    pub bluetooth: crate::controls::bluetooth::Bluetooth,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
     pub night_active: bool,
@@ -232,6 +263,8 @@ pub struct FrameJob {
     pub notify_sounds: bool,
     pub sounds: crate::sounds::Preferences,
     pub audio: crate::controls::Audio,
+    pub wifi: crate::controls::network::Wifi,
+    pub bluetooth: crate::controls::bluetooth::Bluetooth,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
     pub night_active: bool,
@@ -274,6 +307,8 @@ impl FrameJob {
             notify_sounds: c.notify_sounds,
             sounds: c.sounds,
             audio: c.audio.clone(),
+            wifi: c.wifi.clone(),
+            bluetooth: c.bluetooth.clone(),
             hot_corners: c.hot_corners,
             night: c.night,
             night_active: c.night_active,
@@ -308,6 +343,8 @@ impl FrameJob {
             notify_sounds: self.notify_sounds,
             sounds: self.sounds,
             audio: self.audio.clone(),
+            wifi: self.wifi.clone(),
+            bluetooth: self.bluetooth.clone(),
             hot_corners: self.hot_corners,
             night: self.night,
             night_active: self.night_active,
@@ -320,7 +357,7 @@ const TOOLBAR_CLIP: f32 = 12.0;
 /// Sidebar groups, like the sections of macOS System Settings.
 const SIDEBAR: [&[Page]; 3] = [
     &[Page::Appearance, Page::Desktop, Page::Displays],
-    &[Page::Keyboard, Page::Pointer, Page::Sound],
+    &[Page::Network, Page::Bluetooth, Page::Keyboard, Page::Pointer, Page::Sound],
     &[Page::Notifications, Page::Defaults, Page::DateTime, Page::Power],
 ];
 fn side_width(w: f32) -> f32 {
@@ -351,6 +388,7 @@ enum Style {
     Mini,
     Source { badge: &'static str, selected: bool },
     Preview(bool, bool),
+    ColorSwatch { color: Option<crate::theme::AccentColor>, selected: bool },
     Wallpaper(usize, bool),
     Gradient(bool),
     TextField(bool),
@@ -366,6 +404,7 @@ struct Control {
     label: String,
     detail: String,
     value: String,
+    right_reserve: f32,
     action: Option<Action>,
     style: Style,
     /// Not scrolled with the page: sidebar and overlays.
@@ -383,11 +422,38 @@ struct Layout {
 }
 impl Layout {
     fn push(&mut self, rect: R, label: &str, style: Style, action: Option<Action>) -> &mut Control {
+        if self.group.is_some()
+            && matches!(
+                style,
+                Style::Push(_)
+                    | Style::Popup
+                    | Style::Track
+                    | Style::Mini
+                    | Style::TextField(_)
+                    | Style::ColorSwatch { .. }
+            )
+        {
+            if let Some(row) = self
+                .out
+                .iter_mut()
+                .rev()
+                .find(|c| matches!(c.style, Style::Row))
+            {
+                if rect.y >= row.rect.y
+                    && rect.y < row.rect.y + row.rect.h
+                    && rect.x > row.rect.x + 40.0
+                {
+                    let reserve = (row.rect.x + row.rect.w - rect.x + 12.0).max(0.0);
+                    row.right_reserve = row.right_reserve.max(reserve);
+                }
+            }
+        }
         self.out.push(Control {
             rect,
             label: label.into(),
             detail: String::new(),
             value: String::new(),
+            right_reserve: 0.0,
             action,
             style,
             fixed: false,
@@ -454,6 +520,8 @@ fn theme_label(dir: &str) -> String {
 fn page_color(page: Page) -> (tiny_skia::Color, tiny_skia::Color) {
     match page {
         Page::Appearance => (rgba(80, 80, 88, 255), rgba(28, 28, 32, 255)),
+        Page::Network => (rgba(55, 165, 255, 255), rgba(15, 105, 225, 255)),
+        Page::Bluetooth => (rgba(45, 145, 255, 255), rgba(10, 85, 215, 255)),
         Page::Keyboard => (rgba(160, 165, 175, 255), rgba(112, 117, 128, 255)),
         Page::Pointer => (rgba(120, 128, 140, 255), rgba(74, 80, 92, 255)),
         Page::Displays => (rgba(70, 175, 255, 255), rgba(20, 115, 235, 255)),
@@ -487,6 +555,33 @@ fn draw_page_icon(pm: &mut PixmapMut, page: Page, x: f32, y: f32, size: f32) {
             if let Some(half) = half.finish() {
                 fill_path_gradient(pm, &half, cy - 6.0 * k, cy + 6.0 * k, white, white);
             }
+        }
+        Page::Network => {
+            let (cx, cy) = pt(10.0, 10.0);
+            stroke_circle(pm, cx, cy, 6.2 * k, 1.2 * k, white);
+            stroke_line(pm, cx - 6.0 * k, cy, cx + 6.0 * k, cy, 1.0 * k, white);
+            stroke_line(pm, cx, cy - 6.0 * k, cx, cy + 6.0 * k, 1.0 * k, white);
+            let mut b = tiny_skia::PathBuilder::new();
+            b.move_to(cx, cy - 6.0 * k);
+            b.quad_to(cx - 3.6 * k, cy, cx, cy + 6.0 * k);
+            b.move_to(cx, cy - 6.0 * k);
+            b.quad_to(cx + 3.6 * k, cy, cx, cy + 6.0 * k);
+            if let Some(path) = b.finish() {
+                let s = crate::theme::ui_scale();
+                let mut paint = tiny_skia::Paint::default();
+                paint.set_color(white);
+                paint.anti_alias = true;
+                let stroke = tiny_skia::Stroke { width: 1.0 * k, ..Default::default() };
+                pm.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::from_scale(s, s), None);
+            }
+        }
+        Page::Bluetooth => {
+            let (cx, cy) = pt(10.0, 10.0);
+            stroke_line(pm, cx, cy - 5.8 * k, cx, cy + 5.8 * k, 1.3 * k, white);
+            stroke_line(pm, cx, cy - 5.8 * k, cx + 3.8 * k, cy - 2.6 * k, 1.25 * k, white);
+            stroke_line(pm, cx + 3.8 * k, cy - 2.6 * k, cx - 3.6 * k, cy + 2.8 * k, 1.25 * k, white);
+            stroke_line(pm, cx, cy + 5.8 * k, cx + 3.8 * k, cy + 2.6 * k, 1.25 * k, white);
+            stroke_line(pm, cx + 3.8 * k, cy + 2.6 * k, cx - 3.6 * k, cy - 2.8 * k, 1.25 * k, white);
         }
         Page::Keyboard => {
             let (x0, y0) = pt(3.0, 6.0);
@@ -626,12 +721,52 @@ fn zone_matches(zone: &str, query: &str) -> bool {
     };
     alias.contains(query)
 }
+fn app_matches(app: &crate::system_preferences::DesktopApp, query: &str) -> bool {
+    query.is_empty()
+        || app.name.to_lowercase().contains(query)
+        || app.id.to_lowercase().contains(query)
+        || app.exec.to_lowercase().contains(query)
+}
 impl Panel {
     pub fn editing(&self) -> bool {
-        self.page == Page::DateTime && (self.time_editing || self.zone_picker)
+        (self.page == Page::DateTime && (self.time_editing || self.zone_picker))
+            || (self.page == Page::Network && self.wifi_target.is_some())
+            || (self.page == Page::Defaults && self.autostart_picker)
     }
     pub fn edit_key(&mut self, sym: u32, ch: Option<char>, ctrl: bool, shift: bool) -> Option<Action> {
         use smithay::input::keyboard::keysyms;
+        if self.page == Page::Network && self.wifi_target.is_some() {
+            if sym == keysyms::KEY_Escape {
+                self.wifi_target = None;
+                self.wifi_password.clear();
+                return None;
+            }
+            if matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter) {
+                return (!self.wifi_password.is_empty()).then_some(Action::WifiPasswordSubmit);
+            }
+            let utf8 = ch.filter(|c| !c.is_control()).map(|c| c.to_string());
+            self.wifi_password = std::mem::take(&mut self.wifi_password).with_byte_limit(64);
+            self.wifi_password.key(sym, utf8.as_deref(), ctrl, shift);
+            return None;
+        }
+        if self.page == Page::Defaults && self.autostart_picker {
+            if sym == keysyms::KEY_Escape {
+                self.autostart_picker = false;
+                self.autostart_query.clear();
+                return None;
+            }
+            if matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter) {
+                return Some(Action::AutostartSearchSubmit);
+            }
+            let utf8 = ch.filter(|c| !c.is_control()).map(|c| c.to_string());
+            self.autostart_query = std::mem::take(&mut self.autostart_query).with_limit(64);
+            if self.autostart_query.key(sym, utf8.as_deref(), ctrl, shift)
+                == feather_ui::input::Edit::Changed
+            {
+                self.scroll = 0.0;
+            }
+            return None;
+        }
         if sym == keysyms::KEY_Escape {
             self.time_editing = false;
             self.zone_picker = false;
@@ -688,6 +823,387 @@ impl Panel {
         let right = |r: R, w: f32, h: f32| R::new(r.x + r.w - 14.0 - w, r.y + (r.h - h) / 2.0, w, h);
         let kb = !self.keyboard_busy;
         match self.page {
+            Page::Network => {
+                use crate::controls::{network::Security, Control as Net};
+                l.hero(Page::Network);
+                if let Some(error) = &c.wifi.error {
+                    l.footer(error);
+                }
+                l.header("Wi‑Fi");
+                if !c.wifi.available {
+                    l.footer("Адаптер Wi‑Fi или служба NetworkManager недоступны.");
+                } else {
+                    let status = if !c.wifi.hardware {
+                        "Аппаратно заблокирован".into()
+                    } else if !c.wifi.enabled {
+                        "Выключен".into()
+                    } else if c.wifi.connecting {
+                        "Подключение…".into()
+                    } else if let Some(active) = &c.wifi.connected {
+                        format!("Подключено к «{active}»")
+                    } else {
+                        "Включён · не подключено".into()
+                    };
+                    l.begin();
+                    l.row(
+                        52.0,
+                        "Wi‑Fi",
+                        status,
+                        Style::Toggle(c.wifi.enabled),
+                        c.wifi.hardware.then_some(Action::Network(Net::Wifi(!c.wifi.enabled))),
+                    );
+                    if c.wifi.enabled && c.wifi.hardware {
+                        l.row(
+                            48.0,
+                            "Поиск сетей",
+                            "Обновить список доступных точек доступа".into(),
+                            Style::Row,
+                            Some(Action::Network(Net::Scan)),
+                        );
+                        for n in &c.wifi.networks {
+                            let state = if n.active {
+                                "Подключено"
+                            } else if n.saved.is_some() {
+                                "Сохранена"
+                            } else {
+                                "Доступна"
+                            };
+                            let detail = format!("{state} · {} · {} %", n.security.label(), n.strength);
+                            let action = if n.active {
+                                Some(Action::Network(Net::Disconnect(n.device.clone())))
+                            } else if n.saved.is_some() || matches!(n.security, Security::Open | Security::Owe) {
+                                Some(Action::Network(Net::Connect {
+                                    network: n.clone(),
+                                    password: None,
+                                }))
+                            } else if n.security.password() {
+                                Some(Action::WifiPassword(n.clone()))
+                            } else {
+                                Some(Action::OpenConnectionEditor)
+                            };
+                            l.row(52.0, &n.label, detail, Style::Row, action);
+                            l.out.last_mut().unwrap().value = if n.active {
+                                "Отключить".into()
+                            } else {
+                                "Подключить".into()
+                            };
+                        }
+                    }
+                    l.end();
+                    if c.wifi.enabled && c.wifi.hardware && c.wifi.networks.is_empty() {
+                        l.footer("Доступные сети Wi‑Fi не найдены.");
+                    }
+                }
+                l.header("Сохранённые сети Wi‑Fi");
+                if c.wifi.saved_wifi.is_empty() {
+                    l.footer("Сохранённых профилей Wi‑Fi пока нет.");
+                } else {
+                    l.begin();
+                    for s in &c.wifi.saved_wifi {
+                        let state = if s.active {
+                            "Подключено"
+                        } else if s.in_range {
+                            "В зоне действия"
+                        } else {
+                            "Вне зоны действия"
+                        };
+                        let auto = if s.autoconnect { "Автоподключение" } else { "Вручную" };
+                        let detail = format!("{state} · {} · {auto}", s.security.label());
+                        let r = l.row(54.0, &s.label, detail, Style::Row, None);
+                        let forget = right(r, 76.0, 26.0);
+                        let auto_btn = R::new(forget.x - 6.0 - 86.0, forget.y, 86.0, 26.0);
+                        l.push(
+                            auto_btn,
+                            if s.autoconnect { "Авто" } else { "Вручную" },
+                            Style::Push(s.autoconnect),
+                            Some(Action::Network(Net::SetAutoconnect {
+                                profile: s.profile.clone(),
+                                autoconnect: !s.autoconnect,
+                            })),
+                        );
+                        l.push(
+                            forget,
+                            "Забыть",
+                            Style::Push(false),
+                            Some(Action::Network(Net::ForgetConnection(s.profile.clone()))),
+                        );
+                    }
+                    l.end();
+                    l.footer("«Авто» разрешает подключаться к сети автоматически. «Забыть» удаляет профиль и пароль из NetworkManager.");
+                }
+                l.header("Ethernet");
+                if c.wifi.ethernets.is_empty() {
+                    l.footer("Проводные сетевые адаптеры не найдены.");
+                } else {
+                    l.begin();
+                    for e in &c.wifi.ethernets {
+                        let status = if e.active {
+                            "Подключено"
+                        } else if e.connecting {
+                            "Подключение…"
+                        } else if e.carrier {
+                            "Кабель подключён"
+                        } else {
+                            "Кабель не подключён"
+                        };
+                        let detail = if e.speed > 0 {
+                            format!("{} · {status} · {} Мбит/с", e.interface, e.speed)
+                        } else {
+                            format!("{} · {status}", e.interface)
+                        };
+                        let action = if e.active || e.connecting {
+                            Some(Action::Network(Net::Disconnect(e.device.clone())))
+                        } else if e.carrier {
+                            Some(Action::Network(Net::ConnectEthernet {
+                                device: e.device.clone(),
+                                profile: e.profile.clone(),
+                            }))
+                        } else {
+                            None
+                        };
+                        l.row(52.0, &e.label, detail, Style::Row, action);
+                        l.out.last_mut().unwrap().value = if e.active || e.connecting {
+                            "Отключить".into()
+                        } else if e.carrier {
+                            "Подключить".into()
+                        } else {
+                            "Нет сигнала".into()
+                        };
+                    }
+                    l.end();
+                }
+                l.header("VPN");
+                if c.wifi.vpns.is_empty() {
+                    l.footer("Профили VPN и WireGuard не настроены.");
+                } else {
+                    l.begin();
+                    for v in &c.wifi.vpns {
+                        let status = if v.active {
+                            "Подключено"
+                        } else if v.connecting {
+                            "Подключение…"
+                        } else {
+                            "Отключено"
+                        };
+                        let detail = format!("{} · {status}", v.kind);
+                        let on = v.active || v.connecting;
+                        let action = if on {
+                            v.active_path
+                                .as_ref()
+                                .map(|p| Action::Network(Net::DisconnectVpn(p.clone())))
+                        } else {
+                            Some(Action::Network(Net::ConnectVpn(v.profile.clone())))
+                        };
+                        l.row(52.0, &v.label, detail, Style::Toggle(on), action);
+                    }
+                    l.end();
+                }
+                l.begin();
+                l.row(
+                    48.0,
+                    "Обновить состояние сети",
+                    String::new(),
+                    Style::Row,
+                    Some(Action::Network(Net::RefreshNetwork)),
+                );
+                l.row(
+                    52.0,
+                    "Расширенные настройки сети…",
+                    "Сертификаты 802.1X, маршруты и импорт профилей VPN".into(),
+                    Style::Row,
+                    Some(Action::OpenConnectionEditor),
+                );
+                l.end();
+                if let Some(net) = &self.wifi_target {
+                    let sw = (w - 120.0).min(420.0);
+                    let sheet = R::new((w - sw) / 2.0, 48.0, sw, 146.0);
+                    l.fixed(
+                        R::new(0.0, -100.0, w, h + 200.0),
+                        "",
+                        Style::Scrim(true),
+                        Some(Action::WifiPasswordCancel),
+                    );
+                    l.fixed(sheet, &format!("Пароль для «{}»", net.label), Style::Sheet, None).detail =
+                        net.security.label().into();
+                    l.fixed(
+                        R::new(sheet.x + 20.0, sheet.y + 52.0, sw - 40.0, 28.0),
+                        "Введите пароль сети Wi‑Fi",
+                        Style::TextField(true),
+                        Some(Action::WifiPasswordFocus),
+                    );
+                    l.fixed(
+                        R::new(sheet.x + sw - 220.0, sheet.y + sheet.h - 42.0, 96.0, 28.0),
+                        "Отмена",
+                        Style::Push(false),
+                        Some(Action::WifiPasswordCancel),
+                    );
+                    l.fixed(
+                        R::new(sheet.x + sw - 116.0, sheet.y + sheet.h - 42.0, 96.0, 28.0),
+                        "Подключить",
+                        Style::Push(true),
+                        (!self.wifi_password.is_empty()).then_some(Action::WifiPasswordSubmit),
+                    );
+                }
+            }
+            Page::Bluetooth => {
+                use crate::controls::Control as Bt;
+                l.hero(Page::Bluetooth);
+                if let Some(error) = &c.bluetooth.error {
+                    l.footer(error);
+                }
+                if !c.bluetooth.available {
+                    l.footer("Адаптер Bluetooth или служба BlueZ недоступны.");
+                } else {
+                    let connected_names: Vec<&str> = c
+                        .bluetooth
+                        .devices
+                        .iter()
+                        .filter(|d| d.connected)
+                        .map(|d| d.name.as_str())
+                        .collect();
+                    let status = if !c.bluetooth.powered {
+                        "Выключен".into()
+                    } else if c.bluetooth.connecting.is_some() {
+                        "Подключение…".into()
+                    } else if connected_names.len() == 1 {
+                        format!("Подключено: «{}»", connected_names[0])
+                    } else if !connected_names.is_empty() {
+                        format!("Подключено устройств: {}", connected_names.len())
+                    } else if c.bluetooth.discovering {
+                        "Включён · идёт поиск устройств…".into()
+                    } else {
+                        "Включён · доступен для подключения".into()
+                    };
+                    l.begin();
+                    l.row(
+                        52.0,
+                        "Bluetooth",
+                        status,
+                        Style::Toggle(c.bluetooth.powered),
+                        Some(Action::Bluetooth(Bt::Bluetooth(!c.bluetooth.powered))),
+                    );
+                    if c.bluetooth.powered {
+                        l.row(
+                            48.0,
+                            if c.bluetooth.discovering {
+                                "Остановить поиск устройств"
+                            } else {
+                                "Поиск устройств"
+                            },
+                            if c.bluetooth.discovering {
+                                "Сканирование эфира активно".into()
+                            } else {
+                                "Найти наушники, мыши, клавиатуры и другие аксессуары".into()
+                            },
+                            Style::Row,
+                            Some(Action::Bluetooth(Bt::ScanBluetooth)),
+                        );
+                    }
+                    l.end();
+
+                    if c.bluetooth.powered {
+                        let my_devices: Vec<_> = c
+                            .bluetooth
+                            .devices
+                            .iter()
+                            .filter(|d| d.paired || d.connected)
+                            .collect();
+                        l.header("Мои устройства");
+                        if my_devices.is_empty() {
+                            l.footer("Сопряжённых устройств Bluetooth пока нет.");
+                        } else {
+                            l.begin();
+                            for d in my_devices {
+                                let state = if d.connected {
+                                    "Подключено"
+                                } else if c.bluetooth.connecting.as_deref() == Some(d.path.as_str()) {
+                                    "Подключение…"
+                                } else {
+                                    "Сопряжено"
+                                };
+                                let mut detail = format!("{} · {state}", d.kind_label());
+                                if let Some(b) = d.battery {
+                                    detail.push_str(&format!(" · Заряд {b} %"));
+                                }
+                                let r = l.row(56.0, &d.name, detail, Style::Row, None);
+                                let forget = right(r, 76.0, 26.0);
+                                let toggle = R::new(forget.x - 6.0 - 106.0, forget.y, 106.0, 26.0);
+                                l.push(
+                                    toggle,
+                                    if d.connected { "Отключить" } else { "Подключить" },
+                                    Style::Push(!d.connected),
+                                    Some(Action::Bluetooth(if d.connected {
+                                        Bt::DisconnectBluetooth(d.path.clone())
+                                    } else {
+                                        Bt::ConnectBluetooth(d.path.clone())
+                                    })),
+                                );
+                                l.push(
+                                    forget,
+                                    "Забыть",
+                                    Style::Push(false),
+                                    Some(Action::Bluetooth(Bt::ForgetBluetooth(d.path.clone()))),
+                                );
+                            }
+                            l.end();
+                        }
+
+                        let other_devices: Vec<_> = c
+                            .bluetooth
+                            .devices
+                            .iter()
+                            .filter(|d| !d.paired && !d.connected)
+                            .collect();
+                        l.header("Другие устройства");
+                        if other_devices.is_empty() {
+                            l.footer(if c.bluetooth.discovering {
+                                "Переведите аксессуар в режим сопряжения — он появится здесь."
+                            } else {
+                                "Нажмите «Поиск устройств», чтобы обнаружить новые аксессуары рядом."
+                            });
+                        } else {
+                            l.begin();
+                            for d in other_devices {
+                                let busy = c.bluetooth.connecting.as_deref() == Some(d.path.as_str());
+                                let detail = if busy {
+                                    format!("{} · Сопряжение и подключение…", d.kind_label())
+                                } else {
+                                    format!("{} · Доступно для подключения", d.kind_label())
+                                };
+                                l.row(
+                                    52.0,
+                                    &d.name,
+                                    detail,
+                                    Style::Row,
+                                    Some(Action::Bluetooth(Bt::ConnectBluetooth(d.path.clone()))),
+                                );
+                                l.out.last_mut().unwrap().value = if busy {
+                                    "Подключение…".into()
+                                } else {
+                                    "Подключить".into()
+                                };
+                            }
+                            l.end();
+                        }
+                    }
+                }
+                l.begin();
+                l.row(
+                    48.0,
+                    "Обновить состояние Bluetooth",
+                    String::new(),
+                    Style::Row,
+                    Some(Action::Bluetooth(Bt::RefreshBluetooth)),
+                );
+                l.row(
+                    52.0,
+                    "Расширенный диспетчер Bluetooth…",
+                    "Профили кодеков A2DP, передача файлов OBEX и диагностика".into(),
+                    Style::Row,
+                    Some(Action::OpenBluetoothManager),
+                );
+                l.end();
+            }
             Page::Sound => {
                 use crate::controls::Control as Audio;
                 l.hero(Page::Sound);
@@ -796,6 +1312,61 @@ impl Panel {
                         Some(Action::Appearance(a)),
                     );
                 }
+                let current_accent = crate::theme::accent_color();
+                let r = l.row(54.0, "Цвет акцента", current_accent.label().into(), Style::Row, None);
+                let bar = right(r, 8.0 * 27.0 - 3.0, 24.0);
+                for (i, color) in crate::theme::AccentColor::ALL.into_iter().enumerate() {
+                    l.push(
+                        R::new(bar.x + i as f32 * 27.0, bar.y, 24.0, 24.0),
+                        color.label(),
+                        Style::ColorSwatch {
+                            color: Some(color),
+                            selected: current_accent == color,
+                        },
+                        Some(Action::AccentColor(color)),
+                    );
+                }
+                let current_hl = crate::theme::highlight_choice();
+                let r = l.row(
+                    54.0,
+                    "Цвет выделения",
+                    current_hl.map_or("Как цвет акцента", |c| c.label()).into(),
+                    Style::Row,
+                    None,
+                );
+                let bar = right(r, 9.0 * 26.0 - 2.0, 24.0);
+                for (i, choice) in std::iter::once(None)
+                    .chain(crate::theme::AccentColor::ALL.into_iter().map(Some))
+                    .enumerate()
+                {
+                    l.push(
+                        R::new(bar.x + i as f32 * 26.0, bar.y, 24.0, 24.0),
+                        choice.map_or("Как цвет акцента", |c| c.label()),
+                        Style::ColorSwatch {
+                            color: choice,
+                            selected: current_hl == choice,
+                        },
+                        Some(Action::HighlightColor(choice)),
+                    );
+                }
+                let current_ts = crate::theme::text_size();
+                let r = l.row(
+                    54.0,
+                    "Размер текста интерфейса",
+                    format!("{} ({} %)", current_ts.label(), current_ts.percent()),
+                    Style::Row,
+                    None,
+                );
+                let track = right(r, 4.0 * 72.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, ts) in crate::theme::TextSize::ALL.into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * 72.0, track.y, 72.0, 28.0),
+                        ts.short_label(),
+                        Style::Segment(current_ts == ts),
+                        Some(Action::TextSize(ts)),
+                    );
+                }
                 l.row(
                     52.0,
                     "Анимации интерфейса",
@@ -811,7 +1382,7 @@ impl Panel {
                     Some(Action::GtkTheme),
                 );
                 l.end();
-                l.footer("Если анимации выключены, окна и панели появляются мгновенно.");
+                l.footer("Цвета и размер текста сразу применяются к системным панелям, Файлам и Заметкам.");
             }
             Page::Keyboard => {
                 l.hero(Page::Keyboard);
@@ -1064,6 +1635,7 @@ impl Panel {
             Page::Defaults => {
                 let state = &c.system;
                 l.hero(Page::Defaults);
+                l.header("Приложения по умолчанию");
                 l.begin();
                 let mut anchors = [R::new(0.0, 0.0, 0.0, 0.0); 2];
                 for (i, (label, value)) in [
@@ -1085,6 +1657,70 @@ impl Panel {
                 }
                 l.end();
                 l.footer("Браузер открывает ссылки и HTML-файлы. Терминал запускается по Super+T и Super+Enter.");
+
+                l.header("Автозапуск при входе");
+                l.begin();
+                if state.autostart.is_empty() {
+                    l.row(
+                        52.0,
+                        "Нет программ в автозапуске",
+                        "Добавьте приложения, которые должны открываться при входе в систему".into(),
+                        Style::Row,
+                        None,
+                    );
+                } else {
+                    for item in state.autostart.iter() {
+                        let status = if item.enabled {
+                            "Запускается при входе"
+                        } else {
+                            "Отключено"
+                        };
+                        let r = l.row(
+                            52.0,
+                            &item.name,
+                            format!("{status} · {}", item.exec),
+                            Style::Row,
+                            None,
+                        );
+                        let toggle_rect = R::new(
+                            r.x + r.w - 14.0 - 80.0 - 6.0 - 68.0,
+                            r.y + (r.h - 26.0) / 2.0,
+                            68.0,
+                            26.0,
+                        );
+                        l.push(
+                            toggle_rect,
+                            if item.enabled { "Вкл." } else { "Выкл." },
+                            Style::Push(item.enabled),
+                            (!state.busy).then_some(Action::ToggleAutostart {
+                                id: item.id.clone(),
+                                enabled: !item.enabled,
+                            }),
+                        );
+                        l.push(
+                            right(r, 80.0, 26.0),
+                            "Удалить",
+                            Style::Push(false),
+                            (!state.busy).then_some(Action::RemoveAutostart(item.id.clone())),
+                        );
+                    }
+                }
+                let add_row = l.row(
+                    48.0,
+                    "Добавить в автозапуск",
+                    "Установленные программы и записи ~/.config/autostart".into(),
+                    Style::Row,
+                    None,
+                );
+                l.push(
+                    right(add_row, 118.0, 26.0),
+                    "Добавить…",
+                    Style::Push(false),
+                    (!state.busy).then_some(Action::AutostartPicker(true)),
+                );
+                l.end();
+                l.footer("Записи сохраняются в стандарте XDG Autostart (~/.config/autostart/*.desktop) и запускаются при входе в сессию Пёрышка.");
+
                 if let Some(browser) = self.apps_picker {
                     let anchor = anchors[usize::from(!browser)];
                     let apps: Vec<_> = state
@@ -1119,6 +1755,57 @@ impl Panel {
                             }),
                         );
                     }
+                }
+                if self.autostart_picker {
+                    let sw = (w - 120.0).min(440.0);
+                    let sheet = R::new((w - sw) / 2.0, 0.0, sw, 120.0 + 8.0 * 30.0);
+                    l.fixed(
+                        R::new(0.0, -100.0, w, h + 200.0),
+                        "",
+                        Style::Scrim(true),
+                        Some(Action::AutostartPicker(false)),
+                    );
+                    l.fixed(sheet, "Добавить в автозапуск", Style::Sheet, None).detail =
+                        "Выберите установленное приложение".into();
+                    l.fixed(
+                        R::new(sheet.x + 20.0, sheet.y + 52.0, sw - 40.0, 28.0),
+                        self.autostart_query.text(),
+                        Style::TextField(true),
+                        Some(Action::AutostartSearchFocus),
+                    );
+                    let query = self.autostart_query.to_lowercase();
+                    let matches: Vec<_> = state
+                        .apps
+                        .iter()
+                        .filter(|a| app_matches(a, &query))
+                        .take(8)
+                        .collect();
+                    if matches.is_empty() {
+                        l.fixed(
+                            R::new(sheet.x + 16.0, sheet.y + 88.0, sw - 32.0, 28.0),
+                            "Приложения не найдены",
+                            Style::MenuItem(false),
+                            None,
+                        );
+                    }
+                    for (i, app) in matches.into_iter().enumerate() {
+                        let already = state
+                            .autostart
+                            .iter()
+                            .any(|item| item.id == app.id && item.enabled);
+                        l.fixed(
+                            R::new(sheet.x + 16.0, sheet.y + 88.0 + i as f32 * 30.0, sw - 32.0, 28.0),
+                            &app.name,
+                            Style::MenuItem(already),
+                            (!state.busy).then_some(Action::AddAutostart(app.id.clone())),
+                        );
+                    }
+                    l.fixed(
+                        R::new(sheet.x + sw - 116.0, sheet.y + sheet.h - 42.0, 96.0, 28.0),
+                        "Отмена",
+                        Style::Push(false),
+                        Some(Action::AutostartPicker(false)),
+                    );
                 }
             }
             Page::DateTime => {
@@ -1623,9 +2310,10 @@ impl Panel {
             }
             Style::Row => {
                 let reserve = if control.value.is_empty() {
-                    0.0
+                    control.right_reserve
                 } else {
-                    fonts.measure_text(&control.value, 13.0, false).min(r.w * 0.55) + 12.0
+                    (fonts.measure_text(&control.value, 13.0, false).min(r.w * 0.55) + 12.0)
+                        .max(control.right_reserve)
                 };
                 row_text(pm, fonts, reserve);
                 if !control.value.is_empty() {
@@ -1762,8 +2450,43 @@ impl Panel {
                 for (i, color) in [rgba(255, 95, 86, 255), rgba(255, 189, 46, 255), rgba(39, 201, 63, 255)].into_iter().enumerate() {
                     fill_circle(pm, t.x + 19.0 + i as f32 * 5.0, t.y + 16.0, 1.5, color);
                 }
+                fill_rounded_rect(pm, t.x + 20.0, t.y + 24.0, 20.0, 4.5, 2.25, p.accent);
                 fill_rounded_rect(pm, t.x + t.w / 2.0 - 16.0, t.y + t.h - 7.0, 32.0, 4.0, 2.0, rgba(255, 255, 255, 150));
                 fonts.draw_text_clipped_centered(pm, &control.label, r.x + r.w / 2.0, r.y + r.h - 16.0, r.w, 11.0, if selected { p.text } else { p.text_secondary }, selected);
+            }
+            Style::ColorSwatch { color, selected } => {
+                let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                if hover && !selected {
+                    stroke_circle(
+                        pm,
+                        cx,
+                        cy,
+                        11.0,
+                        1.5,
+                        if dark { rgba(255, 255, 255, 80) } else { rgba(0, 0, 0, 50) },
+                    );
+                }
+                if let Some(c) = color {
+                    let (cr, cg, cb) = c.rgb(appearance());
+                    fill_circle(pm, cx, cy, 9.0, rgba(cr, cg, cb, 255));
+                    stroke_circle(
+                        pm,
+                        cx,
+                        cy,
+                        9.0,
+                        0.75,
+                        if dark { rgba(255, 255, 255, 45) } else { rgba(0, 0, 0, 35) },
+                    );
+                } else {
+                    let (cr, cg, cb) = crate::theme::accent_color().rgb(appearance());
+                    let fill = rgba(cr, cg, cb, 255);
+                    stroke_circle(pm, cx, cy, 8.2, 2.0, fill);
+                    fill_circle(pm, cx, cy, 5.2, fill);
+                }
+                if selected {
+                    fill_circle(pm, cx, cy, 3.6, rgba(255, 255, 255, 255));
+                    stroke_circle(pm, cx, cy, 3.6, 0.5, rgba(0, 0, 0, 45));
+                }
             }
             Style::Wallpaper(index, selected) => {
                 let t = R::new(r.x, r.y, r.w, r.h - 22.0);
@@ -1801,9 +2524,20 @@ impl Panel {
                 }
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 7.0, if dark { rgba(255, 255, 255, 18) } else { rgba(255, 255, 255, 255) });
                 stroke_rounded_rect(pm, r.x, r.y, r.w, r.h, 7.0, 0.5, if dark { rgba(255, 255, 255, 40) } else { rgba(0, 0, 0, 45) });
-                let input = if matches!(control.action, Some(Action::ZoneSearchFocus)) { &self.zone_query } else { &self.time_input };
+                let masked = matches!(control.action, Some(Action::WifiPasswordFocus));
+                let input = if matches!(control.action, Some(Action::ZoneSearchFocus)) {
+                    &self.zone_query
+                } else if matches!(control.action, Some(Action::AutostartSearchFocus)) {
+                    &self.autostart_query
+                } else if masked {
+                    &self.wifi_password
+                } else {
+                    &self.time_input
+                };
                 if input.is_empty() && !active {
                     fonts.draw_text_clipped(pm, &control.label, r.x + 9.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 18.0, 13.0, p.text_tertiary, false);
+                } else if masked {
+                    input.draw_masked(pm, fonts, r.x + 9.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 18.0, 13.0, fg, p.accent);
                 } else {
                     input.draw(pm, fonts, r.x + 9.0, r.y + (r.h - 13.0) / 2.0 - 1.0, r.w - 18.0, 13.0, false, fg, active, p.accent);
                 }
@@ -1862,13 +2596,25 @@ impl crate::FeatherCompositor {
                 }
             }
         }
-        if !matches!(action, Action::EditTime | Action::ZoneSearchFocus) { return; }
+        if !matches!(action, Action::EditTime | Action::ZoneSearchFocus | Action::WifiPasswordFocus) { return; }
         let Some(rect) = self.system_settings.text_rect(x, y, w, h, &self.settings_context()) else { return; };
-        let input = if matches!(action, Action::ZoneSearchFocus) { &mut self.system_settings.zone_query } else { &mut self.system_settings.time_input };
+        let masked = matches!(action, Action::WifiPasswordFocus);
+        let input = if matches!(action, Action::ZoneSearchFocus) {
+            &mut self.system_settings.zone_query
+        } else if masked {
+            &mut self.system_settings.wifi_password
+        } else {
+            &mut self.system_settings.time_input
+        };
         if matches!(action, Action::EditTime) && input.is_empty() {
             input.set(&self.system_preferences.time.local_input);
         }
-        input.click(&mut self.fonts, x - rect.x - 9.0, rect.w - 18.0, 13.0, false, self.keyboard.modifier_state().shift);
+        let extend = self.keyboard.modifier_state().shift;
+        if masked {
+            input.click_masked(&mut self.fonts, x - rect.x - 9.0, rect.w - 18.0, 13.0, extend);
+        } else {
+            input.click(&mut self.fonts, x - rect.x - 9.0, rect.w - 18.0, 13.0, false, extend);
+        }
     }
     pub fn settings_context(&self) -> Context<'_> {
         Context {
@@ -1897,6 +2643,8 @@ impl crate::FeatherCompositor {
             notify_sounds: self.shell.notify_sounds,
             sounds: self.sound_preferences,
             audio: self.shell.cc.audio.clone(),
+            wifi: self.shell.cc.wifi.clone(),
+            bluetooth: self.shell.cc.bluetooth.clone(),
             hot_corners: self.hot_corners.actions,
             night: self.night.prefs,
             night_active: self.night.active(),
@@ -2004,6 +2752,75 @@ impl crate::FeatherCompositor {
                 if let Err(error) = self.controls.as_ref().ok_or("Служба звука недоступна").and_then(|c| c.send(command)) {
                     self.system_settings.error = Some(error.into());
                 }
+            }
+            Action::Network(command) => {
+                self.shell.cc.wifi.error = None;
+                match &command {
+                    crate::controls::Control::Connect { .. } => self.shell.cc.wifi.connecting = true,
+                    crate::controls::Control::Disconnect(_) => self.shell.cc.wifi.connecting = false,
+                    _ => {}
+                }
+                if let Err(error) = self.controls.as_ref().ok_or("Служба сети недоступна").and_then(|c| c.send(command)) {
+                    self.system_settings.error = Some(error.into());
+                }
+            }
+            Action::Bluetooth(command) => {
+                self.shell.cc.bluetooth.error = None;
+                match &command {
+                    crate::controls::Control::ConnectBluetooth(path) => {
+                        self.shell.cc.bluetooth.connecting = Some(path.clone());
+                    }
+                    crate::controls::Control::DisconnectBluetooth(_)
+                    | crate::controls::Control::ForgetBluetooth(_)
+                    | crate::controls::Control::Bluetooth(false) => {
+                        self.shell.cc.bluetooth.connecting = None;
+                    }
+                    _ => {}
+                }
+                if let Err(error) = self.controls.as_ref().ok_or("Служба Bluetooth недоступна").and_then(|c| c.send(command)) {
+                    self.system_settings.error = Some(error.into());
+                }
+            }
+            Action::WifiPassword(net) => {
+                self.cancel_key_repeat();
+                self.system_settings.wifi_password = feather_ui::input::TextInput::default().with_byte_limit(64);
+                self.system_settings.wifi_target = Some(net);
+            }
+            Action::WifiPasswordFocus => {}
+            Action::WifiPasswordCancel => {
+                self.cancel_key_repeat();
+                self.system_settings.wifi_target = None;
+                self.system_settings.wifi_password.clear();
+            }
+            Action::WifiPasswordSubmit => {
+                self.cancel_key_repeat();
+                if let Some(network) = self.system_settings.wifi_target.take() {
+                    let password: crate::controls::Secret = self.system_settings.wifi_password.take_text().into();
+                    if !password.as_str().is_empty() {
+                        self.shell.cc.wifi.error = None;
+                        self.shell.cc.wifi.connecting = true;
+                        if let Err(error) = self.controls.as_ref().ok_or("Служба сети недоступна").and_then(|c| {
+                            c.send(crate::controls::Control::Connect {
+                                network,
+                                password: Some(password),
+                            })
+                        }) {
+                            self.system_settings.error = Some(error.into());
+                        }
+                    }
+                }
+            }
+            Action::OpenConnectionEditor => {
+                self.execute_shell_action(crate::shell::ShellClickAction::LaunchApp(
+                    crate::apps::AppAction::Exec("nm-connection-editor".into()),
+                    "Настройки сети".into(),
+                ));
+            }
+            Action::OpenBluetoothManager => {
+                self.execute_shell_action(crate::shell::ShellClickAction::LaunchApp(
+                    crate::apps::AppAction::Exec("blueman-manager".into()),
+                    "Bluetooth".into(),
+                ));
             }
             Action::LockNow=>self.lock_session(),
             Action::DoNotDisturb => {
@@ -2129,9 +2946,13 @@ impl crate::FeatherCompositor {
                 self.cancel_key_repeat();
                 self.system_settings.shortcut_capture = None;
                 self.system_settings.apps_picker = None;
+                self.system_settings.autostart_picker = false;
+                self.system_settings.autostart_query.clear();
                 self.system_settings.cursor_picker = false;
                 self.system_settings.zone_picker = false;
                 self.system_settings.time_editing = false;
+                self.system_settings.wifi_target = None;
+                self.system_settings.wifi_password.clear();
                 self.system_settings.audio_drag = None;
                 self.system_settings.page = page;
                 self.system_settings.adding = false;
@@ -2140,11 +2961,18 @@ impl crate::FeatherCompositor {
                 if page == Page::Sound {
                     if let Some(controls) = &self.controls { let _ = controls.send(crate::controls::Control::RefreshAudio); }
                 }
+                if page == Page::Network {
+                    if let Some(controls) = &self.controls { let _ = controls.send(crate::controls::Control::RefreshNetwork); }
+                }
+                if page == Page::Bluetooth {
+                    if let Some(controls) = &self.controls { let _ = controls.send(crate::controls::Control::RefreshBluetooth); }
+                }
                 if matches!(page, Page::Defaults | Page::DateTime | Page::Pointer) {
                     self.request_system_preference(crate::system_preferences::Command::Refresh);
                 }
             }
             Action::AppPicker(browser) => {
+                self.system_settings.autostart_picker = false;
                 self.system_settings.apps_picker =
                     if self.system_settings.apps_picker == Some(browser) {
                         None
@@ -2166,6 +2994,43 @@ impl crate::FeatherCompositor {
                 });
                 self.system_settings.apps_picker = None;
                 self.system_settings.scroll = 0.0;
+            }
+            Action::AutostartPicker(open) => {
+                self.system_settings.apps_picker = None;
+                self.system_settings.autostart_picker = open;
+                self.system_settings.autostart_query.clear();
+                self.system_settings.scroll = 0.0;
+            }
+            Action::AutostartSearchFocus => {}
+            Action::AutostartSearchSubmit => {
+                let query = self.system_settings.autostart_query.to_lowercase();
+                if let Some(id) = self
+                    .system_preferences
+                    .apps
+                    .iter()
+                    .find(|a| app_matches(a, &query))
+                    .map(|a| a.id.clone())
+                {
+                    self.apply_system_setting(Action::AddAutostart(id));
+                }
+            }
+            Action::AddAutostart(id) => {
+                self.request_system_preference(crate::system_preferences::Command::AddAutostart(
+                    id,
+                ));
+                self.system_settings.autostart_picker = false;
+                self.system_settings.autostart_query.clear();
+                self.system_settings.scroll = 0.0;
+            }
+            Action::ToggleAutostart { id, enabled } => {
+                self.request_system_preference(
+                    crate::system_preferences::Command::ToggleAutostart { id, enabled },
+                );
+            }
+            Action::RemoveAutostart(id) => {
+                self.request_system_preference(
+                    crate::system_preferences::Command::RemoveAutostart(id),
+                );
             }
             Action::RefreshSystem => {
                 self.request_system_preference(crate::system_preferences::Command::Refresh)
@@ -2213,6 +3078,36 @@ impl crate::FeatherCompositor {
             Action::Appearance(a) => {
                 if appearance() != a {
                     self.toggle_appearance();
+                }
+            }
+            Action::AccentColor(color) => {
+                if crate::theme::accent_color() != color {
+                    crate::theme::set_accent_color(color);
+                    self.shell.invalidate_all();
+                    self.mark_builtin_windows_dirty();
+                    if self.own_session && self.gtk_theme {
+                        crate::gtk_theme::apply(
+                            crate::theme::appearance() == crate::theme::Appearance::Dark,
+                        );
+                    }
+                    self.save_settings();
+                }
+            }
+            Action::HighlightColor(choice) => {
+                if crate::theme::highlight_choice() != choice {
+                    crate::theme::set_highlight_choice(choice);
+                    self.shell.desktop.invalidate();
+                    self.mark_builtin_windows_dirty();
+                    self.save_settings();
+                }
+            }
+            Action::TextSize(size) => {
+                if crate::theme::text_size() != size {
+                    crate::theme::set_text_size(size);
+                    self.shell.invalidate_all();
+                    self.mark_builtin_windows_dirty();
+                    self.lock.repaint();
+                    self.save_settings();
                 }
             }
             Action::Animations => {
@@ -2655,6 +3550,8 @@ mod tests {
             notify_sounds: true,
             sounds: Default::default(),
             audio: Default::default(),
+            wifi: Default::default(),
+            bluetooth: Default::default(),
             hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
             night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
             night_active: true,
@@ -2671,6 +3568,221 @@ mod tests {
             ],
             ..Default::default()
         };
+        context.wifi = crate::controls::network::Wifi {
+            available: true,
+            enabled: true,
+            hardware: true,
+            connected: Some("Feather-5G".into()),
+            connecting: false,
+            networks: vec![
+                crate::controls::network::Network {
+                    ssid: b"Feather-5G".to_vec(),
+                    label: "Feather-5G".into(),
+                    ap: "/ap/home".into(),
+                    device: "/dev/wlan0".into(),
+                    saved: Some("/settings/1".into()),
+                    security: crate::controls::network::Security::Sae,
+                    strength: 92,
+                    active: true,
+                },
+                crate::controls::network::Network {
+                    ssid: "Гостевая сеть".as_bytes().to_vec(),
+                    label: "Гостевая сеть".into(),
+                    ap: "/ap/guest".into(),
+                    device: "/dev/wlan0".into(),
+                    saved: None,
+                    security: crate::controls::network::Security::Psk,
+                    strength: 71,
+                    active: false,
+                },
+            ],
+            saved_wifi: vec![
+                crate::controls::network::SavedWifi {
+                    profile: "/settings/1".into(),
+                    ssid: b"Feather-5G".to_vec(),
+                    label: "Feather-5G".into(),
+                    security: crate::controls::network::Security::Sae,
+                    autoconnect: true,
+                    active: true,
+                    in_range: true,
+                },
+                crate::controls::network::SavedWifi {
+                    profile: "/settings/2".into(),
+                    ssid: "Дача".as_bytes().to_vec(),
+                    label: "Дача".into(),
+                    security: crate::controls::network::Security::Psk,
+                    autoconnect: false,
+                    active: false,
+                    in_range: false,
+                },
+            ],
+            ethernets: vec![crate::controls::network::Ethernet {
+                device: "/dev/eth0".into(),
+                interface: "enp3s0".into(),
+                label: "Проводное подключение 1".into(),
+                profile: Some("/settings/eth0".into()),
+                carrier: true,
+                speed: 1000,
+                active: true,
+                connecting: false,
+            }],
+            vpns: vec![crate::controls::network::Vpn {
+                profile: "/settings/wg0".into(),
+                label: "Офис · WireGuard".into(),
+                kind: "WireGuard".into(),
+                active_path: None,
+                active: false,
+                connecting: false,
+            }],
+            error: None,
+        };
+        context.bluetooth = crate::controls::bluetooth::Bluetooth {
+            available: true,
+            powered: true,
+            discovering: true,
+            adapter_name: "Feather".into(),
+            connected: Some("AirPods Pro".into()),
+            connecting: None,
+            devices: vec![
+                crate::controls::bluetooth::BtDevice {
+                    path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01".into(),
+                    adapter: "/org/bluez/hci0".into(),
+                    address: "AA:BB:CC:DD:EE:01".into(),
+                    name: "AirPods Pro".into(),
+                    icon: "audio-headphones".into(),
+                    paired: true,
+                    trusted: true,
+                    connected: true,
+                    rssi: None,
+                    battery: Some(85),
+                },
+                crate::controls::bluetooth::BtDevice {
+                    path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".into(),
+                    adapter: "/org/bluez/hci0".into(),
+                    address: "AA:BB:CC:DD:EE:02".into(),
+                    name: "Keychron K2".into(),
+                    icon: "input-keyboard".into(),
+                    paired: true,
+                    trusted: true,
+                    connected: false,
+                    rssi: None,
+                    battery: Some(64),
+                },
+                crate::controls::bluetooth::BtDevice {
+                    path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03".into(),
+                    adapter: "/org/bluez/hci0".into(),
+                    address: "AA:BB:CC:DD:EE:03".into(),
+                    name: "MX Master 3S".into(),
+                    icon: "input-mouse".into(),
+                    paired: false,
+                    trusted: false,
+                    connected: false,
+                    rssi: Some(-52),
+                    battery: None,
+                },
+            ],
+            error: None,
+        };
+        {
+            use smithay::input::keyboard::keysyms;
+            use crate::controls::Control as Net;
+            let mut panel = Panel { page: Page::Network, ..Default::default() };
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::WifiPassword(n)) if n.label == "Гостевая сеть")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Network(Net::SetAutoconnect { profile, autoconnect: false })) if profile == "/settings/1")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Network(Net::ForgetConnection(p))) if p == "/settings/2")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Network(Net::ConnectVpn(p))) if p == "/settings/wg0")));
+            panel.wifi_target = Some(context.wifi.networks[1].clone());
+            assert!(panel.editing());
+            assert!(panel.edit_key(keysyms::KEY_Return, None, false, false).is_none());
+            for ch in "correct-horse-battery".chars() {
+                panel.edit_key(0, Some(ch), false, false);
+            }
+            assert_eq!(panel.wifi_password.text(), "correct-horse-battery");
+            assert!(matches!(
+                panel.edit_key(keysyms::KEY_Return, None, false, false),
+                Some(Action::WifiPasswordSubmit)
+            ));
+            panel.edit_key(keysyms::KEY_Escape, None, false, false);
+            assert!(!panel.editing());
+            assert!(panel.wifi_password.is_empty());
+        }
+        {
+            use crate::controls::Control as Bt;
+            let panel = Panel { page: Page::Bluetooth, ..Default::default() };
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::Bluetooth(false))))));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::ScanBluetooth)))));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::DisconnectBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::ConnectBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::ForgetBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::ConnectBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03")));
+        }
+        {
+            use crate::theme::{AccentColor, TextSize};
+            let panel = Panel { page: Page::Appearance, ..Default::default() };
+            let controls = panel.controls(800.0, 540.0, &context);
+            for color in AccentColor::ALL {
+                assert!(controls.iter().any(|c| matches!(c.action, Some(Action::AccentColor(ac)) if ac == color)));
+                assert!(controls.iter().any(|c| matches!(c.action, Some(Action::HighlightColor(Some(hc))) if hc == color)));
+            }
+            assert!(controls.iter().any(|c| matches!(c.action, Some(Action::HighlightColor(None)))));
+            for ts in TextSize::ALL {
+                assert!(controls.iter().any(|c| matches!(c.action, Some(Action::TextSize(s)) if s == ts)));
+            }
+        }
+        context.system.apps = std::sync::Arc::new(vec![
+            crate::system_preferences::DesktopApp {
+                id: "firefox.desktop".into(),
+                name: "Firefox".into(),
+                exec: "firefox".into(),
+                browser: true,
+                terminal: false,
+            },
+            crate::system_preferences::DesktopApp {
+                id: "feather-notes.desktop".into(),
+                name: "Заметки".into(),
+                exec: "feather-notes".into(),
+                browser: false,
+                terminal: false,
+            },
+        ]);
+        context.system.autostart = std::sync::Arc::new(vec![
+            crate::system_preferences::AutostartItem {
+                id: "feather-notes.desktop".into(),
+                name: "Заметки".into(),
+                exec: "feather-notes".into(),
+                enabled: true,
+            },
+            crate::system_preferences::AutostartItem {
+                id: "org.telegram.desktop".into(),
+                name: "Telegram".into(),
+                exec: "telegram-desktop".into(),
+                enabled: false,
+            },
+        ]);
+        {
+            use smithay::input::keyboard::keysyms;
+            let mut panel = Panel { page: Page::Defaults, ..Default::default() };
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ToggleAutostart { id, enabled: false }) if id == "feather-notes.desktop")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ToggleAutostart { id, enabled: true }) if id == "org.telegram.desktop")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::RemoveAutostart(id)) if id == "feather-notes.desktop")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::AutostartPicker(true)))));
+            panel.autostart_picker = true;
+            assert!(panel.editing());
+            for ch in "заметки".chars() {
+                panel.edit_key(0, Some(ch), false, false);
+            }
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::AddAutostart(id)) if id == "feather-notes.desktop")));
+            assert!(matches!(
+                panel.edit_key(keysyms::KEY_Return, None, false, false),
+                Some(Action::AutostartSearchSubmit)
+            ));
+            panel.edit_key(keysyms::KEY_Escape, None, false, false);
+            assert!(!panel.editing());
+        }
         {
             use crate::controls::Control as Audio;
             let mut panel = Panel { page:Page::Sound, ..Default::default() };
@@ -2716,10 +3828,17 @@ mod tests {
                         let overlays = [
                             Panel { page: Page::Keyboard, adding: true, ..Default::default() },
                             Panel { page: Page::Defaults, apps_picker: Some(true), ..Default::default() },
+                            Panel { page: Page::Defaults, autostart_picker: true, ..Default::default() },
                             Panel { page: Page::DateTime, zone_picker: true, ..Default::default() },
                             // Hover: sidebar «Дисплеи» and, below, nothing else lit
                             Panel { page: Page::Desktop, pointer: Some((100.0, 100.0)), ..Default::default() },
                             Panel { page: Page::Sound, scroll: 440.0, ..Default::default() },
+                            Panel {
+                                page: Page::Network,
+                                wifi_target: Some(context.wifi.networks[1].clone()),
+                                wifi_password: "secret-password".into(),
+                                ..Default::default()
+                            },
                         ];
                         for (n, panel) in Page::ALL
                             .into_iter()
@@ -2811,6 +3930,8 @@ mod tests {
             notify_sounds: true,
             sounds: Default::default(),
             audio: Default::default(),
+            wifi: Default::default(),
+            bluetooth: Default::default(),
             hot_corners: [crate::hot_corners::HotAction::Launchpad, Default::default(), Default::default(), crate::hot_corners::HotAction::Lock],
             night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
             night_active: true,

@@ -311,7 +311,12 @@ impl TextInput {
             let (sx, ex) = (at(fonts, a), at(fonts, b));
             if ex > sx {
                 let alpha = if focused { 0.35 } else { 0.18 };
-                let sel = Color::from_rgba(accent.red(), accent.green(), accent.blue(), alpha).unwrap_or(accent);
+                let base = if crate::scale::highlight_choice().is_some() {
+                    crate::appearance::colors::highlight()
+                } else {
+                    accent
+                };
+                let sel = Color::from_rgba(base.red(), base.green(), base.blue(), alpha).unwrap_or(base);
                 draw::fill_rect(pm, x + sx, y - 1.0, ex - sx, size + 4.0, sel);
             }
         }

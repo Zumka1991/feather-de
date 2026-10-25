@@ -266,6 +266,185 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-microphone-check] complete: ok");
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_NETWORK_SETTINGS").is_some() {
+        use crate::{controls::Control as C, system_settings::{Action as A, Page}};
+        if state.backend.is_drm() || !state.debug_input_only {
+            return Err("network settings check requires isolated windowed input".into());
+        }
+        fn click(s: &mut FeatherCompositor, predicate: impl Fn(&A) -> bool) {
+            let w = s.windows.iter().find(|w| w.app_id == "builtin.settings").unwrap();
+            let (width, height) = (w.width as f32, w.height as f32);
+            let (_, y) = s.system_settings.debug_point(width, height, &s.settings_context(), &predicate).unwrap();
+            s.system_settings.scroll += (y - height * 0.55).max(0.0);
+            let (x, y) = s.system_settings.debug_point(width, height, &s.settings_context(), &predicate).unwrap();
+            let w = s.windows.iter().find(|w| w.app_id == "builtin.settings").unwrap();
+            let (gx, gy) = (w.x as f64 + x as f64, (w.y + w.titlebar_h()) as f64 + y as f64);
+            assert!(y > 12.0 && y < height - 20.0);
+            s.debug_pointer_motion(gx, gy);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+        }
+        at(state, 800, |s| {
+            s.shell.control_center_open = true;
+            s.shell.cc.open(crate::control_panel::Page::Wifi);
+            s.execute_shell_action(ShellClickAction::NetworkSettings);
+            assert!(!s.shell.control_center_open);
+            assert_eq!(s.system_settings.page, Page::Network);
+            assert!(s.windows.iter().any(|w| w.app_id == "builtin.settings" && w.is_visible()));
+            eprintln!("[feather-network-check] Control Center -> Network Settings: ok");
+        })?;
+        at(state, 1500, |s| {
+            let wifi = &s.shell.cc.wifi;
+            assert!(wifi.enabled);
+            assert_eq!(wifi.connected.as_deref(), Some("Feather 5G"));
+            assert_eq!(wifi.saved_wifi.len(), 2);
+            assert_eq!(wifi.ethernets.len(), 1);
+            assert!(wifi.ethernets[0].active && wifi.ethernets[0].speed == 1000);
+            assert_eq!(wifi.vpns.len(), 2);
+            assert!(wifi.vpns.iter().any(|v| v.label == "Work WireGuard" && v.active));
+            assert!(wifi.vpns.iter().any(|v| v.label == "Corp VPN" && !v.active));
+            eprintln!("[feather-network-check] initial snapshot (Wi-Fi, Saved, Ethernet, VPN): ok");
+            click(s, |a| matches!(a, A::Network(C::SetAutoconnect { profile, autoconnect: false }) if profile == "/test/saved/home"));
+        })?;
+        at(state, 2200, |s| {
+            let home = s.shell.cc.wifi.saved_wifi.iter().find(|w| w.profile == "/test/saved/home").unwrap();
+            assert!(!home.autoconnect);
+            click(s, |a| matches!(a, A::Network(C::ForgetConnection(profile)) if profile == "/test/saved/cafe"));
+        })?;
+        at(state, 2900, |s| {
+            assert_eq!(s.shell.cc.wifi.saved_wifi.len(), 1);
+            assert_eq!(s.shell.cc.wifi.saved_wifi[0].label, "Feather 5G");
+            eprintln!("[feather-network-check] saved Wi-Fi autoconnect + forget: ok");
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Network(C::Disconnect(dev)) if dev == "/test/eth0"));
+        })?;
+        at(state, 3600, |s| {
+            assert!(!s.shell.cc.wifi.ethernets[0].active);
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Network(C::ConnectEthernet { device, .. }) if device == "/test/eth0"));
+        })?;
+        at(state, 4300, |s| {
+            assert!(s.shell.cc.wifi.ethernets[0].active);
+            eprintln!("[feather-network-check] Ethernet disconnect + connect: ok");
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Network(C::DisconnectVpn(active)) if active == "/test/active/wg"));
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Network(C::ConnectVpn(profile)) if profile == "/test/vpn/corp"));
+        })?;
+        at(state, 5100, |s| {
+            let wg = s.shell.cc.wifi.vpns.iter().find(|v| v.profile == "/test/vpn/wg").unwrap();
+            let corp = s.shell.cc.wifi.vpns.iter().find(|v| v.profile == "/test/vpn/corp").unwrap();
+            assert!(!wg.active && corp.active);
+            eprintln!("[feather-network-check] VPN connect + disconnect: ok");
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::WifiPassword(n) if n.label == "Neighbor WPA2"));
+            assert!(s.system_settings.wifi_target.is_some());
+            // Type "feather123" (f=33, e=18, a=30, t=20, h=35, e=18, r=19, 1=2, 2=3, 3=4) and press Enter (28).
+            for key in [33, 18, 30, 20, 35, 18, 19, 2, 3, 4] {
+                tap(s, key);
+            }
+            assert_eq!(s.system_settings.wifi_password.text(), "feather123");
+            tap(s, 28);
+        })?;
+        at(state, 5900, |s| {
+            assert!(s.system_settings.wifi_target.is_none());
+            assert_eq!(s.shell.cc.wifi.connected.as_deref(), Some("Neighbor WPA2"));
+            assert_eq!(s.shell.cc.wifi.saved_wifi.len(), 2);
+            eprintln!("[feather-network-check] WPA2 password sheet + connect: ok");
+            s.system_settings.scroll = 0.0;
+            // Disconnecting corp VPN is configured in the mock to fail once, testing error persistence across a signal snapshot.
+            click(s, |a| matches!(a, A::Network(C::DisconnectVpn(active)) if active == "/test/active/corp"));
+        })?;
+        at(state, 6600, |s| {
+            assert!(s.system_settings.error.is_some(), "command error must survive snapshot");
+            eprintln!("[feather-network-check] command error survives snapshot: ok");
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Network(C::RefreshNetwork)));
+            assert!(s.system_settings.error.is_none(), "explicit action clears error");
+            s.system_settings.scroll = 0.0;
+            s.mark_settings_dirty();
+            s.needs_redraw = true;
+            eprintln!("[feather-network-check] complete: ok");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_BLUETOOTH_SETTINGS").is_some() {
+        use crate::{controls::Control as C, system_settings::{Action as A, Page}};
+        if state.backend.is_drm() || !state.debug_input_only {
+            return Err("bluetooth settings check requires isolated windowed input".into());
+        }
+        fn click(s: &mut FeatherCompositor, predicate: impl Fn(&A) -> bool) {
+            let w = s.windows.iter().find(|w| w.app_id == "builtin.settings").unwrap();
+            let (width, height) = (w.width as f32, w.height as f32);
+            let (_, y) = s.system_settings.debug_point(width, height, &s.settings_context(), &predicate).unwrap();
+            s.system_settings.scroll += (y - height * 0.55).max(0.0);
+            let (x, y) = s.system_settings.debug_point(width, height, &s.settings_context(), &predicate).unwrap();
+            let w = s.windows.iter().find(|w| w.app_id == "builtin.settings").unwrap();
+            let (gx, gy) = (w.x as f64 + x as f64, (w.y + w.titlebar_h()) as f64 + y as f64);
+            assert!(y > 12.0 && y < height - 20.0);
+            s.debug_pointer_motion(gx, gy);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+        }
+        at(state, 800, |s| {
+            s.shell.control_center_open = true;
+            s.shell.cc.open(crate::control_panel::Page::Bluetooth);
+            s.execute_shell_action(ShellClickAction::Control(C::ScanBluetooth));
+            assert!(s.shell.cc.page == crate::control_panel::Page::Bluetooth);
+            eprintln!("[feather-bluetooth-check] Control Center Bluetooth page + scan: ok");
+        })?;
+        at(state, 1500, |s| {
+            let bt = &s.shell.cc.bluetooth;
+            assert!(bt.available && bt.powered && bt.discovering);
+            assert_eq!(bt.devices.len(), 3, "unnamed BLE beacon must be filtered out");
+            let pods = bt.devices.iter().find(|d| d.name == "AirPods Pro").unwrap();
+            assert!(pods.connected && pods.paired && pods.battery == Some(88));
+            s.execute_shell_action(ShellClickAction::BluetoothSettings);
+            assert!(!s.shell.control_center_open);
+            assert_eq!(s.system_settings.page, Page::Bluetooth);
+            assert!(s.windows.iter().any(|w| w.app_id == "builtin.settings" && w.is_visible()));
+            eprintln!("[feather-bluetooth-check] Control Center -> Bluetooth Settings + snapshot: ok");
+        })?;
+        at(state, 2200, |s| {
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Bluetooth(C::ConnectBluetooth(p)) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03"));
+        })?;
+        at(state, 2900, |s| {
+            let mouse = s.shell.cc.bluetooth.devices.iter().find(|d| d.path == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03").unwrap();
+            assert!(mouse.paired && mouse.trusted && mouse.connected);
+            eprintln!("[feather-bluetooth-check] pair + trust + connect discovered device: ok");
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Bluetooth(C::DisconnectBluetooth(p)) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01"));
+        })?;
+        at(state, 3600, |s| {
+            let pods = s.shell.cc.bluetooth.devices.iter().find(|d| d.path == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01").unwrap();
+            assert!(!pods.connected && pods.paired);
+            eprintln!("[feather-bluetooth-check] disconnect device: ok");
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Bluetooth(C::ForgetBluetooth(p)) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02"));
+        })?;
+        at(state, 4300, |s| {
+            assert_eq!(s.shell.cc.bluetooth.devices.len(), 2);
+            assert!(!s.shell.cc.bluetooth.devices.iter().any(|d| d.path == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02"));
+            eprintln!("[feather-bluetooth-check] forget device (RemoveDevice): ok");
+            s.system_settings.scroll = 0.0;
+            // Reconnecting AirPods Pro is configured in the mock to fail once, verifying error persistence across a signal snapshot.
+            click(s, |a| matches!(a, A::Bluetooth(C::ConnectBluetooth(p)) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01"));
+        })?;
+        at(state, 5000, |s| {
+            assert!(s.system_settings.error.is_some(), "command error must survive snapshot");
+            eprintln!("[feather-bluetooth-check] command error survives snapshot: ok");
+            s.system_settings.scroll = 0.0;
+            click(s, |a| matches!(a, A::Bluetooth(C::ScanBluetooth)));
+            assert!(s.system_settings.error.is_none(), "explicit action clears error");
+        })?;
+        at(state, 5700, |s| {
+            assert!(!s.shell.cc.bluetooth.discovering);
+            s.system_settings.scroll = 0.0;
+            s.mark_settings_dirty();
+            s.needs_redraw = true;
+            eprintln!("[feather-bluetooth-check] stop discovery + complete: ok");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_AUDIO_KEYS").is_some() {
         if state.backend.is_drm() || !state.debug_input_only {return Err("audio key check requires isolated windowed input".into());}
         let level = Rc::new(Cell::new(0.0f32));

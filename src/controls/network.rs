@@ -1,10 +1,14 @@
 use super::*;
 const NM: &str = "org.freedesktop.NetworkManager";
 const ROOT: &str = "/org/freedesktop/NetworkManager";
+const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
+const SETTINGS_IFACE: &str = "org.freedesktop.NetworkManager.Settings";
 const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
+const WIRED: &str = "org.freedesktop.NetworkManager.Device.Wired";
 const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const AP: &str = "org.freedesktop.NetworkManager.AccessPoint";
 const SETTINGS: &str = "org.freedesktop.NetworkManager.Settings.Connection";
+const ACTIVE_CONN: &str = "org.freedesktop.NetworkManager.Connection.Active";
 type Props = HashMap<String, OwnedValue>;
 type Settings = HashMap<String, Props>;
 
@@ -21,6 +25,16 @@ impl Security {
     pub fn password(self) -> bool {
         matches!(self, Self::Psk | Self::Sae | Self::Transition)
     }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Open => "Открытая",
+            Self::Psk => "WPA2",
+            Self::Sae => "WPA3",
+            Self::Transition => "WPA2/WPA3",
+            Self::Owe => "OWE",
+            Self::Other => "802.1X",
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Network {
@@ -33,6 +47,36 @@ pub struct Network {
     pub strength: u8,
     pub active: bool,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedWifi {
+    pub profile: String,
+    pub ssid: Vec<u8>,
+    pub label: String,
+    pub security: Security,
+    pub autoconnect: bool,
+    pub active: bool,
+    pub in_range: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ethernet {
+    pub device: String,
+    pub interface: String,
+    pub label: String,
+    pub profile: Option<String>,
+    pub carrier: bool,
+    pub speed: u32,
+    pub active: bool,
+    pub connecting: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Vpn {
+    pub profile: String,
+    pub label: String,
+    pub kind: String,
+    pub active_path: Option<String>,
+    pub active: bool,
+    pub connecting: bool,
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Wifi {
     pub available: bool,
@@ -41,6 +85,9 @@ pub struct Wifi {
     pub connected: Option<String>,
     pub connecting: bool,
     pub networks: Vec<Network>,
+    pub saved_wifi: Vec<SavedWifi>,
+    pub ethernets: Vec<Ethernet>,
+    pub vpns: Vec<Vpn>,
     pub error: Option<String>,
 }
 impl Wifi {
@@ -115,6 +162,44 @@ fn security(p: &Props) -> Security {
         Security::Other
     }
 }
+fn profile_security(settings: &Settings) -> Security {
+    match settings
+        .get("802-11-wireless-security")
+        .and_then(|s| text(s, "key-mgmt"))
+    {
+        None => Security::Open,
+        Some("owe") => Security::Owe,
+        Some("wpa-psk") => Security::Psk,
+        Some("sae") => Security::Sae,
+        Some(_) => Security::Other,
+    }
+}
+fn vpn_kind(ctype: &str, settings: &Settings) -> String {
+    if ctype == "wireguard" {
+        return "WireGuard".into();
+    }
+    let service = settings
+        .get("vpn")
+        .and_then(|v| text(v, "service-type"))
+        .unwrap_or("");
+    let tail = service
+        .rsplit('.')
+        .next()
+        .unwrap_or(service)
+        .to_ascii_lowercase();
+    match tail.as_str() {
+        "openvpn" => "OpenVPN".into(),
+        "wireguard" => "WireGuard".into(),
+        "openconnect" => "OpenConnect".into(),
+        "l2tp" => "L2TP".into(),
+        "pptp" => "PPTP".into(),
+        "strongswan" | "libreswan" => "IPsec".into(),
+        "fortisslvpn" => "FortiSSL".into(),
+        "vpnc" => "Cisco VPNC".into(),
+        "sstp" => "SSTP".into(),
+        _ => "VPN".into(),
+    }
+}
 fn saved_matches(settings: &Settings, ssid: &[u8], sec: Security) -> bool {
     let Some(w) = settings.get("802-11-wireless") else {
         return false;
@@ -147,21 +232,117 @@ fn normalize(networks: &mut Vec<Network>) {
     networks.truncate(128);
 }
 async fn snapshot(conn: &zbus::Connection, detailed: bool) -> zbus::Result<Wifi> {
+    struct ActiveConn {
+        path: String,
+        profile: String,
+        state: u32,
+    }
     let root = props(conn, ROOT, NM).await?;
     let mut wifi = Wifi {
         enabled: boolean(&root, "WirelessEnabled"),
         hardware: boolean(&root, "WirelessHardwareEnabled"),
         ..Wifi::default()
     };
+    let mut active_conns = Vec::new();
+    let mut saved: Vec<(String, Settings)> = Vec::new();
+    if detailed {
+        for ac in paths(&root, "ActiveConnections").into_iter().take(64) {
+            if let Ok(p) = props(conn, ac.as_str(), ACTIVE_CONN).await {
+                if let Some(profile) = path(&p, "Connection").filter(|s| s != "/") {
+                    active_conns.push(ActiveConn {
+                        path: ac.to_string(),
+                        profile,
+                        state: number(&p, "State"),
+                    });
+                }
+            }
+        }
+        if let Ok(pxy) = proxy(conn, SETTINGS_PATH, SETTINGS_IFACE).await {
+            let list = match pxy
+                .call::<_, _, Vec<OwnedObjectPath>>("ListConnections", &())
+                .await
+            {
+                Ok(v) => v,
+                Err(_) => props(conn, SETTINGS_PATH, SETTINGS_IFACE)
+                    .await
+                    .map(|p| paths(&p, "Connections"))
+                    .unwrap_or_default(),
+            };
+            for p in list.into_iter().take(128) {
+                if let Ok(cpxy) = proxy(conn, p.as_str(), SETTINGS).await {
+                    if let Ok(s) = cpxy.call::<_, _, Settings>("GetSettings", &()).await {
+                        saved.push((p.to_string(), s));
+                    }
+                }
+            }
+        }
+    }
     let devices: Vec<OwnedObjectPath> =
         proxy(conn, ROOT, NM).await?.call("GetDevices", &()).await?;
     for device in devices.into_iter().take(32) {
         let d = props(conn, device.as_str(), DEVICE).await?;
-        if number(&d, "DeviceType") != 2 {
+        let dev_type = number(&d, "DeviceType");
+        let dev_state = number(&d, "State");
+        if detailed && (dev_type == 1 || dev_type == 2) {
+            for p in paths(&d, "AvailableConnections").into_iter().take(128) {
+                if !saved.iter().any(|(k, _)| k == p.as_str()) {
+                    if let Ok(pxy) = proxy(conn, p.as_str(), SETTINGS).await {
+                        if let Ok(s) = pxy.call::<_, _, Settings>("GetSettings", &()).await {
+                            saved.push((p.to_string(), s));
+                        }
+                    }
+                }
+            }
+        }
+        if dev_type == 1 && detailed {
+            let wired = props(conn, device.as_str(), WIRED).await.unwrap_or_default();
+            let iface: String = text(&d, "Interface")
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(32)
+                .collect();
+            let avail = paths(&d, "AvailableConnections");
+            let profile = avail.first().map(|p| p.to_string());
+            let profile_label = profile
+                .as_ref()
+                .and_then(|p| saved.iter().find(|(k, _)| k == p))
+                .and_then(|(_, s)| s.get("connection"))
+                .and_then(|c| text(c, "id"))
+                .filter(|s| !s.is_empty())
+                .map(|s| s.chars().filter(|c| !c.is_control()).take(64).collect::<String>());
+            let label = match (profile_label, iface.is_empty()) {
+                (Some(name), false) if !name.contains(&iface) => format!("{name} ({iface})"),
+                (Some(name), _) => name,
+                (None, false) => format!("Ethernet ({iface})"),
+                (None, true) => "Ethernet".into(),
+            };
+            let active = dev_state == 100;
+            let connecting = (40..100).contains(&dev_state);
+            let carrier = wired
+                .get("Carrier")
+                .and_then(|v| bool::try_from(v).ok())
+                .unwrap_or(dev_state >= 30)
+                || active
+                || connecting;
+            wifi.ethernets.push(Ethernet {
+                device: device.to_string(),
+                interface: iface,
+                label,
+                profile,
+                carrier,
+                speed: number(&wired, "Speed"),
+                active,
+                connecting,
+            });
+            continue;
+        }
+        if dev_type != 2 {
             continue;
         }
         wifi.available = true;
-        wifi.connecting |= (40..100).contains(&number(&d, "State"));
+        wifi.connecting |= (40..100).contains(&dev_state);
         let wireless = props(conn, device.as_str(), WIRELESS).await?;
         let active = path(&wireless, "ActiveAccessPoint").unwrap_or_else(|| "/".into());
         let aps = if detailed {
@@ -173,16 +354,6 @@ async fn snapshot(conn: &zbus::Connection, detailed: bool) -> zbus::Result<Wifi>
                 .into_iter()
                 .collect()
         };
-        let mut saved = Vec::new();
-        if detailed {
-            for p in paths(&d, "AvailableConnections").into_iter().take(128) {
-                if let Ok(pxy) = proxy(conn, p.as_str(), SETTINGS).await {
-                    if let Ok(s) = pxy.call::<_, _, Settings>("GetSettings", &()).await {
-                        saved.push((p.to_string(), s));
-                    }
-                }
-            }
-        }
         for ap in aps.into_iter().take(256) {
             let Ok(a) = props(conn, ap.as_str(), AP).await else {
                 continue;
@@ -196,7 +367,7 @@ async fn snapshot(conn: &zbus::Connection, detailed: bool) -> zbus::Result<Wifi>
                 .filter(|c| !c.is_control())
                 .take(64)
                 .collect();
-            let is_active = ap.as_str() == active && number(&d, "State") == 100;
+            let is_active = ap.as_str() == active && dev_state == 100;
             if is_active {
                 wifi.connected = Some(label.clone());
             }
@@ -220,6 +391,112 @@ async fn snapshot(conn: &zbus::Connection, detailed: bool) -> zbus::Result<Wifi>
         }
     }
     normalize(&mut wifi.networks);
+    if detailed {
+        for (profile_path, settings) in &saved {
+            let conn_sec = settings.get("connection");
+            let ctype = conn_sec.and_then(|c| text(c, "type")).or_else(|| {
+                if settings.contains_key("802-11-wireless") {
+                    Some("802-11-wireless")
+                } else if settings.contains_key("vpn") {
+                    Some("vpn")
+                } else if settings.contains_key("wireguard") {
+                    Some("wireguard")
+                } else {
+                    None
+                }
+            });
+            if ctype == Some("802-11-wireless") {
+                let Some(w) = settings.get("802-11-wireless") else {
+                    continue;
+                };
+                let ssid = bytes(w, "ssid");
+                if ssid.is_empty() {
+                    continue;
+                }
+                let label: String = conn_sec
+                    .and_then(|c| text(c, "id"))
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| String::from_utf8_lossy(&ssid).into_owned())
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(64)
+                    .collect();
+                let sec = profile_security(settings);
+                let autoconnect = conn_sec
+                    .and_then(|c| c.get("autoconnect"))
+                    .and_then(|v| bool::try_from(v).ok())
+                    .unwrap_or(true);
+                let active = active_conns
+                    .iter()
+                    .any(|ac| ac.profile == *profile_path && ac.state == 2)
+                    || wifi.networks.iter().any(|n| {
+                        n.active
+                            && (n.saved.as_deref() == Some(profile_path.as_str())
+                                || (n.ssid == ssid && saved_matches(settings, &n.ssid, n.security)))
+                    });
+                let in_range = active
+                    || wifi.networks.iter().any(|n| {
+                        n.saved.as_deref() == Some(profile_path.as_str())
+                            || (n.ssid == ssid && saved_matches(settings, &n.ssid, n.security))
+                    });
+                wifi.saved_wifi.push(SavedWifi {
+                    profile: profile_path.clone(),
+                    ssid,
+                    label,
+                    security: sec,
+                    autoconnect,
+                    active,
+                    in_range,
+                });
+            } else if matches!(ctype, Some("vpn" | "wireguard")) {
+                let label: String = conn_sec
+                    .and_then(|c| text(c, "id"))
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("VPN")
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(64)
+                    .collect();
+                let kind = vpn_kind(ctype.unwrap_or("vpn"), settings);
+                let ac = active_conns
+                    .iter()
+                    .find(|ac| ac.profile == *profile_path && matches!(ac.state, 1 | 2));
+                wifi.vpns.push(Vpn {
+                    profile: profile_path.clone(),
+                    label,
+                    kind,
+                    active_path: ac.map(|a| a.path.clone()),
+                    active: ac.is_some_and(|a| a.state == 2),
+                    connecting: ac.is_some_and(|a| a.state == 1),
+                });
+            }
+        }
+        wifi.saved_wifi.sort_by(|a, b| {
+            b.active
+                .cmp(&a.active)
+                .then(b.in_range.cmp(&a.in_range))
+                .then(a.label.cmp(&b.label))
+                .then(a.profile.cmp(&b.profile))
+        });
+        wifi.saved_wifi.truncate(128);
+        wifi.ethernets.sort_by(|a, b| {
+            b.active
+                .cmp(&a.active)
+                .then(b.connecting.cmp(&a.connecting))
+                .then(b.carrier.cmp(&a.carrier))
+                .then(a.interface.cmp(&b.interface))
+        });
+        wifi.ethernets.truncate(32);
+        wifi.vpns.sort_by(|a, b| {
+            b.active
+                .cmp(&a.active)
+                .then(b.connecting.cmp(&a.connecting))
+                .then(a.label.cmp(&b.label))
+                .then(a.profile.cmp(&b.profile))
+        });
+        wifi.vpns.truncate(64);
+    }
     Ok(wifi)
 }
 #[cfg(test)]
@@ -310,11 +587,15 @@ async fn action(conn: &zbus::Connection, command: Control, current: &Wifi) -> Re
             Ok(())
         }
         Control::Disconnect(device) => {
-            if !current
+            let active_wifi = current
                 .networks
                 .iter()
-                .any(|n| n.device == device && n.active)
-            {
+                .any(|n| n.device == device && n.active);
+            let active_eth = current
+                .ethernets
+                .iter()
+                .any(|e| e.device == device && (e.active || e.connecting));
+            if !active_wifi && !active_eth {
                 return Err("Подключение уже изменилось".into());
             }
             proxy(conn, &device, DEVICE)
@@ -322,6 +603,95 @@ async fn action(conn: &zbus::Connection, command: Control, current: &Wifi) -> Re
                 .map_err(|_| "Адаптер отключён")?
                 .call("Disconnect", &())
                 .await
+        }
+        Control::ConnectEthernet { device, profile } => {
+            if !current
+                .ethernets
+                .iter()
+                .any(|e| e.device == device && e.carrier && !e.active)
+            {
+                return Err("Кабель не подключён или состояние адаптера изменилось".into());
+            }
+            let dev =
+                OwnedObjectPath::try_from(device.as_str()).map_err(|_| "Адаптер отключён")?;
+            let prof = OwnedObjectPath::try_from(profile.as_deref().unwrap_or("/"))
+                .map_err(|_| "Профиль удалён")?;
+            let spec = OwnedObjectPath::try_from("/").unwrap();
+            root.call::<_, _, OwnedObjectPath>("ActivateConnection", &(prof, dev, spec))
+                .await
+                .map(|_| ())
+        }
+        Control::SetAutoconnect {
+            profile,
+            autoconnect,
+        } => {
+            if !current.saved_wifi.iter().any(|s| s.profile == profile) {
+                return Err("Сохранённый профиль изменился".into());
+            }
+            let pxy = proxy(conn, &profile, SETTINGS)
+                .await
+                .map_err(|_| "Профиль удалён")?;
+            let mut settings: Settings = pxy
+                .call("GetSettings", &())
+                .await
+                .map_err(|_| "Не удалось прочитать профиль")?;
+            if settings.contains_key("802-11-wireless-security") {
+                if let Ok(secrets) = pxy
+                    .call::<_, _, Settings>("GetSecrets", &("802-11-wireless-security",))
+                    .await
+                {
+                    if let (Some(src), Some(dst)) = (
+                        secrets.get("802-11-wireless-security"),
+                        settings.get_mut("802-11-wireless-security"),
+                    ) {
+                        for (k, v) in src {
+                            dst.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            settings
+                .entry("connection".into())
+                .or_default()
+                .insert("autoconnect".into(), OwnedValue::from(autoconnect));
+            pxy.call::<_, _, ()>("Update", &(settings,)).await
+        }
+        Control::ForgetConnection(profile) => {
+            if !current.saved_wifi.iter().any(|s| s.profile == profile) {
+                return Err("Сохранённый профиль уже удалён".into());
+            }
+            proxy(conn, &profile, SETTINGS)
+                .await
+                .map_err(|_| "Профиль уже удалён")?
+                .call("Delete", &())
+                .await
+        }
+        Control::ConnectVpn(profile) => {
+            if !current
+                .vpns
+                .iter()
+                .any(|v| v.profile == profile && !v.active && !v.connecting)
+            {
+                return Err("Состояние VPN уже изменилось".into());
+            }
+            let prof =
+                OwnedObjectPath::try_from(profile.as_str()).map_err(|_| "Профиль VPN удалён")?;
+            let none = OwnedObjectPath::try_from("/").unwrap();
+            root.call::<_, _, OwnedObjectPath>("ActivateConnection", &(prof, none.clone(), none))
+                .await
+                .map(|_| ())
+        }
+        Control::DisconnectVpn(active_path) => {
+            if !current
+                .vpns
+                .iter()
+                .any(|v| v.active_path.as_deref() == Some(active_path.as_str()))
+            {
+                return Err("Подключение VPN уже закрыто".into());
+            }
+            let act = OwnedObjectPath::try_from(active_path.as_str())
+                .map_err(|_| "Подключение VPN уже закрыто")?;
+            root.call::<_, _, ()>("DeactivateConnection", &(act,)).await
         }
         Control::Connect {
             network: n,
@@ -372,10 +742,23 @@ fn relevant(message: &zbus::Message, detailed: bool) -> bool {
         if let Ok((iface, changed, invalidated)) =
             message.body().deserialize::<(String, Props, Vec<String>)>()
         {
-            let watched: &[&str] = if iface == NM {
+            let watched: &[&str] = if iface == NM && detailed {
+                &[
+                    "WirelessEnabled",
+                    "WirelessHardwareEnabled",
+                    "Devices",
+                    "ActiveConnections",
+                ]
+            } else if iface == NM {
                 &["WirelessEnabled", "WirelessHardwareEnabled", "Devices"]
             } else if iface == DEVICE {
                 &["State", "ActiveConnection", "AvailableConnections"]
+            } else if iface == WIRED && detailed {
+                &["Carrier", "Speed"]
+            } else if iface == ACTIVE_CONN && detailed {
+                &["State", "VpnState"]
+            } else if iface == SETTINGS_IFACE && detailed {
+                &["Connections"]
             } else if iface == WIRELESS && detailed {
                 &["ActiveAccessPoint", "LastScan", "AccessPoints"]
             } else if iface == WIRELESS {
@@ -400,7 +783,12 @@ fn relevant(message: &zbus::Message, detailed: bool) -> bool {
                 | "NewConnection"
                 | "Removed"
                 | "Updated"
-        ) || (detailed && matches!(m.as_str(), "AccessPointAdded" | "AccessPointRemoved"))
+                | "ConnectionRemoved"
+        ) || (detailed
+            && matches!(
+                m.as_str(),
+                "AccessPointAdded" | "AccessPointRemoved" | "VpnStateChanged"
+            ))
     })
 }
 pub async fn run(commands: async_channel::Receiver<Control>, updates: channel::SyncSender<Update>) {
@@ -423,8 +811,13 @@ pub async fn run(commands: async_channel::Receiver<Control>, updates: channel::S
         // Explicit panel reopening retries a failed bus connection. No idle retry timer.
         while let Ok(command) = commands.recv().await {
             match command {
-                Control::WatchWifi(watch) => detailed = watch,
-                Control::Refresh => break,
+                Control::WatchWifi(watch) => {
+                    detailed = watch;
+                    if watch {
+                        break;
+                    }
+                }
+                Control::Refresh | Control::RefreshNetwork => break,
                 _ => {}
             }
         }
@@ -570,7 +963,14 @@ mod tests {
     #[zbus::interface(name = "org.freedesktop.NetworkManager")]
     impl MockRoot {
         fn get_devices(&self) -> Vec<OwnedObjectPath> {
-            vec![OwnedObjectPath::try_from("/test/device").unwrap()]
+            vec![
+                OwnedObjectPath::try_from("/test/device").unwrap(),
+                OwnedObjectPath::try_from("/test/eth0").unwrap(),
+            ]
+        }
+        #[zbus(property)]
+        fn active_connections(&self) -> Vec<OwnedObjectPath> {
+            vec![OwnedObjectPath::try_from("/test/active_vpn").unwrap()]
         }
         #[zbus(property)]
         fn wireless_enabled(&self) -> bool {
@@ -597,6 +997,12 @@ mod tests {
                 .push(format!("saved:{profile}:{device}:{ap}"));
             OwnedObjectPath::try_from("/test/active").unwrap()
         }
+        fn deactivate_connection(&self, active: OwnedObjectPath) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("deactivate:{active}"));
+        }
         fn add_and_activate_connection(
             &self,
             settings: Settings,
@@ -618,20 +1024,62 @@ mod tests {
             )
         }
     }
-    struct MockDevice;
+    struct MockSettings;
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings")]
+    impl MockSettings {
+        fn list_connections(&self) -> Vec<OwnedObjectPath> {
+            vec![
+                OwnedObjectPath::try_from("/test/saved").unwrap(),
+                OwnedObjectPath::try_from("/test/eth_profile").unwrap(),
+                OwnedObjectPath::try_from("/test/vpn0").unwrap(),
+            ]
+        }
+    }
+    struct MockDevice {
+        calls: Arc<Mutex<Vec<String>>>,
+        kind: u32,
+        iface: &'static str,
+        profile: &'static str,
+    }
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
     impl MockDevice {
         #[zbus(property)]
         fn device_type(&self) -> u32 {
-            2
+            self.kind
         }
         #[zbus(property)]
         fn state(&self) -> u32 {
             100
         }
         #[zbus(property)]
+        fn interface(&self) -> String {
+            self.iface.into()
+        }
+        #[zbus(property)]
+        fn active_connection(&self) -> OwnedObjectPath {
+            OwnedObjectPath::try_from("/test/active").unwrap()
+        }
+        #[zbus(property)]
         fn available_connections(&self) -> Vec<OwnedObjectPath> {
-            vec![OwnedObjectPath::try_from("/test/saved").unwrap()]
+            vec![OwnedObjectPath::try_from(self.profile).unwrap()]
+        }
+        fn disconnect(&self) {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("disconnect:{}", self.iface));
+        }
+    }
+    struct MockWired;
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.Wired")]
+    impl MockWired {
+        #[zbus(property)]
+        fn carrier(&self) -> bool {
+            true
+        }
+        #[zbus(property)]
+        fn speed(&self) -> u32 {
+            1000
         }
     }
     struct MockWireless;
@@ -670,11 +1118,43 @@ mod tests {
             72
         }
     }
-    struct MockProfile;
+    struct MockActiveVpn;
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
+    impl MockActiveVpn {
+        #[zbus(property)]
+        fn connection(&self) -> OwnedObjectPath {
+            OwnedObjectPath::try_from("/test/vpn0").unwrap()
+        }
+        #[zbus(property)]
+        fn state(&self) -> u32 {
+            2
+        }
+        #[zbus(property)]
+        fn vpn_state(&self) -> u32 {
+            5
+        }
+    }
+    struct MockProfile {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
     impl MockProfile {
         fn get_settings(&self) -> Settings {
             HashMap::from([
+                (
+                    "connection".into(),
+                    HashMap::from([
+                        (
+                            "id".into(),
+                            OwnedValue::from(zbus::zvariant::Str::from("test wifi")),
+                        ),
+                        (
+                            "type".into(),
+                            OwnedValue::from(zbus::zvariant::Str::from("802-11-wireless")),
+                        ),
+                        ("autoconnect".into(), OwnedValue::from(true)),
+                    ]),
+                ),
                 (
                     "802-11-wireless".into(),
                     HashMap::from([(
@@ -690,6 +1170,48 @@ mod tests {
                     )]),
                 ),
             ])
+        }
+        fn get_secrets(&self, setting_name: &str) -> Settings {
+            assert_eq!(setting_name, "802-11-wireless-security");
+            HashMap::from([(
+                "802-11-wireless-security".into(),
+                HashMap::from([(
+                    "psk".into(),
+                    OwnedValue::from(zbus::zvariant::Str::from("existing secret")),
+                )]),
+            )])
+        }
+        fn update(&self, settings: Settings) {
+            let auto = settings["connection"]["autoconnect"]
+                .downcast_ref::<bool>()
+                .unwrap();
+            let psk = text(&settings["802-11-wireless-security"], "psk").unwrap_or("");
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("update:auto={auto}:psk={psk}"));
+        }
+        fn delete(&self) {
+            self.calls.lock().unwrap().push("delete:/test/saved".into());
+        }
+    }
+    struct MockSimpleProfile {
+        id: &'static str,
+        kind: &'static str,
+    }
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
+    impl MockSimpleProfile {
+        fn get_settings(&self) -> Settings {
+            HashMap::from([(
+                "connection".into(),
+                HashMap::from([
+                    ("id".into(), OwnedValue::from(zbus::zvariant::Str::from(self.id))),
+                    (
+                        "type".into(),
+                        OwnedValue::from(zbus::zvariant::Str::from(self.kind)),
+                    ),
+                ]),
+            )])
         }
     }
     #[test]
@@ -711,13 +1233,58 @@ mod tests {
                     },
                 )
                 .unwrap()
-                .serve_at("/test/device", MockDevice)
+                .serve_at(SETTINGS_PATH, MockSettings)
+                .unwrap()
+                .serve_at(
+                    "/test/device",
+                    MockDevice {
+                        calls: calls.clone(),
+                        kind: 2,
+                        iface: "wlan0",
+                        profile: "/test/saved",
+                    },
+                )
                 .unwrap()
                 .serve_at("/test/device", MockWireless)
                 .unwrap()
+                .serve_at(
+                    "/test/eth0",
+                    MockDevice {
+                        calls: calls.clone(),
+                        kind: 1,
+                        iface: "enp3s0",
+                        profile: "/test/eth_profile",
+                    },
+                )
+                .unwrap()
+                .serve_at("/test/eth0", MockWired)
+                .unwrap()
                 .serve_at("/test/ap", MockAp)
                 .unwrap()
-                .serve_at("/test/saved", MockProfile)
+                .serve_at("/test/active_vpn", MockActiveVpn)
+                .unwrap()
+                .serve_at(
+                    "/test/saved",
+                    MockProfile {
+                        calls: calls.clone(),
+                    },
+                )
+                .unwrap()
+                .serve_at(
+                    "/test/eth_profile",
+                    MockSimpleProfile {
+                        id: "Проводное 1",
+                        kind: "802-3-ethernet",
+                    },
+                )
+                .unwrap()
+                .serve_at(
+                    "/test/vpn0",
+                    MockSimpleProfile {
+                        id: "Work VPN",
+                        kind: "wireguard",
+                    },
+                )
                 .unwrap()
                 .build()
                 .await
@@ -731,6 +1298,21 @@ mod tests {
             let mut state = snapshot(&conn, true).await.unwrap();
             assert_eq!(state.connected.as_deref(), Some("test wifi"));
             assert_eq!(state.networks.len(), 1);
+            assert_eq!(state.saved_wifi.len(), 1);
+            assert_eq!(state.saved_wifi[0].label, "test wifi");
+            assert!(state.saved_wifi[0].autoconnect);
+            assert!(state.saved_wifi[0].active);
+            assert!(state.saved_wifi[0].in_range);
+            assert_eq!(state.saved_wifi[0].security, Security::Psk);
+            assert_eq!(state.ethernets.len(), 1);
+            assert_eq!(state.ethernets[0].interface, "enp3s0");
+            assert!(state.ethernets[0].active);
+            assert!(state.ethernets[0].carrier);
+            assert_eq!(state.ethernets[0].speed, 1000);
+            assert_eq!(state.vpns.len(), 1);
+            assert_eq!(state.vpns[0].label, "Work VPN");
+            assert_eq!(state.vpns[0].kind, "WireGuard");
+            assert!(state.vpns[0].active);
             let saved = state.networks[0].clone();
             assert!(saved.saved.is_some());
             action(
@@ -767,16 +1349,65 @@ mod tests {
             )
             .await
             .is_err());
+            action(
+                &conn,
+                Control::SetAutoconnect {
+                    profile: "/test/saved".into(),
+                    autoconnect: false,
+                },
+                &state,
+            )
+            .await
+            .unwrap();
+            action(&conn, Control::ForgetConnection("/test/saved".into()), &state)
+                .await
+                .unwrap();
+            action(&conn, Control::Disconnect("/test/eth0".into()), &state)
+                .await
+                .unwrap();
+            state.ethernets[0].active = false;
+            action(
+                &conn,
+                Control::ConnectEthernet {
+                    device: "/test/eth0".into(),
+                    profile: Some("/test/eth_profile".into()),
+                },
+                &state,
+            )
+            .await
+            .unwrap();
+            action(
+                &conn,
+                Control::DisconnectVpn("/test/active_vpn".into()),
+                &state,
+            )
+            .await
+            .unwrap();
+            state.vpns[0].active = false;
+            state.vpns[0].active_path = None;
+            action(&conn, Control::ConnectVpn("/test/vpn0".into()), &state)
+                .await
+                .unwrap();
             action(&conn, Control::Wifi(false), &state).await.unwrap();
             assert_eq!(
                 calls.lock().unwrap().as_slice(),
                 [
                     "saved:/test/saved:/test/device:/test/ap",
                     "new:/test/device:/test/ap",
+                    "update:auto=false:psk=existing secret",
+                    "delete:/test/saved",
+                    "disconnect:enp3s0",
+                    "saved:/test/eth_profile:/test/eth0:/",
+                    "deactivate:/test/active_vpn",
+                    "saved:/test/vpn0:/:/",
                     "wifi:false"
                 ]
             );
-            assert!(!snapshot(&conn, false).await.unwrap().enabled);
+            let compact = snapshot(&conn, false).await.unwrap();
+            assert!(!compact.enabled);
+            assert!(compact.saved_wifi.is_empty());
+            assert!(compact.ethernets.is_empty());
+            assert!(compact.vpns.is_empty());
             drop(server);
         });
     }

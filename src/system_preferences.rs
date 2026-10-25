@@ -15,6 +15,13 @@ pub struct DesktopApp {
     pub browser: bool,
     pub terminal: bool,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutostartItem {
+    pub id: String,
+    pub name: String,
+    pub exec: String,
+    pub enabled: bool,
+}
 #[derive(Clone, Default, Debug)]
 pub struct TimeState {
     pub available: bool,
@@ -27,6 +34,8 @@ pub struct TimeState {
 #[derive(Clone, Debug)]
 pub struct State {
     pub apps: Arc<Vec<DesktopApp>>,
+    pub autostart: Arc<Vec<AutostartItem>>,
+    pub loaded: bool,
     pub browser: Option<String>,
     pub terminal: String,
     pub time: TimeState,
@@ -40,6 +49,8 @@ impl Default for State {
     fn default() -> Self {
         Self {
             apps: Arc::new(Vec::new()),
+            autostart: Arc::new(Vec::new()),
+            loaded: false,
             browser: None,
             terminal: "feather-terminal.desktop".into(),
             time: TimeState::default(),
@@ -72,6 +83,9 @@ impl State {
 pub enum Command {
     Refresh,
     DefaultApp { browser: bool, id: String },
+    AddAutostart(String),
+    ToggleAutostart { id: String, enabled: bool },
+    RemoveAutostart(String),
     Ntp(bool),
     Timezone(String),
     SetTime(String),
@@ -130,14 +144,34 @@ fn scan_apps() -> Vec<DesktopApp> {
             .unwrap_or_else(|| vec!["/usr/local/share".into(), "/usr/share".into()]),
     );
     let mut seen = std::collections::HashSet::new();
-    let mut apps = vec![DesktopApp {
-        id: "feather-terminal.desktop".into(),
-        name: "Терминал Feather".into(),
-        exec: crate::apps::terminal_command(),
-        browser: false,
-        terminal: true,
-    }];
+    let mut apps = vec![
+        DesktopApp {
+            id: "feather-files.desktop".into(),
+            name: "Файлы".into(),
+            exec: crate::apps::files_command(),
+            browser: false,
+            terminal: false,
+        },
+        DesktopApp {
+            id: "feather-terminal.desktop".into(),
+            name: "Терминал Feather".into(),
+            exec: crate::apps::terminal_command(),
+            browser: false,
+            terminal: true,
+        },
+    ];
+    seen.insert("feather-files.desktop".to_string());
     seen.insert("feather-terminal.desktop".to_string());
+    if let Some(exec) = crate::apps::notes_command() {
+        apps.push(DesktopApp {
+            id: "feather-notes.desktop".into(),
+            name: "Заметки".into(),
+            exec,
+            browser: false,
+            terminal: false,
+        });
+        seen.insert("feather-notes.desktop".to_string());
+    }
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir.join("applications")) else {
             continue;
@@ -154,6 +188,7 @@ fn scan_apps() -> Vec<DesktopApp> {
                 continue;
             };
             let mut in_entry = false;
+            let mut kind = "Application";
             let mut name = None;
             let mut ru = None;
             let mut exec = None;
@@ -171,6 +206,7 @@ fn scan_apps() -> Vec<DesktopApp> {
                 }
                 if let Some((key, value)) = line.split_once('=') {
                     match key {
+                        "Type" => kind = value.trim(),
                         "Name" => name = Some(value.to_string()),
                         "Name[ru]" => ru = Some(value.to_string()),
                         "Exec" => {
@@ -189,12 +225,12 @@ fn scan_apps() -> Vec<DesktopApp> {
                     }
                 }
             }
+            if hidden || kind != "Application" {
+                continue;
+            }
             let browser = categories.split(';').any(|c| c == "WebBrowser")
                 || mime.split(';').any(|m| m == "x-scheme-handler/http");
             let terminal = categories.split(';').any(|c| c == "TerminalEmulator");
-            if hidden || (!browser && !terminal) {
-                continue;
-            }
             if let Some(exec) = exec.filter(|e| !e.is_empty()) {
                 apps.push(DesktopApp {
                     id: id.into(),
@@ -206,8 +242,139 @@ fn scan_apps() -> Vec<DesktopApp> {
             }
         }
     }
-    apps.sort_by_key(|a| a.name.to_lowercase());
+    apps.sort_by_key(|a| (a.name.to_lowercase(), a.id.clone()));
     apps
+}
+
+pub fn scan_autostart(config: &Path) -> Vec<AutostartItem> {
+    let Ok(entries) = std::fs::read_dir(config.join("autostart")) else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    for file in entries.flatten() {
+        let path = file.path();
+        let Some(id) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !valid_id(id) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut in_entry = false;
+        let mut name = None;
+        let mut ru = None;
+        let mut exec = None;
+        let mut hidden = false;
+        let mut gnome_enabled = None;
+        let mut only_show = String::new();
+        let mut not_show = String::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                in_entry = line == "[Desktop Entry]";
+                continue;
+            }
+            if !in_entry {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                let value = value.trim();
+                match key.trim() {
+                    "Name" => name = Some(value.to_string()),
+                    "Name[ru]" => ru = Some(value.to_string()),
+                    "Exec" => {
+                        exec = Some(
+                            value
+                                .split_whitespace()
+                                .filter(|p| !p.starts_with('%'))
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        )
+                    }
+                    "Hidden" => hidden = value.eq_ignore_ascii_case("true"),
+                    "X-GNOME-Autostart-enabled" => {
+                        gnome_enabled = Some(!value.eq_ignore_ascii_case("false"))
+                    }
+                    "OnlyShowIn" => only_show = value.to_string(),
+                    "NotShowIn" => not_show = value.to_string(),
+                    _ => {}
+                }
+            }
+        }
+        if !not_show.is_empty()
+            && not_show
+                .split(';')
+                .any(|d| d.trim().eq_ignore_ascii_case("FeatherDE"))
+        {
+            continue;
+        }
+        if !only_show.is_empty()
+            && !only_show
+                .split(';')
+                .filter(|d| !d.trim().is_empty())
+                .any(|d| d.trim().eq_ignore_ascii_case("FeatherDE"))
+        {
+            continue;
+        }
+        if let Some(exec) = exec.filter(|e| !e.is_empty()) {
+            items.push(AutostartItem {
+                id: id.to_string(),
+                name: ru
+                    .or(name)
+                    .unwrap_or_else(|| id.trim_end_matches(".desktop").to_string()),
+                exec,
+                enabled: !hidden && gnome_enabled.unwrap_or(true),
+            });
+        }
+    }
+    items.sort_by_key(|i| (i.name.to_lowercase(), i.id.clone()));
+    items
+}
+
+fn write_autostart(config: &Path, app: &DesktopApp) -> Result<(), String> {
+    if !valid_id(&app.id) {
+        return Err("Недопустимый desktop ID".into());
+    }
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+    let text = format!(
+        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nHidden=false\nX-GNOME-Autostart-enabled=true\n",
+        clean(&app.name),
+        clean(&app.exec)
+    );
+    atomic_write(&config.join("autostart").join(&app.id), &text)
+        .map_err(|e| format!("Не удалось добавить в автозапуск: {e}"))
+}
+
+fn toggle_autostart(config: &Path, id: &str, enabled: bool) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err("Недопустимый desktop ID".into());
+    }
+    let path = config.join("autostart").join(id);
+    let old = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Не удалось прочитать элемент автозапуска: {e}"))?;
+    let text = update_ini(
+        &old,
+        "Desktop Entry",
+        &[
+            ("Hidden", (!enabled).to_string()),
+            ("X-GNOME-Autostart-enabled", enabled.to_string()),
+        ],
+    );
+    atomic_write(&path, &text).map_err(|e| format!("Не удалось обновить автозапуск: {e}"))
+}
+
+fn remove_autostart(config: &Path, id: &str) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err("Недопустимый desktop ID".into());
+    }
+    let path = config.join("autostart").join(id);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Не удалось удалить из автозапуска: {e}")),
+    }
 }
 
 /// Used by Files as a short-lived launcher; disk lookup never runs in the compositor.
@@ -431,6 +598,7 @@ impl Worker {
                 if let Some(error) = &state.system_preferences.error {
                     state.system_settings.error = Some(error.clone());
                 }
+                state.maybe_launch_autostart();
                 state.mark_settings_dirty();
                 state.save_settings();
                 state.needs_redraw = true;
@@ -443,6 +611,8 @@ impl Worker {
                 futures_lite::future::block_on(async move {
                     let mut state = State::default();
                     state.apps = Arc::new(scan_apps());
+                    state.autostart = Arc::new(scan_autostart(&config_home()));
+                    state.loaded = true;
                     state.browser = default_browser().or(browser);
                     if let Some(id) =
                         terminal.filter(|id| state.apps.iter().any(|a| a.id == *id && a.terminal))
@@ -492,8 +662,28 @@ impl Worker {
                                         .map(|_| state.terminal = id.clone())
                                 }
                             }
+                            Command::AddAutostart(id) => {
+                                let cfg = config_home();
+                                if let Some(app) = state.apps.iter().find(|a| a.id == *id) {
+                                    write_autostart(&cfg, app)
+                                        .map(|_| state.autostart = Arc::new(scan_autostart(&cfg)))
+                                } else {
+                                    Err("Приложение не найдено".into())
+                                }
+                            }
+                            Command::ToggleAutostart { id, enabled } => {
+                                let cfg = config_home();
+                                toggle_autostart(&cfg, id, *enabled)
+                                    .map(|_| state.autostart = Arc::new(scan_autostart(&cfg)))
+                            }
+                            Command::RemoveAutostart(id) => {
+                                let cfg = config_home();
+                                remove_autostart(&cfg, id)
+                                    .map(|_| state.autostart = Arc::new(scan_autostart(&cfg)))
+                            }
                             Command::Refresh => {
                                 state.apps = Arc::new(scan_apps());
+                                state.autostart = Arc::new(scan_autostart(&config_home()));
                                 state.cursor_themes = Arc::new(scan_cursor_themes());
                                 state.browser = default_browser().or(state.browser);
                                 Ok(())
@@ -516,7 +706,11 @@ impl Worker {
                                     state.time.available = false;
                                     if !matches!(
                                         command,
-                                        Command::DefaultApp { .. } | Command::Refresh
+                                        Command::DefaultApp { .. }
+                                            | Command::AddAutostart(_)
+                                            | Command::ToggleAutostart { .. }
+                                            | Command::RemoveAutostart(_)
+                                            | Command::Refresh
                                     ) {
                                         state.error = Some(e.to_string());
                                     }
@@ -681,6 +875,42 @@ mod tests {
                 .unwrap()
                 .starts_with("feather-terminal.desktop\n")
         );
+        let app = DesktopApp {
+            id: "feather-notes.desktop".into(),
+            name: "Заметки".into(),
+            exec: "feather-notes".into(),
+            browser: false,
+            terminal: false,
+        };
+        write_autostart(&config, &app).unwrap();
+        atomic_write(
+            &config.join("autostart/kde-only.desktop"),
+            "[Desktop Entry]\nType=Application\nName=KDE Only\nExec=kde-tool\nOnlyShowIn=KDE;\n",
+        )
+        .unwrap();
+        atomic_write(
+            &config.join("autostart/not-feather.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Not Feather\nExec=other-tool\nNotShowIn=FeatherDE;GNOME;\n",
+        )
+        .unwrap();
+        let items = scan_autostart(&config);
+        assert_eq!(
+            items,
+            vec![AutostartItem {
+                id: "feather-notes.desktop".into(),
+                name: "Заметки".into(),
+                exec: "feather-notes".into(),
+                enabled: true,
+            }]
+        );
+        toggle_autostart(&config, "feather-notes.desktop", false).unwrap();
+        let items = scan_autostart(&config);
+        assert!(!items[0].enabled);
+        toggle_autostart(&config, "feather-notes.desktop", true).unwrap();
+        let items = scan_autostart(&config);
+        assert!(items[0].enabled);
+        remove_autostart(&config, "feather-notes.desktop").unwrap();
+        assert!(scan_autostart(&config).is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

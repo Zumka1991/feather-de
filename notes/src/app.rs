@@ -834,6 +834,11 @@ impl App {
         Vec::new()
     }
 
+    pub fn invalidate_layout(&mut self) {
+        self.layout_valid = false;
+        self.dirty = true;
+    }
+
     // ---------- painting ----------
 
     pub fn paint(&mut self, pm: &mut PixmapMut) {
@@ -997,7 +1002,16 @@ impl App {
                         ex += 6.0;
                     }
                     if ex > sx {
-                        let tint = if self.focused { rgba(YELLOW.0, YELLOW.1, YELLOW.2, 110) } else { colors::selected_gray() };
+                        let tint = if self.focused {
+                            if feather_ui::scale::highlight_choice().is_some() {
+                                let hl = colors::highlight();
+                                tiny_skia::Color::from_rgba(hl.red(), hl.green(), hl.blue(), 110.0 / 255.0).unwrap_or(hl)
+                            } else {
+                                rgba(YELLOW.0, YELLOW.1, YELLOW.2, 110)
+                            }
+                        } else {
+                            colors::selected_gray()
+                        };
                         theme::fill_rect(pm, x0 + sx, y + 1.0, ex - sx, line.height - 2.0, tint);
                     }
                 }

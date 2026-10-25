@@ -130,6 +130,11 @@ pub fn terminal_command() -> String {
     own_program("feather-terminal").unwrap_or_else(|| "konsole".into())
 }
 
+/// Feather's Notes app when built next to the compositor binary
+pub fn notes_command() -> Option<String> {
+    own_program("feather-notes")
+}
+
 pub struct AppRegistry {
     pub apps: Vec<AppEntry>,
 }

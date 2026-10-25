@@ -95,7 +95,13 @@ pub fn reserved_for(icon: f32, autohide: bool) -> i32 {
 pub const TRAFFIC_RADIUS: f32 = 6.0;
 pub const TRAFFIC_CENTERS: [f32; 3] = [16.0, 36.0, 56.0];
 
-pub use feather_ui::scale::{appearance, set_appearance, set_ui_scale, ui_scale, with_render_settings, Appearance};
+pub use feather_ui::scale::{
+    accent_color, appearance, highlight_choice, highlight_color, set_accent_color, set_appearance,
+    set_highlight_choice, set_text_size, set_ui_scale, text_size, ui_scale,
+    with_full_render_settings, AccentColor, Appearance, TextSize,
+};
+#[cfg(test)]
+pub use feather_ui::scale::with_render_settings;
 
 pub fn to_phys(logical: i32) -> i32 {
     ((logical as f32) * ui_scale()).round().max(1.0) as i32
@@ -117,6 +123,7 @@ pub struct Palette {
     pub text_secondary: Color,
     pub text_tertiary: Color,
     pub accent: Color,
+    pub highlight: Color,
     pub on_accent: Color,
     pub separator: Color,
     pub control_fill: Color,
@@ -134,7 +141,12 @@ pub struct Palette {
 }
 
 pub fn palette() -> Palette {
-    match appearance() {
+    let app = appearance();
+    let (ar, ag, ab) = accent_color().rgb(app);
+    let (hr, hg, hb) = highlight_color().rgb(app);
+    let accent = rgba(ar, ag, ab, 255);
+    let highlight = rgba(hr, hg, hb, 255);
+    match app {
         Appearance::Light => Palette {
             glass_fill: rgba(246, 246, 248, 175),
             glass_fill_strong: rgba(250, 250, 252, 212),
@@ -144,7 +156,8 @@ pub fn palette() -> Palette {
             text: rgba(0, 0, 0, 222),
             text_secondary: rgba(60, 60, 67, 165),
             text_tertiary: rgba(60, 60, 67, 95),
-            accent: rgba(0, 122, 255, 255),
+            accent,
+            highlight,
             on_accent: rgba(255, 255, 255, 255),
             separator: rgba(0, 0, 0, 26),
             control_fill: rgba(0, 0, 0, 14),
@@ -169,7 +182,8 @@ pub fn palette() -> Palette {
             text: rgba(255, 255, 255, 235),
             text_secondary: rgba(235, 235, 245, 155),
             text_tertiary: rgba(235, 235, 245, 85),
-            accent: rgba(10, 132, 255, 255),
+            accent,
+            highlight,
             on_accent: rgba(255, 255, 255, 255),
             separator: rgba(255, 255, 255, 30),
             control_fill: rgba(255, 255, 255, 22),

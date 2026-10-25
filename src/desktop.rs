@@ -274,12 +274,27 @@ impl Desktop {
         self.rubber = None;
         self.rubber_base.clear();
     }
-    pub fn new() -> Self {
-        let pixel = |i: usize| {
-            // Premultiplied: accent fill at 18 %, accent edge at 85 %
-            let rgba: [u8; 4] = if i == 0 { [2, 24, 46, 46] } else { [8, 112, 217, 217] };
+    fn band_buffers() -> [MemoryRenderBuffer; 5] {
+        let hl = crate::theme::palette().highlight;
+        let (hr, hg, hb) = (
+            (hl.red() * 255.0).round() as u32,
+            (hl.green() * 255.0).round() as u32,
+            (hl.blue() * 255.0).round() as u32,
+        );
+        std::array::from_fn(|i| {
+            // Premultiplied: highlight fill at 18 %, highlight edge at 85 %
+            let a: u32 = if i == 0 { 46 } else { 217 };
+            let rgba: [u8; 4] = [
+                ((hr * a + 127) / 255) as u8,
+                ((hg * a + 127) / 255) as u8,
+                ((hb * a + 127) / 255) as u8,
+                a as u8,
+            ];
             MemoryRenderBuffer::from_slice(&rgba, Fourcc::Abgr8888, (1, 1), 1, Transform::Normal, None)
-        };
+        })
+    }
+
+    pub fn new() -> Self {
         Self {
             dir: fileops::user_dir("DESKTOP", "Desktop"),
             items: Vec::new(),
@@ -292,7 +307,7 @@ impl Desktop {
             layout: None,
             rubber: None,
             rubber_base: HashSet::new(),
-            band: std::array::from_fn(pixel),
+            band: Self::band_buffers(),
             last_click: None,
             anchor: None,
             drag: None,
@@ -320,12 +335,13 @@ impl Desktop {
         self.items.iter().position(|i| i.name == name)
     }
 
-    /// Scale/appearance changed: tiles are rebuilt lazily
+    /// Scale/appearance/accent/highlight/text_size changed: tiles and rubberband are rebuilt
     pub fn invalidate(&mut self) {
         self.tiles.clear();
         self.uploads.clear();
         self.requested.clear();
         self.layout = None;
+        self.band = Self::band_buffers();
     }
 
     fn set_items(&mut self, items: Vec<Item>, positions: HashMap<String, Cell>) {
@@ -608,7 +624,7 @@ pub fn raster_tile(job: &TileJob, fonts: &mut crate::text::FontSystem, icons: &m
             let tw = fonts.measure_text(line, 12.0, false);
             let x = (CELL_W - tw) * 0.5;
             if selected {
-                crate::theme::fill_rounded_rect(&mut m, x - 4.0, y - 1.0, tw + 8.0, 16.0, 4.0, rgba(10, 132, 255, 255));
+                crate::theme::fill_rounded_rect(&mut m, x - 4.0, y - 1.0, tw + 8.0, 16.0, 4.0, crate::theme::palette().accent);
             } else {
                 // A faint tight outline under the blur keeps thin strokes crisp on light wallpapers
                 fonts.draw_text(&mut m, line, x, y + 0.5, 12.0, rgba(0, 0, 0, 70), false);

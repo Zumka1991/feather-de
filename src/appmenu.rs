@@ -326,9 +326,8 @@ impl AppMenus {
         let worker_generation = latest_generation.clone();
         handle.insert_source(source, |event, _, state| match event {
             channel::Event::Msg(Update::Ready) => {
-                if let Some(cmd) = state.pending_autostart.take() {
-                    crate::apps::spawn_wayland_command(&cmd, &state.wayland_socket_name);
-                }
+                state.appmenu_ready = true;
+                state.maybe_launch_autostart();
             }
             channel::Event::Msg(Update::Layout { generation, root }) => {
                 if generation == state.appmenus.generation {
@@ -348,9 +347,8 @@ impl AppMenus {
                 if state.shell.set_client_menu(state.appmenus.generation, None) {
                     state.needs_redraw = true;
                 }
-                if let Some(cmd) = state.pending_autostart.take() {
-                    crate::apps::spawn_wayland_command(&cmd, &state.wayland_socket_name);
-                }
+                state.appmenu_ready = true;
+                state.maybe_launch_autostart();
             }
         })?;
         std::thread::Builder::new()

@@ -14,7 +14,7 @@ use std::time::Duration;
 pub(crate) enum Target {
     Search,
     Applications,
-    Settings(u64, bool),
+    Settings(u64, crate::system_settings::Page, bool),
     Wifi,
     Audio,
 }
@@ -78,7 +78,11 @@ impl FeatherCompositor {
                         w.backend,
                         WindowBackend::Builtin(BuiltinWindowKind::SystemSettings)
                     ))
-                .then_some(Target::Settings(w.id, self.system_settings.zone_picker))
+                .then_some(Target::Settings(
+                    w.id,
+                    self.system_settings.page,
+                    self.system_settings.zone_picker,
+                ))
             })
     }
     pub(crate) fn repeat_candidate(

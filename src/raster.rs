@@ -68,6 +68,9 @@ struct Request {
     epoch: u64,
     scale: f32,
     appearance: Appearance,
+    accent: crate::theme::AccentColor,
+    highlight: Option<crate::theme::AccentColor>,
+    text_size: crate::theme::TextSize,
     job: Job,
 }
 
@@ -177,9 +180,12 @@ impl RasterSender {
                         Job::Tile(_) => "tile",
                         Job::DesktopTile(_) => "desktop-tile",
                     };
-                    let asset = crate::theme::with_render_settings(
+                    let asset = crate::theme::with_full_render_settings(
                         request.scale,
                         request.appearance,
+                        request.accent,
+                        request.highlight,
+                        request.text_size,
                         || match &request.job {
                             Job::Settings(job) => Asset::Settings(
                                 job.ticket.clone(),
@@ -328,6 +334,9 @@ impl RasterSender {
                 epoch: self.epoch.load(Ordering::Acquire),
                 scale: crate::theme::ui_scale(),
                 appearance: crate::theme::appearance(),
+                accent: crate::theme::accent_color(),
+                highlight: crate::theme::highlight_choice(),
+                text_size: crate::theme::text_size(),
                 job,
             })
             .is_ok()

@@ -1584,6 +1584,12 @@ impl MacShell {
                 self.cc.wifi=wifi;
                 self.topbar_dirty=true;
             }
+            crate::controls::Update::Bluetooth(bluetooth) => {
+                if self.cc.bluetooth == bluetooth {
+                    return false;
+                }
+                self.cc.bluetooth = bluetooth;
+            }
             crate::controls::Update::AudioFeedback(audio) => {
                 self.cc.keyboard_audio_updated(audio);
             }
@@ -1593,7 +1599,16 @@ impl MacShell {
                 self.cc.audio_updated();
             }
             crate::controls::Update::Error(title,error) => {
-                if self.control_center_open {self.cc.open(if title=="Звук" {crate::control_panel::Page::Sound} else {crate::control_panel::Page::Wifi});}
+                if self.control_center_open {
+                    self.cc.open(match title {
+                        "Звук" => crate::control_panel::Page::Sound,
+                        "Bluetooth" => crate::control_panel::Page::Bluetooth,
+                        _ => crate::control_panel::Page::Wifi,
+                    });
+                }
+                if title == "Bluetooth" {
+                    self.cc.bluetooth.connecting = None;
+                }
                 self.cc.error=Some(error.clone());
                 if !self.control_center_open {self.notify(title,error);return true;}
             }
@@ -2453,7 +2468,10 @@ impl MacShell {
             if let Some((r, item)) = items.iter().find(|(r, _)| r.contains(mx, my)) {
                 match item {
                     CcItem::Wifi => { self.cc.open(crate::control_panel::Page::Wifi); return Some(ShellClickAction::Control(crate::controls::Control::Scan)); }
-                    CcItem::Bluetooth => return Some(ShellClickAction::BluetoothSettings),
+                    CcItem::Bluetooth => {
+                        self.cc.open(crate::control_panel::Page::Bluetooth);
+                        return Some(ShellClickAction::Control(crate::controls::Control::ScanBluetooth));
+                    }
                     CcItem::Focus => return Some(ShellClickAction::ToggleDoNotDisturb),
                     CcItem::DarkMode => return Some(ShellClickAction::ToggleAppearance),
                     CcItem::Brightness => {
@@ -3062,7 +3080,14 @@ impl MacShell {
                     };
                     match item {
                         CcItem::Wifi => toggle(&mut pm, fonts, wifi, "Wi‑Fi", controls.wifi.subtitle(),crate::control_panel::Icon::Wifi),
-                        CcItem::Bluetooth => toggle(&mut pm, fonts, false, "Bluetooth", "Настроить…",crate::control_panel::Icon::Bluetooth),
+                        CcItem::Bluetooth => toggle(
+                            &mut pm,
+                            fonts,
+                            controls.bluetooth.available && controls.bluetooth.powered,
+                            "Bluetooth",
+                            controls.bluetooth.subtitle(),
+                            crate::control_panel::Icon::Bluetooth,
+                        ),
                         CcItem::Focus => toggle(&mut pm, fonts, dnd, "Не беспокоить", if dnd { "Вкл." } else { "Выкл." },crate::control_panel::Icon::Moon),
                         CcItem::DarkMode => toggle(&mut pm, fonts, dark, "Тёмный режим", if dark { "Вкл." } else { "Выкл." },crate::control_panel::Icon::Contrast),
                         CcItem::Brightness => match controls.shown_brightness() {
