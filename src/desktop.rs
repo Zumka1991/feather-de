@@ -1235,6 +1235,19 @@ impl FeatherCompositor {
             }
             if path.is_dir() && ours {
                 self.files(&shell_quote(&path));
+            } else if matches!(
+                path.extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf"
+            ) {
+                if let Some(preview) = crate::apps::preview_command() {
+                    self.spawn(&format!("{preview} {}", shell_quote(&path)));
+                } else {
+                    self.spawn(&format!("xdg-open {}", shell_quote(&path)));
+                }
             } else {
                 self.spawn(&format!("xdg-open {}", shell_quote(&path)));
             }

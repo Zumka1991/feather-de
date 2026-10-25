@@ -739,6 +739,7 @@ dependencies = [
  "feather-ui",
  "image",
  "libc",
+ "resvg",
  "smithay-client-toolkit",
  "tiny-skia",
  "wayland-client",
@@ -751,6 +752,20 @@ dependencies = [
  "chrono",
  "feather-ui",
  "libc",
+ "smithay-client-toolkit",
+ "tiny-skia",
+ "wayland-client",
+]
+
+[[package]]
+name = "feather-preview"
+version = "0.1.0"
+dependencies = [
+ "feather-ui",
+ "flate2",
+ "image",
+ "libc",
+ "resvg",
  "smithay-client-toolkit",
  "tiny-skia",
  "wayland-client",

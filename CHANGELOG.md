@@ -2,6 +2,43 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-25 — «Просмотр»: изображения и PDF (`feather-preview`) (Gemini/agy)
+
+- Создан собственный Wayland-клиент `feather-preview` (`preview/Cargo.toml`, `preview/src/main.rs`,
+  `preview/src/app.rs`, `preview/src/doc.rs`, `preview/src/theme.rs`) на `smithay-client-toolkit` 0.20,
+  `tiny-skia` и `feather-ui` в стиле macOS Tahoe Preview:
+  - Поддержка растровых изображений (`PNG`, `JPEG`, `WebP` через `image`), векторной графики (`SVG`
+    через `resvg`/`usvg`) и многостраничных документов `PDF` (высокочёткая растеризация через
+    `pdftoppm`/`gs` при наличии в системе + встроенный чистый Rust-парсер и растеризатор PDF-потоков
+    `render_pdf_native` со сжатием `FlateDecode`, векторными путями и текстом `BT .. ET` без внешних
+    зависимостей).
+  - Единая панель инструментов macOS Tahoe (`TOOLBAR_H = 48.0`): кнопки управления окном («светофор»),
+    переключатель боковой панели миниатюр, навигация по страницам (`‹` / `›`), заголовок и подзаголовок
+    документа (`PDF · Стр. X из Y · W × H` или `PNG · W × H · размер`), управление масштабом
+    (`−`, `По окну` / `100%`, `+`, колесо мыши с `Ctrl`), поворот на 90° против и по часовой стрелке
+    (`↺`, `↻`, `Ctrl+R` / `Ctrl+Shift+R`), всплывающий инспектор сведений о файле (`ⓘ`, `Ctrl+I`) и
+    кнопка «Открыть…» (`Ctrl+O`, неблокирующий запуск `feather-files --file-picker` в отдельном потоке).
+  - Боковая панель миниатюр страниц (`SIDEBAR_W = 164.0`) для многостраничных PDF с подсветкой активной
+    страницы и прокруткой, панорамирование перетаскиванием мыши при увеличении, приём файлов через
+    Wayland drag-and-drop (`text/uri-list`), поддержка светлой и тёмной темы (`appearance.conf`),
+    масштаба текста и дробного HiDPI (`wp_fractional_scale_v1` + `wp_viewporter`), локализация на 6
+    языков в `crates/feather-ui/src/i18n.rs`.
+- Приложение интегрировано во всё окружение Пёрышка:
+  - В `src/apps.rs` добавлены `IconKind::Preview`, `preview_command()`, процедурная иконка «Просмотра»
+    в стиле macOS Tahoe (пейзаж в белой рамке с лупой) и запись `"builtin.preview"` в реестре приложений
+    (Dock, Launchpad, Spotlight).
+  - В `files/src/fsops.rs` (`open_external`) и `src/desktop.rs` (`open_desktop_selection`) открытие
+    файлов `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg` и `.pdf` направлено в `feather-preview`.
+  - В `files/src/preview.rs` быстрый просмотр (`Space` в «Файлах») дополнен рендерингом `.svg` через
+    `resvg`.
+  - В `src/main.rs` добавлен отладочный сценарий `FEATHER_DEBUG_OPEN=preview` с генерацией
+    многостраничного демонстрационного PDF (`--sample-pdf`).
+- `cargo build --release` без предупреждений, все 196 тестов workspace прошли (включая модульные тесты
+  `loads_png_jpeg_webp_svg_and_multipage_pdf_and_rotates` и
+  `preview_ui_renders_empty_and_multipage_pdf_and_handles_controls`). Вложенная проверка
+  `FEATHER_DEBUG_OPEN=preview`: 0 тиков CPU за 5 с в простое и у `feather-de`, и у `feather-preview`;
+  `RssAnon` композитора — 34,00 МиБ (бюджет ≤ 60 МБ), `feather-preview` — 28,05 МиБ.
+
 ## 2026-10-25 — Конфиденциальность: доступ программ к записи экрана (портал) (Gemini/agy)
 
 - В `src/file_portal.rs` встроенная служба портала (`org.freedesktop.impl.portal.desktop.feather`)

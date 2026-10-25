@@ -105,6 +105,29 @@ pub fn volumes() -> Vec<(String, PathBuf)> {
 
 /// Opens a file with its default application; children are reaped by SIGCHLD=SIG_IGN
 pub fn open_external(path: &Path) {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf") {
+        if let Some(own) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("feather-preview")))
+            .filter(|p| p.is_file())
+        {
+            if std::process::Command::new(own)
+                .arg(path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
     let _ = std::process::Command::new("xdg-open")
         .arg(path)
         .stdin(std::process::Stdio::null())

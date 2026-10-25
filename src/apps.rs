@@ -17,6 +17,7 @@ pub enum IconKind {
     Antigravity,
     Vpn,
     Notes,
+    Preview,
     ActivityMonitor,
     Settings,
     Launchpad,
@@ -145,6 +146,11 @@ pub fn notes_command() -> Option<String> {
     own_program("feather-notes")
 }
 
+/// Feather's Preview app (images & PDF) when built next to the compositor binary
+pub fn preview_command() -> Option<String> {
+    own_program("feather-preview")
+}
+
 pub struct AppRegistry {
     pub apps: Vec<AppEntry>,
 }
@@ -187,6 +193,16 @@ impl AppRegistry {
                     .with_aliases(&["feather-notes"]),
                 None => AppEntry::new("builtin.notes", "Заметки", "Быстрые заметки (RU / EN)", IconKind::Notes, BuiltinWindow(BuiltinWindowKind::QuickNotes), true),
             },
+            AppEntry::new(
+                "builtin.preview",
+                "Просмотр",
+                "Изображения и документы PDF",
+                IconKind::Preview,
+                Exec(preview_command().unwrap_or_else(|| "feather-preview".into())),
+                true,
+            )
+            .with_aliases(&["feather-preview"])
+            .with_own_icon(),
             AppEntry::new(
                 "builtin.monitor",
                 "Мониторинг системы",
@@ -903,6 +919,39 @@ pub fn draw_app_icon(
                 let ly = y + size * (0.44 + i as f32 * 0.15);
                 stroke_line(pixmap, x + size * 0.18, ly, x + size * 0.82, ly, size * 0.025, rgba(200, 196, 186, 255));
             }
+        }
+        IconKind::Preview => {
+            // Preview («Просмотр»): sky-blue Tahoe tile with framed landscape photograph and magnifier loupe
+            tile(pixmap, rgba(96, 192, 255, 255), rgba(24, 108, 236, 255));
+            fill_rounded_rect(
+                pixmap,
+                x + size * 0.15,
+                y + size * 0.17,
+                size * 0.66,
+                size * 0.56,
+                size * 0.07,
+                rgba(255, 255, 255, 240),
+            );
+            fill_rounded_rect(
+                pixmap,
+                x + size * 0.19,
+                y + size * 0.21,
+                size * 0.58,
+                size * 0.48,
+                size * 0.045,
+                rgba(38, 134, 245, 255),
+            );
+            // Sun + mountain peaks inside the framed photo
+            fill_circle(pixmap, x + size * 0.31, y + size * 0.33, size * 0.055, rgba(255, 224, 102, 255));
+            stroke_line(pixmap, x + size * 0.22, y + size * 0.61, x + size * 0.40, y + size * 0.43, size * 0.04, rgba(255, 255, 255, 230));
+            stroke_line(pixmap, x + size * 0.40, y + size * 0.43, x + size * 0.52, y + size * 0.55, size * 0.04, rgba(255, 255, 255, 230));
+            stroke_line(pixmap, x + size * 0.52, y + size * 0.55, x + size * 0.64, y + size * 0.41, size * 0.04, rgba(255, 255, 255, 230));
+            stroke_line(pixmap, x + size * 0.64, y + size * 0.41, x + size * 0.74, y + size * 0.61, size * 0.04, rgba(255, 255, 255, 230));
+            // Inspecting loupe in bottom-right corner
+            let (lx, ly) = (x + size * 0.68, y + size * 0.66);
+            fill_circle(pixmap, lx, ly, size * 0.16, rgba(255, 255, 255, 250));
+            fill_circle(pixmap, lx, ly, size * 0.115, rgba(165, 218, 255, 240));
+            stroke_line(pixmap, lx + size * 0.10, ly + size * 0.10, lx + size * 0.19, ly + size * 0.19, size * 0.055, rgba(245, 247, 252, 255));
         }
         IconKind::ActivityMonitor => {
             tile(pixmap, rgba(58, 58, 64, 255), rgba(22, 22, 26, 255));

@@ -6,6 +6,18 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**«Просмотр»: изображения и PDF (`feather-preview`), 2026-10-25 (Gemini/agy):**
+в `preview/` (`main.rs`, `app.rs`, `doc.rs`, `theme.rs`), `src/apps.rs`, `src/desktop.rs`,
+`src/main.rs`, `files/src/fsops.rs`, `files/src/preview.rs` и `crates/feather-ui/src/i18n.rs`
+реализовано собственное Wayland-приложение «Просмотр» (`feather-preview`) в стиле macOS Tahoe Preview
+с поддержкой `PNG`, `JPEG`, `WebP`, `SVG` и многостраничных `PDF` (внешний растеризатор `pdftoppm`/`gs`
++ встроенный чистый Rust-растеризатор PDF), единой панелью инструментов, боковой панелью миниатюр
+страниц, масштабированием, поворотом на 90°, инспектором `ⓘ`, открытием через `feather-files --file-picker`,
+Wayland drag-and-drop (`text/uri-list`), процедурной иконкой в Dock/Launchpad/Spotlight и локализацией на
+6 языков. 196 тестов и `cargo build --release` без предупреждений; вложенная проверка
+`FEATHER_DEBUG_OPEN=preview`: 0 тиков CPU за 5 с в простое, `RssAnon` композитора 34,00 МиБ (клиента —
+28,05 МиБ).
+
 **Конфиденциальность: доступ программ к записи экрана (портал), 2026-10-25 (Gemini/agy):**
 в `src/file_portal.rs`, `src/system_preferences.rs`, `src/settings.rs`, `src/main.rs`,
 `src/system_settings.rs` и `crates/feather-ui/src/i18n.rs` реализованы портальные интерфейсы

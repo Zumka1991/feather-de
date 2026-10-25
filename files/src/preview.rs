@@ -45,6 +45,24 @@ fn load_inner(path: &Path) -> Result<Content, Box<dyn std::error::Error>> {
         let pm = tiny_skia::Pixmap::from_vec(pixels, tiny_skia::IntSize::from_wh(pw, ph).ok_or("Пустое изображение")?).ok_or("Пустое изображение")?;
         return Ok(Content::Image(pm, w, h));
     }
+    if ext == "svg" && meta.len() <= 16 * 1024 * 1024 {
+        let mut svg_bytes = Vec::new();
+        file.take(16 * 1024 * 1024).read_to_end(&mut svg_bytes)?;
+        let opt = resvg::usvg::Options::default();
+        if let Ok(tree) = resvg::usvg::Tree::from_data(&svg_bytes, &opt) {
+            let sz = tree.size();
+            let (ow, oh) = (sz.width().round().max(1.0) as u32, sz.height().round().max(1.0) as u32);
+            let scale = (1000.0 / ow as f32).min(750.0 / oh as f32).clamp(0.1, 4.0);
+            let rw = ((ow as f32 * scale).round() as u32).clamp(1, 1200);
+            let rh = ((oh as f32 * scale).round() as u32).clamp(1, 900);
+            if let Some(mut pm) = tiny_skia::Pixmap::new(rw, rh) {
+                let t = tiny_skia::Transform::from_scale(rw as f32 / sz.width().max(1.0), rh as f32 / sz.height().max(1.0));
+                resvg::render(&tree, t, &mut pm.as_mut());
+                return Ok(Content::Image(pm, ow, oh));
+            }
+        }
+        return Ok(Content::Info("Повреждённый SVG-файл".into()));
+    }
     let mut bytes = Vec::new();
     file.take(65537).read_to_end(&mut bytes)?;
     let truncated = bytes.len() > 65536;

@@ -2200,6 +2200,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             state.mark_settings_dirty();
         }
         Ok("about") => state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather),
+        Ok("preview") => {
+            if let Some(cmd) = crate::apps::preview_command() {
+                crate::apps::spawn_wayland_command(
+                    &format!("{cmd} --sample-pdf /tmp/feather-sample-preview.pdf"),
+                    &state.wayland_socket_name,
+                );
+            }
+        }
         _ => {}
     }
 

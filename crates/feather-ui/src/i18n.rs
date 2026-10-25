@@ -1135,6 +1135,23 @@ static TABLE: &[Entry] = &[
     ("Очистить", "Clear", "Borrar", "Leeren", "Effacer", "清空"),
     ("При политике «По списку» неизвестные программы добавляются при первом запросе; вы можете заранее разрешить или заблокировать любую программу.", "In “Per App” mode, unknown apps are recorded on first request; you can allow or block any app in advance.", "En el modo «Por aplicación», las aplicaciones desconocidas se registran en la primera solicitud; puedes permitir o bloquear cualquiera de antemano.", "Im Modus „Nach Liste“ werden unbekannte Programme bei der ersten Anfrage eingetragen; Sie können jedes Programm vorab erlauben oder blockieren.", "En mode « Par application », les applications inconnues sont ajoutées à la première demande ; vous pouvez autoriser ou bloquer toute application à l’avance.", "在“按应用列表”策略下，未知应用会在首次请求时加入列表；您可以预先允许或阻止任何应用。"),
     ("Разрешить доступ к записи экрана", "Allow Screen Recording Access", "Permitir acceso a la grabación de pantalla", "Zugriff auf Bildschirmaufnahme erlauben", "Autoriser l’accès à l’enregistrement d’écran", "允许访问屏幕录制"),
+
+    // ── Preview («Просмотр») ──
+    ("Просмотр", "Preview", "Vista Previa", "Vorschau", "Aperçu", "预览"),
+    ("Изображения и документы PDF", "Images and PDF Documents", "Imágenes y documentos PDF", "Bilder und PDF-Dokumente", "Images et documents PDF", "图像与 PDF 文稿"),
+    ("Открыть…", "Open…", "Abrir…", "Öffnen…", "Ouvrir…", "打开…"),
+    ("Открыть файл…", "Open File…", "Abrir archivo…", "Datei öffnen…", "Ouvrir un fichier…", "打开文件…"),
+    ("По окну", "Fit", "Ajustar", "Anpassen", "Adapter", "适合窗口"),
+    ("Стр.", "Page", "Pág.", "Seite", "Page", "第"),
+    ("из", "of", "de", "von", "sur", "/"),
+    ("Сведения о документе", "Document Info", "Información del documento", "Dokumentinformationen", "Informations sur le document", "文稿信息"),
+    ("Формат", "Format", "Formato", "Format", "Format", "格式"),
+    ("Страниц", "Pages", "Páginas", "Seiten", "Pages", "页数"),
+    ("Масштаб", "Zoom", "Zoom", "Zoom", "Zoom", "缩放"),
+    ("Изображения PNG, JPEG, WebP, SVG и документы PDF", "PNG, JPEG, WebP, SVG Images and PDF Documents", "Imágenes PNG, JPEG, WebP, SVG y documentos PDF", "PNG-, JPEG-, WebP-, SVG-Bilder und PDF-Dokumente", "Images PNG, JPEG, WebP, SVG et documents PDF", "PNG、JPEG、WebP、SVG 图像与 PDF 文稿"),
+    ("Перетащите файл сюда или нажмите «Открыть…»", "Drag a file here or click “Open…”", "Arrastra un archivo aquí o haz clic en «Abrir…»", "Datei hierher ziehen oder auf „Öffnen…“ klicken", "Glissez un fichier ici ou cliquez sur « Ouvrir… »", "将文件拖到此处或点按“打开…”"),
+    ("Загрузка документа…", "Loading document…", "Cargando documento…", "Dokument wird geladen…", "Chargement du document…", "正在载入文稿…"),
+    ("Не удалось открыть файл", "Could Not Open File", "No se pudo abrir el archivo", "Datei konnte nicht geöffnet werden", "Impossible d’ouvrir le fichier", "无法打开文件"),
 ];
 
 fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {
