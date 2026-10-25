@@ -6,6 +6,23 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Жесты трекпада, VRR / explicit sync / direct scanout и приёмка бюджетов производительности, 2026-10-26 (Gemini/agy):**
+в `src/input.rs` и `src/main.rs` реализована обработка жестов трекпада 3–4 пальцами (`GestureSwipe`
+для переключения рабочих столов, Mission Control и страниц Launchpad; `GesturePinch` для открытия и
+закрытия Launchpad). В `src/drm_backend.rs`, `src/render.rs`, `src/handlers.rs` и `src/main.rs`
+подключены VRR (`vrr_supported` / `Head::set_vrr` / `FEATHER_VRR=0|1|auto`), direct scanout
+(`ALLOW_PRIMARY_PLANE_SCANOUT_ANY` + `SKIP_CURSOR_ONLY_UPDATES` + счётчик `direct_scanouts`) и
+explicit sync (`wp_linux_drm_syncobj_v1` через `DrmSyncobjState` и `DrmSyncPointBlocker`). В
+`src/wallpaper.rs`, `src/ui_raster.rs`, `src/theme.rs`, `src/window.rs`, `src/raster.rs`,
+`src/shell.rs`, `src/system_settings.rs`, `src/icons.rs` и `src/render.rs` оптимизированы пики памяти
+и CPU: потоковое масштабирование обоев по одной строке (`peak_decoder_anon_kib = 5720` КиБ,
+`peak_sampled_anon_kib = 53008` КиБ, `peak_combined_anon_kib = 58552` КиБ ≤ 60 МБ), кэш плитки тени и
+парный `ShadowSet`, частичное обновление заголовка при смене фокуса, прямой блит иконок и кэш
+`full_span` (первые CPU-кадры анимаций `0,69–3,18 мс`: восстановление окна `1,70 мс`, Spotlight
+`2,52 мс`; среднее `сцена+GL` `0,30–0,55 мс`; кадр `builtin.settings` на worker `5,86 мс`). Все
+программные задачи `docs/ROADMAP.md` закрыты; за пользователем остаётся только ручная проверка на
+физическом оборудовании в DRM-сессии.
+
 **Первый запуск (мастер приветствия) и система упаковки/установки, 2026-10-25 (Gemini/agy):**
 в `src/first_run.rs`, `src/settings.rs`, `src/apps.rs`, `src/window.rs`, `src/shell.rs`, `src/input.rs`,
 `src/render.rs`, `src/main.rs` и `crates/feather-ui/src/i18n.rs` реализован 4‑шаговый мастер первого

@@ -6,9 +6,9 @@ use smithay::{
         renderer::{utils::on_commit_buffer_handler, ImportDma},
     },
     delegate_compositor, delegate_cursor_shape, delegate_data_device, delegate_dmabuf,
-    delegate_fractional_scale, delegate_output, delegate_primary_selection, delegate_seat,
-    delegate_shm, delegate_viewporter, delegate_xdg_activation, delegate_xdg_decoration,
-    delegate_xdg_shell,
+    delegate_drm_syncobj, delegate_fractional_scale, delegate_output, delegate_primary_selection,
+    delegate_seat, delegate_shm, delegate_viewporter, delegate_xdg_activation,
+    delegate_xdg_decoration, delegate_xdg_shell,
     desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKind},
     input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
     reexports::{
@@ -25,8 +25,12 @@ use smithay::{
     utils::{Logical, Rectangle, Serial, SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
-        compositor::{get_parent, with_states, CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{
+            add_blocker, add_pre_commit_hook, get_parent, with_states, CompositorClientState,
+            CompositorHandler, CompositorState,
+        },
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
+        drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
         fractional_scale::{self, FractionalScaleHandler},
         output::OutputHandler,
         selection::{
@@ -462,6 +466,31 @@ impl CompositorHandler for FeatherCompositor {
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
+            let acquire_point = with_states(surface, |states| {
+                states
+                    .cached_state
+                    .get::<DrmSyncobjCachedState>()
+                    .pending()
+                    .acquire_point
+                    .clone()
+            });
+            if let Some(acquire_point) = acquire_point {
+                if let Ok((blocker, source)) = acquire_point.generate_blocker() {
+                    if let Some(client) = surface.client() {
+                        add_blocker(surface, blocker);
+                        let _ = state.loop_handle.insert_source(source, move |(), (), state| {
+                            let dh = state.display_handle.clone();
+                            state.client_compositor_state(&client).blocker_cleared(state, &dh);
+                            Ok(())
+                        });
+                    }
+                }
+            }
+        });
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         self.lock_surface_commit(surface);
@@ -484,6 +513,12 @@ impl CompositorHandler for FeatherCompositor {
                 let _ = popup.send_configure();
             }
         }
+    }
+}
+
+impl DrmSyncobjHandler for FeatherCompositor {
+    fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {
+        self.drm_syncobj_state.as_mut()
     }
 }
 
@@ -566,6 +601,7 @@ delegate_xdg_activation!(FeatherCompositor);
 delegate_compositor!(FeatherCompositor);
 delegate_shm!(FeatherCompositor);
 delegate_dmabuf!(FeatherCompositor);
+delegate_drm_syncobj!(FeatherCompositor);
 delegate_seat!(FeatherCompositor);
 delegate_data_device!(FeatherCompositor);
 delegate_primary_selection!(FeatherCompositor);

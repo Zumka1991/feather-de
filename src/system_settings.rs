@@ -4021,7 +4021,7 @@ impl crate::FeatherCompositor {
     }
     pub fn set_wallpaper_image(&mut self, image: Option<crate::wallpaper::ImageSource>) {
         self.shell.wallpaper_image = image;
-        self.shell.invalidate_all();
+        self.shell.invalidate_wallpaper();
         self.mark_builtin_windows_dirty();
         self.needs_redraw = true;
     }

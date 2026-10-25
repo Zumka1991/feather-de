@@ -205,6 +205,7 @@ pub struct FeatherCompositor {
     pub shm_state: ShmState,
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
+    pub drm_syncobj_state: Option<smithay::wayland::drm_syncobj::DrmSyncobjState>,
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
@@ -277,6 +278,7 @@ pub struct FeatherCompositor {
     pub physically_held_modifiers: std::collections::HashSet<smithay::input::keyboard::Keycode>,
     pub latched_modifiers: std::collections::HashSet<smithay::input::keyboard::Keycode>,
     pub modifier_used_while_held: bool,
+    pub gestures: crate::input::GestureState,
     pub audio_hud: crate::audio_hud::Hud,
     pub preferences: Option<crate::settings::Worker>,
     pub wallpaper_picker: Option<crate::wallpaper::Picker>,
@@ -412,7 +414,6 @@ impl FeatherCompositor {
         {
             let mut win = self.windows.remove(pos);
             win.minimized = false;
-            win.dirty = true;
             self.windows.push(win);
         } else {
             let id = self.next_win_id;
@@ -1251,7 +1252,6 @@ impl FeatherCompositor {
                     // Restored onto the desktop in front, like on macOS
                     win.space = self.spaces.current;
                     win.off_space = false;
-                    win.dirty = true;
                     self.windows.push(win);
                     self.shell.dock_dirty = true;
                     self.refresh_focus();
@@ -1263,7 +1263,7 @@ impl FeatherCompositor {
             ShellClickAction::CycleTheme => {
                 self.shell.wallpaper_image=None;
                 self.shell.theme = self.shell.theme.next();
-                self.shell.invalidate_all();
+                self.shell.invalidate_wallpaper();
                 self.mark_builtin_windows_dirty();
                 self.save_settings();
             }
@@ -1698,6 +1698,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let dmabuf_state = DmabufState::new();
     let node_hint = drm_info.as_ref().and_then(|i| i.4);
     let (dmabuf_state, dmabuf_global) = setup_dmabuf(dmabuf_state, backend.renderer(), node_hint, &dh);
+    let drm_syncobj_state = match &backend {
+        crate::backend::Backend::Drm(d) if smithay::wayland::drm_syncobj::supports_syncobj_eventfd(&d.fd) => {
+            Some(smithay::wayland::drm_syncobj::DrmSyncobjState::new::<FeatherCompositor>(&dh, d.fd.clone()))
+        }
+        _ => None,
+    };
 
     let (initial_size, host_scale, refresh_mhz) = match &backend {
         crate::backend::Backend::Winit(b) => (b.window_size(), b.scale_factor(), 60_000),
@@ -1893,6 +1899,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         shm_state,
         dmabuf_state,
         dmabuf_global,
+        drm_syncobj_state,
         seat_state,
         data_device_state,
         primary_selection_state,
@@ -1957,6 +1964,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         physically_held_modifiers: Default::default(),
         latched_modifiers: Default::default(),
         modifier_used_while_held: false,
+        gestures: Default::default(),
         audio_hud: Default::default(),
         preferences: None,
         wallpaper_picker: None,
@@ -2077,14 +2085,13 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
                             state.execute_shell_action(ShellClickAction::DockPress(target));
                         }
                     }
-                    2 => state.shell.open_menu = Some(crate::shell::TopMenu::App),
-                    3 => { state.shell.close_menus(); state.shell.control_center_open = true; }
-                    4 => { state.shell.close_menus(); state.shell.spotlight_open = true; }
+                    2 => { state.shell.open_menu = Some(crate::shell::TopMenu::App); state.shell.overlay_dirty = true; }
+                    3 => { state.shell.close_menus(); state.shell.control_center_open = true; state.shell.overlay_dirty = true; }
+                    4 => { state.shell.close_menus(); state.shell.spotlight_open = true; state.shell.overlay_dirty = true; }
                     5 => { state.shell.close_menus(); state.toggle_launchpad(); }
                     6 => state.toggle_launchpad(),
                     _ => {},
                 }
-                state.shell.overlay_dirty = true;
                 state.needs_redraw = true;
                 TimeoutAction::Drop
             })?;

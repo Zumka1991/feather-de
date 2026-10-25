@@ -49,6 +49,19 @@ pub struct Head {
     pub pending: bool,
     pub protected: bool,
     pub queued_protected: bool,
+    pub vrr_supported: bool,
+    pub vrr_enabled: bool,
+}
+impl Head {
+    pub fn set_vrr(&mut self, want: bool) {
+        if !self.vrr_supported || self.vrr_enabled == want {
+            return;
+        }
+        if let Err(err) = self.output.with_compositor(|c| c.use_vrr(want)) {
+            tracing::debug!("DRM {}: VRR({want}) недоступен: {err:?}", self.name);
+        }
+        self.vrr_enabled = self.output.with_compositor(|c| c.vrr_enabled());
+    }
 }
 pub struct DrmBackend {
     pub session: LibSeatSession,
@@ -227,7 +240,17 @@ impl DrmBackend {
                     continue;
                 }
             };
-            tracing::info!("DRM: {name} {}x{}", mode.size().0, mode.size().1);
+            let vrr_supported = matches!(
+                output.with_compositor(|c| c.vrr_supported(info.handle())),
+                Ok(smithay::backend::drm::VrrSupport::Supported
+                    | smithay::backend::drm::VrrSupport::RequiresModeset)
+            );
+            let vrr_enabled = output.with_compositor(|c| c.vrr_enabled());
+            tracing::info!(
+                "DRM: {name} {}x{} (vrr_supported={vrr_supported})",
+                mode.size().0,
+                mode.size().1
+            );
             self.heads.push(Head {
                 output,
                 connector: info.handle(),
@@ -243,6 +266,8 @@ impl DrmBackend {
                 pending: false,
                 protected: false,
                 queued_protected: false,
+                vrr_supported,
+                vrr_enabled,
             });
         }
         Ok(())

@@ -1328,6 +1328,15 @@ impl MacShell {
         self.desktop.invalidate();
     }
 
+    /// Only the wallpaper image/theme changed: keep icon caches and desktop tiles intact
+    pub fn invalidate_wallpaper(&mut self) {
+        self.launchpad_bg_key = None;
+        self.launchpad_bg_requested = None;
+        self.cc_backdrop = None;
+        self.cc_backdrop_requested = false;
+        self.wallpaper_dirty = true;
+    }
+
     pub fn reallocate_buffers(&mut self, logical_w: i32, logical_h: i32) {
         let w = logical_w.max(640);
         let h = logical_h.max(480);
@@ -1665,6 +1674,10 @@ impl MacShell {
                 self.applied_wallpaper_image=image;
                 self.wallpaper_pending=Some((pixels,size));
                 crate::theme::set_glass_background(Some((std::rc::Rc::new(glass), self.screen_w as f32 / w as f32, self.screen_h as f32 / h as f32)));
+                self.launchpad_bg_key = None;
+                self.launchpad_bg_requested = None;
+                self.cc_backdrop = None;
+                self.cc_backdrop_requested = false;
                 self.dock_painted.clear(); self.overlay_painted.clear();
                 self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true;
             }
@@ -2614,7 +2627,11 @@ impl MacShell {
     pub fn upload_wallpaper(&mut self,renderer:&mut smithay::backend::renderer::gles::GlesRenderer){
         use smithay::backend::renderer::{ImportMem,element::texture::TextureBuffer};
         if let Some((pixels,size))=self.wallpaper_pending.take(){
+            self.wallpaper_texture = None;
             match renderer.import_memory(&pixels,Fourcc::Abgr8888,size.into(),false){Ok(texture)=>{self.wallpaper_texture=Some(TextureBuffer::from_texture(renderer,texture,1,Transform::Normal,None));self.wallpaper_texture_size=size;},Err(e)=>tracing::warn!("wallpaper upload: {e:?}")}
+            drop(pixels);
+            #[cfg(target_os = "linux")]
+            unsafe { libc::malloc_trim(0); }
             self.request_raster_reclaim();
         }
     }
@@ -2653,10 +2670,14 @@ impl MacShell {
         let icons=&mut self.icons;
         let mut ctx = self.topbar_buffer.render();
         let _ = ctx.draw(|buf| {
-            buf.fill(0);
+            // Tahoe: fill the menu bar tint directly in a single pass instead of
+            // zeroing the whole buffer and rasterizing a full-screen tiny_skia mask.
+            let tc = bar.tint.premultiply().to_color_u8();
+            let px = [tc.red(), tc.green(), tc.blue(), tc.alpha()];
+            for chunk in buf.chunks_exact_mut(4) {
+                chunk.copy_from_slice(&px);
+            }
             if let Some(mut pm) = PixmapMut::from_bytes(buf, pw as u32, ph as u32) {
-                // Tahoe: the menu bar is (almost) transparent over the wallpaper
-                fill_rounded_rect(&mut pm, 0.0, 0.0, lw, lh, 0.0, bar.tint);
                 let text_y = (lh - 13.0) * 0.5 - 1.5;
                 let highlight = |pm: &mut PixmapMut, x0: f32, x1: f32| {
                     fill_rounded_rect(pm, x0, 2.0, x1 - x0, lh - 4.0, 6.0, bar.highlight);
@@ -2980,10 +3001,18 @@ impl MacShell {
 
         let p = palette();
         let menu_panels: Vec<_> = self.menu_panels().into_iter().map(|(r, rows, hovered)| (local(r), rows, hovered)).collect();
-        let (panel, items) = self.cc_layout();
-        let cc = (local(panel), items.into_iter().map(|(r, item)| (local(r), item)).collect::<Vec<_>>());
-        let (bar, list, count, math) = self.spotlight_layout(registry);
-        let sp = (local(bar), list.map(local), count, math);
+        let cc = if self.control_center_open {
+            let (panel, items) = self.cc_layout();
+            (local(panel), items.into_iter().map(|(r, item)| (local(r), item)).collect::<Vec<_>>())
+        } else {
+            (R::new(0.0, 0.0, 0.0, 0.0), Vec::new())
+        };
+        let sp = if self.spotlight_open {
+            let (bar, list, count, math) = self.spotlight_layout(registry);
+            (local(bar), list.map(local), count, math)
+        } else {
+            (R::new(0.0, 0.0, 0.0, 0.0), None, 0, false)
+        };
         let toasts: Vec<_> = if self.toast_visible() {
             self.toasts.iter().cloned().zip(self.toast_rects().into_iter().map(local)).collect()
         } else {

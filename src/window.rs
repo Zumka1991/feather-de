@@ -87,27 +87,39 @@ pub enum WindowBackend {
 /// 9-slice drop shadow: the shadow image is rasterized once per focus state / scale
 /// and then stretched on the GPU, so resizing a window never re-rasterizes it on the CPU.
 pub struct ShadowSet {
-    pieces: Vec<MemoryRenderBuffer>,
-    built_for: Option<(bool, u32, bool)>,
+    sets: [Vec<MemoryRenderBuffer>; 2],
+    focused: bool,
+    built_for: Option<(u32, bool)>,
     corner_phys: i32,
 }
 
 impl ShadowSet {
     fn new() -> Self {
         Self {
-            pieces: Vec::new(),
+            sets: [Vec::new(), Vec::new()],
+            focused: false,
             built_for: None,
             corner_phys: 0,
         }
     }
 
+    fn has_state(&self, focused: bool) -> bool {
+        let key = (ui_scale().to_bits(), appearance() == Appearance::Dark);
+        self.built_for == Some(key) && self.sets[usize::from(focused)].len() == 8
+    }
+
     fn ensure(&mut self, focused: bool) {
         let s = ui_scale();
-        let key = (focused, s.to_bits(), appearance() == Appearance::Dark);
-        if self.built_for == Some(key) {
+        let key = (s.to_bits(), appearance() == Appearance::Dark);
+        if self.built_for != Some(key) {
+            self.sets = [Vec::new(), Vec::new()];
+            self.built_for = Some(key);
+        }
+        self.focused = focused;
+        let slot = usize::from(focused);
+        if self.sets[slot].len() == 8 {
             return;
         }
-        self.built_for = Some(key);
 
         let corner_logical = SHADOW_PAD as f32 + WINDOW_CORNER_RADIUS + 6.0;
         let kp = (corner_logical * s).ceil() as i32;
@@ -133,7 +145,7 @@ impl ShadowSet {
             )
         };
         // Order: TL, TR, BL, BR, Top, Bottom, Left, Right
-        self.pieces = vec![
+        self.sets[slot] = vec![
             crop(0, 0, kp, kp),
             crop(kp + 1, 0, kp, kp),
             crop(0, kp + 1, kp, kp),
@@ -158,7 +170,8 @@ impl ShadowSet {
         R: Renderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
-        if self.pieces.len() != 8 {
+        let pieces = &self.sets[usize::from(self.focused)];
+        if pieces.len() != 8 {
             return Vec::new();
         }
         let pad = SHADOW_PAD as f64 * scale;
@@ -183,7 +196,7 @@ impl ShadowSet {
             (rx + rw - k, ry + k, k, mid_h),
         ];
         let mut out = Vec::with_capacity(8);
-        for (index, (buf, (x, y, w, h))) in self.pieces.iter().zip(placements).enumerate() {
+        for (index, (buf, (x, y, w, h))) in pieces.iter().zip(placements).enumerate() {
             if let Ok(elem) = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 (x as f64, y as f64),
@@ -241,6 +254,7 @@ pub struct ManagedWindow {
     pub phys_buf_h: i32,
     pub shadow: ShadowSet,
     pub dirty: bool,
+    pub painted_focused: Option<bool>,
 }
 
 pub struct BuiltinContext<'a> {
@@ -271,12 +285,7 @@ fn empty_buffer() -> MemoryRenderBuffer {
 
 impl ManagedWindow {
     pub fn settings_needs_shadow(&self) -> bool {
-        self.shadow.built_for
-            != Some((
-                self.activated,
-                ui_scale().to_bits(),
-                appearance() == Appearance::Dark,
-            ))
+        !self.shadow.has_state(self.activated)
     }
     pub fn decoration_size(&self) -> (i32, i32) {
         (self.phys_buf_w, self.phys_buf_h)
@@ -295,13 +304,7 @@ impl ManagedWindow {
         self.hovered_traffic = job.traffic;
         self.dirty = true;
         self.shadow = ShadowSet::new();
-        if !job.shadow {
-            self.shadow.built_for = Some((
-                job.focused,
-                ui_scale().to_bits(),
-                appearance() == Appearance::Dark,
-            ));
-        }
+        self.maximized = !job.shadow;
         let context = job.context();
         let first_run = crate::first_run::Wizard::default();
         let ctx = BuiltinContext {
@@ -318,6 +321,7 @@ impl ManagedWindow {
             show_about: false,
         };
         self.ensure_rendered(fonts, job.focused, &ctx);
+        self.maximized = false;
         let buffer = std::mem::replace(&mut self.decoration_buffer, empty_buffer());
         let size = (self.phys_buf_w, self.phys_buf_h);
         self.phys_buf_w = 0;
@@ -343,12 +347,17 @@ impl ManagedWindow {
         {
             return false;
         }
-        if (self.phys_buf_w, self.phys_buf_h) != frame.size {
+        let SettingsFrame {
+            buffer,
+            shadow,
+            size,
+        } = frame;
+        if (self.phys_buf_w, self.phys_buf_h) != size {
             // A size change needs a new texture anyway. Transfer the worker's
             // pixels directly instead of allocating a third full-size CPU frame.
-            self.decoration_buffer = frame.buffer;
+            self.decoration_buffer = buffer;
         } else {
-            let mut source = frame.buffer;
+            let mut source = buffer;
             let mut target = self.decoration_buffer.render();
             let _ = target.draw(|dest| {
                 let mut src = source.render();
@@ -356,15 +365,22 @@ impl ManagedWindow {
                     dest.copy_from_slice(data);
                     Ok::<_, ()>(Vec::new())
                 });
-                Ok::<_, ()>(vec![Rectangle::from_size(frame.size.into())])
+                Ok::<_, ()>(vec![Rectangle::from_size(size.into())])
             });
+            drop(target);
+            drop(source);
         }
-        if let Some(shadow) = frame.shadow {
+        if let Some(shadow) = shadow {
             self.shadow = shadow;
         }
-        self.phys_buf_w = frame.size.0;
-        self.phys_buf_h = frame.size.1;
+        self.phys_buf_w = size.0;
+        self.phys_buf_h = size.1;
+        self.painted_focused = Some(self.activated);
         self.settings_ticket = None;
+        #[cfg(target_env = "gnu")]
+        unsafe {
+            libc::malloc_trim(0);
+        }
         true
     }
     pub fn new_wayland(id: u64, surface: ToplevelSurface) -> Self {
@@ -398,6 +414,7 @@ impl ManagedWindow {
             phys_buf_h: 1,
             shadow: ShadowSet::new(),
             dirty: true,
+            painted_focused: None,
         }
     }
 
@@ -449,6 +466,7 @@ impl ManagedWindow {
             phys_buf_h: 1,
             shadow: ShadowSet::new(),
             dirty: true,
+            painted_focused: None,
         }
     }
 
@@ -761,7 +779,11 @@ impl ManagedWindow {
             return;
         }
         self.activated = active;
-        self.dirty = true;
+        if (self.app_id == "builtin.settings" || self.painted_focused.is_none())
+            && self.painted_focused != Some(active)
+        {
+            self.dirty = true;
+        }
         if let Some(t) = self.toplevel() {
             t.with_pending_state(|state| {
                 if active {
@@ -866,6 +888,15 @@ impl ManagedWindow {
         focused: bool,
         ctx: &BuiltinContext<'_>,
     ) {
+        self.ensure_rendered_opt(fonts, focused, Some(ctx));
+    }
+
+    pub fn ensure_rendered_opt(
+        &mut self,
+        fonts: &mut FontSystem,
+        focused: bool,
+        ctx: Option<&BuiltinContext<'_>>,
+    ) {
         self.ensure_shadow();
 
         // Builtin windows own their whole frame; Wayland SSD windows only need a titlebar strip
@@ -887,12 +918,24 @@ impl ManagedWindow {
             self.phys_buf_w = target_phys_w;
             self.phys_buf_h = target_phys_h;
             self.dirty = true;
+            self.painted_focused = None;
         }
 
-        if !self.dirty {
+        if !self.dirty && self.painted_focused == Some(focused) {
+            return;
+        }
+        let builtin_kind = match self.backend {
+            WindowBackend::Wayland(_) => None,
+            WindowBackend::Builtin(k) => Some(k),
+        };
+        let unified = builtin_kind == Some(BuiltinWindowKind::SystemSettings);
+        let titlebar_only =
+            !self.dirty && self.painted_focused.is_some() && builtin_kind.is_some() && !unified;
+        if !titlebar_only && builtin_kind.is_some() && ctx.is_none() {
             return;
         }
         self.dirty = false;
+        self.painted_focused = Some(focused);
 
         let bw = self.phys_buf_w;
         let bh = self.phys_buf_h;
@@ -900,29 +943,51 @@ impl ManagedWindow {
         let win_h = lh as f32;
         let title = self.title.clone();
         let group_hovered = self.traffic_group_hovered;
-        let builtin_kind = match self.backend {
-            WindowBackend::Wayland(_) => None,
-            WindowBackend::Builtin(k) => Some(k),
-        };
         let r = WINDOW_CORNER_RADIUS;
         let tb = TITLEBAR_HEIGHT as f32;
         let p = palette();
-        let unified = builtin_kind == Some(BuiltinWindowKind::SystemSettings);
         let (tdx, tdy) = self.traffic_shift();
+        let draw_h = if titlebar_only {
+            to_phys(TITLEBAR_HEIGHT).min(bh)
+        } else {
+            bh
+        };
 
         let mut render_ctx = self.decoration_buffer.render();
         let _ = render_ctx.draw(|buf| {
-            buf.fill(0);
-            if let Some(mut pm) = PixmapMut::from_bytes(buf, bw as u32, bh as u32) {
+            let cr = ((r * ui_scale()).ceil() as usize + 2).min(bh as usize / 2);
+            let row_bytes = bw as usize * 4;
+            if titlebar_only {
+                buf[..draw_h as usize * row_bytes].fill(0);
+            } else if builtin_kind.is_some() && bh as usize > cr * 2 {
+                buf[..cr * row_bytes].fill(0);
+                buf[(bh as usize - cr) * row_bytes..].fill(0);
+            } else {
+                buf.fill(0);
+            }
+            if let Some(mut pm) =
+                PixmapMut::from_bytes(&mut buf[..draw_h as usize * row_bytes], bw as u32, draw_h as u32)
+            {
                 // A Wayland titlebar is just the top of a rounded rect: extend it past the strip
-                let body_h = if builtin_kind.is_some() {
+                let body_h = if builtin_kind.is_some() && !titlebar_only {
                     win_h
                 } else {
-                    win_h + r * 2.0
+                    tb + r * 2.0
                 };
-                fill_rounded_rect(&mut pm, 0.0, 0.0, win_w, body_h, r, p.window_bg);
+                if !titlebar_only {
+                    fill_rounded_rect(&mut pm, 0.0, 0.0, win_w, body_h, r, p.window_bg);
+                }
                 if unified {
-                    ctx.settings.paint(&mut pm, fonts, (0.0, tb), (win_w, win_h - tb), tb, &ctx.settings_context);
+                    if let Some(ctx) = ctx {
+                        ctx.settings.paint(
+                            &mut pm,
+                            fonts,
+                            (0.0, tb),
+                            (win_w, win_h - tb),
+                            tb,
+                            &ctx.settings_context,
+                        );
+                    }
                 } else {
                     let tb_col = if focused {
                         p.titlebar_active
@@ -930,7 +995,7 @@ impl ManagedWindow {
                         p.titlebar_inactive
                     };
                     fill_rounded_rect(&mut pm, 0.0, 0.0, win_w, tb + r * 2.0, r, tb_col);
-                    if builtin_kind.is_some() {
+                    if builtin_kind.is_some() && !titlebar_only {
                         fill_rounded_rect(&mut pm, 0.0, tb, win_w, r * 2.0, 0.0, p.window_bg);
                     }
                     stroke_line(&mut pm, 0.0, tb - 0.5, win_w, tb - 0.5, 1.0, p.separator);
@@ -970,29 +1035,31 @@ impl ManagedWindow {
                 } else {
                     p.title_inactive
                 };
-                if !unified { fonts.draw_text_clipped_centered(
-                    &mut pm,
-                    &title,
-                    win_w * 0.5,
-                    (tb - 13.0) * 0.5 - 1.5,
-                    (win_w - 2.0 * (TRAFFIC_CENTERS[2] + 24.0)).max(40.0),
-                    13.0,
-                    title_col,
-                    true,
-                );
-
-                }
-                if let Some(kind) = builtin_kind.filter(|_| !unified) {
-                    Self::draw_builtin_content(
+                if !unified {
+                    fonts.draw_text_clipped_centered(
                         &mut pm,
-                        fonts,
-                        kind,
-                        0.0,
-                        tb,
-                        win_w,
-                        win_h - tb,
-                        ctx,
+                        &title,
+                        win_w * 0.5,
+                        (tb - 13.0) * 0.5 - 1.5,
+                        (win_w - 2.0 * (TRAFFIC_CENTERS[2] + 24.0)).max(40.0),
+                        13.0,
+                        title_col,
+                        true,
                     );
+                }
+                if !titlebar_only {
+                    if let (Some(kind), Some(ctx)) = (builtin_kind.filter(|_| !unified), ctx) {
+                        Self::draw_builtin_content(
+                            &mut pm,
+                            fonts,
+                            kind,
+                            0.0,
+                            tb,
+                            win_w,
+                            win_h - tb,
+                            ctx,
+                        );
+                    }
                 }
 
                 stroke_rounded_rect(
@@ -1006,7 +1073,7 @@ impl ManagedWindow {
                     p.window_outline,
                 );
             }
-            Result::<_, ()>::Ok(vec![Rectangle::from_size((bw, bh).into())])
+            Result::<_, ()>::Ok(vec![Rectangle::from_size((bw, draw_h).into())])
         });
     }
 

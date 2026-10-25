@@ -125,6 +125,7 @@ impl RasterSender {
                     // New frosted wallpaper behind the lock panel
                     state.lock.repaint();
                     if wallpaper_ready {
+                        state.shell.upload_wallpaper(state.backend.renderer());
                         state.save_settings();
                     }
                 }
@@ -313,6 +314,12 @@ impl RasterSender {
                             },
                         },
                     );
+                    if matches!(request.job, Job::Settings(_) | Job::Wallpaper { .. }) {
+                        #[cfg(target_env = "gnu")]
+                        unsafe {
+                            libc::malloc_trim(0);
+                        }
+                    }
                     if profile {
                         eprintln!(
                             "[feather-raster] {kind}: {:.2} мс (worker)",

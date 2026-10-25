@@ -139,22 +139,36 @@ pub fn helper(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if w == 0 || h == 0 || w > 1920 || h > 1080 {
         return Err("invalid image size".into());
     }
-    std::io::stdout()
-        .lock()
-        .write_all(&prepare_pixels(source, w, h)?)?;
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::with_capacity(64 * 1024, stdout.lock());
+    stream_pixels(source, w, h, &mut out)?;
+    out.flush()?;
     Ok(())
 }
 
+#[cfg(test)]
 fn prepare_pixels(
     source: ImageSource,
     w: u32,
     h: u32,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+    stream_pixels(source, w, h, &mut out)?;
+    Ok(out)
+}
+
+fn stream_pixels(
+    source: ImageSource,
+    w: u32,
+    h: u32,
+    out: &mut impl Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use image::GenericImageView;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16384);
     limits.max_image_height = Some(16384);
     limits.max_alloc = Some(192 * 1024 * 1024);
-    let mut picture = match source {
+    let picture = match source {
         ImageSource::Bundled(i) => {
             let mut r =
                 image::ImageReader::new(std::io::Cursor::new(IMAGES[i])).with_guessed_format()?;
@@ -177,17 +191,82 @@ fn prepare_pixels(
             p
         }
     };
-    // Flatten alpha against a neutral background, preserving RGBA premultiplication.
-    picture = picture.resize_to_fill(w, h, image::imageops::FilterType::Triangle);
-    let mut pixels = picture.to_rgba8().into_raw();
-    for p in pixels.chunks_exact_mut(4) {
-        let a = p[3] as u16;
-        for c in &mut p[..3] {
-            *c = ((*c as u16 * a + 24 * (255 - a) + 127) / 255) as u8;
-        }
-        p[3] = 255;
+    unsafe {
+        libc::malloc_trim(0);
     }
-    Ok(pixels)
+    let (pw, ph) = (picture.width().max(1), picture.height().max(1));
+    let (sx0, sy0, sw, sh) = if (pw as u64) * (h as u64) >= (ph as u64) * (w as u64) {
+        let sw = (ph as f64) * (w as f64) / (h as f64);
+        ((pw as f64 - sw) * 0.5, 0.0, sw, ph as f64)
+    } else {
+        let sh = (pw as f64) * (h as f64) / (w as f64);
+        (0.0, (ph as f64 - sh) * 0.5, pw as f64, sh)
+    };
+    let max_x = (pw - 1) as isize;
+    let max_y = (ph - 1) as isize;
+    let x_samples: Vec<(u32, u32, u32)> = (0..w)
+        .map(|x| {
+            let sx = sx0 + ((x as f64 + 0.5) * sw / (w as f64)) - 0.5;
+            let xf = sx.floor();
+            let tx = ((sx - xf).clamp(0.0, 1.0) * 256.0).round() as u32;
+            let x0 = (xf as isize).clamp(0, max_x) as u32;
+            let x1 = (xf as isize + 1).clamp(0, max_x) as u32;
+            (x0, x1, tx)
+        })
+        .collect();
+    let mut row = vec![0u8; w as usize * 4];
+    for y in 0..h {
+        let sy = sy0 + ((y as f64 + 0.5) * sh / (h as f64)) - 0.5;
+        let yf = sy.floor();
+        let ty = ((sy - yf).clamp(0.0, 1.0) * 256.0).round() as u32;
+        let y0 = (yf as isize).clamp(0, max_y) as u32;
+        let y1 = (yf as isize + 1).clamp(0, max_y) as u32;
+        let wy0 = 256 - ty;
+        let wy1 = ty;
+        match &picture {
+            image::DynamicImage::ImageRgb8(rgb) => {
+                let raw = rgb.as_raw();
+                let stride = pw as usize * 3;
+                let r0 = &raw[y0 as usize * stride..];
+                let r1 = &raw[y1 as usize * stride..];
+                for (dst, &(x0, x1, tx)) in row.chunks_exact_mut(4).zip(x_samples.iter()) {
+                    let wx0 = 256 - tx;
+                    let wx1 = tx;
+                    let i0 = x0 as usize * 3;
+                    let i1 = x1 as usize * 3;
+                    for c in 0..3 {
+                        let top = r0[i0 + c] as u32 * wx0 + r0[i1 + c] as u32 * wx1;
+                        let bot = r1[i0 + c] as u32 * wx0 + r1[i1 + c] as u32 * wx1;
+                        dst[c] = ((top * wy0 + bot * wy1 + 32768) >> 16) as u8;
+                    }
+                    dst[3] = 255;
+                }
+            }
+            _ => {
+                for (dst, &(x0, x1, tx)) in row.chunks_exact_mut(4).zip(x_samples.iter()) {
+                    let wx0 = 256 - tx;
+                    let wx1 = tx;
+                    let p00 = picture.get_pixel(x0, y0).0;
+                    let p10 = picture.get_pixel(x1, y0).0;
+                    let p01 = picture.get_pixel(x0, y1).0;
+                    let p11 = picture.get_pixel(x1, y1).0;
+                    let mut rgba = [0u8; 4];
+                    for c in 0..4 {
+                        let top = p00[c] as u32 * wx0 + p10[c] as u32 * wx1;
+                        let bot = p01[c] as u32 * wx0 + p11[c] as u32 * wx1;
+                        rgba[c] = ((top * wy0 + bot * wy1 + 32768) >> 16) as u8;
+                    }
+                    let a = rgba[3] as u16;
+                    for c in 0..3 {
+                        dst[c] = ((rgba[c] as u16 * a + 24 * (255 - a) + 127) / 255) as u8;
+                    }
+                    dst[3] = 255;
+                }
+            }
+        }
+        out.write_all(&row)?;
+    }
+    Ok(())
 }
 
 pub fn glass(

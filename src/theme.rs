@@ -575,15 +575,30 @@ fn box_blur(data: &mut [f32], w: usize, h: usize, radius: usize) {
     }
 }
 
+thread_local! {
+    static SHADOW_TILE_CACHE: std::cell::RefCell<[Option<((u32, u32, u32), Pixmap)>; 2]> =
+        const { std::cell::RefCell::new([None, None]) };
+}
+
 /// Rasterizes the macOS window shadow for a square "core" window inside an `np`×`np` tile:
 /// a wide, soft, downward-offset gaussian plus a tight contact shadow. The window interior is
 /// cut out so translucent/rounded client corners never show a dark halo.
 pub fn render_shadow_tile(np: u32, focused: bool) -> Option<Pixmap> {
     let s = ui_scale();
+    let strength = palette().shadow_strength;
+    let key = (np, s.to_bits(), strength.to_bits());
+    let slot = usize::from(focused);
+    if let Some(cached) = SHADOW_TILE_CACHE.with_borrow(|c| {
+        c[slot]
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, pm)| pm.clone())
+    }) {
+        return Some(cached);
+    }
     let n = np as usize;
     let pad = SHADOW_PAD as f32;
     let core = np as f32 / s - pad * 2.0;
-    let strength = palette().shadow_strength;
 
     let coverage = |dy: f32| -> Option<Vec<f32>> {
         let mut pm = Pixmap::new(np, np)?;
@@ -609,6 +624,7 @@ pub fn render_shadow_tile(np: u32, focused: bool) -> Option<Pixmap> {
         px[2] = 0;
         px[3] = (a.clamp(0.0, 1.0) * 255.0) as u8;
     }
+    SHADOW_TILE_CACHE.with_borrow_mut(|c| c[slot] = Some((key, pixmap.clone())));
     Some(pixmap)
 }
 

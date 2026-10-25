@@ -35,6 +35,7 @@ pub struct FrameStats {
     renders: u32,
     submits: u32,
     commits: u32,
+    pub direct_scanouts: u32,
     cpu_ms: f64,
     gpu_ms: f64,
     swap_ms: f64,
@@ -108,8 +109,13 @@ impl FrameStats {
         let elapsed = start.elapsed().as_secs_f64();
         if elapsed >= 2.0 {
             let n = self.renders.max(1) as f64;
+            let scanout_note = if self.direct_scanouts > 0 {
+                format!(", scanout {}/{}", self.direct_scanouts, self.submits)
+            } else {
+                String::new()
+            };
             eprintln!(
-                "[feather-profile] кадров {:.0}/с (с изменениями {:.0}/с), коммитов {:.0}/с | CPU-буферы {:.2} мс, сцена+GL {:.2} мс, худший {:.2} мс, swap {:.2} мс",
+                "[feather-profile] кадров {:.0}/с (с изменениями {:.0}/с{scanout_note}), коммитов {:.0}/с | CPU-буферы {:.2} мс, сцена+GL {:.2} мс, худший {:.2} мс, swap {:.2} мс",
                 self.renders as f64 / elapsed,
                 self.submits as f64 / elapsed,
                 self.commits as f64 / elapsed,
@@ -680,32 +686,45 @@ impl FeatherCompositor {
 
         self.auth.ensure_rendered(&mut self.fonts);
         profile.step("overlay");
-        let visible_count = self.windows.iter().filter(|w| w.is_visible()).count();
-        let ctx = BuiltinContext {
-            settings: &self.system_settings,
-            first_run: &self.first_run,
-            settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,monitors:self.monitors.iter().map(|m|m.info.clone()).collect(),modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref(),dnd:self.shell.dnd_active(),dnd_schedule:self.shell.dnd_schedule,notify_sounds:self.shell.notify_sounds,sounds:self.sound_preferences,audio:self.shell.cc.audio.clone(),wifi:self.shell.cc.wifi.clone(),bluetooth:self.shell.cc.bluetooth.clone(),hot_corners:self.hot_corners.actions,night:self.night.prefs,night_active:self.night.active(),notify_apps:&self.shell.notify_apps,screen_capture_policy:self.screen_capture_policy,screen_capture_cursor:self.screen_capture_cursor,screen_capture_apps:&self.screen_capture_apps,sticky_keys:self.sticky_keys},
-            notes_text: &self.notes_buffer,
-            rss_mb: self.shell.last_rss_mb,
-            window_count: visible_count,
-            wayland_socket: &self.wayland_socket_name,
-            active_layout: &self.active_layout_name,
-            input_shortcut: self.keyboard_config.shortcut.label(),
-            scale_factor: ui_scale(),
-            show_about: self.show_about,
-        };
-        for win in &mut self.windows {
-            if win.is_visible() {
-                if win.app_id=="builtin.settings"{
-                    if win.dirty {
-                        let ticket=std::sync::Arc::new(());
-                        let job=crate::system_settings::FrameJob::new(std::sync::Arc::downgrade(&ticket),&self.system_settings,&ctx.settings_context,win);
-                        if self.shell.raster.as_ref().is_some_and(|worker|worker.submit(crate::raster::Job::Settings(job))){win.settings_ticket=Some(ticket);win.dirty=false;}
+        let needs_builtin_ctx = self
+            .windows
+            .iter()
+            .any(|w| w.is_visible() && w.is_builtin() && w.dirty);
+        if needs_builtin_ctx {
+            let visible_count = self.windows.iter().filter(|w| w.is_visible()).count();
+            let ctx = BuiltinContext {
+                settings: &self.system_settings,
+                first_run: &self.first_run,
+                settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,monitors:self.monitors.iter().map(|m|m.info.clone()).collect(),modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref(),dnd:self.shell.dnd_active(),dnd_schedule:self.shell.dnd_schedule,notify_sounds:self.shell.notify_sounds,sounds:self.sound_preferences,audio:self.shell.cc.audio.clone(),wifi:self.shell.cc.wifi.clone(),bluetooth:self.shell.cc.bluetooth.clone(),hot_corners:self.hot_corners.actions,night:self.night.prefs,night_active:self.night.active(),notify_apps:&self.shell.notify_apps,screen_capture_policy:self.screen_capture_policy,screen_capture_cursor:self.screen_capture_cursor,screen_capture_apps:&self.screen_capture_apps,sticky_keys:self.sticky_keys},
+                notes_text: &self.notes_buffer,
+                rss_mb: self.shell.last_rss_mb,
+                window_count: visible_count,
+                wayland_socket: &self.wayland_socket_name,
+                active_layout: &self.active_layout_name,
+                input_shortcut: self.keyboard_config.shortcut.label(),
+                scale_factor: ui_scale(),
+                show_about: self.show_about,
+            };
+            for win in &mut self.windows {
+                if win.is_visible() {
+                    if win.app_id=="builtin.settings"{
+                        if win.dirty {
+                            let ticket=std::sync::Arc::new(());
+                            let job=crate::system_settings::FrameJob::new(std::sync::Arc::downgrade(&ticket),&self.system_settings,&ctx.settings_context,win);
+                            if self.shell.raster.as_ref().is_some_and(|worker|worker.submit(crate::raster::Job::Settings(job))){win.settings_ticket=Some(ticket);win.dirty=false;}
+                        }
+                        continue;
                     }
-                    continue;
+                    let focused = win.activated;
+                    win.ensure_rendered(&mut self.fonts, focused, &ctx);
                 }
-                let focused = win.activated;
-                win.ensure_rendered(&mut self.fonts, focused, &ctx);
+            }
+        } else {
+            for win in &mut self.windows {
+                if win.is_visible() && win.app_id != "builtin.settings" {
+                    let focused = win.activated;
+                    win.ensure_rendered_opt(&mut self.fonts, focused, None);
+                }
             }
         }
         profile.step("windows");
@@ -900,15 +919,50 @@ impl FeatherCompositor {
 
     /// Direct DRM: compose (or scan out directly) and queue the frame for the next vblank
     fn render_drm(&mut self) -> Option<Duration> {
+        use smithay::backend::drm::compositor::{FrameFlags, PrimaryPlaneElement};
         let crate::backend::Backend::Drm(d)=&mut self.backend else{return None};
         let scale=self.scale_factor;let pointer=(self.pointer_location.x,self.pointer_location.y);
-        let t=Instant::now();let mut submitted=false;
+        let vrr_policy: u8 = * {
+            static POLICY: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+            POLICY.get_or_init(|| match std::env::var("FEATHER_VRR").as_deref() {
+                Ok("0" | "off" | "false") => 0,
+                Ok("1" | "always" | "true") => 2,
+                _ => 1, // auto: enable VRR for fullscreen windows
+            })
+        };
+        let t=Instant::now();let mut submitted=false;let mut direct_scanouts=0u32;
         for head in &mut d.heads {
             if head.pending {continue;}
             let Some(m)=self.monitors.iter().find(|m|m.info.name==head.name)else{continue};
             let info=&m.info;
             let now=Instant::now();
             let splash_opaque=self.lock.splash.is_opaque(now);
+            let fullscreen_on_head = !self.lock.active
+                && !self.lock.splash.active
+                && !self.shell.has_visible_overlay()
+                && self.shell.launchpad.is_none()
+                && self
+                    .windows
+                    .iter()
+                    .rev()
+                    .find(|w| {
+                        w.is_visible()
+                            && crate::monitors::Rect {
+                                x: w.x,
+                                y: w.y,
+                                w: w.width,
+                                h: w.total_height(),
+                            }
+                            .intersection(info.rect)
+                                > 0
+                    })
+                    .is_some_and(|w| w.fullscreen && self.animations.window(w).identity());
+            let want_vrr = match vrr_policy {
+                0 => false,
+                2 => !self.lock.active && !self.lock.splash.active,
+                _ => fullscreen_on_head,
+            };
+            head.set_vrr(want_vrr);
             let mut elements=if splash_opaque {
                 Vec::new()
             } else if self.lock.active {
@@ -931,10 +985,24 @@ impl FeatherCompositor {
                 sp.extend(elements);
                 elements=sp;
             }
-            match head.output.render_frame(&mut d.renderer,&elements,if self.lock.active||self.lock.splash.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR},smithay::backend::drm::compositor::FrameFlags::DEFAULT){
-                Ok(r) if !r.is_empty=>match head.output.queue_frame(()){
-                    Ok(())=>{head.pending=true;head.queued_protected=self.lock.active;submitted=true;},
-                    Err(e)=>tracing::warn!("DRM {} queue: {e:?}",head.name),
+            let mut flags = FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
+            if head.vrr_enabled {
+                flags |= FrameFlags::SKIP_CURSOR_ONLY_UPDATES;
+            }
+            match head.output.render_frame(&mut d.renderer,&elements,if self.lock.active||self.lock.splash.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR},flags){
+                Ok(r) if !r.is_empty=>{
+                    let scanned_out = matches!(r.primary_element, PrimaryPlaneElement::Element(_));
+                    match head.output.queue_frame(()){
+                        Ok(())=>{
+                            head.pending=true;
+                            head.queued_protected=self.lock.active;
+                            submitted=true;
+                            if scanned_out {
+                                direct_scanouts += 1;
+                            }
+                        },
+                        Err(e)=>tracing::warn!("DRM {} queue: {e:?}",head.name),
+                    }
                 },
                 Ok(_)=>{},Err(e)=>tracing::warn!("DRM {} render: {e:?}",head.name),
             }
@@ -942,6 +1010,11 @@ impl FeatherCompositor {
         // A failed lock frame must never leave the previous desktop on any connector.
         if self.lock.active && d.heads.iter().any(|h|!h.pending&&!h.protected){
             match d.clear_all(){Ok(())=>{submitted=false;self.lock.protected_frame=true;},Err(e)=>tracing::error!("Не удалось защитить все дисплеи: {e}")}
+        }
+        if direct_scanouts > 0 {
+            if let Some(stats) = self.frame_stats.as_mut() {
+                stats.direct_scanouts += direct_scanouts;
+            }
         }
         submitted.then(||t.elapsed())
     }

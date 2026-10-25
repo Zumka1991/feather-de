@@ -100,16 +100,11 @@ pub fn exact_icon_px(phys: f32) -> Option<u32> {
 pub fn blit_icon(target: &mut PixmapMut, icon: &Pixmap, x: f32, y: f32) {
     let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Icon);
     let s = ui_scale();
-    target.draw_pixmap(
+    crate::ui_raster::blit_premultiplied(
+        target,
+        icon.as_ref(),
         (x * s).round() as i32,
         (y * s).round() as i32,
-        icon.as_ref(),
-        &PixmapPaint {
-            quality: FilterQuality::Nearest,
-            ..Default::default()
-        },
-        Transform::identity(),
-        None,
     );
 }
 

@@ -3,8 +3,9 @@ use std::time::Instant;
 use smithay::{
     backend::{
         input::{
-            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-            KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+            AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
+            GesturePinchUpdateEvent, GestureSwipeUpdateEvent, InputBackend, InputEvent, KeyState,
+            KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
         },
     },
     desktop::{find_popup_root_surface, PopupManager},
@@ -29,6 +30,104 @@ use crate::{
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const DOUBLE_CLICK_MS: u128 = 350;
+const SWIPE_THRESHOLD: f64 = 48.0;
+const SWIPE_AXIS_RATIO: f64 = 1.3;
+const PINCH_IN_SCALE: f64 = 0.78;
+const PINCH_OUT_SCALE: f64 = 1.28;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GestureAction {
+    /// Horizontal 3/4-finger swipe: switch desktop left (-1) or right (+1)
+    SpaceStep(i32),
+    /// Vertical 3/4-finger swipe up: open Mission Control (or close Launchpad first)
+    OpenMission,
+    /// Vertical 3/4-finger swipe down: close Mission Control
+    CloseMission,
+    /// 3/4-finger pinch inward: open Launchpad
+    OpenLaunchpad,
+    /// 3/4-finger pinch outward: close Launchpad
+    CloseLaunchpad,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GestureState {
+    pub swipe_fingers: u32,
+    pub swipe_dx: f64,
+    pub swipe_dy: f64,
+    pub swipe_fired: bool,
+    pub pinch_fingers: u32,
+    pub pinch_scale: f64,
+    pub pinch_fired: bool,
+}
+
+impl GestureState {
+    pub fn swipe_begin(&mut self, fingers: u32) {
+        self.swipe_fingers = fingers;
+        self.swipe_dx = 0.0;
+        self.swipe_dy = 0.0;
+        self.swipe_fired = false;
+    }
+
+    pub fn swipe_update(&mut self, dx: f64, dy: f64, natural: bool) -> Option<GestureAction> {
+        if self.swipe_fingers < 3 || self.swipe_fired {
+            return None;
+        }
+        self.swipe_dx += dx;
+        self.swipe_dy += dy;
+        let ax = self.swipe_dx.abs();
+        let ay = self.swipe_dy.abs();
+        if ax >= SWIPE_THRESHOLD && ax > ay * SWIPE_AXIS_RATIO {
+            self.swipe_fired = true;
+            // Natural touchpad: fingers moving left (dx < 0) pull the right desktop (+1) in
+            let dir = if self.swipe_dx < 0.0 { 1 } else { -1 };
+            Some(GestureAction::SpaceStep(if natural { dir } else { -dir }))
+        } else if ay >= SWIPE_THRESHOLD && ay > ax * SWIPE_AXIS_RATIO {
+            self.swipe_fired = true;
+            if self.swipe_dy < 0.0 {
+                Some(GestureAction::OpenMission)
+            } else {
+                Some(GestureAction::CloseMission)
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn swipe_end(&mut self) {
+        self.swipe_fingers = 0;
+        self.swipe_dx = 0.0;
+        self.swipe_dy = 0.0;
+        self.swipe_fired = false;
+    }
+
+    pub fn pinch_begin(&mut self, fingers: u32) {
+        self.pinch_fingers = fingers;
+        self.pinch_scale = 1.0;
+        self.pinch_fired = false;
+    }
+
+    pub fn pinch_update(&mut self, scale: f64) -> Option<GestureAction> {
+        if self.pinch_fingers < 3 || self.pinch_fired {
+            return None;
+        }
+        self.pinch_scale = scale;
+        if scale <= PINCH_IN_SCALE {
+            self.pinch_fired = true;
+            Some(GestureAction::OpenLaunchpad)
+        } else if scale >= PINCH_OUT_SCALE {
+            self.pinch_fired = true;
+            Some(GestureAction::CloseLaunchpad)
+        } else {
+            None
+        }
+    }
+
+    pub fn pinch_end(&mut self) {
+        self.pinch_fingers = 0;
+        self.pinch_scale = 1.0;
+        self.pinch_fired = false;
+    }
+}
 
 /// Actions decided inside the keyboard filter. They run after it returns, because changing
 /// keyboard focus from inside `KeyboardHandle::input` would deadlock on the keyboard lock.
@@ -79,6 +178,8 @@ fn cycle_stack<T>(stack: &mut Vec<T>, matches: impl Fn(&T) -> bool, reverse: boo
 
 #[cfg(test)]
 mod cycle_tests {
+    use super::{GestureAction, GestureState};
+
     #[test]
     fn alt_grave_walks_every_window_of_the_app_both_ways() {
         // Bottom → top; 'a' windows belong to the frontmost app, others stay in place
@@ -91,6 +192,46 @@ mod cycle_tests {
         assert_eq!(*s.iter().rev().find(|w| a(w)).unwrap(), "a2", "reverse goes back");
         let mut one = vec!["x", "a1"];
         assert!(!super::cycle_stack(&mut one, a, false), "a single window does nothing");
+    }
+
+    #[test]
+    fn trackpad_three_and_four_finger_gestures_switch_spaces_mission_and_launchpad() {
+        let mut g = GestureState::default();
+        // 2-finger swipe is scrolling, not a desktop gesture
+        g.swipe_begin(2);
+        assert_eq!(g.swipe_update(-80.0, 0.0, true), None);
+        g.swipe_end();
+
+        // 3-finger horizontal swipe with natural touchpad: left (-dx) -> next space (+1)
+        g.swipe_begin(3);
+        assert_eq!(g.swipe_update(-20.0, 2.0, true), None);
+        assert_eq!(g.swipe_update(-32.0, 1.0, true), Some(GestureAction::SpaceStep(1)));
+        // Subsequent updates in the same swipe do not double-fire
+        assert_eq!(g.swipe_update(-40.0, 0.0, true), None);
+        g.swipe_end();
+
+        // Non-natural touchpad reverses horizontal direction
+        g.swipe_begin(4);
+        assert_eq!(g.swipe_update(-55.0, 0.0, false), Some(GestureAction::SpaceStep(-1)));
+        g.swipe_end();
+
+        // 3-finger vertical swipe up (-dy) opens Mission Control; down (+dy) closes it
+        g.swipe_begin(3);
+        assert_eq!(g.swipe_update(3.0, -52.0, true), Some(GestureAction::OpenMission));
+        g.swipe_end();
+        g.swipe_begin(4);
+        assert_eq!(g.swipe_update(-2.0, 54.0, true), Some(GestureAction::CloseMission));
+        g.swipe_end();
+
+        // 4-finger pinch in/out controls Launchpad
+        g.pinch_begin(4);
+        assert_eq!(g.pinch_update(0.90), None);
+        assert_eq!(g.pinch_update(0.75), Some(GestureAction::OpenLaunchpad));
+        assert_eq!(g.pinch_update(0.60), None);
+        g.pinch_end();
+        g.pinch_begin(3);
+        assert_eq!(g.pinch_update(1.32), Some(GestureAction::CloseLaunchpad));
+        g.pinch_end();
     }
 }
 
@@ -111,29 +252,118 @@ impl FeatherCompositor {
     /// Input from either backend (winit when nested, libinput on DRM)
     pub fn handle_input<B: InputBackend>(&mut self, event: InputEvent<B>) {
         // The event which wakes a blank screen is consumed in full.
-        let activity=matches!(&event,InputEvent::Keyboard{..}|InputEvent::PointerMotion{..}|InputEvent::PointerMotionAbsolute{..}|InputEvent::PointerButton{..}|InputEvent::PointerAxis{..});
-        if activity && self.activity(){return;}
+        let activity = matches!(
+            &event,
+            InputEvent::Keyboard { .. }
+                | InputEvent::PointerMotion { .. }
+                | InputEvent::PointerMotionAbsolute { .. }
+                | InputEvent::PointerButton { .. }
+                | InputEvent::PointerAxis { .. }
+                | InputEvent::GestureSwipeBegin { .. }
+                | InputEvent::GestureSwipeUpdate { .. }
+                | InputEvent::GestureSwipeEnd { .. }
+                | InputEvent::GesturePinchBegin { .. }
+                | InputEvent::GesturePinchUpdate { .. }
+                | InputEvent::GesturePinchEnd { .. }
+        );
+        if activity && self.activity() {
+            return;
+        }
         self.needs_redraw = true;
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => {
                 // Relative motion (mice/touchpads on DRM): libinput already applied acceleration
                 let delta = event.delta();
-                let p=crate::monitors::project(&self.monitor_rects(),(self.pointer_location.x+delta.x,self.pointer_location.y+delta.y));
-                let pos=Point::from(p);
+                let p = crate::monitors::project(
+                    &self.monitor_rects(),
+                    (self.pointer_location.x + delta.x, self.pointer_location.y + delta.y),
+                );
+                let pos = Point::from(p);
                 self.on_pointer_motion(pos, Event::time_msec(&event));
             }
             InputEvent::PointerMotionAbsolute { event } => {
-                let r=self.monitors.iter().find(|m|self.preview_monitor.as_ref()==Some(&m.info.name)).or_else(||self.primary_monitor()).map(|m|m.info.rect).unwrap_or_else(||self.monitor_at(0.0,0.0));
-                let local=event.position_transformed((r.w,r.h).into());
-                let pos=Point::from((local.x+r.x as f64,local.y+r.y as f64));
+                let r = self
+                    .monitors
+                    .iter()
+                    .find(|m| self.preview_monitor.as_ref() == Some(&m.info.name))
+                    .or_else(|| self.primary_monitor())
+                    .map(|m| m.info.rect)
+                    .unwrap_or_else(|| self.monitor_at(0.0, 0.0));
+                let local = event.position_transformed((r.w, r.h).into());
+                let pos = Point::from((local.x + r.x as f64, local.y + r.y as f64));
                 self.on_pointer_motion(pos, Event::time_msec(&event));
             }
             InputEvent::PointerButton { event } => {
                 self.on_pointer_button(event.button_code(), event.state(), Event::time_msec(&event));
             }
             InputEvent::PointerAxis { event } => self.on_pointer_axis::<B>(event),
+            InputEvent::GestureSwipeBegin { event } => {
+                self.gestures.swipe_begin(event.fingers());
+            }
+            InputEvent::GestureSwipeUpdate { event } => {
+                let natural = self.pointer_config.natural_touchpad;
+                if let Some(action) = self.gestures.swipe_update(event.delta_x(), event.delta_y(), natural) {
+                    self.apply_gesture_action(action);
+                }
+            }
+            InputEvent::GestureSwipeEnd { event: _ } => {
+                self.gestures.swipe_end();
+            }
+            InputEvent::GesturePinchBegin { event } => {
+                self.gestures.pinch_begin(event.fingers());
+            }
+            InputEvent::GesturePinchUpdate { event } => {
+                if let Some(action) = self.gestures.pinch_update(event.scale()) {
+                    self.apply_gesture_action(action);
+                }
+            }
+            InputEvent::GesturePinchEnd { event: _ } => {
+                self.gestures.pinch_end();
+            }
             _ => {}
+        }
+    }
+
+    pub fn apply_gesture_action(&mut self, action: GestureAction) {
+        if self.lock.active || self.auth.is_open() {
+            return;
+        }
+        match action {
+            GestureAction::SpaceStep(delta) => {
+                if let Some(lp) = self.shell.launchpad.as_mut() {
+                    if lp.scroll(delta as f64, true) {
+                        self.needs_redraw = true;
+                    }
+                } else {
+                    self.space_step(delta, false);
+                }
+            }
+            GestureAction::OpenMission => {
+                if self.shell.launchpad.is_some() {
+                    self.toggle_launchpad();
+                } else if !self.mission_open() {
+                    self.open_mission();
+                }
+            }
+            GestureAction::CloseMission => {
+                if self.mission_open() {
+                    self.close_mission(None);
+                }
+            }
+            GestureAction::OpenLaunchpad => {
+                if self.mission_open() {
+                    self.close_mission(None);
+                }
+                if self.shell.launchpad.is_none() {
+                    self.toggle_launchpad();
+                }
+            }
+            GestureAction::CloseLaunchpad => {
+                if self.shell.launchpad.is_some() {
+                    self.toggle_launchpad();
+                }
+            }
         }
     }
 
@@ -1428,6 +1658,7 @@ impl FeatherCompositor {
         self.latched_modifiers.clear();
         self.physically_held_modifiers.clear();
         self.modifier_used_while_held = false;
+        self.gestures = Default::default();
         self.shell.switcher_keys.clear();
         self.pointer_focus_dirty = true;
     }

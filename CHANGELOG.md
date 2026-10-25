@@ -2,6 +2,63 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-26 — Жесты трекпада, VRR / explicit sync / direct scanout и приёмка бюджетов памяти и CPU (Gemini/agy)
+
+- **Жесты трекпада: столы, Mission Control и Launchpad** (`src/input.rs`, `src/main.rs`):
+  - Реализованы конечный автомат `GestureState` и действия `GestureAction` для мультитач-жестов
+    `libinput` / Smithay (`GestureSwipeBegin`, `GestureSwipeUpdate`, `GestureSwipeEnd`,
+    `GesturePinchBegin`, `GesturePinchUpdate`, `GesturePinchEnd` для 3 и 4 пальцев):
+    - горизонтальный смах 3/4 пальцами переключает рабочие столы (`SpaceStep`, с учётом настройки
+      `natural_touchpad`) или перелистывает страницы открытого Launchpad;
+    - вертикальный смах вверх открывает Mission Control (или закрывает Launchpad), смах вниз
+      закрывает Mission Control;
+    - сведение 3/4 пальцев (`scale <= 0.78`) открывает Launchpad, разведение (`scale >= 1.28`)
+      закрывает его.
+- **VRR, explicit sync и direct scanout** (`src/drm_backend.rs`, `src/render.rs`, `src/handlers.rs`,
+  `src/main.rs`):
+  - **VRR (Adaptive Sync)**: при опросе DRM-выходов проверяется `vrr_supported(crtc)` (`Supported` /
+    `RequiresModeset`), в `Head::set_vrr` переключается `use_vrr` на композиторе вывода; в `render_drm`
+    частота автоматически переводится в адаптивный режим при наличии полноэкранного окна на выходе
+    (либо управляется через `FEATHER_VRR=0|1|auto`).
+  - **Direct Scanout**: в `render_drm` включён флаг
+    `FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY` (плюс
+    `FrameFlags::SKIP_CURSOR_ONLY_UPDATES` при активном VRR) с подсчётом кадров прямого вывода
+    клиентских буферов на первичную плоскость (`PrimaryPlaneElement::Element` → `direct_scanouts` в
+    `FrameStats`).
+  - **Explicit Sync (`wp_linux_drm_syncobj_v1`)**: подключён `DrmSyncobjState` (при поддержке
+    `supports_syncobj_eventfd` на DRM-устройстве), реализован `DrmSyncobjHandler` и pre-commit hook
+    поверхностей с регистрацией `DrmSyncPointBlocker` / `DrmSyncPointSource` в цикле событий Calloop.
+- **Приёмка бюджетов памяти и времени кадра (`docs/SPEC.md` §2)** (`src/wallpaper.rs`,
+  `src/ui_raster.rs`, `src/theme.rs`, `src/window.rs`, `src/raster.rs`, `src/shell.rs`,
+  `src/system_settings.rs`, `src/icons.rs`, `src/render.rs`):
+  - **Память при смене обоев ≤ 60 МБ**: в помощнике `--decode-wallpaper` (`src/wallpaper.rs`)
+    устранены полноразмерные промежуточные буферы `resize_to_fill` + `to_rgba8` (~39 МиБ): функция
+    `stream_pixels` вызывает `malloc_trim(0)` сразу после декодирования исходника и потоково
+    интерполирует/сплющивает альфу построчно в буфер одной строки (`7,68 КБ`). В композиторе
+    добавлен `MacShell::invalidate_wallpaper()` (без сброса кэша иконок и рабочего стола при смене
+    обоев), немедленная выгрузка `Asset::Wallpaper` в GL с освобождением старой текстуры до загрузки
+    новой и возвратом арен кучи (`malloc_trim(0)`). Пик декодера снизился с `~39 МиБ` до **`5,59 МиБ`**
+    (`5720 КиБ`), пик композитора — с `61 МиБ` до **`51,77 МиБ`** (`53008 КиБ`), суммарный пик
+    `compositor + --decode-wallpaper` — с `79,2 МиБ` до **`57,18 МиБ`** (`58552 КиБ` ≤ 60 МБ).
+  - **Первые CPU-кадры панелей ≤ 4 мс и кадр настроек на worker**:
+    - кэширована базовая плитка 9‑patch тени окна (`SHADOW_TILE_CACHE` в `src/theme.rs`) и обе
+      конфигурации `ShadowSet` (активная/неактивная) в `src/window.rs` (`0,00 мс` и `0` GL-загрузок
+      при смене фокуса);
+    - при смене фокуса уже отрисованного встроенного окна перерисовывается только полоска заголовка
+      высотой `28 pt` вместо всего тела окна (`ensure_rendered_opt`), а при разворачивании окна из
+      Dock сохранённый буфер переиспользуется без повторной растеризации;
+    - в `ensure_topbar_rendered` заливка фона строки меню выполняется прямым 4‑байтовым проходом без
+      создания полноэкранной маски `tiny_skia`;
+    - в `ui_raster` (`Coverage`, `solid`, `frosted`) кэшируется `full_span` по всей прямой
+      вертикальной части скруглённого прямоугольника и добавлен быстрый целочисленный блит
+      предварительно умноженных иконок `blit_premultiplied`.
+- **Проверка**: `cargo build --release --workspace` без предупреждений; все **201 тест** workspace
+  прошли; `python3 bench/session-check.py wallpaper --no-screenshot`: `idle_ticks_5s = 0`,
+  `peak_sampled_anon_kib = 53008`, `peak_decoder_anon_kib = 5720`, `peak_combined_anon_kib = 58552`;
+  `FEATHER_DEBUG_ANIMATIONS=1`: первые CPU-кадры всех анимаций `0,69–3,18 мс` (восстановление окна
+  `1,70 мс`, Spotlight `2,52 мс`), среднее время `сцена+GL` `0,30–0,55 мс`; кадр `builtin.settings`
+  на worker `5,86 мс`.
+
 ## 2026-10-25 — Первый запуск (мастер приветствия) и система упаковки/установки (Gemini/agy)
 
 - **Первый запуск: приветствие и начальная настройка** (`src/first_run.rs`, `src/settings.rs`,

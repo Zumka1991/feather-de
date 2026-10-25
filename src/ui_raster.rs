@@ -4,8 +4,22 @@ use tiny_skia::{Color, FillRule, Mask, Path, PixmapMut, PixmapRef, Transform};
 
 struct Coverage {
     mask: Mask,
+    mid: std::ops::Range<usize>,
     x: usize,
     y: usize,
+    w: usize,
+    total_h: usize,
+}
+impl Coverage {
+    #[inline]
+    fn row(&self, row: usize) -> &[u8] {
+        let r = if self.mid.contains(&row) {
+            self.mid.start
+        } else {
+            row
+        };
+        &self.mask.data()[r * self.w..(r + 1) * self.w]
+    }
 }
 fn coverage(dst: &PixmapMut<'_>, path: &Path, scale: f32) -> Option<Coverage> {
     let bounds = path.bounds();
@@ -20,7 +34,27 @@ fn coverage(dst: &PixmapMut<'_>, path: &Path, scale: f32) -> Option<Coverage> {
     if right <= x || bottom <= y {
         return None;
     }
-    let mut mask = Mask::new(right - x, bottom - y)?;
+    let w = right - x;
+    let total_h = bottom - y;
+    let r = path
+        .points()
+        .first()
+        .map(|p| (p.x - bounds.left()).max(0.0))
+        .unwrap_or(0.0);
+    let top_end = ((bounds.top() + r) * scale)
+        .ceil()
+        .clamp(y as f32, bottom as f32) as u32
+        + 2;
+    let bot_start = (((bounds.bottom() - r) * scale)
+        .floor()
+        .clamp(y as f32, bottom as f32) as u32)
+        .saturating_sub(2);
+    let mid = if top_end > y && bot_start > top_end + 4 && bot_start < bottom {
+        (top_end - y) as usize..(bot_start - y) as usize
+    } else {
+        0..0
+    };
+    let mut mask = Mask::new(w, total_h)?;
     mask.fill_path(
         path,
         FillRule::Winding,
@@ -29,8 +63,11 @@ fn coverage(dst: &PixmapMut<'_>, path: &Path, scale: f32) -> Option<Coverage> {
     );
     Some(Coverage {
         mask,
+        mid,
         x: x as usize,
         y: y as usize,
+        w: w as usize,
+        total_h: total_h as usize,
     })
 }
 
@@ -52,6 +89,40 @@ fn over(dst: &mut [u8], source: u32) {
     dst.copy_from_slice(&pixel.to_le_bytes());
 }
 
+pub fn blit_premultiplied(dst: &mut PixmapMut<'_>, src: PixmapRef<'_>, dx: i32, dy: i32) {
+    let dw = dst.width() as i32;
+    let dh = dst.height() as i32;
+    let sw = src.width() as i32;
+    let sh = src.height() as i32;
+    let x0 = dx.max(0);
+    let y0 = dy.max(0);
+    let x1 = (dx + sw).min(dw);
+    let y1 = (dy + sh).min(dh);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let sx0 = (x0 - dx) as usize;
+    let sy0 = (y0 - dy) as usize;
+    let w = (x1 - x0) as usize;
+    let h = (y1 - y0) as usize;
+    let d_stride = dw as usize * 4;
+    let s_stride = sw as usize * 4;
+    let d_data = dst.data_mut();
+    let s_data = src.data();
+    for r in 0..h {
+        let d_row = &mut d_data[(y0 as usize + r) * d_stride + x0 as usize * 4..][..w * 4];
+        let s_row = &s_data[(sy0 + r) * s_stride + sx0 * 4..][..w * 4];
+        for (dp, sp) in d_row.chunks_exact_mut(4).zip(s_row.chunks_exact(4)) {
+            let a = sp[3];
+            if a == 255 {
+                dp.copy_from_slice(sp);
+            } else if a != 0 {
+                over(dp, u32::from_le_bytes(sp.try_into().unwrap()));
+            }
+        }
+    }
+}
+
 pub fn solid(dst: &mut PixmapMut<'_>, path: &Path, scale: f32, color: Color) {
     if color.alpha() == 0.0 {
         return;
@@ -62,11 +133,20 @@ pub fn solid(dst: &mut PixmapMut<'_>, path: &Path, scale: f32, color: Color) {
     let c = color.premultiply().to_color_u8();
     let source = u32::from_le_bytes([c.red(), c.green(), c.blue(), c.alpha()]);
     let stride = dst.width() as usize * 4;
-    let w = coverage.mask.width() as usize;
-    for (row, mask) in coverage.mask.data().chunks_exact(w).enumerate() {
-        let start = (coverage.y + row) * stride + coverage.x * 4;
+    let w = coverage.w;
+    let mut cached_span: Option<(*const u8, std::ops::Range<usize>)> = None;
+    for row_idx in 0..coverage.total_h {
+        let mask = coverage.row(row_idx);
+        let span = match &cached_span {
+            Some((ptr, s)) if *ptr == mask.as_ptr() => s.clone(),
+            _ => {
+                let s = full_span(mask);
+                cached_span = Some((mask.as_ptr(), s.clone()));
+                s
+            }
+        };
+        let start = (coverage.y + row_idx) * stride + coverage.x * 4;
         let row = &mut dst.data_mut()[start..start + w * 4];
-        let span = full_span(mask);
         blend_span(&mut row[span.start * 4..span.end * 4], source);
         for range in [0..span.start, span.end..w] {
             for (pixel, &alpha) in row[range.start * 4..range.end * 4]
@@ -115,7 +195,7 @@ pub fn frosted(
         let c = c.premultiply().to_color_u8();
         u32::from_le_bytes([c.red(), c.green(), c.blue(), c.alpha()])
     });
-    let w = coverage.mask.width() as usize;
+    let w = coverage.w;
     let xs: Vec<_> = (0..w)
         .map(|x| {
             sample_axis(
@@ -138,7 +218,17 @@ pub fn frosted(
         }
     };
     let stride = dst.width() as usize * 4;
-    for (y, mask) in coverage.mask.data().chunks_exact(w).enumerate() {
+    let mut cached_span: Option<(*const u8, std::ops::Range<usize>)> = None;
+    for y in 0..coverage.total_h {
+        let mask = coverage.row(y);
+        let span = match &cached_span {
+            Some((ptr, s)) if *ptr == mask.as_ptr() => s.clone(),
+            _ => {
+                let s = full_span(mask);
+                cached_span = Some((mask.as_ptr(), s.clone()));
+                s
+            }
+        };
         let (a, b, fraction) = sample_axis(
             (((coverage.y + y) as f32 + 0.5) / scale + origin.1) / logical_per_pixel.1,
             bg.height(),
@@ -154,7 +244,6 @@ pub fn frosted(
         }
         let start = (coverage.y + y) * stride + coverage.x * 4;
         let row = &mut dst.data_mut()[start..start + w * 4];
-        let span = full_span(mask);
         sampled_span(
             &mut row[span.start * 4..span.end * 4],
             &top[span.clone()],
