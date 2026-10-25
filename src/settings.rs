@@ -288,6 +288,8 @@ pub struct Settings {
     pub use_24h_time: bool,
     pub first_weekday_monday: bool,
     pub metric_units: bool,
+    pub screenshot_format: crate::screenshot::Format,
+    pub screenshot_dir: Option<PathBuf>,
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub default_browser: Option<String>,
@@ -331,6 +333,8 @@ impl Default for Settings {
             use_24h_time: true,
             first_weekday_monday: true,
             metric_units: true,
+            screenshot_format: crate::screenshot::Format::Png,
+            screenshot_dir: None,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             default_browser: None,
@@ -447,6 +451,12 @@ impl Settings {
                         s.metric_units = b;
                     }
                 }
+                "screenshot_format" => {
+                    if let Some(fmt) = crate::screenshot::Format::parse(v) {
+                        s.screenshot_format = fmt;
+                    }
+                }
+                "screenshot_dir" => s.screenshot_dir = crate::screenshot::parse_dir_id(v),
                 "wallpaper" => {
                     if let Some(t) = WallpaperTheme::from_id(v) {
                         s.wallpaper = t;
@@ -698,6 +708,10 @@ impl Settings {
         ));
         if let Some(image) = &self.wallpaper_image {
             text.push_str(&format!("wallpaper_image={}\n", image.id()));
+        }
+        text.push_str(&format!("screenshot_format={}\n", self.screenshot_format.id()));
+        if let Some(dir) = &self.screenshot_dir {
+            text.push_str(&format!("screenshot_dir={}\n", crate::screenshot::encode_dir_id(dir)));
         }
         for (key, value) in [
             ("default_browser", &self.default_browser),

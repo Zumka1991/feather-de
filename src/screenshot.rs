@@ -32,10 +32,172 @@ use smithay::{
 };
 
 use crate::{render::FeatherElement, FeatherCompositor};
+use std::sync::{
+    atomic::{AtomicU8, Ordering},
+    RwLock,
+};
 
 /// What the compositor itself offers on the clipboard: (MIME type, bytes) pairs
 pub type ClipboardData = Arc<Vec<(String, Vec<u8>)>>;
 pub const PNG_MIME: &str = "image/png";
+
+/// Image file format used when saving screenshots to disk
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Format {
+    #[default]
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl Format {
+    pub const ALL: [Self; 3] = [Self::Png, Self::Jpeg, Self::Webp];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpeg",
+            Self::Webp => "webp",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Webp => "webp",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Png => "PNG",
+            Self::Jpeg => "JPEG",
+            Self::Webp => "WebP",
+        }
+    }
+
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "png" => Some(Self::Png),
+            "jpeg" | "jpg" => Some(Self::Jpeg),
+            "webp" => Some(Self::Webp),
+            _ => None,
+        }
+    }
+
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Jpeg,
+            2 => Self::Webp,
+            _ => Self::Png,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Png => 0,
+            Self::Jpeg => 1,
+            Self::Webp => 2,
+        }
+    }
+}
+
+static SCREENSHOT_FORMAT: AtomicU8 = AtomicU8::new(0);
+static SCREENSHOT_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+pub fn format() -> Format {
+    Format::from_u8(SCREENSHOT_FORMAT.load(Ordering::Relaxed))
+}
+
+pub fn set_format(fmt: Format) {
+    SCREENSHOT_FORMAT.store(fmt.as_u8(), Ordering::Relaxed);
+}
+
+pub fn custom_dir() -> Option<PathBuf> {
+    SCREENSHOT_DIR.read().ok().and_then(|g| g.clone())
+}
+
+pub fn set_custom_dir(dir: Option<PathBuf>) {
+    if let Ok(mut g) = SCREENSHOT_DIR.write() {
+        *g = dir.filter(|p| p.is_absolute());
+    }
+}
+
+pub fn default_dir() -> Option<PathBuf> {
+    Some(pictures_dir()?.join("Снимки экрана"))
+}
+
+pub fn dir_display_label(custom: Option<&std::path::Path>) -> String {
+    let Some(path) = custom else {
+        return "Изображения / Снимки экрана".into();
+    };
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        if path == home {
+            return "~".into();
+        }
+        if let Ok(rel) = path.strip_prefix(&home) {
+            return format!("~/{}", rel.to_string_lossy());
+        }
+    }
+    path.to_string_lossy().into_owned()
+}
+
+pub fn encode_dir_id(path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    if let Some(s) = path.to_str() {
+        if s.starts_with('/')
+            && !s.is_empty()
+            && s.trim() == s
+            && !s.chars().any(char::is_control)
+        {
+            return s.to_owned();
+        }
+    }
+    format!(
+        "hex:{}",
+        path.as_os_str()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    )
+}
+
+pub fn parse_dir_id(id: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let id = id.trim();
+    if id.is_empty() || id == "default" {
+        return None;
+    }
+    if let Some(hex) = id.strip_prefix("hex:") {
+        if hex.is_empty() || hex.len() > 32768 || hex.len() % 2 != 0 || !hex.is_ascii() {
+            return None;
+        }
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+            .collect::<Option<Vec<u8>>>()?;
+        if bytes.contains(&0) {
+            return None;
+        }
+        let path = PathBuf::from(std::ffi::OsString::from_vec(bytes));
+        return path.is_absolute().then_some(path);
+    }
+    if id.starts_with('/') && id.len() <= 16384 && !id.contains('\0') {
+        Some(PathBuf::from(id))
+    } else {
+        None
+    }
+}
 
 /// Region selection in progress (Shift+Print)
 pub struct Selection {
@@ -98,8 +260,8 @@ pub enum Target {
 }
 
 pub struct Finished {
-    png: Vec<u8>,
-    saved: Option<PathBuf>,
+    pub clipboard: Vec<(String, Vec<u8>)>,
+    pub saved: Option<PathBuf>,
 }
 
 impl FeatherCompositor {
@@ -206,6 +368,8 @@ impl FeatherCompositor {
         }
         let tx = self.screenshot_tx.clone();
         let (w, h) = (region.size.w as u32, region.size.h as u32);
+        let fmt = format();
+        let dir = custom_dir();
         // Map the PBO a frame later: by then the GPU has finished, nothing stalls the loop
         let _ = self.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(16)), move |_, _, state| {
             let t = std::time::Instant::now();
@@ -216,11 +380,12 @@ impl FeatherCompositor {
             match pixels {
                 Ok(pixels) => {
                     let tx = tx.clone();
+                    let dir = dir.clone();
                     let spawned = std::thread::Builder::new().name("feather-screenshot".into()).spawn(move || {
                         let t = std::time::Instant::now();
-                        let finished = encode_and_save(pixels, w, h, false, radius);
+                        let finished = encode_and_save_with(pixels, w, h, false, radius, fmt, dir.as_deref());
                         if profile.is_some() {
-                            eprintln!("[feather-profile] снимок: PNG+файл {:.1} мс (поток)", t.elapsed().as_secs_f64() * 1e3);
+                            eprintln!("[feather-profile] снимок: {}+файл {:.1} мс (поток)", fmt.label(), t.elapsed().as_secs_f64() * 1e3);
                         }
                         let _ = tx.send(finished);
                     });
@@ -241,7 +406,7 @@ impl FeatherCompositor {
             return;
         };
         self.play_effect(crate::sounds::Effect::Screenshot,false);
-        self.set_clipboard(vec![(PNG_MIME.into(), finished.png)]);
+        self.set_clipboard(finished.clipboard);
         let body = match finished.saved.as_ref().and_then(|p| p.file_name()) {
             Some(name) => format!("В буфере обмена и в файле {}", name.to_string_lossy()),
             None => "Скопирован в буфер обмена".into(),
@@ -318,13 +483,28 @@ impl FeatherCompositor {
     }
 }
 
-fn encode_and_save(rgba: Vec<u8>, w: u32, h: u32, flipped: bool, radius: f32) -> Option<Finished> {
-    let png = to_png(rgba, w, h, flipped, radius)?;
-    let saved = save(&png);
-    Some(Finished { png, saved })
+pub fn encode_and_save_with(
+    rgba: Vec<u8>,
+    w: u32,
+    h: u32,
+    flipped: bool,
+    radius: f32,
+    fmt: Format,
+    custom_dir: Option<&std::path::Path>,
+) -> Option<Finished> {
+    let file_bytes = to_image(rgba.clone(), w, h, flipped, radius, fmt)?;
+    let saved = save_to(&file_bytes, custom_dir, fmt);
+    let clipboard = if fmt == Format::Png {
+        vec![(PNG_MIME.into(), file_bytes)]
+    } else if let Some(png) = to_png(rgba, w, h, flipped, radius) {
+        vec![(fmt.mime().into(), file_bytes), (PNG_MIME.into(), png)]
+    } else {
+        vec![(fmt.mime().into(), file_bytes)]
+    };
+    Some(Finished { clipboard, saved })
 }
 
-fn to_png(mut rgba: Vec<u8>, w: u32, h: u32, flipped: bool, radius: f32) -> Option<Vec<u8>> {
+fn prepare_rgba(mut rgba: Vec<u8>, w: u32, h: u32, flipped: bool, radius: f32) -> Option<Vec<u8>> {
     let stride = w as usize * 4;
     if w == 0 || h == 0 || rgba.len() < stride * h as usize {
         return None;
@@ -341,12 +521,66 @@ fn to_png(mut rgba: Vec<u8>, w: u32, h: u32, flipped: bool, radius: f32) -> Opti
     }
     if radius > 0.0 {
         round_corners(&mut rgba, w, h, radius);
-        encode(&rgba, w, h, png::ColorType::Rgba)
-    } else {
-        // The composited frame is opaque: RGB is smaller and faster to encode
-        let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-        encode(&rgb, w, h, png::ColorType::Rgb)
     }
+    Some(rgba)
+}
+
+pub fn to_image(rgba: Vec<u8>, w: u32, h: u32, flipped: bool, radius: f32, fmt: Format) -> Option<Vec<u8>> {
+    use image::ImageEncoder;
+    let rgba = prepare_rgba(rgba, w, h, flipped, radius)?;
+    match fmt {
+        Format::Png => {
+            if radius > 0.0 {
+                encode(&rgba, w, h, png::ColorType::Rgba)
+            } else {
+                // The composited frame is opaque: RGB is smaller and faster to encode
+                let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+                encode(&rgb, w, h, png::ColorType::Rgb)
+            }
+        }
+        Format::Jpeg => {
+            // JPEG has no alpha channel: blend rounded corners smoothly against dark neutral
+            let rgb: Vec<u8> = if radius > 0.0 {
+                rgba.chunks_exact(4)
+                    .flat_map(|p| {
+                        let a = p[3] as u16;
+                        [
+                            ((p[0] as u16 * a) / 255) as u8,
+                            ((p[1] as u16 * a) / 255) as u8,
+                            ((p[2] as u16 * a) / 255) as u8,
+                        ]
+                    })
+                    .collect()
+            } else {
+                rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+            };
+            let mut out = Vec::with_capacity(rgb.len() / 4);
+            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 92);
+            encoder
+                .write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)
+                .ok()?;
+            Some(out)
+        }
+        Format::Webp => {
+            let mut out = Vec::with_capacity(rgba.len() / 3);
+            let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut out);
+            if radius > 0.0 {
+                encoder
+                    .write_image(&rgba, w, h, image::ExtendedColorType::Rgba8)
+                    .ok()?;
+            } else {
+                let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+                encoder
+                    .write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)
+                    .ok()?;
+            }
+            Some(out)
+        }
+    }
+}
+
+fn to_png(rgba: Vec<u8>, w: u32, h: u32, flipped: bool, radius: f32) -> Option<Vec<u8>> {
+    to_image(rgba, w, h, flipped, radius, Format::Png)
 }
 
 fn encode(data: &[u8], w: u32, h: u32, color: png::ColorType) -> Option<Vec<u8>> {
@@ -379,19 +613,20 @@ fn round_corners(rgba: &mut [u8], w: u32, h: u32, r: f32) {
     }
 }
 
-/// Pictures/Снимки экрана/Снимок экрана YYYY-MM-DD в HH.MM.SS.png
-fn save(png: &[u8]) -> Option<PathBuf> {
-    let dir = pictures_dir()?.join("Снимки экрана");
+/// `<dir>/Снимок экрана YYYY-MM-DD в HH.MM.SS.<ext>`
+pub fn save_to(bytes: &[u8], custom_dir: Option<&std::path::Path>, fmt: Format) -> Option<PathBuf> {
+    let dir = custom_dir.map(PathBuf::from).or_else(default_dir)?;
     std::fs::create_dir_all(&dir).ok()?;
+    let ext = fmt.extension();
     let stamp = chrono::Local::now().format("%Y-%m-%d в %H.%M.%S");
-    let mut path = dir.join(format!("Снимок экрана {stamp}.png"));
+    let mut path = dir.join(format!("Снимок экрана {stamp}.{ext}"));
     for n in 2.. {
         if !path.exists() {
             break;
         }
-        path = dir.join(format!("Снимок экрана {stamp} ({n}).png"));
+        path = dir.join(format!("Снимок экрана {stamp} ({n}).{ext}"));
     }
-    std::fs::write(&path, png).ok()?;
+    std::fs::write(&path, bytes).ok()?;
     Some(path)
 }
 
@@ -446,5 +681,37 @@ mod tests {
         assert_eq!([alpha(20, 0), alpha(0, 20), alpha(20, 20)], [200; 3]);
         // Somewhere on the arc coverage is partial
         assert!((0..12).any(|i| (1..255).contains(&alpha(i, 12 - i)) || (1..255).contains(&alpha(i, 11 - i))));
+    }
+
+    #[test]
+    fn formats_encode_save_to_custom_directory_and_roundtrip_paths() {
+        let dir = std::env::temp_dir().join(format!("feather-screenshot-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rgba = vec![180u8; 24 * 16 * 4];
+        for fmt in Format::ALL {
+            assert_eq!(Format::parse(fmt.id()), Some(fmt));
+            assert_eq!(Format::from_u8(fmt.as_u8()), fmt);
+            let finished = encode_and_save_with(rgba.clone(), 24, 16, false, 6.0, fmt, Some(&dir)).unwrap();
+            let path = finished.saved.expect("saved screenshot path");
+            assert!(path.starts_with(&dir));
+            assert_eq!(path.extension().and_then(|e| e.to_str()), Some(fmt.extension()));
+            let decoded = image::load_from_memory(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (24, 16));
+            assert!(finished.clipboard.iter().any(|(m, _)| m == PNG_MIME));
+            assert!(finished.clipboard.iter().any(|(m, _)| m == fmt.mime()));
+        }
+        // Second save in the same second gets a collision suffix "(2)"
+        let a = save_to(b"png1", Some(&dir), Format::Png).unwrap();
+        let b = save_to(b"png2", Some(&dir), Format::Png).unwrap();
+        assert_ne!(a, b);
+        for p in [
+            PathBuf::from("/tmp/Мои снимки экрана"),
+            PathBuf::from("/tmp/странный\nпуть=1"),
+        ] {
+            let encoded = encode_dir_id(&p);
+            assert_eq!(parse_dir_id(&encoded), Some(p));
+        }
+        assert!(parse_dir_id("relative/path").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

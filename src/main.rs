@@ -720,6 +720,8 @@ impl FeatherCompositor {
             use_24h_time: crate::theme::use_24h_time(),
             first_weekday_monday: crate::theme::first_weekday_monday(),
             metric_units: crate::theme::metric_units(),
+            screenshot_format: crate::screenshot::format(),
+            screenshot_dir: crate::screenshot::custom_dir(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.clone(),
             default_browser: self.system_preferences.browser.clone(),
@@ -1635,6 +1637,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     crate::theme::set_use_24h_time(saved.use_24h_time);
     crate::theme::set_first_weekday_monday(saved.first_weekday_monday);
     crate::theme::set_metric_units(saved.metric_units);
+    crate::screenshot::set_format(saved.screenshot_format);
+    crate::screenshot::set_custom_dir(saved.screenshot_dir.clone());
     let explicit_scale = parse_explicit_scale().or(saved.scale);
     let init_scale =
         explicit_scale.unwrap_or_else(|| auto_scale_for_resolution(phys_w, host_scale));
@@ -2180,6 +2184,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("settings-defaults") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults)),
         Ok("settings-accessibility") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Accessibility)),
         Ok("settings-language") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Language)),
+        Ok("settings-screenshots") => {
+            state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Desktop));
+            state.system_settings.scroll = 320.0;
+            state.mark_settings_dirty();
+        }
         Ok("about") => state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather),
         _ => {}
     }

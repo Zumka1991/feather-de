@@ -132,6 +132,9 @@ pub enum Action {
     Wallpaper,
     WallpaperImage(Option<crate::wallpaper::ImageSource>),
     ChooseWallpaper,
+    ScreenshotFormat(crate::screenshot::Format),
+    ChooseScreenshotDir,
+    ResetScreenshotDir,
     AppPicker(bool),
     DefaultApp { browser: bool, id: String },
     AutostartPicker(bool),
@@ -207,6 +210,7 @@ pub struct Panel {
     pub wifi_target: Option<crate::controls::network::Network>,
     pub wifi_password: feather_ui::input::TextInput,
     pub wallpaper_busy: bool,
+    pub screenshot_dir_busy: bool,
     pub page: Page,
     pub adding: bool,
     pub keyboard_busy: bool,
@@ -2167,6 +2171,57 @@ impl Panel {
                 }
                 l.row(52.0, "Автоматически скрывать Dock", "Появляется, когда указатель у нижнего края".into(), Style::Toggle(crate::theme::dock_autohide()), Some(Action::DockAutohide));
                 l.end();
+                l.header("Снимки экрана");
+                l.begin();
+                let custom_dir = crate::screenshot::custom_dir();
+                let r = l.row(
+                    52.0,
+                    "Папка сохранения",
+                    crate::screenshot::dir_display_label(custom_dir.as_deref()),
+                    Style::Row,
+                    None,
+                );
+                let choose_rect = right(r, 146.0, 26.0);
+                if custom_dir.is_some() {
+                    let reset_rect = R::new(choose_rect.x - 6.0 - 88.0, choose_rect.y, 88.0, 26.0);
+                    l.push(
+                        reset_rect,
+                        "Сбросить",
+                        Style::Push(false),
+                        (!self.screenshot_dir_busy).then_some(Action::ResetScreenshotDir),
+                    );
+                }
+                l.push(
+                    choose_rect,
+                    if self.screenshot_dir_busy {
+                        "Выбор…"
+                    } else {
+                        "Выбрать папку…"
+                    },
+                    Style::Push(false),
+                    (!self.screenshot_dir_busy && !self.wallpaper_busy)
+                        .then_some(Action::ChooseScreenshotDir),
+                );
+                let current_fmt = crate::screenshot::format();
+                let r = l.row(
+                    52.0,
+                    "Формат файлов",
+                    format!("Расширение .{}" , current_fmt.extension()),
+                    Style::Row,
+                    None,
+                );
+                let track = right(r, 3.0 * 88.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, fmt) in crate::screenshot::Format::ALL.into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * 88.0, track.y, 88.0, track.h),
+                        fmt.label(),
+                        Style::Segment(current_fmt == fmt),
+                        Some(Action::ScreenshotFormat(fmt)),
+                    );
+                }
+                l.end();
+                l.footer("Print — весь экран, Shift+Print — область или окно, Alt+Print — активное окно. Снимки также копируются в буфер обмена.");
                 l.header("Активные углы");
                 l.begin();
                 for (i, name) in crate::hot_corners::CORNER_NAMES.iter().enumerate() {
@@ -3403,9 +3458,33 @@ impl crate::FeatherCompositor {
             Action::WallpaperImage(image) => self.set_wallpaper_image(image),
             Action::ChooseWallpaper => {
                 if !self.system_settings.wallpaper_busy
+                    && !self.system_settings.screenshot_dir_busy
                     && self.wallpaper_picker.as_ref().is_some_and(|p| p.open())
                 {
                     self.system_settings.wallpaper_busy = true;
+                }
+            }
+            Action::ScreenshotFormat(fmt) => {
+                if crate::screenshot::format() != fmt {
+                    crate::screenshot::set_format(fmt);
+                    self.save_settings();
+                }
+            }
+            Action::ChooseScreenshotDir => {
+                if !self.system_settings.screenshot_dir_busy
+                    && !self.system_settings.wallpaper_busy
+                    && self
+                        .wallpaper_picker
+                        .as_ref()
+                        .is_some_and(|p| p.open_screenshot_dir(crate::screenshot::custom_dir()))
+                {
+                    self.system_settings.screenshot_dir_busy = true;
+                }
+            }
+            Action::ResetScreenshotDir => {
+                if crate::screenshot::custom_dir().is_some() {
+                    crate::screenshot::set_custom_dir(None);
+                    self.save_settings();
                 }
             }
             Action::AddPicker(open) => {

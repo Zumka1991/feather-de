@@ -2,6 +2,32 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-25 — Снимки экрана: папка и формат (Gemini/agy)
+
+- В `src/screenshot.rs` добавлен тип `Format` (`Png` `.png`, `Jpeg` `.jpg`, `Webp` `.webp`) и
+  настраиваемая папка сохранения (`custom_dir`, `set_custom_dir`, `default_dir`,
+  `dir_display_label`, `encode_dir_id`, `parse_dir_id`). Кодировщик `save_to` / `encode_and_save_with`
+  поддерживает сохранение в PNG (`png`), JPEG (`image::codecs::jpeg::JpegEncoder`, качество 92) и
+  беспотерьный WebP (`image::codecs::webp::WebPEncoder::new_lossless`), при этом в буфер обмена
+  Wayland (`Finished::clipboard`) при выборе JPEG/WebP одновременно предлагаются как выбранный
+  MIME-тип, так и `image/png` для совместимости со всеми приёмниками вставки.
+- В `src/wallpaper.rs` (`wallpaper::Picker`) переиспользован существующий фоновый поток
+  `feather-picker` для запуска выбора папки `feather-files --file-picker` в режиме
+  `feather_ui::picker::Mode::Directory` (`open_screenshot_dir`), а в `files/src/picker.rs`
+  (`App::debug_picker_choose`) поддержано подтверждение текущей директории в режиме выбора папки.
+- В `src/settings.rs` и `src/main.rs` добавлено чтение и сохранение ключей `screenshot_format` и
+  `screenshot_dir` в `~/.config/feather-de/settings.conf`, а также отладочное открытие
+  `FEATHER_DEBUG_OPEN=settings-screenshots`.
+- На странице «Системные настройки → Рабочий стол и Dock» (`Page::Desktop` в `src/system_settings.rs`)
+  добавлен раздел «Снимки экрана» с выбором формата (`PNG`, `JPEG`, `WebP`), отображением текущей
+  папки сохранения и кнопками «Выбрать…» и «Сбросить», локализованный на 6 языков в
+  `crates/feather-ui/src/i18n.rs`.
+- `cargo build --release` без предупреждений, все 192 теста workspace прошли (включая новый модульный
+  тест `formats_encode_save_to_custom_directory_and_roundtrip_paths`). Вложенная E2E-проверка
+  (`FEATHER_DEBUG_SCREENSHOT_SETTINGS=1`): выбор пользовательской папки, сохранение снимков в PNG,
+  JPEG и WebP, сброс папки и запись в `settings.conf`, 0 тиков CPU за 5 с в простое, `RssAnon` —
+  50,49 МиБ (бюджет ≤ 60 МБ).
+
 ## 2026-10-25 — Язык и регион; перевод интерфейса на популярные языки (Gemini/agy)
 
 - Создан модуль `feather_ui::i18n` (`crates/feather-ui/src/i18n.rs`) с поддержкой 6 популярных

@@ -460,6 +460,9 @@ impl App {
         }
     }
     pub fn debug_picker_choose(&mut self, path: &Path) -> Vec<Effect> {
+        if self.picker.as_ref().is_some_and(|p| p.config.mode == Mode::Directory) && self.dir == path {
+            return self.press(BTN_LEFT, self.w - 80.0, self.h - 28.0, Mods::default());
+        }
         let Some(i) = (0..self.visible.len()).find(|&i| self.entry(i).path == path) else {
             return Vec::new();
         };

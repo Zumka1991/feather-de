@@ -6,6 +6,16 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Снимки экрана: папка и формат, 2026-10-25 (Gemini/agy):**
+в `src/screenshot.rs`, `src/wallpaper.rs`, `files/src/picker.rs`, `src/settings.rs`, `src/main.rs`,
+`src/system_settings.rs` и `crates/feather-ui/src/i18n.rs` реализована настройка формата снимков
+экрана (`PNG`, `JPEG`, `WebP`) и папки сохранения с выбором через `feather-files --file-picker`
+(`Mode::Directory` на потоке `feather-picker`) и сбросом к стандартной папке, сохранением
+`screenshot_format` и `screenshot_dir` в `settings.conf` и разделом «Снимки экрана» на странице
+«Системные настройки → Рабочий стол и Dock» (`Page::Desktop`). 192 теста и `cargo build --release`
+без предупреждений; вложенная проверка `FEATHER_DEBUG_SCREENSHOT_SETTINGS=1`: 0 тиков CPU за 5 с в
+простое, `RssAnon` 50,49 МиБ.
+
 **Язык и регион; перевод интерфейса на популярные языки, 2026-10-25 (Gemini/agy):**
 в `feather-ui` (`i18n.rs`, `scale.rs`, `appearance.rs`, `text.rs`, `input.rs`), `src/theme.rs`,
 `src/shell.rs`, `src/session_lock.rs`, `src/apps.rs`, `src/settings.rs` и `src/system_settings.rs`

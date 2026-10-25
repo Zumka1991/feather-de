@@ -258,7 +258,17 @@ pub fn paint_thumb_rounded(pm: &mut tiny_skia::PixmapMut, index: usize, rect: cr
     pm.fill_path(&path, &paint, tiny_skia::FillRule::Winding, crate::theme::scale_transform(), None);
 }
 
-pub struct Picker(std::sync::mpsc::SyncSender<()>);
+enum PickRequest {
+    Wallpaper,
+    ScreenshotDir(Option<PathBuf>),
+}
+
+enum PickResult {
+    Wallpaper(Result<Option<ImageSource>, String>),
+    ScreenshotDir(Result<Option<PathBuf>, String>),
+}
+
+pub struct Picker(std::sync::mpsc::SyncSender<PickRequest>);
 impl Picker {
     pub fn new(
         handle: &LoopHandle<'static, crate::FeatherCompositor>,
@@ -268,11 +278,26 @@ impl Picker {
         let (done, channel) = channel::sync_channel(1);
         handle.insert_source(channel, |event, _, state| {
             if let channel::Event::Msg(result) = event {
-                state.system_settings.wallpaper_busy = false;
                 match result {
-                    Ok(Some(source)) => state.set_wallpaper_image(Some(source)),
-                    Ok(None) => {}
-                    Err(e) => state.system_settings.error = Some(e),
+                    PickResult::Wallpaper(res) => {
+                        state.system_settings.wallpaper_busy = false;
+                        match res {
+                            Ok(Some(source)) => state.set_wallpaper_image(Some(source)),
+                            Ok(None) => {}
+                            Err(e) => state.system_settings.error = Some(e),
+                        }
+                    }
+                    PickResult::ScreenshotDir(res) => {
+                        state.system_settings.screenshot_dir_busy = false;
+                        match res {
+                            Ok(Some(dir)) => {
+                                crate::screenshot::set_custom_dir(Some(dir));
+                                state.save_settings();
+                            }
+                            Ok(None) => {}
+                            Err(e) => state.system_settings.error = Some(e),
+                        }
+                    }
                 }
                 state.mark_settings_dirty();
                 state.needs_redraw = true;
@@ -282,30 +307,53 @@ impl Picker {
             .name("feather-picker".into())
             .stack_size(256 * 1024)
             .spawn(move || {
-                use feather_ui::picker::{self, Config, Filter};
-                while rx.recv().is_ok() {
-                    let start = std::env::var_os("FEATHER_PICKER_TEST_FILE")
+                use feather_ui::picker::{self, Config, Filter, Mode};
+                while let Ok(request) = rx.recv() {
+                    let test_start = std::env::var_os("FEATHER_PICKER_TEST_FILE")
                         .map(PathBuf::from)
-                        .and_then(|p| p.parent().map(PathBuf::from))
-                        .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
-                    let config = Config {
-                        title: "Выберите обои".into(),
-                        accept: "Выбрать обои".into(),
-                        start: start.as_deref().map(picker::path_bytes),
-                        filters: vec![Filter {
-                            name: "Изображения PNG, JPEG, WebP".into(),
-                            rules: ["image/png", "image/jpeg", "image/webp"]
-                                .into_iter()
-                                .map(|m| (1, m.into()))
-                                .collect(),
-                        }],
-                        ..Default::default()
+                        .and_then(|p| p.parent().map(PathBuf::from));
+                    let msg = match request {
+                        PickRequest::Wallpaper => {
+                            let start = test_start
+                                .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+                            let config = Config {
+                                title: "Выберите обои".into(),
+                                accept: "Выбрать обои".into(),
+                                start: start.as_deref().map(picker::path_bytes),
+                                filters: vec![Filter {
+                                    name: "Изображения PNG, JPEG, WebP".into(),
+                                    rules: ["image/png", "image/jpeg", "image/webp"]
+                                        .into_iter()
+                                        .map(|m| (1, m.into()))
+                                        .collect(),
+                                }],
+                                ..Default::default()
+                            };
+                            let result = picker::run(&config, Some(&socket), |_| {}).and_then(|s| {
+                                s.map(|s| s.local_paths().map(|p| ImageSource::File(p[0].clone())))
+                                    .transpose()
+                            });
+                            PickResult::Wallpaper(result)
+                        }
+                        PickRequest::ScreenshotDir(current) => {
+                            let start = test_start
+                                .or_else(|| current.filter(|p| p.is_dir()))
+                                .or_else(|| crate::screenshot::default_dir().filter(|p| p.is_dir()))
+                                .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+                            let config = Config {
+                                title: "Папка для снимков экрана".into(),
+                                accept: "Выбрать папку".into(),
+                                mode: Mode::Directory,
+                                start: start.as_deref().map(picker::path_bytes),
+                                ..Default::default()
+                            };
+                            let result = picker::run(&config, Some(&socket), |_| {}).and_then(|s| {
+                                s.map(|s| s.local_paths().map(|p| p[0].clone())).transpose()
+                            });
+                            PickResult::ScreenshotDir(result)
+                        }
                     };
-                    let result = picker::run(&config, Some(&socket), |_| {}).and_then(|s| {
-                        s.map(|s| s.local_paths().map(|p| ImageSource::File(p[0].clone())))
-                            .transpose()
-                    });
-                    if done.send(result).is_err() {
+                    if done.send(msg).is_err() {
                         break;
                     }
                 }
@@ -313,7 +361,10 @@ impl Picker {
         Ok(Self(tx))
     }
     pub fn open(&self) -> bool {
-        self.0.try_send(()).is_ok()
+        self.0.try_send(PickRequest::Wallpaper).is_ok()
+    }
+    pub fn open_screenshot_dir(&self, current: Option<PathBuf>) -> bool {
+        self.0.try_send(PickRequest::ScreenshotDir(current)).is_ok()
     }
 }
 

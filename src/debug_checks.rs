@@ -1916,5 +1916,88 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-language-check] language, region, 12/24h clock, weekday and units passed");
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_SCREENSHOT_SETTINGS").is_some() {
+        use crate::screenshot::Format;
+        use crate::system_settings::{Action as A, Page};
+        fn click(state: &mut FeatherCompositor, predicate: impl Fn(&A) -> bool) {
+            let w = state
+                .windows
+                .iter()
+                .find(|w| w.app_id == "builtin.settings")
+                .unwrap();
+            let (x, y) = state
+                .system_settings
+                .debug_point(
+                    w.width as f32,
+                    w.height as f32,
+                    &state.settings_context(),
+                    predicate,
+                )
+                .expect("screenshot settings control");
+            let point = (
+                w.x as f64 + x as f64,
+                (w.y + w.titlebar_h()) as f64 + y as f64,
+            );
+            state.debug_pointer_motion(point.0, point.1);
+            state.debug_pointer_button(0x110, true);
+            state.debug_pointer_button(0x110, false);
+        }
+        let target_dir = std::env::var_os("FEATHER_PICKER_TEST_FILE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("feather-shots-e2e"));
+        let _ = std::fs::create_dir_all(&target_dir);
+        let has_picker = std::env::var_os("FEATHER_PICKER_TEST_FILE").is_some();
+        let dir_step = target_dir.clone();
+        at(state, 700, move |s| {
+            s.apply_system_setting(A::Page(Page::Desktop));
+            s.system_settings.scroll = 320.0;
+            s.mark_settings_dirty();
+            assert_eq!(crate::screenshot::format(), Format::Png);
+            assert!(crate::screenshot::custom_dir().is_none());
+            if has_picker {
+                click(s, |a| matches!(a, A::ChooseScreenshotDir));
+                assert!(s.system_settings.screenshot_dir_busy);
+            } else {
+                crate::screenshot::set_custom_dir(Some(dir_step.clone()));
+                s.save_settings();
+                s.mark_settings_dirty();
+            }
+        })?;
+        let dir_verify = target_dir.clone();
+        at(state, 2100, move |s| {
+            assert!(!s.system_settings.screenshot_dir_busy);
+            assert_eq!(crate::screenshot::custom_dir(), Some(dir_verify.clone()));
+            click(s, |a| matches!(a, A::ResetScreenshotDir));
+            assert!(crate::screenshot::custom_dir().is_none());
+            crate::screenshot::set_custom_dir(Some(dir_verify.clone()));
+            s.save_settings();
+            s.mark_settings_dirty();
+            for fmt in [Format::Jpeg, Format::Png, Format::Webp] {
+                click(s, |a| matches!(a, A::ScreenshotFormat(f) if *f == fmt));
+                assert_eq!(crate::screenshot::format(), fmt);
+            }
+            s.take_screenshot(crate::screenshot::Target::Area {
+                x: 80.0,
+                y: 60.0,
+                w: 240.0,
+                h: 160.0,
+                radius: 12.0,
+            });
+        })?;
+        at(state, 2800, move |_s| {
+            let saved = crate::settings::Settings::load();
+            assert_eq!(saved.screenshot_format, Format::Webp);
+            assert_eq!(saved.screenshot_dir, Some(target_dir.clone()));
+            let files: Vec<_> = std::fs::read_dir(&target_dir)
+                .unwrap()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("webp"))
+                .collect();
+            assert!(!files.is_empty(), "expected saved .webp screenshot in {:?}", target_dir);
+            let img = image::load_from_memory(&std::fs::read(&files[0]).unwrap()).unwrap();
+            assert!(img.width() > 0 && img.height() > 0);
+            eprintln!("[feather-screenshot-settings-check] folder picker, PNG/JPEG/WebP formats, capture and persistence passed");
+        })?;
+    }
     Ok(())
 }
