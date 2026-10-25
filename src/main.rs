@@ -2208,6 +2208,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Ok("textedit") => {
+            if let Some(cmd) = crate::apps::textedit_command() {
+                crate::apps::spawn_wayland_command(
+                    &format!("{cmd} --sample /tmp/feather-sample-textedit.md"),
+                    &state.wayland_socket_name,
+                );
+            }
+        }
         _ => {}
     }
 

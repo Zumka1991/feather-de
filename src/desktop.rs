@@ -1248,6 +1248,20 @@ impl FeatherCompositor {
                 } else {
                     self.spawn(&format!("xdg-open {}", shell_quote(&path)));
                 }
+            } else if matches!(
+                feather_ui::file_kind::kind_of(
+                    path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
+                    false,
+                    false
+                )
+                .0,
+                feather_ui::file_kind::Kind::Text | feather_ui::file_kind::Kind::Code
+            ) {
+                if let Some(textedit) = crate::apps::textedit_command() {
+                    self.spawn(&format!("{textedit} {}", shell_quote(&path)));
+                } else {
+                    self.spawn(&format!("xdg-open {}", shell_quote(&path)));
+                }
             } else {
                 self.spawn(&format!("xdg-open {}", shell_quote(&path)));
             }

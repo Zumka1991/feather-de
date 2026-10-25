@@ -785,6 +785,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "feather-textedit"
+version = "0.1.0"
+dependencies = [
+ "feather-ui",
+ "libc",
+ "smithay-client-toolkit",
+ "tiny-skia",
+ "wayland-client",
+]
+
+[[package]]
 name = "feather-ui"
 version = "0.1.0"
 dependencies = [

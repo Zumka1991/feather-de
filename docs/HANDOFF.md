@@ -6,6 +6,19 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Текстовый редактор (`feather-textedit`), 2026-10-25 (Gemini/agy):**
+в `textedit/` (`main.rs`, `app.rs`, `theme.rs`), `src/apps.rs`, `src/desktop.rs`, `src/main.rs`,
+`files/src/fsops.rs` и `crates/feather-ui/src/i18n.rs` реализовано собственное Wayland-приложение
+«Текстовый редактор» (`feather-textedit`) в стиле macOS Tahoe TextEdit с вкладками документов,
+нумерацией строк (`#`), переносом по словам (`↩`), масштабированием шрифта (`A−` / `A+`), панелью поиска
+и замены (`🔍`, `Ctrl+F` / `Ctrl+H`), структурной и синтаксической подсветкой (`Markdown`, `Rust`,
+`TOML`, `JSON`, `Скрипт`, `Код`, `HTML`), автоотступом, `Undo`/`Redo`, буфером обмена Wayland,
+приёмом файлов через Wayland drag-and-drop (`text/uri-list`), неблокирующими диалогами открытия и
+сохранения через `feather-files --file-picker`, процедурной иконкой в Dock/Launchpad/Spotlight и
+локализацией на 6 языков. 197 тестов и `cargo build --release` без предупреждений; вложенная проверка
+`FEATHER_DEBUG_OPEN=textedit`: 0 тиков CPU за 5 с в простое, `RssAnon` композитора 34,47 МиБ (клиента —
+1,13 МиБ).
+
 **«Просмотр»: изображения и PDF (`feather-preview`), 2026-10-25 (Gemini/agy):**
 в `preview/` (`main.rs`, `app.rs`, `doc.rs`, `theme.rs`), `src/apps.rs`, `src/desktop.rs`,
 `src/main.rs`, `files/src/fsops.rs`, `files/src/preview.rs` и `crates/feather-ui/src/i18n.rs`

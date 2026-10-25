@@ -1152,6 +1152,31 @@ static TABLE: &[Entry] = &[
     ("Перетащите файл сюда или нажмите «Открыть…»", "Drag a file here or click “Open…”", "Arrastra un archivo aquí o haz clic en «Abrir…»", "Datei hierher ziehen oder auf „Öffnen…“ klicken", "Glissez un fichier ici ou cliquez sur « Ouvrir… »", "将文件拖到此处或点按“打开…”"),
     ("Загрузка документа…", "Loading document…", "Cargando documento…", "Dokument wird geladen…", "Chargement du document…", "正在载入文稿…"),
     ("Не удалось открыть файл", "Could Not Open File", "No se pudo abrir el archivo", "Datei konnte nicht geöffnet werden", "Impossible d’ouvrir le fichier", "无法打开文件"),
+
+    // ── TextEdit («Текстовый редактор») ──
+    ("Текстовый редактор", "TextEdit", "Editor de Texto", "TextEdit", "TextEdit", "文本编辑"),
+    ("Текстовые документы и исходный код", "Text Documents and Source Code", "Documentos de texto y código fuente", "Textdokumente und Quellcode", "Documents texte et code source", "文本文稿与源代码"),
+    ("Без названия", "Untitled", "Sin título", "Ohne Titel", "Sans titre", "未命名"),
+    ("Сохранить", "Save", "Guardar", "Sichern", "Enregistrer", "存储"),
+    ("Сохранить документ", "Save Document", "Guardar documento", "Dokument sichern", "Enregistrer le document", "存储文稿"),
+    ("Открыть текстовый документ", "Open Text Document", "Abrir documento de texto", "Textdokument öffnen", "Ouvrir un document texte", "打开文本文稿"),
+    ("Текстовые файлы и код", "Text and Code Files", "Archivos de texto y código", "Text- und Codedateien", "Fichiers texte et code", "文本与代码文件"),
+    ("Все файлы", "All Files", "Todos los archivos", "Alle Dateien", "Tous les fichiers", "所有文件"),
+    ("Сохранено", "Saved", "Guardado", "Gesichert", "Enregistré", "已存储"),
+    ("Изменено", "Edited", "Editado", "Bearbeitet", "Modifié", "已编辑"),
+    ("Ошибка сохранения", "Save Failed", "Error al guardar", "Sichern fehlgeschlagen", "Échec de l’enregistrement", "存储失败"),
+    ("Строк", "Lines", "Líneas", "Zeilen", "Lignes", "行数"),
+    ("Слов", "Words", "Palabras", "Wörter", "Mots", "字数"),
+    ("Симв.", "Chars", "Car.", "Zeichen", "Car.", "字符"),
+    ("стб.", "Col", "col.", "Sp.", "col.", "列"),
+    ("Выделено", "Selected", "Seleccionado", "Ausgewählt", "Sélectionné", "已选中"),
+    ("Найти…", "Find…", "Buscar…", "Suchen…", "Rechercher…", "查找…"),
+    ("Заменить на…", "Replace with…", "Reemplazar con…", "Ersetzen durch…", "Remplacer par…", "替换为…"),
+    ("Заменить", "Replace", "Reemplazar", "Ersetzen", "Remplacer", "替换"),
+    ("Все", "All", "Todo", "Alle", "Tout", "全部"),
+    ("Заменено", "Replaced", "Reemplazado", "Ersetzt", "Remplacé", "已替换"),
+    ("TOML / Конфиг", "TOML / Config", "TOML / Config.", "TOML / Konfig.", "TOML / Config.", "TOML / 配置"),
+    ("Скрипт", "Script", "Script", "Skript", "Script", "脚本"),
 ];
 
 fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {

@@ -128,6 +128,26 @@ pub fn open_external(path: &Path) {
             }
         }
     }
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let (kind, _) = kind_of(name, false, false);
+    if matches!(kind, Kind::Text | Kind::Code) {
+        if let Some(own) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("feather-textedit")))
+            .filter(|p| p.is_file())
+        {
+            if std::process::Command::new(own)
+                .arg(path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+        }
+    }
     let _ = std::process::Command::new("xdg-open")
         .arg(path)
         .stdin(std::process::Stdio::null())

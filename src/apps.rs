@@ -18,6 +18,7 @@ pub enum IconKind {
     Vpn,
     Notes,
     Preview,
+    TextEdit,
     ActivityMonitor,
     Settings,
     Launchpad,
@@ -151,6 +152,11 @@ pub fn preview_command() -> Option<String> {
     own_program("feather-preview")
 }
 
+/// Feather's TextEdit app (text & source code editor) when built next to the compositor binary
+pub fn textedit_command() -> Option<String> {
+    own_program("feather-textedit")
+}
+
 pub struct AppRegistry {
     pub apps: Vec<AppEntry>,
 }
@@ -202,6 +208,16 @@ impl AppRegistry {
                 true,
             )
             .with_aliases(&["feather-preview"])
+            .with_own_icon(),
+            AppEntry::new(
+                "builtin.textedit",
+                "Текстовый редактор",
+                "Текстовые документы и исходный код",
+                IconKind::TextEdit,
+                Exec(textedit_command().unwrap_or_else(|| "feather-textedit".into())),
+                true,
+            )
+            .with_aliases(&["feather-textedit"])
             .with_own_icon(),
             AppEntry::new(
                 "builtin.monitor",
@@ -952,6 +968,67 @@ pub fn draw_app_icon(
             fill_circle(pixmap, lx, ly, size * 0.16, rgba(255, 255, 255, 250));
             fill_circle(pixmap, lx, ly, size * 0.115, rgba(165, 218, 255, 240));
             stroke_line(pixmap, lx + size * 0.10, ly + size * 0.10, lx + size * 0.19, ly + size * 0.19, size * 0.055, rgba(245, 247, 252, 255));
+        }
+        IconKind::TextEdit => {
+            // TextEdit («Текстовый редактор»): crisp document sheet with ruled blue lines and slanted pen nib
+            tile(pixmap, rgba(252, 253, 255, 255), rgba(226, 232, 242, 255));
+            fill_rounded_rect(
+                pixmap,
+                x + size * 0.14,
+                y + size * 0.12,
+                size * 0.72,
+                size * 0.76,
+                size * 0.06,
+                rgba(255, 255, 255, 255),
+            );
+            // Red margin rule on the left + blue ruled lines
+            stroke_line(
+                pixmap,
+                x + size * 0.26,
+                y + size * 0.14,
+                x + size * 0.26,
+                y + size * 0.86,
+                size * 0.015,
+                rgba(255, 110, 105, 150),
+            );
+            for i in 0..4 {
+                let ly = y + size * (0.28 + i as f32 * 0.135);
+                stroke_line(
+                    pixmap,
+                    x + size * 0.20,
+                    ly,
+                    x + size * 0.78,
+                    ly,
+                    size * 0.022,
+                    rgba(120, 175, 245, 185),
+                );
+            }
+            // Slanted pen body + gold nib in the bottom-right corner
+            stroke_line(
+                pixmap,
+                x + size * 0.52,
+                y + size * 0.74,
+                x + size * 0.80,
+                y + size * 0.46,
+                size * 0.09,
+                rgba(38, 118, 245, 255),
+            );
+            stroke_line(
+                pixmap,
+                x + size * 0.45,
+                y + size * 0.81,
+                x + size * 0.52,
+                y + size * 0.74,
+                size * 0.06,
+                rgba(245, 184, 46, 255),
+            );
+            fill_circle(
+                pixmap,
+                x + size * 0.44,
+                y + size * 0.82,
+                size * 0.022,
+                rgba(45, 50, 60, 255),
+            );
         }
         IconKind::ActivityMonitor => {
             tile(pixmap, rgba(58, 58, 64, 255), rgba(22, 22, 26, 255));
