@@ -6,6 +6,17 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Язык и регион; перевод интерфейса на популярные языки, 2026-10-25 (Gemini/agy):**
+в `feather-ui` (`i18n.rs`, `scale.rs`, `appearance.rs`, `text.rs`, `input.rs`), `src/theme.rs`,
+`src/shell.rs`, `src/session_lock.rs`, `src/apps.rs`, `src/settings.rs` и `src/system_settings.rs`
+реализована система локализации на 6 языков (`ru`, `en`, `es`, `de`, `fr`, `zh`) и 8 региональных
+профилей (`RU`, `US`, `GB`, `DE`, `FR`, `ES`, `CN`, `KZ`) с живой синхронизацией в «Файлы» и
+«Заметки», локализацией часов строки меню и экрана блокировки (12/24 ч), разбором `Name[<lang>]=` /
+`Comment[<lang>]=` в `.desktop`, передачей `LANGUAGE`/`LC_TIME`/`LC_MEASUREMENT` запускаемым
+программам и страницей «Системные настройки → Язык и регион» (`Page::Language`). 191 тест и
+`cargo build --release` без предупреждений; вложенная проверка `FEATHER_DEBUG_LANGUAGE=1`:
+0 тиков CPU за 5 с в простое, `RssAnon` 42,00 МиБ.
+
 **Универсальный доступ (крупный текст, контраст, меньше прозрачности, залипание клавиш), 2026-10-25 (Gemini/agy):**
 в `feather-ui` (`scale.rs`, `appearance.rs`), `src/theme.rs`, `src/shell.rs`, `src/raster.rs`,
 `src/settings.rs`, `src/input.rs` и `src/system_settings.rs` реализована страница

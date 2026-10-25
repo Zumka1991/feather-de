@@ -65,15 +65,21 @@ pub struct AppEntry {
 }
 
 impl AppEntry {
-    fn new(id: &str, name: &str, subtitle: &str, icon: IconKind, action: AppAction, pinned: bool) -> Self {
+    fn new(id: &str, name: &'static str, subtitle: &'static str, icon: IconKind, action: AppAction, pinned: bool) -> Self {
+        let loc_name = feather_ui::i18n::tr_static(name);
+        let loc_sub = feather_ui::i18n::tr_static(subtitle);
+        let mut aliases = Vec::new();
+        if loc_name != name {
+            aliases.push(name.to_string());
+        }
         Self {
             id: id.to_string(),
-            name: name.to_string(),
-            subtitle: subtitle.to_string(),
+            name: loc_name.to_string(),
+            subtitle: loc_sub.to_string(),
             icon,
             icon_name: None,
             wm_class: None,
-            aliases: Vec::new(),
+            aliases,
             action,
             pinned_in_dock: pinned,
             own_icon: false,
@@ -86,7 +92,11 @@ impl AppEntry {
     }
 
     fn with_aliases(mut self, aliases: &[&str]) -> Self {
-        self.aliases = aliases.iter().map(|a| a.to_string()).collect();
+        for a in aliases {
+            if !self.aliases.iter().any(|x| x == a) {
+                self.aliases.push((*a).to_string());
+            }
+        }
         self
     }
 
@@ -223,6 +233,9 @@ impl AppRegistry {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
         };
+        let active_lang = feather_ui::scale::lang();
+        let name_keys = active_lang.desktop_name_keys();
+        let comment_keys = active_lang.desktop_comment_keys();
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
@@ -232,8 +245,9 @@ impl AppRegistry {
                 continue;
             };
             let mut name = None;
-            let mut name_ru = None;
+            let mut name_loc = None;
             let mut comment = None;
+            let mut comment_loc = None;
             let mut exec = None;
             let mut icon_name = None;
             let mut wm_class = None;
@@ -249,12 +263,12 @@ impl AppRegistry {
                 if !in_desktop_entry {
                     continue;
                 }
-                if let Some(v) = line.strip_prefix("Name[ru]=") {
-                    name_ru = Some(v.trim().to_string());
+                if let Some(v) = name_keys.iter().find_map(|k| line.strip_prefix(k)) {
+                    name_loc = Some(v.trim().to_string());
                 } else if let Some(v) = line.strip_prefix("Name=") {
                     name.get_or_insert_with(|| v.trim().to_string());
-                } else if let Some(v) = line.strip_prefix("Comment[ru]=") {
-                    comment = Some(v.trim().to_string());
+                } else if let Some(v) = comment_keys.iter().find_map(|k| line.strip_prefix(k)) {
+                    comment_loc = Some(v.trim().to_string());
                 } else if let Some(v) = line.strip_prefix("Comment=") {
                     comment.get_or_insert_with(|| v.trim().to_string());
                 } else if let Some(v) = line.strip_prefix("Exec=") {
@@ -283,8 +297,8 @@ impl AppRegistry {
             let Some(cmd) = exec else { continue };
             let candidate = AppEntry {
                 id: stem.clone(),
-                name: name_ru.or(name).unwrap_or_else(|| stem.clone()),
-                subtitle: comment.unwrap_or_else(|| cmd.clone()),
+                name: name_loc.or(name).unwrap_or_else(|| stem.clone()),
+                subtitle: comment_loc.or(comment).unwrap_or_else(|| cmd.clone()),
                 icon: IconKind::GenericApp,
                 icon_name,
                 wm_class,
@@ -434,6 +448,7 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
         None if std::env::var_os("FEATHER_XWAYLAND").is_some() => { command.env_remove("DISPLAY"); }
         None => {}
     }
+    let region_locale = feather_ui::scale::region().locale_code();
     command
         .arg("-c")
         .arg(trimmed)
@@ -441,6 +456,9 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
         .env("WAYLAND_DISPLAY", wayland_socket)
         .env("XDG_SESSION_TYPE", "wayland")
         .env("XDG_CURRENT_DESKTOP", "FeatherDE")
+        .env("LANGUAGE", feather_ui::scale::lang().id())
+        .env("LC_TIME", region_locale)
+        .env("LC_MEASUREMENT", region_locale)
         .env("QT_QPA_PLATFORM", "wayland;xcb")
         .env("GDK_BACKEND", "wayland,x11")
         .env("GTK_USE_PORTAL", "1")

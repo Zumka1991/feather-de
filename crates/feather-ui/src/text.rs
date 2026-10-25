@@ -482,11 +482,17 @@ impl FontSystem {
         width
     }
 
-    /// Measures text width in logical points (HiDPI scale-aware and text-size-aware)
-    pub fn measure_text(&mut self, text: &str, logical_size: f32, is_bold: bool) -> f32 {
+    /// Measures literal text width without UI translation (used by text input fields).
+    pub fn measure_raw(&mut self, text: &str, logical_size: f32, is_bold: bool) -> f32 {
         let s = ui_scale();
         let ts = text_scale();
         self.advance_phys(text, logical_size * ts * s, is_bold) / s
+    }
+
+    /// Measures text width in logical points (HiDPI scale-aware, text-size-aware, and localized).
+    pub fn measure_text(&mut self, text: &str, logical_size: f32, is_bold: bool) -> f32 {
+        let translated = crate::i18n::tr(text);
+        self.measure_raw(&translated, logical_size, is_bold)
     }
 
     /// Cell size for a monospace font at `phys_size` pixels: the advance of "M" and the
@@ -534,10 +540,9 @@ impl FontSystem {
         }
     }
 
-    /// Draws UTF-8 text onto a physical HiDPI pixmap at logical `(x, y)` (top of the line box).
-    /// Returns the logical width advanced.
+    /// Draws literal UTF-8 text without UI translation (used by text input fields).
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_text(
+    pub fn draw_raw(
         &mut self,
         pixmap: &mut PixmapMut,
         text: &str,
@@ -617,6 +622,31 @@ impl FontSystem {
         (pen_x - start_x) / s
     }
 
+    /// Draws UTF-8 text onto a physical HiDPI pixmap at logical `(x, y)` (top of the line box).
+    /// Returns the logical width advanced.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text(
+        &mut self,
+        pixmap: &mut PixmapMut,
+        text: &str,
+        logical_x: f32,
+        logical_y: f32,
+        logical_size: f32,
+        color: Color,
+        is_bold: bool,
+    ) -> f32 {
+        let translated = crate::i18n::tr(text);
+        self.draw_raw(
+            pixmap,
+            &translated,
+            logical_x,
+            logical_y,
+            logical_size,
+            color,
+            is_bold,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn draw_text_centered(
         &mut self,
@@ -628,8 +658,9 @@ impl FontSystem {
         color: Color,
         is_bold: bool,
     ) {
-        let w = self.measure_text(text, size, is_bold);
-        self.draw_text(pixmap, text, center_x - w * 0.5, y, size, color, is_bold);
+        let translated = crate::i18n::tr(text);
+        let w = self.measure_raw(&translated, size, is_bold);
+        self.draw_raw(pixmap, &translated, center_x - w * 0.5, y, size, color, is_bold);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -643,14 +674,14 @@ impl FontSystem {
         color: Color,
         is_bold: bool,
     ) -> f32 {
-        let w = self.measure_text(text, size, is_bold);
-        self.draw_text(pixmap, text, right_x - w, y, size, color, is_bold);
+        let translated = crate::i18n::tr(text);
+        let w = self.measure_raw(&translated, size, is_bold);
+        self.draw_raw(pixmap, &translated, right_x - w, y, size, color, is_bold);
         w
     }
 
-    /// Truncates `text` with an ellipsis so it fits `max_width` logical points
-    pub fn ellipsize(&mut self, text: &str, max_width: f32, size: f32, is_bold: bool) -> String {
-        if self.measure_text(text, size, is_bold) <= max_width {
+    fn ellipsize_raw(&mut self, text: &str, max_width: f32, size: f32, is_bold: bool) -> String {
+        if self.measure_raw(text, size, is_bold) <= max_width {
             return text.to_string();
         }
         let scale = ui_scale();
@@ -676,19 +707,27 @@ impl FontSystem {
         out
     }
 
+    /// Truncates `text` with an ellipsis so it fits `max_width` logical points
+    pub fn ellipsize(&mut self, text: &str, max_width: f32, size: f32, is_bold: bool) -> String {
+        let translated = crate::i18n::tr(text);
+        self.ellipsize_raw(&translated, max_width, size, is_bold)
+    }
+
     #[allow(clippy::too_many_arguments)]
     /// Finder/desktop labels: up to two lines, preferring a break after a space, dash,
     /// underscore or dot; a word broken mid-way leaves at least three letters for line two,
     /// and the second line ends with an ellipsis when it still does not fit
     pub fn wrap_two_lines(&mut self, text: &str, width: f32, size: f32, is_bold: bool) -> Vec<String> {
-        if self.measure_text(text, size, is_bold) <= width {
+        let translated = crate::i18n::tr(text);
+        let text = translated.as_ref();
+        if self.measure_raw(text, size, is_bold) <= width {
             return vec![text.to_string()];
         }
         let chars: Vec<char> = text.chars().collect();
         let mut split = 0;
         for end in 1..=chars.len() {
             let line: String = chars[..end].iter().collect();
-            if self.measure_text(&line, size, is_bold) > width {
+            if self.measure_raw(&line, size, is_bold) > width {
                 break;
             }
             split = end;
@@ -701,7 +740,7 @@ impl FontSystem {
         let split = split.max(1);
         let first: String = chars[..split].iter().collect();
         let rest: String = chars[split..].iter().collect();
-        vec![first.trim_end().to_string(), self.ellipsize(rest.trim_start(), width, size, is_bold)]
+        vec![first.trim_end().to_string(), self.ellipsize_raw(rest.trim_start(), width, size, is_bold)]
     }
 
     pub fn draw_text_clipped(
@@ -716,7 +755,7 @@ impl FontSystem {
         is_bold: bool,
     ) {
         let fitted = self.ellipsize(text, max_width, size, is_bold);
-        self.draw_text(pixmap, &fitted, x, y, size, color, is_bold);
+        self.draw_raw(pixmap, &fitted, x, y, size, color, is_bold);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -732,7 +771,8 @@ impl FontSystem {
         is_bold: bool,
     ) {
         let fitted = self.ellipsize(text, max_width, size, is_bold);
-        self.draw_text_centered(pixmap, &fitted, center_x, y, size, color, is_bold);
+        let w = self.measure_raw(&fitted, size, is_bold);
+        self.draw_raw(pixmap, &fitted, center_x - w * 0.5, y, size, color, is_bold);
     }
 }
 

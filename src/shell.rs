@@ -1344,11 +1344,13 @@ impl MacShell {
 
     pub fn format_ru_clock() -> String {
         let now = Local::now();
-        let weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][now.weekday().num_days_from_monday() as usize];
-        let month = [
-            "янв.", "февр.", "мар.", "апр.", "мая", "июн.", "июл.", "авг.", "сент.", "окт.", "нояб.", "дек.",
-        ][now.month0() as usize];
-        format!("{} {} {}  {}:{:02}", weekday, now.day(), month, now.hour(), now.minute())
+        feather_ui::i18n::format_topbar_clock(
+            now.weekday().num_days_from_monday() as usize,
+            now.day(),
+            now.month0() as usize,
+            now.hour(),
+            now.minute(),
+        )
     }
 
     /// Periodic housekeeping (clock, RSS, toast expiry). Returns true if anything needs a redraw.

@@ -1855,5 +1855,66 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-accessibility-check] high contrast, reduce transparency, large text and sticky keys passed");
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_LANGUAGE").is_some() {
+        use crate::system_settings::{Action as A, Page};
+        use crate::theme::{Lang, Region};
+        fn click(state: &mut FeatherCompositor, predicate: impl Fn(&A) -> bool) {
+            let w = state
+                .windows
+                .iter()
+                .find(|w| w.app_id == "builtin.settings")
+                .unwrap();
+            let (x, y) = state
+                .system_settings
+                .debug_point(
+                    w.width as f32,
+                    w.height as f32,
+                    &state.settings_context(),
+                    predicate,
+                )
+                .expect("language control");
+            let point = (
+                w.x as f64 + x as f64,
+                (w.y + w.titlebar_h()) as f64 + y as f64,
+            );
+            state.debug_pointer_motion(point.0, point.1);
+            state.debug_pointer_button(0x110, true);
+            state.debug_pointer_button(0x110, false);
+        }
+        at(state, 900, |s| {
+            s.apply_system_setting(A::Page(Page::Language));
+        })?;
+        at(state, 1400, |s| {
+            assert_eq!(crate::theme::lang(), Lang::Ru);
+            assert_eq!(crate::theme::region(), Region::Ru);
+            assert!(crate::theme::use_24h_time());
+            assert!(crate::theme::first_weekday_monday());
+            assert!(crate::theme::metric_units());
+            for lang in [Lang::Es, Lang::De, Lang::Fr, Lang::Zh, Lang::En] {
+                click(s, |a| matches!(a, A::Language(l) if *l == lang));
+                assert_eq!(crate::theme::lang(), lang);
+            }
+            assert_eq!(feather_ui::i18n::tr("Системные настройки"), "System Settings");
+            assert!(s.app_registry.apps.iter().any(|a| a.id == "builtin.settings" && a.name == "System Settings"));
+            click(s, |a| matches!(a, A::RegionStep(1)));
+            assert_eq!(crate::theme::region(), Region::Us);
+            click(s, |a| matches!(a, A::Use24HourTime));
+            assert!(!crate::theme::use_24h_time());
+            assert!(s.shell.last_clock_str.ends_with("AM") || s.shell.last_clock_str.ends_with("PM"));
+            click(s, |a| matches!(a, A::FirstWeekdayMonday(false)));
+            assert!(!crate::theme::first_weekday_monday());
+            click(s, |a| matches!(a, A::MetricUnits(false)));
+            assert!(!crate::theme::metric_units());
+        })?;
+        at(state, 1900, |_s| {
+            let saved = crate::settings::Settings::load();
+            assert_eq!(saved.language, Lang::En);
+            assert_eq!(saved.region, Region::Us);
+            assert!(!saved.use_24h_time);
+            assert!(!saved.first_weekday_monday);
+            assert!(!saved.metric_units);
+            eprintln!("[feather-language-check] language, region, 12/24h clock, weekday and units passed");
+        })?;
+    }
     Ok(())
 }

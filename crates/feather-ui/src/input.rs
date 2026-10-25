@@ -238,7 +238,7 @@ impl TextInput {
     /// First visible byte so the caret fits into `width` (stateless scrolling).
     fn visible_start(&self, fonts: &mut FontSystem, width: f32, size: f32, bold: bool) -> usize {
         let mut start = 0;
-        while start < self.caret && fonts.measure_text(&self.text[start..self.caret], size, bold) > width - 2.0 {
+        while start < self.caret && fonts.measure_raw(&self.text[start..self.caret], size, bold) > width - 2.0 {
             start = next(&self.text, start);
         }
         start
@@ -250,7 +250,7 @@ impl TextInput {
         let mut best = (start, f32::MAX);
         let mut i = start;
         loop {
-            let d = (fonts.measure_text(&self.text[start..i], size, bold) - x).abs();
+            let d = (fonts.measure_raw(&self.text[start..i], size, bold) - x).abs();
             if d < best.1 {
                 best = (i, d);
             }
@@ -301,12 +301,12 @@ impl TextInput {
         let mut end = start;
         while end < self.text.len() {
             let n = next(&self.text, end);
-            if fonts.measure_text(&self.text[start..n], size, bold) > width {
+            if fonts.measure_raw(&self.text[start..n], size, bold) > width {
                 break;
             }
             end = n;
         }
-        let at = |fonts: &mut FontSystem, i: usize| fonts.measure_text(&self.text[start..i.clamp(start, end)], size, bold);
+        let at = |fonts: &mut FontSystem, i: usize| fonts.measure_raw(&self.text[start..i.clamp(start, end)], size, bold);
         if let Some((a, b)) = self.selection() {
             let (sx, ex) = (at(fonts, a), at(fonts, b));
             if ex > sx {
@@ -320,7 +320,7 @@ impl TextInput {
                 draw::fill_rect(pm, x + sx, y - 1.0, ex - sx, size + 4.0, sel);
             }
         }
-        fonts.draw_text(pm, &self.text[start..end], x, y, size, color, bold);
+        fonts.draw_raw(pm, &self.text[start..end], x, y, size, color, bold);
         if focused && self.selection().is_none() {
             let cx = x + at(fonts, self.caret);
             draw::fill_rect(pm, cx, y - 1.0, 1.5, size + 4.0, accent);

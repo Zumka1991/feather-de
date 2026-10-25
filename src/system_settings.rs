@@ -12,6 +12,7 @@ pub enum Page {
     #[default]
     Appearance,
     Accessibility,
+    Language,
     Network,
     Bluetooth,
     Keyboard,
@@ -25,9 +26,10 @@ pub enum Page {
     Sound,
 }
 impl Page {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Appearance,
         Self::Accessibility,
+        Self::Language,
         Self::Network,
         Self::Bluetooth,
         Self::Keyboard,
@@ -44,6 +46,7 @@ impl Page {
         match self {
             Self::Appearance => "Оформление",
             Self::Accessibility => "Универсальный доступ",
+            Self::Language => "Язык и регион",
             Self::Network => "Сеть",
             Self::Bluetooth => "Bluetooth",
             Self::Keyboard => "Клавиатура",
@@ -61,6 +64,7 @@ impl Page {
         match self {
             Self::Appearance => "Выберите внешний вид и поведение интерфейса.",
             Self::Accessibility => "Крупный текст, контраст, прозрачность и залипание клавиш.",
+            Self::Language => "Язык интерфейса, региональные форматы даты, времени и единиц.",
             Self::Network => "Wi‑Fi, проводная сеть, VPN и сохранённые профили.",
             Self::Bluetooth => "Беспроводные наушники, клавиатуры, мыши и другие устройства.",
             Self::Keyboard => "Источники ввода и переключение языка.",
@@ -114,6 +118,11 @@ pub enum Action {
     HighContrast,
     ReduceTransparency,
     StickyKeys,
+    Language(crate::theme::Lang),
+    RegionStep(i32),
+    Use24HourTime,
+    FirstWeekdayMonday(bool),
+    MetricUnits(bool),
     Animations,
     DockZoom,
     DockSize(u32),
@@ -369,7 +378,7 @@ const TOOLBAR_CLIP: f32 = 12.0;
 const SIDEBAR: [&[Page]; 3] = [
     &[Page::Appearance, Page::Accessibility, Page::Desktop, Page::Displays],
     &[Page::Network, Page::Bluetooth, Page::Keyboard, Page::Pointer, Page::Sound],
-    &[Page::Notifications, Page::Defaults, Page::DateTime, Page::Power],
+    &[Page::Notifications, Page::Defaults, Page::Language, Page::DateTime, Page::Power],
 ];
 fn side_width(w: f32) -> f32 {
     if w >= 720.0 {
@@ -532,6 +541,7 @@ fn page_color(page: Page) -> (tiny_skia::Color, tiny_skia::Color) {
     match page {
         Page::Appearance => (rgba(80, 80, 88, 255), rgba(28, 28, 32, 255)),
         Page::Accessibility => (rgba(35, 145, 255, 255), rgba(10, 88, 215, 255)),
+        Page::Language => (rgba(65, 185, 255, 255), rgba(20, 118, 232, 255)),
         Page::Network => (rgba(55, 165, 255, 255), rgba(15, 105, 225, 255)),
         Page::Bluetooth => (rgba(45, 145, 255, 255), rgba(10, 85, 215, 255)),
         Page::Keyboard => (rgba(160, 165, 175, 255), rgba(112, 117, 128, 255)),
@@ -583,6 +593,25 @@ fn draw_page_icon(pm: &mut PixmapMut, page: Page, x: f32, y: f32, size: f32) {
             let (lrx, lry) = pt(12.0, 14.4);
             stroke_line(pm, bx1, by1, llx, lly, 1.2 * k, white);
             stroke_line(pm, bx1, by1, lrx, lry, 1.2 * k, white);
+        }
+        Page::Language => {
+            let (cx, cy) = pt(10.0, 10.0);
+            stroke_circle(pm, cx, cy, 6.2 * k, 1.2 * k, white);
+            stroke_line(pm, cx - 5.4 * k, cy - 2.3 * k, cx + 5.4 * k, cy - 2.3 * k, 0.95 * k, white);
+            stroke_line(pm, cx - 5.4 * k, cy + 2.3 * k, cx + 5.4 * k, cy + 2.3 * k, 0.95 * k, white);
+            let mut b = tiny_skia::PathBuilder::new();
+            b.move_to(cx, cy - 6.0 * k);
+            b.quad_to(cx - 3.6 * k, cy, cx, cy + 6.0 * k);
+            b.move_to(cx, cy - 6.0 * k);
+            b.quad_to(cx + 3.6 * k, cy, cx, cy + 6.0 * k);
+            if let Some(path) = b.finish() {
+                let s = crate::theme::ui_scale();
+                let mut paint = tiny_skia::Paint::default();
+                paint.set_color(white);
+                paint.anti_alias = true;
+                let stroke = tiny_skia::Stroke { width: 1.0 * k, ..Default::default() };
+                pm.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::from_scale(s, s), None);
+            }
         }
         Page::Network => {
             let (cx, cy) = pt(10.0, 10.0);
@@ -1461,6 +1490,89 @@ impl Panel {
                 );
                 l.end();
                 l.footer("Позволяет нажимать сочетания клавиш последовательно. Повторное нажатие модификатора снимает фиксацию.");
+            }
+            Page::Language => {
+                l.hero(Page::Language);
+                l.header("Язык интерфейса");
+                l.begin();
+                let current_lang = crate::theme::lang();
+                let r = l.row(
+                    82.0,
+                    "Основной язык",
+                    current_lang.full_label().into(),
+                    Style::Row,
+                    None,
+                );
+                let track = R::new(r.x + 14.0, r.y + 46.0, r.w - 28.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                let sw = track.w / crate::theme::Lang::ALL.len() as f32;
+                for (i, lang) in crate::theme::Lang::ALL.into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * sw, track.y, sw, track.h),
+                        lang.native_name(),
+                        Style::Segment(current_lang == lang),
+                        Some(Action::Language(lang)),
+                    );
+                }
+                l.end();
+                l.footer("Применяется сразу к строке меню, Dock, Центру управления, Настройкам, Файлам и Заметкам.");
+                l.header("Регион и форматы");
+                l.begin();
+                let current_region = crate::theme::region();
+                let r = l.row(48.0, "Регион", String::new(), Style::Row, None);
+                l.push(R::new(r.x, r.y, r.w - 64.0, r.h), "", Style::Row, None).value =
+                    current_region.label().into();
+                for (i, label, dir) in [(0, "‹", -1), (1, "›", 1)] {
+                    l.push(
+                        R::new(r.x + r.w - 70.0 + i as f32 * 28.0, r.y + 12.0, 26.0, 24.0),
+                        label,
+                        Style::Mini,
+                        Some(Action::RegionStep(dir)),
+                    );
+                }
+                let use_24h = crate::theme::use_24h_time();
+                l.row(
+                    48.0,
+                    "24‑часовой формат времени",
+                    "Часы в строке меню и на экране блокировки".into(),
+                    Style::Toggle(use_24h),
+                    Some(Action::Use24HourTime),
+                );
+                let monday = crate::theme::first_weekday_monday();
+                let r = l.row(48.0, "Первый день недели", String::new(), Style::Row, None);
+                let track = right(r, 2.0 * 116.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, (label, is_monday)) in [("Понедельник", true), ("Воскресенье", false)].into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * 116.0, track.y, 116.0, 28.0),
+                        label,
+                        Style::Segment(monday == is_monday),
+                        Some(Action::FirstWeekdayMonday(is_monday)),
+                    );
+                }
+                let metric = crate::theme::metric_units();
+                let r = l.row(48.0, "Единицы измерения", String::new(), Style::Row, None);
+                let track = right(r, 2.0 * 116.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, (label, is_metric)) in [("Метрические", true), ("США (дюймы, °F)", false)].into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * 116.0, track.y, 116.0, 28.0),
+                        label,
+                        Style::Segment(metric == is_metric),
+                        Some(Action::MetricUnits(is_metric)),
+                    );
+                }
+                l.row(
+                    48.0,
+                    "Пример форматирования",
+                    "Числа, валюта, дата и температура".into(),
+                    Style::Row,
+                    None,
+                );
+                l.out.last_mut().unwrap().value =
+                    current_region.format_preview(current_lang, use_24h, monday, metric);
+                l.end();
+                l.footer("Язык и региональные стандарты также передаются программам, запускаемым в сессии Пёрышка.");
             }
             Page::Keyboard => {
                 l.hero(Page::Keyboard);
@@ -3233,6 +3345,45 @@ impl crate::FeatherCompositor {
                 }
                 self.save_settings();
             }
+            Action::Language(lang) => {
+                if crate::theme::lang() != lang {
+                    crate::theme::set_lang(lang);
+                    self.app_registry = crate::apps::AppRegistry::new();
+                    self.shell.last_clock_str = crate::shell::MacShell::format_ru_clock();
+                    self.dock_model_dirty = true;
+                    self.shell.invalidate_all();
+                    self.mark_builtin_windows_dirty();
+                    self.lock.repaint();
+                    self.save_settings();
+                }
+            }
+            Action::RegionStep(delta) => {
+                let next = crate::theme::region().step(delta);
+                crate::theme::set_region(next);
+                self.shell.last_clock_str = crate::shell::MacShell::format_ru_clock();
+                self.shell.topbar_dirty = true;
+                self.lock.repaint();
+                self.save_settings();
+            }
+            Action::Use24HourTime => {
+                crate::theme::set_use_24h_time(!crate::theme::use_24h_time());
+                self.shell.last_clock_str = crate::shell::MacShell::format_ru_clock();
+                self.shell.topbar_dirty = true;
+                self.lock.repaint();
+                self.save_settings();
+            }
+            Action::FirstWeekdayMonday(monday) => {
+                if crate::theme::first_weekday_monday() != monday {
+                    crate::theme::set_first_weekday_monday(monday);
+                    self.save_settings();
+                }
+            }
+            Action::MetricUnits(metric) => {
+                if crate::theme::metric_units() != metric {
+                    crate::theme::set_metric_units(metric);
+                    self.save_settings();
+                }
+            }
             Action::Animations => {
                 let enabled = !self.animations.enabled();
                 self.animations
@@ -3862,6 +4013,18 @@ mod tests {
             assert!(acc_controls.iter().any(|c| matches!(c.action, Some(Action::HighContrast))));
             assert!(acc_controls.iter().any(|c| matches!(c.action, Some(Action::ReduceTransparency))));
             assert!(acc_controls.iter().any(|c| matches!(c.action, Some(Action::StickyKeys))));
+            let lang_panel = Panel { page: Page::Language, ..Default::default() };
+            let lang_controls = lang_panel.controls(800.0, 540.0, &context);
+            for l in crate::theme::Lang::ALL {
+                assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::Language(lang)) if lang == l)));
+            }
+            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::RegionStep(-1)))));
+            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::RegionStep(1)))));
+            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::Use24HourTime))));
+            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::FirstWeekdayMonday(true)))));
+            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::FirstWeekdayMonday(false)))));
+            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::MetricUnits(true)))));
+            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::MetricUnits(false)))));
         }
         context.system.apps = std::sync::Arc::new(vec![
             crate::system_preferences::DesktopApp {

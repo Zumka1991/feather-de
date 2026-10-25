@@ -1,5 +1,6 @@
 //! Appearance of Feather clients: startup snapshot and directory inotify for atomic saves.
 //! File reads and waits belong to one sleeping worker, never the UI event loop.
+use crate::i18n::{Lang, Region};
 use crate::scale::{self, AccentColor, Appearance, TextSize};
 use std::{
     io::{self, Read},
@@ -18,6 +19,11 @@ pub struct ThemeConfig {
     pub text_size: TextSize,
     pub high_contrast: bool,
     pub reduce_transparency: bool,
+    pub lang: Lang,
+    pub region: Region,
+    pub use_24h_time: bool,
+    pub first_weekday_monday: bool,
+    pub metric_units: bool,
 }
 
 impl Default for ThemeConfig {
@@ -29,6 +35,11 @@ impl Default for ThemeConfig {
             text_size: TextSize::Default,
             high_contrast: false,
             reduce_transparency: false,
+            lang: Lang::Ru,
+            region: Region::Ru,
+            use_24h_time: true,
+            first_weekday_monday: true,
+            metric_units: true,
         }
     }
 }
@@ -79,6 +90,31 @@ fn parse(text: &str) -> ThemeConfig {
                         result.reduce_transparency = on;
                     }
                 }
+                "language" | "lang" => {
+                    if let Some(l) = Lang::parse(value) {
+                        result.lang = l;
+                    }
+                }
+                "region" => {
+                    if let Some(r) = Region::parse(value) {
+                        result.region = r;
+                    }
+                }
+                "use_24h_time" => {
+                    if let Ok(on) = value.parse::<bool>() {
+                        result.use_24h_time = on;
+                    }
+                }
+                "first_weekday_monday" => {
+                    if let Ok(on) = value.parse::<bool>() {
+                        result.first_weekday_monday = on;
+                    }
+                }
+                "metric_units" => {
+                    if let Ok(on) = value.parse::<bool>() {
+                        result.metric_units = on;
+                    }
+                }
                 _ => {}
             }
         }
@@ -103,21 +139,32 @@ fn apply(cfg: ThemeConfig) {
     scale::set_text_size(cfg.text_size);
     scale::set_high_contrast(cfg.high_contrast);
     scale::set_reduce_transparency(cfg.reduce_transparency);
+    scale::set_lang(cfg.lang);
+    scale::set_region(cfg.region);
+    scale::set_use_24h_time(cfg.use_24h_time);
+    scale::set_first_weekday_monday(cfg.first_weekday_monday);
+    scale::set_metric_units(cfg.metric_units);
 }
 
-static LATEST_CONFIG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x01_ff_00_00);
+static LATEST_CONFIG: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0x00_00_01_ff_00_38);
 
-fn pack_config(cfg: ThemeConfig) -> u32 {
-    let a = matches!(cfg.appearance, Appearance::Dark) as u32
-        | ((cfg.high_contrast as u32) << 1)
-        | ((cfg.reduce_transparency as u32) << 2);
-    let ac = (cfg.accent as u32) << 8;
-    let hl = (cfg.highlight.map_or(255u8, |c| c as u8) as u32) << 16;
-    let ts = (cfg.text_size as u32) << 24;
-    a | ac | hl | ts
+fn pack_config(cfg: ThemeConfig) -> u64 {
+    let a = matches!(cfg.appearance, Appearance::Dark) as u64
+        | ((cfg.high_contrast as u64) << 1)
+        | ((cfg.reduce_transparency as u64) << 2)
+        | ((cfg.use_24h_time as u64) << 3)
+        | ((cfg.first_weekday_monday as u64) << 4)
+        | ((cfg.metric_units as u64) << 5);
+    let ac = (cfg.accent as u64) << 8;
+    let hl = (cfg.highlight.map_or(255u8, |c| c as u8) as u64) << 16;
+    let ts = (cfg.text_size as u64) << 24;
+    let lg = (cfg.lang as u64) << 32;
+    let rg = (cfg.region as u64) << 40;
+    a | ac | hl | ts | lg | rg
 }
 
-fn unpack_config(raw: u32) -> ThemeConfig {
+fn unpack_config(raw: u64) -> ThemeConfig {
     let flags = raw & 0xff;
     let appearance = if (flags & 1) != 0 {
         Appearance::Dark
@@ -126,6 +173,9 @@ fn unpack_config(raw: u32) -> ThemeConfig {
     };
     let high_contrast = (flags & 2) != 0;
     let reduce_transparency = (flags & 4) != 0;
+    let use_24h_time = (flags & 8) != 0;
+    let first_weekday_monday = (flags & 16) != 0;
+    let metric_units = (flags & 32) != 0;
     let accent = AccentColor::from_u8(((raw >> 8) & 0xff) as u8);
     let hl_raw = ((raw >> 16) & 0xff) as u8;
     let highlight = if hl_raw < 8 {
@@ -134,6 +184,8 @@ fn unpack_config(raw: u32) -> ThemeConfig {
         None
     };
     let text_size = TextSize::from_u8(((raw >> 24) & 0xff) as u8);
+    let lang = Lang::from_u8(((raw >> 32) & 0xff) as u8);
+    let region = Region::from_u8(((raw >> 40) & 0xff) as u8);
     ThemeConfig {
         appearance,
         accent,
@@ -141,6 +193,11 @@ fn unpack_config(raw: u32) -> ThemeConfig {
         text_size,
         high_contrast,
         reduce_transparency,
+        lang,
+        region,
+        use_24h_time,
+        first_weekday_monday,
+        metric_units,
     }
 }
 
@@ -149,7 +206,7 @@ fn store_latest(cfg: ThemeConfig) {
 }
 
 /// Applies the latest watched theme snapshot on the event-loop thread. Returns `true` if any
-/// appearance/accent/highlight/text_size/accessibility setting changed.
+/// appearance/accent/highlight/text_size/accessibility/language setting changed.
 pub fn sync(appearance: Appearance) -> bool {
     let mut cfg = unpack_config(LATEST_CONFIG.load(std::sync::atomic::Ordering::Acquire));
     cfg.appearance = appearance;
@@ -158,7 +215,12 @@ pub fn sync(appearance: Appearance) -> bool {
         || scale::highlight_choice() != cfg.highlight
         || scale::text_size() != cfg.text_size
         || scale::high_contrast() != cfg.high_contrast
-        || scale::reduce_transparency() != cfg.reduce_transparency;
+        || scale::reduce_transparency() != cfg.reduce_transparency
+        || scale::lang() != cfg.lang
+        || scale::region() != cfg.region
+        || scale::use_24h_time() != cfg.use_24h_time
+        || scale::first_weekday_monday() != cfg.first_weekday_monday
+        || scale::metric_units() != cfg.metric_units;
     if changed {
         apply(cfg);
     }

@@ -2,6 +2,7 @@
 //! programs. Global atomics for the event-loop thread, plus per-thread snapshots so a worker's
 //! job (or concurrent test) never sees a switch mid-raster.
 
+use crate::i18n::{Lang, Region};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 static UI_SCALE_BITS: AtomicU32 = AtomicU32::new(0x3f800000); // 1.0f32
@@ -11,6 +12,11 @@ static HIGHLIGHT_COLOR: AtomicU8 = AtomicU8::new(255); // 255 = None ("accent")
 static TEXT_SIZE: AtomicU8 = AtomicU8::new(1); // TextSize::Default (100%)
 static HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
 static REDUCE_TRANSPARENCY: AtomicBool = AtomicBool::new(false);
+static LANG: AtomicU8 = AtomicU8::new(0); // Lang::Ru
+static REGION: AtomicU8 = AtomicU8::new(0); // Region::Ru
+static USE_24H_TIME: AtomicBool = AtomicBool::new(true);
+static FIRST_WEEKDAY_MONDAY: AtomicBool = AtomicBool::new(true);
+static METRIC_UNITS: AtomicBool = AtomicBool::new(true);
 
 #[derive(Debug, Clone, Copy)]
 struct RenderSnapshot {
@@ -21,6 +27,7 @@ struct RenderSnapshot {
     text_size: TextSize,
     high_contrast: bool,
     reduce_transparency: bool,
+    lang: Lang,
 }
 
 thread_local! {
@@ -252,16 +259,24 @@ impl TextSize {
 /// Runs `draw` with this thread's scale/appearance overridden (unclamped: icons render in a
 /// 100-unit design space at any pixel size) and default accent/highlight/text_size.
 pub fn with_render_settings<T>(scale: f32, appearance: Appearance, draw: impl FnOnce() -> T) -> T {
-    with_full_render_settings(
+    struct Restore(Option<RenderSnapshot>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RENDER_SETTINGS.with(|s| s.set(self.0));
+        }
+    }
+    let snap = RenderSnapshot {
         scale,
         appearance,
-        AccentColor::Blue,
-        None,
-        TextSize::Default,
-        false,
-        false,
-        draw,
-    )
+        accent: AccentColor::Blue,
+        highlight: None,
+        text_size: TextSize::Default,
+        high_contrast: false,
+        reduce_transparency: false,
+        lang: Lang::Ru,
+    };
+    let _restore = Restore(RENDER_SETTINGS.with(|s| s.replace(Some(snap))));
+    draw()
 }
 
 /// Runs `draw` with this thread's full render snapshot overridden.
@@ -290,6 +305,7 @@ pub fn with_full_render_settings<T>(
         text_size,
         high_contrast,
         reduce_transparency,
+        lang: Lang::from_u8(LANG.load(Ordering::Relaxed)),
     };
     let _restore = Restore(RENDER_SETTINGS.with(|s| s.replace(Some(snap))));
     draw()
@@ -387,5 +403,48 @@ pub fn reduce_transparency() -> bool {
 
 pub fn set_reduce_transparency(on: bool) {
     REDUCE_TRANSPARENCY.store(on, Ordering::Relaxed);
+}
+
+pub fn lang() -> Lang {
+    if let Some(l) = RENDER_SETTINGS.with(|s| s.get().map(|v| v.lang)) {
+        return l;
+    }
+    Lang::from_u8(LANG.load(Ordering::Relaxed))
+}
+
+pub fn set_lang(l: Lang) {
+    LANG.store(l as u8, Ordering::Relaxed);
+}
+
+pub fn region() -> Region {
+    Region::from_u8(REGION.load(Ordering::Relaxed))
+}
+
+pub fn set_region(r: Region) {
+    REGION.store(r as u8, Ordering::Relaxed);
+}
+
+pub fn use_24h_time() -> bool {
+    USE_24H_TIME.load(Ordering::Relaxed)
+}
+
+pub fn set_use_24h_time(on: bool) {
+    USE_24H_TIME.store(on, Ordering::Relaxed);
+}
+
+pub fn first_weekday_monday() -> bool {
+    FIRST_WEEKDAY_MONDAY.load(Ordering::Relaxed)
+}
+
+pub fn set_first_weekday_monday(on: bool) {
+    FIRST_WEEKDAY_MONDAY.store(on, Ordering::Relaxed);
+}
+
+pub fn metric_units() -> bool {
+    METRIC_UNITS.load(Ordering::Relaxed)
+}
+
+pub fn set_metric_units(on: bool) {
+    METRIC_UNITS.store(on, Ordering::Relaxed);
 }
 

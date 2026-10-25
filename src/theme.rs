@@ -95,11 +95,14 @@ pub fn reserved_for(icon: f32, autohide: bool) -> i32 {
 pub const TRAFFIC_RADIUS: f32 = 6.0;
 pub const TRAFFIC_CENTERS: [f32; 3] = [16.0, 36.0, 56.0];
 
+pub use feather_ui::i18n::{Lang, Region};
 pub use feather_ui::scale::{
-    accent_color, appearance, high_contrast, highlight_choice, highlight_color,
-    reduce_transparency, set_accent_color, set_appearance, set_high_contrast, set_highlight_choice,
-    set_reduce_transparency, set_text_size, set_ui_scale, text_size, ui_scale,
-    with_full_render_settings, AccentColor, Appearance, TextSize,
+    accent_color, appearance, first_weekday_monday, high_contrast, highlight_choice,
+    highlight_color, lang, metric_units, reduce_transparency, region, set_accent_color,
+    set_appearance, set_first_weekday_monday, set_high_contrast, set_highlight_choice, set_lang,
+    set_metric_units, set_reduce_transparency, set_region, set_text_size, set_ui_scale,
+    set_use_24h_time, text_size, ui_scale, use_24h_time, with_full_render_settings, AccentColor,
+    Appearance, TextSize,
 };
 #[cfg(test)]
 pub use feather_ui::scale::with_render_settings;

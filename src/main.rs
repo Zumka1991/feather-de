@@ -715,6 +715,11 @@ impl FeatherCompositor {
             high_contrast: crate::theme::high_contrast(),
             reduce_transparency: crate::theme::reduce_transparency(),
             sticky_keys: self.sticky_keys,
+            language: crate::theme::lang(),
+            region: crate::theme::region(),
+            use_24h_time: crate::theme::use_24h_time(),
+            first_weekday_monday: crate::theme::first_weekday_monday(),
+            metric_units: crate::theme::metric_units(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.clone(),
             default_browser: self.system_preferences.browser.clone(),
@@ -1625,6 +1630,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     crate::theme::set_text_size(saved.text_size);
     crate::theme::set_high_contrast(saved.high_contrast);
     crate::theme::set_reduce_transparency(saved.reduce_transparency);
+    crate::theme::set_lang(saved.language);
+    crate::theme::set_region(saved.region);
+    crate::theme::set_use_24h_time(saved.use_24h_time);
+    crate::theme::set_first_weekday_monday(saved.first_weekday_monday);
+    crate::theme::set_metric_units(saved.metric_units);
     let explicit_scale = parse_explicit_scale().or(saved.scale);
     let init_scale =
         explicit_scale.unwrap_or_else(|| auto_scale_for_resolution(phys_w, host_scale));
@@ -2169,6 +2179,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("settings-bluetooth") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth)),
         Ok("settings-defaults") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults)),
         Ok("settings-accessibility") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Accessibility)),
+        Ok("settings-language") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Language)),
         Ok("about") => state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather),
         _ => {}
     }

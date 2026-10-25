@@ -349,9 +349,13 @@ fn shadowed(pm: &mut tiny_skia::PixmapMut, fonts: &mut FontSystem, text: &str, c
 fn clock_text() -> (String, String) {
     use chrono::{Datelike, Timelike};
     let now = chrono::Local::now();
-    let weekday = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"][now.weekday().num_days_from_monday() as usize];
-    let month = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"][now.month0() as usize];
-    (format!("{weekday}, {} {month}", now.day()), format!("{}:{:02}", now.hour(), now.minute()))
+    feather_ui::i18n::format_lock_clock(
+        now.weekday().num_days_from_monday() as usize,
+        now.day(),
+        now.month0() as usize,
+        now.hour(),
+        now.minute(),
+    )
 }
 
 /// Full name from the account (GECOS), else the login; read once

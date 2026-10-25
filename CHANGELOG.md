@@ -2,6 +2,37 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-25 — Язык и регион; перевод интерфейса на популярные языки (Gemini/agy)
+
+- Создан модуль `feather_ui::i18n` (`crates/feather-ui/src/i18n.rs`) с поддержкой 6 популярных
+  языков интерфейса (`Lang`: Русский `ru`, English `en`, Español `es`, Deutsch `de`, Français `fr`,
+  中文 `zh`) и 8 региональных профилей (`Region`: Россия, США, Великобритания, Германия, Франция,
+  Испания, Китай, Казахстан), а также региональных настроек (`use_24h_time`, `first_weekday_monday`,
+  `metric_units`).
+- В `feather_ui::scale` (`crates/feather-ui/src/scale.rs`) и `feather_ui::appearance`
+  (`crates/feather-ui/src/appearance.rs`) добавлены атомарные и потоково-локальные состояния языка
+  и региона с упаковкой в `LATEST_CONFIG`, позволяющей наблюдателю `feather-appearance` живьём
+  доставлять смену языка и региона в собственные приложения («Файлы», «Заметки») без перезапуска.
+- В `FontSystem` (`crates/feather-ui/src/text.rs`) встроен прозрачный перевод строк интерфейса через
+  таблицу `TABLE` и шаблонные правила `i18n::tr`, при этом `TextInput`
+  (`crates/feather-ui/src/input.rs`) использует `measure_raw` / `draw_raw`, чтобы не переводить
+  пользовательский ввод.
+- Локализованы часы в строке меню (`MacShell::format_ru_clock` в `src/shell.rs`) и на экране
+  блокировки (`session_lock::clock_text` в `src/session_lock.rs`) с учётом языка, региона и
+  12/24-часового формата. В `src/apps.rs` (`AppRegistry`) добавлен разбор локализованных полей
+  `Name[<lang>]=` и `Comment[<lang>]=` из `.desktop`-файлов с автоматическим перестроением реестра
+  при смене языка, а в `spawn_wayland_command` — передача `LANGUAGE`, `LC_TIME` и `LC_MEASUREMENT`
+  дочерним процессам.
+- В `src/settings.rs` добавлено сохранение и чтение `language`, `region`, `use_24h_time`,
+  `first_weekday_monday` и `metric_units` в `settings.conf`. В `src/system_settings.rs` реализована
+  страница `Page::Language` («Язык и регион», `FEATHER_DEBUG_OPEN=settings-language`) с выбором
+  основного языка, региона, 24-часового времени, первого дня недели, единиц измерения и живым
+  примером форматирования даты, времени, чисел, валюты и температуры.
+- `cargo build --release` без предупреждений, все 191 тест workspace прошли. Вложенная E2E-проверка
+  (`FEATHER_DEBUG_LANGUAGE=1`): переключение всех 6 языков, региона, 12/24-часового формата, дня
+  недели и единиц измерения, сохранение в `settings.conf`, 0 тиков CPU за 5 с в простое, `RssAnon` —
+  42,00 МиБ (бюджет ≤ 60 МБ).
+
 ## 2026-10-25 — Универсальный доступ: крупный текст, контраст, меньше прозрачности, залипание клавиш (Gemini/agy)
 
 - В `feather-ui::scale` (`crates/feather-ui/src/scale.rs`) и `feather-ui::appearance`

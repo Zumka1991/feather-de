@@ -283,6 +283,11 @@ pub struct Settings {
     pub high_contrast: bool,
     pub reduce_transparency: bool,
     pub sticky_keys: bool,
+    pub language: crate::theme::Lang,
+    pub region: crate::theme::Region,
+    pub use_24h_time: bool,
+    pub first_weekday_monday: bool,
+    pub metric_units: bool,
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub default_browser: Option<String>,
@@ -321,6 +326,11 @@ impl Default for Settings {
             high_contrast: false,
             reduce_transparency: false,
             sticky_keys: false,
+            language: crate::theme::Lang::Ru,
+            region: crate::theme::Region::Ru,
+            use_24h_time: true,
+            first_weekday_monday: true,
+            metric_units: true,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             default_browser: None,
@@ -410,6 +420,31 @@ impl Settings {
                 "sticky_keys" => {
                     if let Ok(b) = v.parse() {
                         s.sticky_keys = b;
+                    }
+                }
+                "language" | "lang" => {
+                    if let Some(l) = crate::theme::Lang::parse(v) {
+                        s.language = l;
+                    }
+                }
+                "region" => {
+                    if let Some(r) = crate::theme::Region::parse(v) {
+                        s.region = r;
+                    }
+                }
+                "use_24h_time" => {
+                    if let Ok(b) = v.parse() {
+                        s.use_24h_time = b;
+                    }
+                }
+                "first_weekday_monday" => {
+                    if let Ok(b) = v.parse() {
+                        s.first_weekday_monday = b;
+                    }
+                }
+                "metric_units" => {
+                    if let Ok(b) = v.parse() {
+                        s.metric_units = b;
                     }
                 }
                 "wallpaper" => {
@@ -616,7 +651,7 @@ impl Settings {
         s
     }
     fn text(&self) -> String {
-        let mut text=format!("appearance={}\naccent_color={}\nhighlight_color={}\ntext_size={}\nhigh_contrast={}\nreduce_transparency={}\nsticky_keys={}\nwallpaper={}\n{}dock_zoom={}\n{}animations={}\nkeyboard_layouts={}\nkeyboard_shortcut={}\n{}",
+        let mut text=format!("appearance={}\naccent_color={}\nhighlight_color={}\ntext_size={}\nhigh_contrast={}\nreduce_transparency={}\nsticky_keys={}\nlanguage={}\nregion={}\nuse_24h_time={}\nfirst_weekday_monday={}\nmetric_units={}\nwallpaper={}\n{}dock_zoom={}\n{}animations={}\nkeyboard_layouts={}\nkeyboard_shortcut={}\n{}",
             if self.appearance==Appearance::Dark{"dark"}else{"light"},
             self.accent_color.id(),
             self.highlight_color.map_or("accent", |c| c.id()),
@@ -624,6 +659,11 @@ impl Settings {
             self.high_contrast,
             self.reduce_transparency,
             self.sticky_keys,
+            self.language.id(),
+            self.region.id(),
+            self.use_24h_time,
+            self.first_weekday_monday,
+            self.metric_units,
             self.wallpaper.id(),self.scale.map(|v|format!("scale={v}\n")).unwrap_or_default(),
             self.dock_zoom,self.dock.as_ref().map(|d|format!("dock={}\n",d.join(","))).unwrap_or_default(),self.animations,self.keyboard.layouts.join(","),self.keyboard.shortcut.option(),
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
