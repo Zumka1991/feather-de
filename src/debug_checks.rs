@@ -1379,6 +1379,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
                 Ok("displays") => Page::Displays,
                 Ok("desktop") => Page::Desktop,
                 Ok("defaults") => Page::Defaults,
+                Ok("privacy") => Page::Privacy,
                 Ok("date") => Page::DateTime,
                 Ok("power") => Page::Power,
                 Ok("notifications") => Page::Notifications,
@@ -1997,6 +1998,96 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             let img = image::load_from_memory(&std::fs::read(&files[0]).unwrap()).unwrap();
             assert!(img.width() > 0 && img.height() > 0);
             eprintln!("[feather-screenshot-settings-check] folder picker, PNG/JPEG/WebP formats, capture and persistence passed");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_PRIVACY").is_some() {
+        use crate::file_portal::{evaluate_and_record_portal_access, ScreenCapturePolicy};
+        use crate::system_settings::{Action as A, Page};
+        fn click(state: &mut FeatherCompositor, predicate: impl Fn(&A) -> bool) {
+            let w = state
+                .windows
+                .iter()
+                .find(|w| w.app_id == "builtin.settings")
+                .unwrap();
+            let (width, height) = (w.width as f32, w.height as f32);
+            let (_, y) = state
+                .system_settings
+                .debug_point(width, height, &state.settings_context(), &predicate)
+                .expect("privacy settings control");
+            state.system_settings.scroll += (y - height * 0.55).max(0.0);
+            let (x, y) = state
+                .system_settings
+                .debug_point(width, height, &state.settings_context(), &predicate)
+                .expect("privacy settings control after scroll");
+            let w = state
+                .windows
+                .iter()
+                .find(|w| w.app_id == "builtin.settings")
+                .unwrap();
+            let point = (
+                w.x as f64 + x as f64,
+                (w.y + w.titlebar_h()) as f64 + y as f64,
+            );
+            state.debug_pointer_motion(point.0, point.1);
+            state.debug_pointer_button(0x110, true);
+            state.debug_pointer_button(0x110, false);
+        }
+        at(state, 700, |s| {
+            s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+            s.apply_system_setting(A::Page(Page::Privacy));
+            assert_eq!(s.screen_capture_policy, ScreenCapturePolicy::Ask);
+            assert!(s.screen_capture_cursor);
+            assert!(s.screen_capture_apps.is_empty());
+        })?;
+        at(state, 1200, |s| {
+            let cfg = crate::file_portal::portal_config_home();
+            // Simulate an unknown portal client requesting ScreenCast access under Ask policy:
+            assert!(evaluate_and_record_portal_access(&cfg, "com.obsproject.Studio", "OBS Studio"));
+            let saved = crate::settings::Settings::load();
+            s.screen_capture_apps = saved.screen_capture_apps;
+            s.mark_settings_dirty();
+            assert_eq!(s.screen_capture_apps.len(), 1);
+            assert!(s.screen_capture_apps[0].allowed);
+            // Toggle OBS Studio to Denied via UI click, switch policy to Deny, and toggle cursor:
+            click(
+                s,
+                |a| matches!(a, A::ToggleScreenCaptureApp(id) if id == "com.obsproject.Studio"),
+            );
+            assert!(!s.screen_capture_apps[0].allowed);
+            click(s, |a| matches!(a, A::ScreenCapturePolicy(ScreenCapturePolicy::Deny)));
+            assert_eq!(s.screen_capture_policy, ScreenCapturePolicy::Deny);
+            click(s, |a| matches!(a, A::ScreenCaptureCursor));
+            assert!(!s.screen_capture_cursor);
+        })?;
+        at(state, 1600, |s| {
+            let cfg = crate::file_portal::portal_config_home();
+            // Verify portal enforces both the per-app deny and the global Deny policy:
+            assert!(!evaluate_and_record_portal_access(&cfg, "com.obsproject.Studio", "OBS Studio"));
+            assert!(!evaluate_and_record_portal_access(&cfg, "org.mozilla.firefox", "Firefox"));
+            let saved = crate::settings::Settings::load();
+            s.screen_capture_apps = saved.screen_capture_apps;
+            s.mark_settings_dirty();
+            // Switch back to Ask policy and re-enable OBS Studio:
+            click(s, |a| matches!(a, A::ScreenCapturePolicy(ScreenCapturePolicy::Ask)));
+            click(
+                s,
+                |a| matches!(a, A::ToggleScreenCaptureApp(id) if id == "com.obsproject.Studio"),
+            );
+        })?;
+        at(state, 2000, |s| {
+            let cfg = crate::file_portal::portal_config_home();
+            assert!(evaluate_and_record_portal_access(&cfg, "com.obsproject.Studio", "OBS Studio"));
+            assert!(!evaluate_and_record_portal_access(&cfg, "org.mozilla.firefox", "Firefox"));
+            let saved = crate::settings::Settings::load();
+            assert_eq!(saved.screen_capture_policy, ScreenCapturePolicy::Ask);
+            assert!(!saved.screen_capture_cursor);
+            assert_eq!(saved.screen_capture_apps.len(), 2);
+            assert!(saved.screen_capture_apps.iter().any(|a| a.id == "com.obsproject.Studio" && a.allowed));
+            assert!(saved.screen_capture_apps.iter().any(|a| a.id == "org.mozilla.firefox" && !a.allowed));
+            s.system_settings.scroll = 0.0;
+            s.mark_settings_dirty();
+            s.needs_redraw = true;
+            eprintln!("[feather-privacy-check] portal access policy, per-app rules, cursor mode and persistence passed");
         })?;
     }
     Ok(())

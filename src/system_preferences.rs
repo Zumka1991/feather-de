@@ -60,6 +60,7 @@ pub struct State {
     pub zones: Arc<Vec<String>>,
     /// Installed xcursor themes (directory names), sorted
     pub cursor_themes: Arc<Vec<String>>,
+    pub recorded_capture_apps: Option<Arc<Vec<crate::file_portal::ScreenCaptureApp>>>,
     pub busy: bool,
     pub error: Option<String>,
 }
@@ -75,6 +76,7 @@ impl Default for State {
             time: TimeState::default(),
             zones: Arc::new(Vec::new()),
             cursor_themes: Arc::new(Vec::new()),
+            recorded_capture_apps: None,
             busy: false,
             error: None,
         }
@@ -105,6 +107,7 @@ pub enum Command {
     AddAutostart(String),
     ToggleAutostart { id: String, enabled: bool },
     RemoveAutostart(String),
+    SyncPortalPermission { id: String, allowed: Option<bool> },
     Ntp(bool),
     Timezone(String),
     SetTime(String),
@@ -993,16 +996,72 @@ fn scan_hardware(prev: Option<&HardwareInfo>) -> HardwareInfo {
     }
 }
 
+async fn sync_portal_permission(id: &str, allowed: Option<bool>) {
+    let Ok(builder) = zbus::connection::Builder::session() else {
+        return;
+    };
+    let Ok(conn) = builder.method_timeout(Duration::from_secs(2)).build().await else {
+        return;
+    };
+    let app_key = crate::file_portal::normalize_app_key(id);
+    if app_key.is_empty() {
+        return;
+    }
+    for table in ["screencast", "screenshot"] {
+        let Ok(proxy) = Proxy::new(
+            &conn,
+            "org.freedesktop.impl.portal.PermissionStore",
+            "/org/freedesktop/impl/portal/PermissionStore",
+            "org.freedesktop.impl.portal.PermissionStore",
+        )
+        .await
+        else {
+            return;
+        };
+        if let Some(allowed) = allowed {
+            let perms = vec![if allowed { "yes" } else { "no" }];
+            let _: Result<(), _> = proxy
+                .call(
+                    "SetPermission",
+                    &(
+                        table,
+                        true,
+                        "",
+                        app_key.as_str(),
+                        perms,
+                    ),
+                )
+                .await;
+        } else {
+            let _: Result<(), _> = proxy
+                .call("DeletePermission", &(table, "", app_key.as_str()))
+                .await;
+        }
+    }
+}
+
 impl Worker {
     pub fn new(
         handle: &LoopHandle<'static, crate::FeatherCompositor>,
         browser: Option<String>,
         terminal: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let (tx, rx) = async_channel::bounded(8);
+        let (tx, rx) = async_channel::bounded(16);
         let (done, events) = channel::sync_channel(2);
-        handle.insert_source(events, |event, _, state| {
-            if let channel::Event::Msg(snapshot) = event {
+        handle.insert_source(events, |event: channel::Event<State>, _, state| {
+            if let channel::Event::Msg(mut snapshot) = event {
+                if let Some(recorded) = snapshot.recorded_capture_apps.take() {
+                    for app in recorded.iter() {
+                        if state.screen_capture_apps.len() < crate::file_portal::MAX_CAPTURE_APPS
+                            && !state
+                                .screen_capture_apps
+                                .iter()
+                                .any(|a| crate::file_portal::same_app_id(&a.id, &app.id))
+                        {
+                            state.screen_capture_apps.push(app.clone());
+                        }
+                    }
+                }
                 state.system_preferences = snapshot;
                 state.system_settings.app_count = state.system_preferences.apps.len();
                 if let Some(error) = &state.system_preferences.error {
@@ -1058,7 +1117,12 @@ impl Worker {
                         return;
                     }
                     while let Ok(command) = rx.recv().await {
+                        if let Command::SyncPortalPermission { id, allowed } = command {
+                            sync_portal_permission(&id, allowed).await;
+                            continue;
+                        }
                         state.error = None;
+                        state.recorded_capture_apps = None;
                         let result = match &command {
                             Command::DefaultApp { browser, id } => {
                                 if !state.apps.iter().any(|a| {
@@ -1093,11 +1157,15 @@ impl Worker {
                                     .map(|_| state.autostart = Arc::new(scan_autostart(&cfg)))
                             }
                             Command::Refresh => {
+                                let cfg = config_home();
                                 state.apps = Arc::new(scan_apps());
-                                state.autostart = Arc::new(scan_autostart(&config_home()));
+                                state.autostart = Arc::new(scan_autostart(&cfg));
                                 state.hardware = Arc::new(scan_hardware(Some(&state.hardware)));
                                 state.cursor_themes = Arc::new(scan_cursor_themes());
                                 state.browser = default_browser().or(state.browser);
+                                let (_, apps) =
+                                    crate::file_portal::load_portal_capture_settings(&cfg);
+                                state.recorded_capture_apps = Some(Arc::new(apps));
                                 Ok(())
                             }
                             _ => {

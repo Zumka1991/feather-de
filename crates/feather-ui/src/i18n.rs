@@ -1109,6 +1109,32 @@ static TABLE: &[Entry] = &[
     ("Новая заметка", "New Note", "Nueva nota", "Neue Notiz", "Nouvelle note", "新建备忘录"),
     ("Все заметки", "All Notes", "Todas las notas", "Alle Notizen", "Toutes les notes", "所有备忘录"),
     ("Нет заметок", "No Notes", "No hay notas", "Keine Notizen", "Aucune note", "没有备忘录"),
+
+    // ── Privacy & Screen Recording (Portal) ──
+    ("Конфиденциальность", "Privacy", "Privacidad", "Datenschutz", "Confidentialité", "隐私"),
+    ("Доступ программ к записи экрана и снимкам через системный портал.", "Application access to screen recording and screenshots through the system portal.", "Acceso de las aplicaciones a la grabación y capturas de pantalla mediante el portal del sistema.", "Programmzugriff auf Bildschirmaufnahme und Bildschirmfotos über das Systemportal.", "Accès des applications à l’enregistrement d’écran et aux captures via le portail système.", "通过系统门户管理应用程序对屏幕录制和截图的访问权限。"),
+    ("Запись экрана и снимки (портал)", "Screen Recording & Screenshots (Portal)", "Grabación y capturas de pantalla (portal)", "Bildschirmaufnahme & Bildschirmfotos (Portal)", "Enregistrement d’écran et captures (portail)", "屏幕录制与截图（门户）"),
+    ("Новые запросы доступа", "New Access Requests", "Nuevas solicitudes de acceso", "Neue Zugriffsanfragen", "Nouvelles demandes d’accès", "新访问请求"),
+    ("ScreenCast, Screenshot и Access в xdg-desktop-portal", "ScreenCast, Screenshot, and Access in xdg-desktop-portal", "ScreenCast, Screenshot y Access en xdg-desktop-portal", "ScreenCast, Screenshot und Access in xdg-desktop-portal", "ScreenCast, Screenshot et Access dans xdg-desktop-portal", "xdg-desktop-portal 中的 ScreenCast、Screenshot 与 Access"),
+    ("По списку", "Per App", "Por aplicación", "Nach Liste", "Par application", "按应用列表"),
+    ("Всем", "Allow All", "Permitir todo", "Allen erlauben", "Tout autoriser", "全部允许"),
+    ("Никому", "Block All", "Bloquear todo", "Niemandem", "Tout bloquer", "全部拒绝"),
+    ("Спрашивать", "Ask", "Preguntar", "Fragen", "Demander", "询问"),
+    ("Разрешать", "Allow", "Permitir", "Erlauben", "Autoriser", "允许"),
+    ("Запрещать", "Deny", "Denegar", "Ablehnen", "Refuser", "拒绝"),
+    ("Показывать курсор в записи", "Show Pointer in Recording", "Mostrar el puntero en la grabación", "Zeiger in der Aufnahme anzeigen", "Afficher le pointeur dans l’enregistrement", "在录制中显示指针"),
+    ("Режим указателя по умолчанию для сеансов ScreenCast", "Default pointer visibility for ScreenCast sessions", "Visibilidad del puntero predeterminada para sesiones ScreenCast", "Standard-Zeigersichtbarkeit für ScreenCast-Sitzungen", "Visibilité du pointeur par défaut pour les sessions ScreenCast", "ScreenCast 会话的默认指针可见性"),
+    ("Портал Пёрышка (org.freedesktop.impl.portal.desktop.feather) проверяет права программ перед захватом экрана и синхронизирует таблицу разрешений.", "The Feather portal (org.freedesktop.impl.portal.desktop.feather) verifies app permissions before screen capture and syncs the permission store.", "El portal de Feather (org.freedesktop.impl.portal.desktop.feather) verifica los permisos antes de capturar la pantalla y sincroniza la tabla de permisos.", "Das Feather-Portal (org.freedesktop.impl.portal.desktop.feather) prüft Programmrechte vor der Bildschirmaufnahme und synchronisiert die Berechtigungstabelle.", "Le portail Feather (org.freedesktop.impl.portal.desktop.feather) vérifie les droits des applications avant la capture d’écran et synchronise la table d’autorisations.", "Feather 门户（org.freedesktop.impl.portal.desktop.feather）会在捕获屏幕前校验应用权限并同步权限存储表。"),
+    ("Доступ программ к экрану", "App Screen Access", "Acceso de aplicaciones a la pantalla", "Programmzugriff auf den Bildschirm", "Accès des applications à l’écran", "应用程序屏幕访问权限"),
+    ("Список программ пуст", "No Applications Listed", "La lista de aplicaciones está vacía", "Keine Programme in der Liste", "Aucune application dans la liste", "应用列表为空"),
+    ("Программы появятся здесь при обращении к порталу или после добавления вручную", "Apps appear here when they request portal access or when added manually", "Las aplicaciones aparecerán aquí al solicitar acceso al portal o al añadirlas manualmente", "Programme erscheinen hier bei einer Portalanfrage oder nach manuellem Hinzufügen", "Les applications apparaissent ici lors d’une demande au portail ou après ajout manuel", "应用在请求门户访问或手动添加后会显示在此处"),
+    ("Разрешено", "Allowed", "Permitido", "Erlaubt", "Autorisé", "已允许"),
+    ("Запрещено", "Blocked", "Bloqueado", "Blockiert", "Bloqué", "已阻止"),
+    ("Добавить программу", "Add Application", "Añadir aplicación", "Programm hinzufügen", "Ajouter une application", "添加应用程序"),
+    ("Выдать или ограничить доступ к записи экрана заранее", "Pre-authorize or restrict screen recording access for an application", "Autorizar o restringir de antemano el acceso a la grabación de pantalla", "Zugriff auf die Bildschirmaufnahme vorab erlauben oder einschränken", "Autoriser ou restreindre à l’avance l’accès à l’enregistrement d’écran", "预先授予或限制应用程序的屏幕录制访问权限"),
+    ("Очистить", "Clear", "Borrar", "Leeren", "Effacer", "清空"),
+    ("При политике «По списку» неизвестные программы добавляются при первом запросе; вы можете заранее разрешить или заблокировать любую программу.", "In “Per App” mode, unknown apps are recorded on first request; you can allow or block any app in advance.", "En el modo «Por aplicación», las aplicaciones desconocidas se registran en la primera solicitud; puedes permitir o bloquear cualquiera de antemano.", "Im Modus „Nach Liste“ werden unbekannte Programme bei der ersten Anfrage eingetragen; Sie können jedes Programm vorab erlauben oder blockieren.", "En mode « Par application », les applications inconnues sont ajoutées à la première demande ; vous pouvez autoriser ou bloquer toute application à l’avance.", "在“按应用列表”策略下，未知应用会在首次请求时加入列表；您可以预先允许或阻止任何应用。"),
+    ("Разрешить доступ к записи экрана", "Allow Screen Recording Access", "Permitir acceso a la grabación de pantalla", "Zugriff auf Bildschirmaufnahme erlauben", "Autoriser l’accès à l’enregistrement d’écran", "允许访问屏幕录制"),
 ];
 
 fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {

@@ -20,13 +20,14 @@ pub enum Page {
     Displays,
     Desktop,
     Defaults,
+    Privacy,
     DateTime,
     Power,
     Notifications,
     Sound,
 }
 impl Page {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Appearance,
         Self::Accessibility,
         Self::Language,
@@ -37,6 +38,7 @@ impl Page {
         Self::Displays,
         Self::Desktop,
         Self::Defaults,
+        Self::Privacy,
         Self::DateTime,
         Self::Power,
         Self::Notifications,
@@ -54,6 +56,7 @@ impl Page {
             Self::Displays => "Дисплеи",
             Self::Desktop => "Рабочий стол и Dock",
             Self::Defaults => "Приложения",
+            Self::Privacy => "Конфиденциальность",
             Self::DateTime => "Дата и время",
             Self::Power => "Экран блокировки и энергосбережение",
             Self::Sound => "Звук",
@@ -72,6 +75,7 @@ impl Page {
             Self::Displays => "Размер интерфейса, разрешение и частота экрана.",
             Self::Desktop => "Настройте рабочее пространство под себя.",
             Self::Defaults => "Приложения по умолчанию и автозапуск при входе.",
+            Self::Privacy => "Доступ программ к записи экрана и снимкам через системный портал.",
             Self::DateTime => "Синхронизация часов и часовой пояс.",
             Self::Power => "Пароль, выключение экрана и переход в сон.",
             Self::Sound => "Системные сигналы, устройства вывода и микрофоны.",
@@ -135,6 +139,15 @@ pub enum Action {
     ScreenshotFormat(crate::screenshot::Format),
     ChooseScreenshotDir,
     ResetScreenshotDir,
+    ScreenCapturePolicy(crate::file_portal::ScreenCapturePolicy),
+    ScreenCaptureCursor,
+    ScreenCapturePicker(bool),
+    PrivacySearchFocus,
+    PrivacySearchSubmit,
+    AddScreenCaptureApp(String),
+    ToggleScreenCaptureApp(String),
+    RemoveScreenCaptureApp(String),
+    ClearScreenCaptureApps,
     AppPicker(bool),
     DefaultApp { browser: bool, id: String },
     AutostartPicker(bool),
@@ -200,6 +213,8 @@ pub struct Panel {
     pub apps_picker: Option<bool>,
     pub autostart_picker: bool,
     pub autostart_query: feather_ui::input::TextInput,
+    pub privacy_picker: bool,
+    pub privacy_query: feather_ui::input::TextInput,
     /// Pointer over the window (content coordinates), for hover highlights
     pub pointer: Option<(f32, f32)>,
     pub cursor_picker: bool,
@@ -255,6 +270,9 @@ pub struct Context<'a> {
     pub night: crate::night::Preferences,
     pub night_active: bool,
     pub notify_apps: &'a [crate::notifications::AppPolicy],
+    pub screen_capture_policy: crate::file_portal::ScreenCapturePolicy,
+    pub screen_capture_cursor: bool,
+    pub screen_capture_apps: &'a [crate::file_portal::ScreenCaptureApp],
     pub sticky_keys: bool,
 }
 
@@ -290,6 +308,9 @@ pub struct FrameJob {
     pub night: crate::night::Preferences,
     pub night_active: bool,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
+    pub screen_capture_policy: crate::file_portal::ScreenCapturePolicy,
+    pub screen_capture_cursor: bool,
+    pub screen_capture_apps: Vec<crate::file_portal::ScreenCaptureApp>,
     pub sticky_keys: bool,
     pub width: i32,
     pub height: i32,
@@ -335,6 +356,9 @@ impl FrameJob {
             night: c.night,
             night_active: c.night_active,
             notify_apps: c.notify_apps.to_vec(),
+            screen_capture_policy: c.screen_capture_policy,
+            screen_capture_cursor: c.screen_capture_cursor,
+            screen_capture_apps: c.screen_capture_apps.to_vec(),
             sticky_keys: c.sticky_keys,
             width: win.width,
             height: win.height,
@@ -372,6 +396,9 @@ impl FrameJob {
             night: self.night,
             night_active: self.night_active,
             notify_apps: &self.notify_apps,
+            screen_capture_policy: self.screen_capture_policy,
+            screen_capture_cursor: self.screen_capture_cursor,
+            screen_capture_apps: &self.screen_capture_apps,
             sticky_keys: self.sticky_keys,
         }
     }
@@ -382,7 +409,7 @@ const TOOLBAR_CLIP: f32 = 12.0;
 const SIDEBAR: [&[Page]; 3] = [
     &[Page::Appearance, Page::Accessibility, Page::Desktop, Page::Displays],
     &[Page::Network, Page::Bluetooth, Page::Keyboard, Page::Pointer, Page::Sound],
-    &[Page::Notifications, Page::Defaults, Page::Language, Page::DateTime, Page::Power],
+    &[Page::Notifications, Page::Privacy, Page::Defaults, Page::Language, Page::DateTime, Page::Power],
 ];
 fn side_width(w: f32) -> f32 {
     if w >= 720.0 {
@@ -553,6 +580,7 @@ fn page_color(page: Page) -> (tiny_skia::Color, tiny_skia::Color) {
         Page::Displays => (rgba(70, 175, 255, 255), rgba(20, 115, 235, 255)),
         Page::Desktop => (rgba(80, 200, 245, 255), rgba(20, 140, 220, 255)),
         Page::Defaults => (rgba(150, 120, 255, 255), rgba(100, 70, 225, 255)),
+        Page::Privacy => (rgba(48, 176, 199, 255), rgba(16, 114, 210, 255)),
         Page::Sound => (rgba(255, 130, 150, 255), rgba(220, 60, 100, 255)),
         Page::Power => (rgba(90,165,220,255),rgba(45,95,175,255)),
         Page::Notifications => (rgba(255, 92, 86, 255), rgba(236, 52, 62, 255)),
@@ -739,6 +767,33 @@ fn draw_page_icon(pm: &mut PixmapMut, page: Page, x: f32, y: f32, size: f32) {
                 }
             }
         }
+        Page::Privacy => {
+            let mut b = tiny_skia::PathBuilder::new();
+            let (tx, ty) = pt(10.0, 3.8);
+            let (rx, ry) = pt(15.2, 5.8);
+            let (rmx, rmy) = pt(15.0, 10.6);
+            let (bx, by) = pt(10.0, 16.4);
+            let (lmx, lmy) = pt(5.0, 10.6);
+            let (lx, ly) = pt(4.8, 5.8);
+            b.move_to(tx, ty);
+            b.line_to(rx, ry);
+            b.quad_to(rmx, rmy, bx, by);
+            b.quad_to(lmx, lmy, lx, ly);
+            b.close();
+            if let Some(path) = b.finish() {
+                let s = crate::theme::ui_scale();
+                let mut paint = tiny_skia::Paint::default();
+                paint.set_color(white);
+                paint.anti_alias = true;
+                let stroke = tiny_skia::Stroke { width: 1.25 * k, ..Default::default() };
+                pm.stroke_path(&path, &paint, &stroke, tiny_skia::Transform::from_scale(s, s), None);
+            }
+            let (p1x, p1y) = pt(7.8, 10.2);
+            let (p2x, p2y) = pt(9.5, 11.9);
+            let (p3x, p3y) = pt(12.5, 8.5);
+            stroke_line(pm, p1x, p1y, p2x, p2y, 1.3 * k, white);
+            stroke_line(pm, p2x, p2y, p3x, p3y, 1.3 * k, white);
+        }
     }
 }
 /// Cheap layered shadow for sheets and menus: no blur pass, a few translucent rings.
@@ -793,6 +848,7 @@ impl Panel {
         (self.page == Page::DateTime && (self.time_editing || self.zone_picker))
             || (self.page == Page::Network && self.wifi_target.is_some())
             || (self.page == Page::Defaults && self.autostart_picker)
+            || (self.page == Page::Privacy && self.privacy_picker)
     }
     pub fn edit_key(&mut self, sym: u32, ch: Option<char>, ctrl: bool, shift: bool) -> Option<Action> {
         use smithay::input::keyboard::keysyms;
@@ -822,6 +878,24 @@ impl Panel {
             let utf8 = ch.filter(|c| !c.is_control()).map(|c| c.to_string());
             self.autostart_query = std::mem::take(&mut self.autostart_query).with_limit(64);
             if self.autostart_query.key(sym, utf8.as_deref(), ctrl, shift)
+                == feather_ui::input::Edit::Changed
+            {
+                self.scroll = 0.0;
+            }
+            return None;
+        }
+        if self.page == Page::Privacy && self.privacy_picker {
+            if sym == keysyms::KEY_Escape {
+                self.privacy_picker = false;
+                self.privacy_query.clear();
+                return None;
+            }
+            if matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter) {
+                return Some(Action::PrivacySearchSubmit);
+            }
+            let utf8 = ch.filter(|c| !c.is_control()).map(|c| c.to_string());
+            self.privacy_query = std::mem::take(&mut self.privacy_query).with_limit(64);
+            if self.privacy_query.key(sym, utf8.as_deref(), ctrl, shift)
                 == feather_ui::input::Edit::Changed
             {
                 self.scroll = 0.0;
@@ -867,7 +941,7 @@ impl Panel {
             group: None,
             first: true,
         };
-        let mut y = 24.0;
+        let mut y = 18.0;
         for group in SIDEBAR {
             for &page in group {
                 l.fixed(
@@ -878,7 +952,7 @@ impl Panel {
                 );
                 y += 32.0;
             }
-            y += 12.0;
+            y += 8.0;
         }
         // Right-side control of a row, vertically centred.
         let right = |r: R, w: f32, h: f32| R::new(r.x + r.w - 14.0 - w, r.y + (r.h - h) / 2.0, w, h);
@@ -2002,6 +2076,159 @@ impl Panel {
                     );
                 }
             }
+            Page::Privacy => {
+                let state = &c.system;
+                l.hero(Page::Privacy);
+                l.header("Запись экрана и снимки (портал)");
+                l.begin();
+                let r = l.row(
+                    52.0,
+                    "Новые запросы доступа",
+                    "ScreenCast, Screenshot и Access в xdg-desktop-portal".into(),
+                    Style::Row,
+                    None,
+                );
+                let track = right(r, 3.0 * 92.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, policy) in crate::file_portal::ScreenCapturePolicy::ALL.into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * 92.0, track.y, 92.0, track.h),
+                        policy.label(),
+                        Style::Segment(c.screen_capture_policy == policy),
+                        Some(Action::ScreenCapturePolicy(policy)),
+                    );
+                }
+                l.row(
+                    52.0,
+                    "Показывать курсор в записи",
+                    "Режим указателя по умолчанию для сеансов ScreenCast".into(),
+                    Style::Toggle(c.screen_capture_cursor),
+                    Some(Action::ScreenCaptureCursor),
+                );
+                l.end();
+                l.footer("Портал Пёрышка (org.freedesktop.impl.portal.desktop.feather) проверяет права программ перед захватом экрана и синхронизирует таблицу разрешений.");
+
+                l.header("Доступ программ к экрану");
+                l.begin();
+                if c.screen_capture_apps.is_empty() {
+                    l.row(
+                        52.0,
+                        "Список программ пуст",
+                        "Программы появятся здесь при обращении к порталу или после добавления вручную".into(),
+                        Style::Row,
+                        None,
+                    );
+                } else {
+                    for app in c.screen_capture_apps {
+                        let status = if app.allowed {
+                            "Разрешено"
+                        } else {
+                            "Запрещено"
+                        };
+                        let r = l.row(
+                            52.0,
+                            &app.label,
+                            format!("{status} · {}", app.id),
+                            Style::Row,
+                            None,
+                        );
+                        let toggle_rect = R::new(
+                            r.x + r.w - 14.0 - 80.0 - 6.0 - 68.0,
+                            r.y + (r.h - 26.0) / 2.0,
+                            68.0,
+                            26.0,
+                        );
+                        l.push(
+                            toggle_rect,
+                            if app.allowed { "Вкл." } else { "Выкл." },
+                            Style::Push(app.allowed),
+                            Some(Action::ToggleScreenCaptureApp(app.id.clone())),
+                        );
+                        l.push(
+                            right(r, 80.0, 26.0),
+                            "Удалить",
+                            Style::Push(false),
+                            Some(Action::RemoveScreenCaptureApp(app.id.clone())),
+                        );
+                    }
+                }
+                let add_row = l.row(
+                    48.0,
+                    "Добавить программу",
+                    "Выдать или ограничить доступ к записи экрана заранее".into(),
+                    Style::Row,
+                    None,
+                );
+                let add_rect = right(add_row, 118.0, 26.0);
+                if !c.screen_capture_apps.is_empty() {
+                    let clear_rect = R::new(add_rect.x - 6.0 - 88.0, add_rect.y, 88.0, 26.0);
+                    l.push(
+                        clear_rect,
+                        "Очистить",
+                        Style::Push(false),
+                        Some(Action::ClearScreenCaptureApps),
+                    );
+                }
+                l.push(
+                    add_rect,
+                    "Добавить…",
+                    Style::Push(false),
+                    Some(Action::ScreenCapturePicker(true)),
+                );
+                l.end();
+                l.footer("При политике «По списку» неизвестные программы добавляются при первом запросе; вы можете заранее разрешить или заблокировать любую программу.");
+
+                if self.privacy_picker {
+                    let sw = (w - 120.0).min(440.0);
+                    let sheet = R::new((w - sw) / 2.0, 0.0, sw, 120.0 + 8.0 * 30.0);
+                    l.fixed(
+                        R::new(0.0, -100.0, w, h + 200.0),
+                        "",
+                        Style::Scrim(true),
+                        Some(Action::ScreenCapturePicker(false)),
+                    );
+                    l.fixed(sheet, "Добавить программу", Style::Sheet, None).detail =
+                        "Разрешить доступ к записи экрана".into();
+                    l.fixed(
+                        R::new(sheet.x + 20.0, sheet.y + 52.0, sw - 40.0, 28.0),
+                        self.privacy_query.text(),
+                        Style::TextField(true),
+                        Some(Action::PrivacySearchFocus),
+                    );
+                    let query = self.privacy_query.to_lowercase();
+                    let matches: Vec<_> = state
+                        .apps
+                        .iter()
+                        .filter(|a| app_matches(a, &query))
+                        .take(8)
+                        .collect();
+                    if matches.is_empty() {
+                        l.fixed(
+                            R::new(sheet.x + 16.0, sheet.y + 88.0, sw - 32.0, 28.0),
+                            "Приложения не найдены",
+                            Style::MenuItem(false),
+                            None,
+                        );
+                    }
+                    for (i, app) in matches.into_iter().enumerate() {
+                        let already = c.screen_capture_apps.iter().any(|item| {
+                            crate::file_portal::same_app_id(&item.id, &app.id) && item.allowed
+                        });
+                        l.fixed(
+                            R::new(sheet.x + 16.0, sheet.y + 88.0 + i as f32 * 30.0, sw - 32.0, 28.0),
+                            &app.name,
+                            Style::MenuItem(already),
+                            Some(Action::AddScreenCaptureApp(app.id.clone())),
+                        );
+                    }
+                    l.fixed(
+                        R::new(sheet.x + sw - 116.0, sheet.y + sheet.h - 42.0, 96.0, 28.0),
+                        "Отмена",
+                        Style::Push(false),
+                        Some(Action::ScreenCapturePicker(false)),
+                    );
+                }
+            }
             Page::DateTime => {
                 let state = &c.system;
                 let time = &state.time;
@@ -2796,6 +3023,8 @@ impl Panel {
                     &self.zone_query
                 } else if matches!(control.action, Some(Action::AutostartSearchFocus)) {
                     &self.autostart_query
+                } else if matches!(control.action, Some(Action::PrivacySearchFocus)) {
+                    &self.privacy_query
                 } else if masked {
                     &self.wifi_password
                 } else {
@@ -2863,11 +3092,15 @@ impl crate::FeatherCompositor {
                 }
             }
         }
-        if !matches!(action, Action::EditTime | Action::ZoneSearchFocus | Action::WifiPasswordFocus) { return; }
+        if !matches!(action, Action::EditTime | Action::ZoneSearchFocus | Action::AutostartSearchFocus | Action::PrivacySearchFocus | Action::WifiPasswordFocus) { return; }
         let Some(rect) = self.system_settings.text_rect(x, y, w, h, &self.settings_context()) else { return; };
         let masked = matches!(action, Action::WifiPasswordFocus);
         let input = if matches!(action, Action::ZoneSearchFocus) {
             &mut self.system_settings.zone_query
+        } else if matches!(action, Action::AutostartSearchFocus) {
+            &mut self.system_settings.autostart_query
+        } else if matches!(action, Action::PrivacySearchFocus) {
+            &mut self.system_settings.privacy_query
         } else if masked {
             &mut self.system_settings.wifi_password
         } else {
@@ -2916,6 +3149,9 @@ impl crate::FeatherCompositor {
             night: self.night.prefs,
             night_active: self.night.active(),
             notify_apps: &self.shell.notify_apps,
+            screen_capture_policy: self.screen_capture_policy,
+            screen_capture_cursor: self.screen_capture_cursor,
+            screen_capture_apps: &self.screen_capture_apps,
             sticky_keys: self.sticky_keys,
         }
     }
@@ -3216,6 +3452,8 @@ impl crate::FeatherCompositor {
                 self.system_settings.apps_picker = None;
                 self.system_settings.autostart_picker = false;
                 self.system_settings.autostart_query.clear();
+                self.system_settings.privacy_picker = false;
+                self.system_settings.privacy_query.clear();
                 self.system_settings.cursor_picker = false;
                 self.system_settings.zone_picker = false;
                 self.system_settings.time_editing = false;
@@ -3235,8 +3473,121 @@ impl crate::FeatherCompositor {
                 if page == Page::Bluetooth {
                     if let Some(controls) = &self.controls { let _ = controls.send(crate::controls::Control::RefreshBluetooth); }
                 }
-                if matches!(page, Page::Defaults | Page::DateTime | Page::Pointer) {
+                if matches!(page, Page::Defaults | Page::Privacy | Page::DateTime | Page::Pointer) {
                     self.request_system_preference(crate::system_preferences::Command::Refresh);
+                }
+            }
+            Action::ScreenCapturePolicy(policy) => {
+                if self.screen_capture_policy != policy {
+                    self.screen_capture_policy = policy;
+                    self.save_settings();
+                }
+            }
+            Action::ScreenCaptureCursor => {
+                self.screen_capture_cursor = !self.screen_capture_cursor;
+                self.save_settings();
+            }
+            Action::ScreenCapturePicker(open) => {
+                self.system_settings.privacy_picker = open;
+                self.system_settings.privacy_query.clear();
+                self.system_settings.scroll = 0.0;
+            }
+            Action::PrivacySearchFocus => {}
+            Action::PrivacySearchSubmit => {
+                let query = self.system_settings.privacy_query.to_lowercase();
+                if let Some(id) = self
+                    .system_preferences
+                    .apps
+                    .iter()
+                    .find(|a| app_matches(a, &query))
+                    .map(|a| a.id.clone())
+                {
+                    self.apply_system_setting(Action::AddScreenCaptureApp(id));
+                }
+            }
+            Action::AddScreenCaptureApp(id) => {
+                let norm = crate::file_portal::normalize_app_key(&id);
+                if !norm.is_empty() {
+                    let label = self
+                        .system_preferences
+                        .apps
+                        .iter()
+                        .find(|a| crate::file_portal::same_app_id(&a.id, &norm))
+                        .map(|a| crate::file_portal::clean_app_field(&a.name))
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| norm.clone());
+                    if let Some(existing) = self
+                        .screen_capture_apps
+                        .iter_mut()
+                        .find(|a| crate::file_portal::same_app_id(&a.id, &norm))
+                    {
+                        existing.allowed = true;
+                    } else if self.screen_capture_apps.len() < crate::file_portal::MAX_CAPTURE_APPS {
+                        self.screen_capture_apps.push(crate::file_portal::ScreenCaptureApp {
+                            id: norm.clone(),
+                            label,
+                            allowed: true,
+                        });
+                    }
+                    if let Some(w) = &self.system_worker {
+                        let _ = w.send(crate::system_preferences::Command::SyncPortalPermission {
+                            id: norm,
+                            allowed: Some(true),
+                        });
+                    }
+                    self.save_settings();
+                }
+                self.system_settings.privacy_picker = false;
+                self.system_settings.privacy_query.clear();
+                self.system_settings.scroll = 0.0;
+            }
+            Action::ToggleScreenCaptureApp(id) => {
+                if let Some(app) = self
+                    .screen_capture_apps
+                    .iter_mut()
+                    .find(|a| crate::file_portal::same_app_id(&a.id, &id))
+                {
+                    app.allowed = !app.allowed;
+                    let allowed = app.allowed;
+                    let norm = app.id.clone();
+                    if let Some(w) = &self.system_worker {
+                        let _ = w.send(crate::system_preferences::Command::SyncPortalPermission {
+                            id: norm,
+                            allowed: Some(allowed),
+                        });
+                    }
+                    self.save_settings();
+                }
+            }
+            Action::RemoveScreenCaptureApp(id) => {
+                let before = self.screen_capture_apps.len();
+                self.screen_capture_apps
+                    .retain(|a| !crate::file_portal::same_app_id(&a.id, &id));
+                if self.screen_capture_apps.len() != before {
+                    if let Some(w) = &self.system_worker {
+                        let _ = w.send(crate::system_preferences::Command::SyncPortalPermission {
+                            id: crate::file_portal::normalize_app_key(&id),
+                            allowed: None,
+                        });
+                    }
+                    self.save_settings();
+                }
+            }
+            Action::ClearScreenCaptureApps => {
+                if !self.screen_capture_apps.is_empty() {
+                    let removed: Vec<String> =
+                        self.screen_capture_apps.drain(..).map(|a| a.id).collect();
+                    if let Some(w) = &self.system_worker {
+                        for id in removed {
+                            let _ = w.send(
+                                crate::system_preferences::Command::SyncPortalPermission {
+                                    id,
+                                    allowed: None,
+                                },
+                            );
+                        }
+                    }
+                    self.save_settings();
                 }
             }
             Action::AppPicker(browser) => {
@@ -3876,6 +4227,18 @@ mod tests {
     fn all_pages_paint_at_fractional_scale_and_clicks_use_the_painted_geometry() {
         let keyboard = Keyboard::default();
         let apps: Vec<_> = ["Telegram", "Firefox"].iter().map(|n| crate::notifications::AppPolicy { key: n.to_lowercase(), label: n.to_string(), delivery: Default::default() }).collect();
+        let capture_apps = [
+            crate::file_portal::ScreenCaptureApp {
+                id: "com.obsproject.Studio".into(),
+                label: "OBS Studio".into(),
+                allowed: true,
+            },
+            crate::file_portal::ScreenCaptureApp {
+                id: "org.mozilla.firefox".into(),
+                label: "Firefox".into(),
+                allowed: false,
+            },
+        ];
         let mode = Mode {
             width: 3840,
             height: 2160,
@@ -3910,6 +4273,9 @@ mod tests {
             night_active: true,
             notify_apps: &apps,
             sticky_keys: false,
+            screen_capture_policy: crate::file_portal::ScreenCapturePolicy::Ask,
+            screen_capture_cursor: true,
+            screen_capture_apps: &capture_apps,
         };
         let mut context = context;
         context.audio = crate::controls::Audio {
@@ -4158,6 +4524,34 @@ mod tests {
             assert!(!panel.editing());
         }
         {
+            use smithay::input::keyboard::keysyms;
+            use crate::file_portal::ScreenCapturePolicy;
+            let mut panel = Panel { page: Page::Privacy, ..Default::default() };
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ScreenCapturePolicy(ScreenCapturePolicy::Ask)))));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ScreenCapturePolicy(ScreenCapturePolicy::Allow)))));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ScreenCapturePolicy(ScreenCapturePolicy::Deny)))));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ScreenCaptureCursor))));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ToggleScreenCaptureApp(id)) if id == "com.obsproject.Studio")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ToggleScreenCaptureApp(id)) if id == "org.mozilla.firefox")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::RemoveScreenCaptureApp(id)) if id == "com.obsproject.Studio")));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ClearScreenCaptureApps))));
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::ScreenCapturePicker(true)))));
+            panel.privacy_picker = true;
+            assert!(panel.editing());
+            for ch in "заметки".chars() {
+                panel.edit_key(0, Some(ch), false, false);
+            }
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::AddScreenCaptureApp(id)) if id == "feather-notes.desktop")));
+            assert!(matches!(
+                panel.edit_key(keysyms::KEY_Return, None, false, false),
+                Some(Action::PrivacySearchSubmit)
+            ));
+            panel.edit_key(keysyms::KEY_Escape, None, false, false);
+            assert!(!panel.editing());
+        }
+        {
             use crate::controls::Control as Audio;
             let mut panel = Panel { page:Page::Sound, ..Default::default() };
             let controls = panel.controls(800.0, 540.0, &context);
@@ -4203,6 +4597,7 @@ mod tests {
                             Panel { page: Page::Keyboard, adding: true, ..Default::default() },
                             Panel { page: Page::Defaults, apps_picker: Some(true), ..Default::default() },
                             Panel { page: Page::Defaults, autostart_picker: true, ..Default::default() },
+                            Panel { page: Page::Privacy, privacy_picker: true, ..Default::default() },
                             Panel { page: Page::DateTime, zone_picker: true, ..Default::default() },
                             // Hover: sidebar «Дисплеи» and, below, nothing else lit
                             Panel { page: Page::Desktop, pointer: Some((100.0, 100.0)), ..Default::default() },
@@ -4311,6 +4706,9 @@ mod tests {
             night_active: true,
             notify_apps: &[],
             sticky_keys: false,
+            screen_capture_policy: crate::file_portal::ScreenCapturePolicy::Ask,
+            screen_capture_cursor: true,
+            screen_capture_apps: &[],
         };
         let mut p = Panel {
             page: Page::Keyboard,

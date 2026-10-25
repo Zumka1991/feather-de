@@ -6,6 +6,17 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Конфиденциальность: доступ программ к записи экрана (портал), 2026-10-25 (Gemini/agy):**
+в `src/file_portal.rs`, `src/system_preferences.rs`, `src/settings.rs`, `src/main.rs`,
+`src/system_settings.rs` и `crates/feather-ui/src/i18n.rs` реализованы портальные интерфейсы
+`org.freedesktop.impl.portal.Access`, `Screenshot` и `ScreenCast` с проверкой глобальной политики
+(`ScreenCapturePolicy`: `Ask`, `Allow`, `Deny`), настройкой видимости курсора (`screen_capture_cursor`),
+индивидуальными разрешениями приложений (`screen_capture_app` в `settings.conf`), синхронизацией с
+`org.freedesktop.impl.portal.PermissionStore` на потоке `feather-system` и страницей
+«Системные настройки → Конфиденциальность» (`Page::Privacy`, локализация на 6 языков). 194 теста и
+`cargo build --release` без предупреждений; вложенная проверка `FEATHER_DEBUG_PRIVACY=1`: 0 тиков
+CPU за 5 с в простое, `RssAnon` 48,34 МиБ.
+
 **Снимки экрана: папка и формат, 2026-10-25 (Gemini/agy):**
 в `src/screenshot.rs`, `src/wallpaper.rs`, `files/src/picker.rs`, `src/settings.rs`, `src/main.rs`,
 `src/system_settings.rs` и `crates/feather-ui/src/i18n.rs` реализована настройка формата снимков

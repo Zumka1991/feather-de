@@ -1316,6 +1316,9 @@ mod settings_tests {
                 night: Default::default(),
                 night_active: false,
                 notify_apps: &[],
+                screen_capture_policy: crate::file_portal::ScreenCapturePolicy::Ask,
+                screen_capture_cursor: true,
+                screen_capture_apps: &[],
                 sticky_keys: false,
             };
             let mut direct = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 0, 0);
@@ -1417,6 +1420,9 @@ mod settings_tests {
                             night: Default::default(),
                             night_active: false,
                             notify_apps: &[],
+                            screen_capture_policy: crate::file_portal::ScreenCapturePolicy::Ask,
+                            screen_capture_cursor: true,
+                            screen_capture_apps: &[],
                             sticky_keys: false,
                         };
                         let ctx = BuiltinContext {

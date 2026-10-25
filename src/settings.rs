@@ -290,6 +290,9 @@ pub struct Settings {
     pub metric_units: bool,
     pub screenshot_format: crate::screenshot::Format,
     pub screenshot_dir: Option<PathBuf>,
+    pub screen_capture_policy: crate::file_portal::ScreenCapturePolicy,
+    pub screen_capture_cursor: bool,
+    pub screen_capture_apps: Vec<crate::file_portal::ScreenCaptureApp>,
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub default_browser: Option<String>,
@@ -335,6 +338,9 @@ impl Default for Settings {
             metric_units: true,
             screenshot_format: crate::screenshot::Format::Png,
             screenshot_dir: None,
+            screen_capture_policy: crate::file_portal::ScreenCapturePolicy::Ask,
+            screen_capture_cursor: true,
+            screen_capture_apps: Vec::new(),
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             default_browser: None,
@@ -457,6 +463,25 @@ impl Settings {
                     }
                 }
                 "screenshot_dir" => s.screenshot_dir = crate::screenshot::parse_dir_id(v),
+                "screen_capture_policy" => {
+                    if let Some(p) = crate::file_portal::ScreenCapturePolicy::parse(v) {
+                        s.screen_capture_policy = p;
+                    }
+                }
+                "screen_capture_cursor" => {
+                    if let Ok(b) = v.parse() {
+                        s.screen_capture_cursor = b;
+                    }
+                }
+                "screen_capture_app" => {
+                    if let Some(app) = crate::file_portal::parse_screen_capture_line(v) {
+                        if s.screen_capture_apps.len() < crate::file_portal::MAX_CAPTURE_APPS
+                            && !s.screen_capture_apps.iter().any(|a| crate::file_portal::same_app_id(&a.id, &app.id))
+                        {
+                            s.screen_capture_apps.push(app);
+                        }
+                    }
+                }
                 "wallpaper" => {
                     if let Some(t) = WallpaperTheme::from_id(v) {
                         s.wallpaper = t;
@@ -712,6 +737,19 @@ impl Settings {
         text.push_str(&format!("screenshot_format={}\n", self.screenshot_format.id()));
         if let Some(dir) = &self.screenshot_dir {
             text.push_str(&format!("screenshot_dir={}\n", crate::screenshot::encode_dir_id(dir)));
+        }
+        text.push_str(&format!(
+            "screen_capture_policy={}\nscreen_capture_cursor={}\n",
+            self.screen_capture_policy.id(),
+            self.screen_capture_cursor
+        ));
+        for a in &self.screen_capture_apps {
+            text.push_str(&format!(
+                "screen_capture_app={}|{}|{}\n",
+                a.id,
+                a.label,
+                if a.allowed { "allow" } else { "deny" }
+            ));
         }
         for (key, value) in [
             ("default_browser", &self.default_browser),
@@ -1023,6 +1061,45 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn screen_capture_privacy_preferences_round_trip_and_deduplicate() {
+        use crate::file_portal::{ScreenCaptureApp, ScreenCapturePolicy};
+        let mut s = Settings::default();
+        assert_eq!(s.screen_capture_policy, ScreenCapturePolicy::Ask);
+        assert!(s.screen_capture_cursor);
+        assert!(s.screen_capture_apps.is_empty());
+        s.screen_capture_policy = ScreenCapturePolicy::Deny;
+        s.screen_capture_cursor = false;
+        s.screen_capture_apps = vec![
+            ScreenCaptureApp {
+                id: "com.obsproject.Studio".into(),
+                label: "OBS Studio".into(),
+                allowed: true,
+            },
+            ScreenCaptureApp {
+                id: "org.mozilla.firefox".into(),
+                label: "Firefox".into(),
+                allowed: false,
+            },
+        ];
+        let back = Settings::parse(&s.text());
+        assert_eq!(back.screen_capture_policy, ScreenCapturePolicy::Deny);
+        assert!(!back.screen_capture_cursor);
+        assert_eq!(back.screen_capture_apps, s.screen_capture_apps);
+        let bad = Settings::parse(
+            "screen_capture_policy=wat\nscreen_capture_cursor=maybe\nscreen_capture_app=|Empty|allow\nscreen_capture_app=obs.desktop|OBS|allow\nscreen_capture_app=obs|OBS Dup|deny\n",
+        );
+        assert_eq!(bad.screen_capture_policy, ScreenCapturePolicy::Ask);
+        assert!(bad.screen_capture_cursor);
+        assert_eq!(
+            bad.screen_capture_apps,
+            vec![ScreenCaptureApp {
+                id: "obs.desktop".into(),
+                label: "OBS".into(),
+                allowed: true,
+            }]
+        );
     }
 }
 

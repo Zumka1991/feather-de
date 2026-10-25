@@ -287,6 +287,9 @@ pub struct FeatherCompositor {
     pub pending_display: Option<(usize,u64,f64)>,
     pub display_generation: u64,
     pub display_preference: Option<crate::settings::Display>,
+    pub screen_capture_policy: crate::file_portal::ScreenCapturePolicy,
+    pub screen_capture_cursor: bool,
+    pub screen_capture_apps: Vec<crate::file_portal::ScreenCaptureApp>,
     pub notes_buffer: String,
 }
 
@@ -722,6 +725,9 @@ impl FeatherCompositor {
             metric_units: crate::theme::metric_units(),
             screenshot_format: crate::screenshot::format(),
             screenshot_dir: crate::screenshot::custom_dir(),
+            screen_capture_policy: self.screen_capture_policy,
+            screen_capture_cursor: self.screen_capture_cursor,
+            screen_capture_apps: self.screen_capture_apps.clone(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.clone(),
             default_browser: self.system_preferences.browser.clone(),
@@ -1885,6 +1891,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         system_worker: None,
         display_modes: Vec::new(),display_name: String::new(),pending_display: None,display_generation: 0,
         display_preference: saved.display.clone(),
+        screen_capture_policy: saved.screen_capture_policy,
+        screen_capture_cursor: saved.screen_capture_cursor,
+        screen_capture_apps: saved.screen_capture_apps.clone(),
         notes_buffer: "Привет из Пёрышко DE!\nНажмите Alt + Shift для переключения языка (RU / EN).\nНажмите Super + Space для вызова Spotlight.\nНажмите Super + = для переключения HiDPI Retina масштаба!".to_string(),
     };
 
@@ -2182,6 +2191,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("settings-network") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Network)),
         Ok("settings-bluetooth") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth)),
         Ok("settings-defaults") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults)),
+        Ok("settings-privacy") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Privacy)),
         Ok("settings-accessibility") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Accessibility)),
         Ok("settings-language") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Language)),
         Ok("settings-screenshots") => {
@@ -2208,6 +2218,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             settings_visible && state.system_settings.page == crate::system_settings::Page::Bluetooth;
         let defaults_settings_open =
             settings_visible && state.system_settings.page == crate::system_settings::Page::Defaults;
+        let privacy_settings_open =
+            settings_visible && state.system_settings.page == crate::system_settings::Page::Privacy;
         if !network_settings_open && state.system_settings.wifi_target.is_some() {
             state.system_settings.wifi_target = None;
             state.system_settings.wifi_password.clear();
@@ -2215,6 +2227,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         if !defaults_settings_open && state.system_settings.autostart_picker {
             state.system_settings.autostart_picker = false;
             state.system_settings.autostart_query.clear();
+        }
+        if !privacy_settings_open && state.system_settings.privacy_picker {
+            state.system_settings.privacy_picker = false;
+            state.system_settings.privacy_query.clear();
         }
         if let Some(controls)=&mut state.controls {
             let wifi_open = (state.shell.control_center_open

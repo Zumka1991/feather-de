@@ -2,6 +2,36 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-25 — Конфиденциальность: доступ программ к записи экрана (портал) (Gemini/agy)
+
+- В `src/file_portal.rs` встроенная служба портала (`org.freedesktop.impl.portal.desktop.feather`)
+  расширена интерфейсами `org.freedesktop.impl.portal.Access`,
+  `org.freedesktop.impl.portal.Screenshot`, `org.freedesktop.impl.portal.ScreenCast` и объектами
+  сеансов `org.freedesktop.impl.portal.Session`. Реализованы политики доступа к захвату экрана
+  (`ScreenCapturePolicy`: `Ask` «Спрашивать», `Allow` «Разрешать», `Deny` «Запрещать»), режим
+  отображения указателя в записи по умолчанию (`screen_capture_cursor`) и проверка индивидуальных
+  правил приложений (`ScreenCaptureApp`, `evaluate_and_record_portal_access`) с автоматической
+  записью новых программ, обращающихся к порталу, в `~/.config/feather-de/settings.conf`. Конфигурация
+  `feather.portal` и `featherde-portals.conf` обновлена до `FileChooser;Access;Screenshot;ScreenCast;`.
+- В `src/system_preferences.rs` на фоновом потоке `feather-system` добавлена синхронизация правил
+  приложений с D-Bus службой `org.freedesktop.impl.portal.PermissionStore` (таблицы `screencast` и
+  `screenshot`, команда `Command::SyncPortalPermission`) и подхват записанных порталом клиентов при
+  `Command::Refresh`.
+- В `src/settings.rs` и `src/main.rs` добавлено чтение и сохранение ключей `screen_capture_policy`,
+  `screen_capture_cursor` и `screen_capture_app=<id>|<label>|<allow|deny>` в `settings.conf`, а также
+  отладочное открытие `FEATHER_DEBUG_OPEN=settings-privacy`.
+- В «Системных настройках» (`src/system_settings.rs`) добавлена страница «Конфиденциальность»
+  (`Page::Privacy`) с выбором глобальной политики для новых запросов портала, переключателем
+  показа курсора в записи, списком программ с переключением «Вкл. / Выкл.», удалением, очисткой и
+  шторкой предварительного добавления установленных приложений (`privacy_picker`), локализованная на
+  6 языков в `crates/feather-ui/src/i18n.rs`.
+- `cargo build --release` без предупреждений, все 194 теста workspace прошли (включая новые модульные
+  тесты `screen_capture_portal_policy_and_per_app_rules` и
+  `screen_capture_privacy_preferences_round_trip_and_deduplicate`). Вложенная E2E-проверка
+  (`FEATHER_DEBUG_PRIVACY=1`): обращение нового приложения к порталу, переключение индивидуальных
+  прав и глобальной политики, сохранение в `settings.conf`, 0 тиков CPU за 5 с в простое, `RssAnon` —
+  48,34 МиБ (бюджет ≤ 60 МБ).
+
 ## 2026-10-25 — Снимки экрана: папка и формат (Gemini/agy)
 
 - В `src/screenshot.rs` добавлен тип `Format` (`Png` `.png`, `Jpeg` `.jpg`, `Webp` `.webp`) и
