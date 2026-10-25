@@ -280,6 +280,9 @@ pub struct Settings {
     pub accent_color: crate::theme::AccentColor,
     pub highlight_color: Option<crate::theme::AccentColor>,
     pub text_size: crate::theme::TextSize,
+    pub high_contrast: bool,
+    pub reduce_transparency: bool,
+    pub sticky_keys: bool,
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub default_browser: Option<String>,
@@ -315,6 +318,9 @@ impl Default for Settings {
             accent_color: crate::theme::AccentColor::Blue,
             highlight_color: None,
             text_size: crate::theme::TextSize::Default,
+            high_contrast: false,
+            reduce_transparency: false,
+            sticky_keys: false,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
             default_browser: None,
@@ -389,6 +395,21 @@ impl Settings {
                 "text_size" => {
                     if let Some(ts) = crate::theme::TextSize::parse(v) {
                         s.text_size = ts;
+                    }
+                }
+                "high_contrast" => {
+                    if let Ok(b) = v.parse() {
+                        s.high_contrast = b;
+                    }
+                }
+                "reduce_transparency" => {
+                    if let Ok(b) = v.parse() {
+                        s.reduce_transparency = b;
+                    }
+                }
+                "sticky_keys" => {
+                    if let Ok(b) = v.parse() {
+                        s.sticky_keys = b;
                     }
                 }
                 "wallpaper" => {
@@ -595,11 +616,14 @@ impl Settings {
         s
     }
     fn text(&self) -> String {
-        let mut text=format!("appearance={}\naccent_color={}\nhighlight_color={}\ntext_size={}\nwallpaper={}\n{}dock_zoom={}\n{}animations={}\nkeyboard_layouts={}\nkeyboard_shortcut={}\n{}",
+        let mut text=format!("appearance={}\naccent_color={}\nhighlight_color={}\ntext_size={}\nhigh_contrast={}\nreduce_transparency={}\nsticky_keys={}\nwallpaper={}\n{}dock_zoom={}\n{}animations={}\nkeyboard_layouts={}\nkeyboard_shortcut={}\n{}",
             if self.appearance==Appearance::Dark{"dark"}else{"light"},
             self.accent_color.id(),
             self.highlight_color.map_or("accent", |c| c.id()),
             self.text_size.id(),
+            self.high_contrast,
+            self.reduce_transparency,
+            self.sticky_keys,
             self.wallpaper.id(),self.scale.map(|v|format!("scale={v}\n")).unwrap_or_default(),
             self.dock_zoom,self.dock.as_ref().map(|d|format!("dock={}\n",d.join(","))).unwrap_or_default(),self.animations,self.keyboard.layouts.join(","),self.keyboard.shortcut.option(),
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
@@ -914,11 +938,18 @@ mod tests {
             }
         }
         s.highlight_color = None;
-        assert_eq!(Settings::parse(&s.text()).highlight_color, None);
-        let bad = Settings::parse("accent_color=neon\nhighlight_color=bogus\ntext_size=huge\n");
+        s.high_contrast = true;
+        s.reduce_transparency = true;
+        s.sticky_keys = true;
+        let back = Settings::parse(&s.text());
+        assert_eq!(back.highlight_color, None);
+        assert!(back.high_contrast && back.reduce_transparency && back.sticky_keys);
+        let bad = Settings::parse(
+            "accent_color=neon\nhighlight_color=bogus\ntext_size=huge\nhigh_contrast=maybe\nreduce_transparency=1\nsticky_keys=yes\n",
+        );
         assert_eq!(
-            (bad.accent_color, bad.highlight_color, bad.text_size),
-            (AccentColor::Blue, None, TextSize::Default)
+            (bad.accent_color, bad.highlight_color, bad.text_size, bad.high_contrast, bad.reduce_transparency, bad.sticky_keys),
+            (AccentColor::Blue, None, TextSize::Default, false, false, false)
         );
     }
     #[test]

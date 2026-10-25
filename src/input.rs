@@ -145,6 +145,30 @@ impl FeatherCompositor {
     pub fn debug_keyboard_key(&mut self,evdev:u32,pressed:bool){
         self.process_keyboard_key((evdev+8).into(),if pressed{KeyState::Pressed}else{KeyState::Released},self.start_time.elapsed().as_millis() as u32);
     }
+    pub fn is_modifier_keycode(keycode: smithay::input::keyboard::Keycode) -> bool {
+        matches!(keycode.raw().saturating_sub(8), 29 | 42 | 54 | 56 | 97 | 100 | 125 | 126)
+    }
+    pub fn release_latched_modifiers(&mut self, time: u32) {
+        let to_release: Vec<_> = self
+            .latched_modifiers
+            .iter()
+            .copied()
+            .filter(|k| !self.physically_held_modifiers.contains(k))
+            .collect();
+        let keyboard = self.keyboard.clone();
+        for mod_code in to_release {
+            self.latched_modifiers.remove(&mod_code);
+            let consumed = self.shell.switcher_keys.remove(&mod_code);
+            keyboard.input::<(), _>(
+                self,
+                mod_code,
+                KeyState::Released,
+                SERIAL_COUNTER.next_serial(),
+                time,
+                |_, _, _| if consumed { FilterResult::Intercept(()) } else { FilterResult::Forward },
+            );
+        }
+    }
     fn process_keyboard_key(&mut self,keycode:smithay::input::keyboard::Keycode,key_state:KeyState,time:u32){
         if key_state == KeyState::Pressed {
             if let Some(stats) = self.frame_stats.as_mut() {
@@ -152,6 +176,35 @@ impl FeatherCompositor {
             }
         }
         self.cancel_key_repeat();
+        let is_modifier = Self::is_modifier_keycode(keycode);
+        if is_modifier {
+            match key_state {
+                KeyState::Pressed => {
+                    self.physically_held_modifiers.insert(keycode);
+                    if self.sticky_keys {
+                        if self.latched_modifiers.remove(&keycode) {
+                            // Pressing an already-latched modifier unlatches it on release
+                            self.modifier_used_while_held = true;
+                            return;
+                        }
+                        self.modifier_used_while_held = false;
+                    }
+                }
+                KeyState::Released => {
+                    self.physically_held_modifiers.remove(&keycode);
+                    if self.sticky_keys
+                        && !self.modifier_used_while_held
+                        && self.shell.switcher.is_none()
+                        && !self.capturing_shortcut()
+                    {
+                        self.latched_modifiers.insert(keycode);
+                        return;
+                    }
+                }
+            }
+        } else if key_state == KeyState::Pressed {
+            self.modifier_used_while_held = true;
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let mut repeat_candidate = None;
         let mut deferred: Option<KeyAction> = None;
@@ -470,6 +523,9 @@ impl FeatherCompositor {
                 if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()) {let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);}
             }
             None => {}
+        }
+        if self.sticky_keys && !is_modifier && key_state == KeyState::Pressed && self.shell.switcher.is_none() {
+            self.release_latched_modifiers(time);
         }
     }
 
@@ -1359,6 +1415,9 @@ impl FeatherCompositor {
                 |_, _, _| if consumed {FilterResult::Intercept(())} else {FilterResult::Forward},
             );
         }
+        self.latched_modifiers.clear();
+        self.physically_held_modifiers.clear();
+        self.modifier_used_while_held = false;
         self.shell.switcher_keys.clear();
         self.pointer_focus_dirty = true;
     }

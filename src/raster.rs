@@ -71,6 +71,8 @@ struct Request {
     accent: crate::theme::AccentColor,
     highlight: Option<crate::theme::AccentColor>,
     text_size: crate::theme::TextSize,
+    high_contrast: bool,
+    reduce_transparency: bool,
     job: Job,
 }
 
@@ -186,6 +188,8 @@ impl RasterSender {
                         request.accent,
                         request.highlight,
                         request.text_size,
+                        request.high_contrast,
+                        request.reduce_transparency,
                         || match &request.job {
                             Job::Settings(job) => Asset::Settings(
                                 job.ticket.clone(),
@@ -337,6 +341,8 @@ impl RasterSender {
                 accent: crate::theme::accent_color(),
                 highlight: crate::theme::highlight_choice(),
                 text_size: crate::theme::text_size(),
+                high_contrast: crate::theme::high_contrast(),
+                reduce_transparency: crate::theme::reduce_transparency(),
                 job,
             })
             .is_ok()

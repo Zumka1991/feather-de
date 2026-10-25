@@ -9,6 +9,8 @@ static DARK_MODE: AtomicBool = AtomicBool::new(false);
 static ACCENT_COLOR: AtomicU8 = AtomicU8::new(0); // AccentColor::Blue
 static HIGHLIGHT_COLOR: AtomicU8 = AtomicU8::new(255); // 255 = None ("accent")
 static TEXT_SIZE: AtomicU8 = AtomicU8::new(1); // TextSize::Default (100%)
+static HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
+static REDUCE_TRANSPARENCY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy)]
 struct RenderSnapshot {
@@ -17,6 +19,8 @@ struct RenderSnapshot {
     accent: AccentColor,
     highlight: Option<AccentColor>,
     text_size: TextSize,
+    high_contrast: bool,
+    reduce_transparency: bool,
 }
 
 thread_local! {
@@ -254,17 +258,22 @@ pub fn with_render_settings<T>(scale: f32, appearance: Appearance, draw: impl Fn
         AccentColor::Blue,
         None,
         TextSize::Default,
+        false,
+        false,
         draw,
     )
 }
 
 /// Runs `draw` with this thread's full render snapshot overridden.
+#[allow(clippy::too_many_arguments)]
 pub fn with_full_render_settings<T>(
     scale: f32,
     appearance: Appearance,
     accent: AccentColor,
     highlight: Option<AccentColor>,
     text_size: TextSize,
+    high_contrast: bool,
+    reduce_transparency: bool,
     draw: impl FnOnce() -> T,
 ) -> T {
     struct Restore(Option<RenderSnapshot>);
@@ -279,6 +288,8 @@ pub fn with_full_render_settings<T>(
         accent,
         highlight,
         text_size,
+        high_contrast,
+        reduce_transparency,
     };
     let _restore = Restore(RENDER_SETTINGS.with(|s| s.replace(Some(snap))));
     draw()
@@ -354,5 +365,27 @@ pub fn set_text_size(ts: TextSize) {
 
 pub fn text_scale() -> f32 {
     text_size().factor()
+}
+
+pub fn high_contrast() -> bool {
+    if let Some(hc) = RENDER_SETTINGS.with(|s| s.get().map(|v| v.high_contrast)) {
+        return hc;
+    }
+    HIGH_CONTRAST.load(Ordering::Relaxed)
+}
+
+pub fn set_high_contrast(on: bool) {
+    HIGH_CONTRAST.store(on, Ordering::Relaxed);
+}
+
+pub fn reduce_transparency() -> bool {
+    if let Some(rt) = RENDER_SETTINGS.with(|s| s.get().map(|v| v.reduce_transparency)) {
+        return rt;
+    }
+    REDUCE_TRANSPARENCY.load(Ordering::Relaxed)
+}
+
+pub fn set_reduce_transparency(on: bool) {
+    REDUCE_TRANSPARENCY.store(on, Ordering::Relaxed);
 }
 

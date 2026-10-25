@@ -1316,6 +1316,7 @@ mod settings_tests {
                 night: Default::default(),
                 night_active: false,
                 notify_apps: &[],
+                sticky_keys: false,
             };
             let mut direct = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 0, 0);
             direct.activated = true;
@@ -1416,6 +1417,7 @@ mod settings_tests {
                             night: Default::default(),
                             night_active: false,
                             notify_apps: &[],
+                            sticky_keys: false,
                         };
                         let ctx = BuiltinContext {
                             settings: &panel,

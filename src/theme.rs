@@ -96,8 +96,9 @@ pub const TRAFFIC_RADIUS: f32 = 6.0;
 pub const TRAFFIC_CENTERS: [f32; 3] = [16.0, 36.0, 56.0];
 
 pub use feather_ui::scale::{
-    accent_color, appearance, highlight_choice, highlight_color, set_accent_color, set_appearance,
-    set_highlight_choice, set_text_size, set_ui_scale, text_size, ui_scale,
+    accent_color, appearance, high_contrast, highlight_choice, highlight_color,
+    reduce_transparency, set_accent_color, set_appearance, set_high_contrast, set_highlight_choice,
+    set_reduce_transparency, set_text_size, set_ui_scale, text_size, ui_scale,
     with_full_render_settings, AccentColor, Appearance, TextSize,
 };
 #[cfg(test)]
@@ -142,61 +143,63 @@ pub struct Palette {
 
 pub fn palette() -> Palette {
     let app = appearance();
+    let hc = high_contrast();
+    let opaque = reduce_transparency();
     let (ar, ag, ab) = accent_color().rgb(app);
     let (hr, hg, hb) = highlight_color().rgb(app);
     let accent = rgba(ar, ag, ab, 255);
     let highlight = rgba(hr, hg, hb, 255);
     match app {
         Appearance::Light => Palette {
-            glass_fill: rgba(246, 246, 248, 175),
-            glass_fill_strong: rgba(250, 250, 252, 212),
+            glass_fill: if opaque { rgba(244, 244, 247, 255) } else { rgba(246, 246, 248, 175) },
+            glass_fill_strong: if opaque { rgba(250, 250, 252, 255) } else { rgba(250, 250, 252, 212) },
             glass_edge: rgba(255, 255, 255, 210),
-            glass_outline: rgba(0, 0, 0, 30),
-            dock_fill: rgba(255, 255, 255, 105),
-            text: rgba(0, 0, 0, 222),
-            text_secondary: rgba(60, 60, 67, 165),
-            text_tertiary: rgba(60, 60, 67, 95),
+            glass_outline: rgba(0, 0, 0, if hc { 95 } else { 30 }),
+            dock_fill: if opaque { rgba(240, 240, 244, 255) } else { rgba(255, 255, 255, 105) },
+            text: rgba(0, 0, 0, if hc { 255 } else { 222 }),
+            text_secondary: if hc { rgba(40, 40, 46, 225) } else { rgba(60, 60, 67, 165) },
+            text_tertiary: if hc { rgba(50, 50, 58, 175) } else { rgba(60, 60, 67, 95) },
             accent,
             highlight,
             on_accent: rgba(255, 255, 255, 255),
-            separator: rgba(0, 0, 0, 26),
-            control_fill: rgba(0, 0, 0, 14),
+            separator: rgba(0, 0, 0, if hc { 72 } else { 26 }),
+            control_fill: rgba(0, 0, 0, if hc { 28 } else { 14 }),
             window_bg: rgba(255, 255, 255, 255),
             titlebar_active: rgba(247, 247, 247, 255),
             titlebar_inactive: rgba(236, 236, 236, 255),
-            title_active: rgba(0, 0, 0, 216),
-            title_inactive: rgba(0, 0, 0, 70),
-            window_outline: rgba(0, 0, 0, 46),
+            title_active: rgba(0, 0, 0, if hc { 255 } else { 216 }),
+            title_inactive: rgba(0, 0, 0, if hc { 145 } else { 70 }),
+            window_outline: rgba(0, 0, 0, if hc { 110 } else { 46 }),
             card: rgba(242, 242, 247, 255),
             traffic_inactive: rgba(221, 221, 221, 255),
-            traffic_inactive_edge: rgba(0, 0, 0, 30),
-            dock_dot: rgba(0, 0, 0, 175),
+            traffic_inactive_edge: rgba(0, 0, 0, if hc { 70 } else { 30 }),
+            dock_dot: rgba(0, 0, 0, if hc { 225 } else { 175 }),
             shadow_strength: 1.0,
         },
         Appearance::Dark => Palette {
-            glass_fill: rgba(38, 38, 42, 185),
-            glass_fill_strong: rgba(44, 44, 48, 215),
-            glass_edge: rgba(255, 255, 255, 46),
-            glass_outline: rgba(0, 0, 0, 120),
-            dock_fill: rgba(60, 60, 66, 120),
-            text: rgba(255, 255, 255, 235),
-            text_secondary: rgba(235, 235, 245, 155),
-            text_tertiary: rgba(235, 235, 245, 85),
+            glass_fill: if opaque { rgba(40, 40, 44, 255) } else { rgba(38, 38, 42, 185) },
+            glass_fill_strong: if opaque { rgba(48, 48, 52, 255) } else { rgba(44, 44, 48, 215) },
+            glass_edge: rgba(255, 255, 255, if hc { 95 } else { 46 }),
+            glass_outline: rgba(0, 0, 0, if hc { 180 } else { 120 }),
+            dock_fill: if opaque { rgba(46, 46, 52, 255) } else { rgba(60, 60, 66, 120) },
+            text: rgba(255, 255, 255, if hc { 255 } else { 235 }),
+            text_secondary: if hc { rgba(240, 240, 248, 225) } else { rgba(235, 235, 245, 155) },
+            text_tertiary: if hc { rgba(225, 225, 235, 170) } else { rgba(235, 235, 245, 85) },
             accent,
             highlight,
             on_accent: rgba(255, 255, 255, 255),
-            separator: rgba(255, 255, 255, 30),
-            control_fill: rgba(255, 255, 255, 22),
+            separator: rgba(255, 255, 255, if hc { 78 } else { 30 }),
+            control_fill: rgba(255, 255, 255, if hc { 42 } else { 22 }),
             window_bg: rgba(30, 30, 32, 255),
             titlebar_active: rgba(52, 52, 55, 255),
             titlebar_inactive: rgba(40, 40, 42, 255),
-            title_active: rgba(255, 255, 255, 220),
-            title_inactive: rgba(255, 255, 255, 80),
-            window_outline: rgba(255, 255, 255, 34),
+            title_active: rgba(255, 255, 255, if hc { 255 } else { 220 }),
+            title_inactive: rgba(255, 255, 255, if hc { 155 } else { 80 }),
+            window_outline: rgba(255, 255, 255, if hc { 90 } else { 34 }),
             card: rgba(44, 44, 46, 255),
             traffic_inactive: rgba(78, 78, 80, 255),
-            traffic_inactive_edge: rgba(0, 0, 0, 60),
-            dock_dot: rgba(255, 255, 255, 200),
+            traffic_inactive_edge: rgba(0, 0, 0, if hc { 100 } else { 60 }),
+            dock_dot: rgba(255, 255, 255, if hc { 245 } else { 200 }),
             shadow_strength: 1.6,
         },
     }
@@ -488,6 +491,10 @@ pub fn set_glass_origin(x: f32, y: f32) {
 /// Frosted glass: the blurred wallpaper that is "behind" this rounded rect. Like Hyprland's
 /// xray blur it shows the desktop, not windows, and costs nothing per frame.
 pub fn fill_frosted(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32) {
+    if reduce_transparency() {
+        fill_rounded_rect(pixmap, x, y, w, h, r, palette().glass_fill);
+        return;
+    }
     let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Frosted);
     let Some(path) = rounded_rect_path(x, y, w, h, r) else { return };
     let origin = GLASS_ORIGIN.with(|o| o.get());
@@ -505,13 +512,17 @@ pub fn draw_glass_panel(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, 
     let tint = if strong { p.glass_fill_strong } else { p.glass_fill };
     let Some(path) = rounded_rect_path(x, y, w, h, r) else { return };
     let origin = GLASS_ORIGIN.with(|o| o.get());
-    let painted = GLASS_BG.with(|g| {
-        if let Some((bg, sx, sy)) = g.borrow().as_ref() {
-            let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Frosted);
-            crate::ui_raster::frosted(pixmap, &path, ui_scale(), bg.as_ref().as_ref(), (*sx, *sy), origin, Some(tint));
-            true
-        } else { false }
-    });
+    let painted = if reduce_transparency() {
+        false
+    } else {
+        GLASS_BG.with(|g| {
+            if let Some((bg, sx, sy)) = g.borrow().as_ref() {
+                let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Frosted);
+                crate::ui_raster::frosted(pixmap, &path, ui_scale(), bg.as_ref().as_ref(), (*sx, *sy), origin, Some(tint));
+                true
+            } else { false }
+        })
+    };
     if !painted { fill_rounded_rect(pixmap, x, y, w, h, r, tint); }
     stroke_rounded_rect(pixmap, x + 0.75, y + 0.75, w - 1.5, h - 1.5, r - 0.75, 1.0, p.glass_edge);
     stroke_rounded_rect(pixmap, x - 0.25, y - 0.25, w + 0.5, h + 0.5, r + 0.25, 0.5, p.glass_outline);

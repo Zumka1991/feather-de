@@ -16,6 +16,8 @@ pub struct ThemeConfig {
     pub accent: AccentColor,
     pub highlight: Option<AccentColor>,
     pub text_size: TextSize,
+    pub high_contrast: bool,
+    pub reduce_transparency: bool,
 }
 
 impl Default for ThemeConfig {
@@ -25,6 +27,8 @@ impl Default for ThemeConfig {
             accent: AccentColor::Blue,
             highlight: None,
             text_size: TextSize::Default,
+            high_contrast: false,
+            reduce_transparency: false,
         }
     }
 }
@@ -65,6 +69,16 @@ fn parse(text: &str) -> ThemeConfig {
                         result.text_size = ts;
                     }
                 }
+                "high_contrast" => {
+                    if let Ok(on) = value.parse::<bool>() {
+                        result.high_contrast = on;
+                    }
+                }
+                "reduce_transparency" => {
+                    if let Ok(on) = value.parse::<bool>() {
+                        result.reduce_transparency = on;
+                    }
+                }
                 _ => {}
             }
         }
@@ -87,12 +101,16 @@ fn apply(cfg: ThemeConfig) {
     scale::set_accent_color(cfg.accent);
     scale::set_highlight_choice(cfg.highlight);
     scale::set_text_size(cfg.text_size);
+    scale::set_high_contrast(cfg.high_contrast);
+    scale::set_reduce_transparency(cfg.reduce_transparency);
 }
 
 static LATEST_CONFIG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x01_ff_00_00);
 
 fn pack_config(cfg: ThemeConfig) -> u32 {
-    let a = matches!(cfg.appearance, Appearance::Dark) as u32;
+    let a = matches!(cfg.appearance, Appearance::Dark) as u32
+        | ((cfg.high_contrast as u32) << 1)
+        | ((cfg.reduce_transparency as u32) << 2);
     let ac = (cfg.accent as u32) << 8;
     let hl = (cfg.highlight.map_or(255u8, |c| c as u8) as u32) << 16;
     let ts = (cfg.text_size as u32) << 24;
@@ -100,11 +118,14 @@ fn pack_config(cfg: ThemeConfig) -> u32 {
 }
 
 fn unpack_config(raw: u32) -> ThemeConfig {
-    let appearance = if (raw & 0xff) != 0 {
+    let flags = raw & 0xff;
+    let appearance = if (flags & 1) != 0 {
         Appearance::Dark
     } else {
         Appearance::Light
     };
+    let high_contrast = (flags & 2) != 0;
+    let reduce_transparency = (flags & 4) != 0;
     let accent = AccentColor::from_u8(((raw >> 8) & 0xff) as u8);
     let hl_raw = ((raw >> 16) & 0xff) as u8;
     let highlight = if hl_raw < 8 {
@@ -118,6 +139,8 @@ fn unpack_config(raw: u32) -> ThemeConfig {
         accent,
         highlight,
         text_size,
+        high_contrast,
+        reduce_transparency,
     }
 }
 
@@ -126,14 +149,16 @@ fn store_latest(cfg: ThemeConfig) {
 }
 
 /// Applies the latest watched theme snapshot on the event-loop thread. Returns `true` if any
-/// appearance/accent/highlight/text_size setting changed.
+/// appearance/accent/highlight/text_size/accessibility setting changed.
 pub fn sync(appearance: Appearance) -> bool {
     let mut cfg = unpack_config(LATEST_CONFIG.load(std::sync::atomic::Ordering::Acquire));
     cfg.appearance = appearance;
     let changed = scale::appearance() != cfg.appearance
         || scale::accent_color() != cfg.accent
         || scale::highlight_choice() != cfg.highlight
-        || scale::text_size() != cfg.text_size;
+        || scale::text_size() != cfg.text_size
+        || scale::high_contrast() != cfg.high_contrast
+        || scale::reduce_transparency() != cfg.reduce_transparency;
     if changed {
         apply(cfg);
     }
@@ -327,7 +352,7 @@ mod tests {
         );
         std::fs::write(
             &temporary,
-            "appearance=light\naccent_color=purple\nhighlight_color=green\ntext_size=large\n",
+            "appearance=light\naccent_color=purple\nhighlight_color=green\ntext_size=large\nhigh_contrast=true\nreduce_transparency=true\n",
         )
         .unwrap();
         std::fs::rename(&temporary, &path).unwrap();
@@ -337,6 +362,8 @@ mod tests {
         assert_eq!(scale::accent_color(), AccentColor::Purple);
         assert_eq!(scale::highlight_choice(), Some(AccentColor::Green));
         assert_eq!(scale::text_size(), TextSize::Large);
+        assert!(scale::high_contrast());
+        assert!(scale::reduce_transparency());
         drop(watch);
         store_latest(ThemeConfig::default());
         apply(ThemeConfig::default());
@@ -352,7 +379,10 @@ mod tests {
 pub mod colors {
     use crate::{
         draw::rgba,
-        scale::{accent_color, appearance, highlight_color, Appearance},
+        scale::{
+            accent_color, appearance, high_contrast, highlight_color, reduce_transparency,
+            Appearance,
+        },
     };
     use tiny_skia::Color;
     fn dark() -> bool {
@@ -373,29 +403,48 @@ pub mod colors {
         }
     }
     pub fn sidebar_edge() -> Color {
+        let a = if high_contrast() { 68 } else { 22 };
         if dark() {
-            rgba(255, 255, 255, 22)
+            rgba(255, 255, 255, a)
         } else {
-            rgba(0, 0, 0, 22)
+            rgba(0, 0, 0, a)
         }
     }
     pub fn text() -> Color {
         if dark() {
-            rgba(240, 240, 244, 255)
+            if high_contrast() {
+                rgba(255, 255, 255, 255)
+            } else {
+                rgba(240, 240, 244, 255)
+            }
+        } else if high_contrast() {
+            rgba(0, 0, 0, 255)
         } else {
             rgba(29, 29, 31, 255)
         }
     }
     pub fn secondary() -> Color {
         if dark() {
-            rgba(173, 173, 183, 255)
+            if high_contrast() {
+                rgba(225, 225, 235, 255)
+            } else {
+                rgba(173, 173, 183, 255)
+            }
+        } else if high_contrast() {
+            rgba(55, 55, 62, 255)
         } else {
             rgba(110, 110, 115, 255)
         }
     }
     pub fn tertiary() -> Color {
         if dark() {
-            rgba(132, 132, 143, 255)
+            if high_contrast() {
+                rgba(185, 185, 196, 255)
+            } else {
+                rgba(132, 132, 143, 255)
+            }
+        } else if high_contrast() {
+            rgba(96, 96, 104, 255)
         } else {
             rgba(160, 160, 166, 255)
         }
@@ -417,9 +466,9 @@ pub mod colors {
     }
     pub fn selected_gray() -> Color {
         if dark() {
-            rgba(255, 255, 255, 28)
+            rgba(255, 255, 255, if high_contrast() { 48 } else { 28 })
         } else {
-            rgba(0, 0, 0, 26)
+            rgba(0, 0, 0, if high_contrast() { 44 } else { 26 })
         }
     }
     pub fn traffic_inactive() -> Color {
@@ -438,9 +487,9 @@ pub mod colors {
     }
     pub fn separator() -> Color {
         if dark() {
-            rgba(255, 255, 255, 24)
+            rgba(255, 255, 255, if high_contrast() { 68 } else { 24 })
         } else {
-            rgba(0, 0, 0, 20)
+            rgba(0, 0, 0, if high_contrast() { 64 } else { 20 })
         }
     }
     pub fn stripe() -> Color {
@@ -452,16 +501,17 @@ pub mod colors {
     }
     pub fn control() -> Color {
         if dark() {
-            rgba(255, 255, 255, 18)
+            rgba(255, 255, 255, if high_contrast() { 36 } else { 18 })
         } else {
-            rgba(0, 0, 0, 13)
+            rgba(0, 0, 0, if high_contrast() { 28 } else { 13 })
         }
     }
     pub fn glass() -> Color {
+        let a = if reduce_transparency() { 255 } else { 252 };
         if dark() {
-            rgba(40, 40, 45, 252)
+            rgba(40, 40, 45, a)
         } else {
-            rgba(248, 248, 250, 252)
+            rgba(248, 248, 250, a)
         }
     }
     pub fn note_selection(focused: bool) -> Color {

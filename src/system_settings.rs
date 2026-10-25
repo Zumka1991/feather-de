@@ -11,6 +11,7 @@ use tiny_skia::PixmapMut;
 pub enum Page {
     #[default]
     Appearance,
+    Accessibility,
     Network,
     Bluetooth,
     Keyboard,
@@ -24,8 +25,9 @@ pub enum Page {
     Sound,
 }
 impl Page {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Appearance,
+        Self::Accessibility,
         Self::Network,
         Self::Bluetooth,
         Self::Keyboard,
@@ -41,6 +43,7 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Оформление",
+            Self::Accessibility => "Универсальный доступ",
             Self::Network => "Сеть",
             Self::Bluetooth => "Bluetooth",
             Self::Keyboard => "Клавиатура",
@@ -57,6 +60,7 @@ impl Page {
     fn caption(self) -> &'static str {
         match self {
             Self::Appearance => "Выберите внешний вид и поведение интерфейса.",
+            Self::Accessibility => "Крупный текст, контраст, прозрачность и залипание клавиш.",
             Self::Network => "Wi‑Fi, проводная сеть, VPN и сохранённые профили.",
             Self::Bluetooth => "Беспроводные наушники, клавиатуры, мыши и другие устройства.",
             Self::Keyboard => "Источники ввода и переключение языка.",
@@ -107,6 +111,9 @@ pub enum Action {
     AccentColor(crate::theme::AccentColor),
     HighlightColor(Option<crate::theme::AccentColor>),
     TextSize(crate::theme::TextSize),
+    HighContrast,
+    ReduceTransparency,
+    StickyKeys,
     Animations,
     DockZoom,
     DockSize(u32),
@@ -235,6 +242,7 @@ pub struct Context<'a> {
     pub night: crate::night::Preferences,
     pub night_active: bool,
     pub notify_apps: &'a [crate::notifications::AppPolicy],
+    pub sticky_keys: bool,
 }
 
 pub struct FrameJob {
@@ -269,6 +277,7 @@ pub struct FrameJob {
     pub night: crate::night::Preferences,
     pub night_active: bool,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
+    pub sticky_keys: bool,
     pub width: i32,
     pub height: i32,
     pub focused: bool,
@@ -313,6 +322,7 @@ impl FrameJob {
             night: c.night,
             night_active: c.night_active,
             notify_apps: c.notify_apps.to_vec(),
+            sticky_keys: c.sticky_keys,
             width: win.width,
             height: win.height,
             focused: win.activated,
@@ -349,6 +359,7 @@ impl FrameJob {
             night: self.night,
             night_active: self.night_active,
             notify_apps: &self.notify_apps,
+            sticky_keys: self.sticky_keys,
         }
     }
 }
@@ -356,7 +367,7 @@ impl FrameJob {
 const TOOLBAR_CLIP: f32 = 12.0;
 /// Sidebar groups, like the sections of macOS System Settings.
 const SIDEBAR: [&[Page]; 3] = [
-    &[Page::Appearance, Page::Desktop, Page::Displays],
+    &[Page::Appearance, Page::Accessibility, Page::Desktop, Page::Displays],
     &[Page::Network, Page::Bluetooth, Page::Keyboard, Page::Pointer, Page::Sound],
     &[Page::Notifications, Page::Defaults, Page::DateTime, Page::Power],
 ];
@@ -520,6 +531,7 @@ fn theme_label(dir: &str) -> String {
 fn page_color(page: Page) -> (tiny_skia::Color, tiny_skia::Color) {
     match page {
         Page::Appearance => (rgba(80, 80, 88, 255), rgba(28, 28, 32, 255)),
+        Page::Accessibility => (rgba(35, 145, 255, 255), rgba(10, 88, 215, 255)),
         Page::Network => (rgba(55, 165, 255, 255), rgba(15, 105, 225, 255)),
         Page::Bluetooth => (rgba(45, 145, 255, 255), rgba(10, 85, 215, 255)),
         Page::Keyboard => (rgba(160, 165, 175, 255), rgba(112, 117, 128, 255)),
@@ -555,6 +567,22 @@ fn draw_page_icon(pm: &mut PixmapMut, page: Page, x: f32, y: f32, size: f32) {
             if let Some(half) = half.finish() {
                 fill_path_gradient(pm, &half, cy - 6.0 * k, cy + 6.0 * k, white, white);
             }
+        }
+        Page::Accessibility => {
+            let (cx, cy) = pt(10.0, 10.0);
+            stroke_circle(pm, cx, cy, 6.2 * k, 1.15 * k, white);
+            let (hx, hy) = pt(10.0, 6.3);
+            fill_circle(pm, hx, hy, 1.15 * k, white);
+            let (alx, aly) = pt(6.3, 8.7);
+            let (arx, ary) = pt(13.7, 8.7);
+            stroke_line(pm, alx, aly, arx, ary, 1.2 * k, white);
+            let (bx0, by0) = pt(10.0, 8.7);
+            let (bx1, by1) = pt(10.0, 11.4);
+            stroke_line(pm, bx0, by0, bx1, by1, 1.25 * k, white);
+            let (llx, lly) = pt(8.0, 14.4);
+            let (lrx, lry) = pt(12.0, 14.4);
+            stroke_line(pm, bx1, by1, llx, lly, 1.2 * k, white);
+            stroke_line(pm, bx1, by1, lrx, lry, 1.2 * k, white);
         }
         Page::Network => {
             let (cx, cy) = pt(10.0, 10.0);
@@ -1384,6 +1412,56 @@ impl Panel {
                 l.end();
                 l.footer("Цвета и размер текста сразу применяются к системным панелям, Файлам и Заметкам.");
             }
+            Page::Accessibility => {
+                l.hero(Page::Accessibility);
+                l.header("Зрение");
+                l.begin();
+                let current_ts = crate::theme::text_size();
+                let r = l.row(
+                    54.0,
+                    "Размер текста интерфейса",
+                    format!("{} ({} %)", current_ts.label(), current_ts.percent()),
+                    Style::Row,
+                    None,
+                );
+                let track = right(r, 4.0 * 72.0, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, ts) in crate::theme::TextSize::ALL.into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * 72.0, track.y, 72.0, 28.0),
+                        ts.short_label(),
+                        Style::Segment(current_ts == ts),
+                        Some(Action::TextSize(ts)),
+                    );
+                }
+                l.row(
+                    52.0,
+                    "Увеличить контраст",
+                    "Чёткие границы карточек, панелей, разделителей и подписей".into(),
+                    Style::Toggle(crate::theme::high_contrast()),
+                    Some(Action::HighContrast),
+                );
+                l.row(
+                    52.0,
+                    "Уменьшить прозрачность",
+                    "Сплошной непрозрачный фон меню, Dock, Центра управления и окон".into(),
+                    Style::Toggle(crate::theme::reduce_transparency()),
+                    Some(Action::ReduceTransparency),
+                );
+                l.end();
+                l.footer("Применяется сразу к панелям, окнам, Файлам и Заметкам.");
+                l.header("Клавиатура и ввод");
+                l.begin();
+                l.row(
+                    52.0,
+                    "Залипание клавиш",
+                    "Shift, Ctrl, Alt и Super удерживаются для следующей клавиши".into(),
+                    Style::Toggle(c.sticky_keys),
+                    Some(Action::StickyKeys),
+                );
+                l.end();
+                l.footer("Позволяет нажимать сочетания клавиш последовательно. Повторное нажатие модификатора снимает фиксацию.");
+            }
             Page::Keyboard => {
                 l.hero(Page::Keyboard);
                 l.header("Источники ввода");
@@ -2149,6 +2227,7 @@ impl Panel {
     ) {
         let p = palette();
         let dark = appearance() == Appearance::Dark;
+        let hc = crate::theme::high_contrast();
         let (ox, oy) = origin;
         let (w, h) = size;
         let side = side_width(w);
@@ -2166,8 +2245,10 @@ impl Panel {
             sb.w - 0.5,
             sb.h - 0.5,
             10.0,
-            0.5,
-            if dark {
+            if hc { 1.0 } else { 0.5 },
+            if hc {
+                p.separator
+            } else if dark {
                 rgba(255, 255, 255, 22)
             } else {
                 rgba(0, 0, 0, 18)
@@ -2188,7 +2269,7 @@ impl Panel {
         fill_rounded_rect(pm, ox + side, oy - top + 12.0, w - side, top + TOOLBAR_CLIP - 12.0, 0.0, p.window_bg);
         fill_rounded_rect(pm, ox + side, oy - top, w - side, 24.0, crate::theme::WINDOW_CORNER_RADIUS, p.window_bg);
         if self.scroll > 0.0 {
-            stroke_line(pm, ox + side, oy + TOOLBAR_CLIP, ox + w, oy + TOOLBAR_CLIP, 0.5, p.separator);
+            stroke_line(pm, ox + side, oy + TOOLBAR_CLIP, ox + w, oy + TOOLBAR_CLIP, if hc { 1.0 } else { 0.5 }, p.separator);
         }
         fonts.draw_text(pm, self.page.title(), ox + side + 20.0, oy - top + 11.0, 15.0, p.text, true);
         if self.keyboard_busy || c.system.busy {
@@ -2215,16 +2296,17 @@ impl Panel {
     ) {
         let p = palette();
         let dark = appearance() == Appearance::Dark;
-        let hover_fill = if dark { rgba(255, 255, 255, 18) } else { rgba(0, 0, 0, 12) };
+        let hc = crate::theme::high_contrast();
+        let hover_fill = if dark { rgba(255, 255, 255, if hc { 28 } else { 18 }) } else { rgba(0, 0, 0, if hc { 20 } else { 12 }) };
         let group_fill = if dark {
-            rgba(255, 255, 255, 13)
+            rgba(255, 255, 255, if hc { 24 } else { 13 })
         } else {
-            rgba(0, 0, 0, 10)
+            rgba(0, 0, 0, if hc { 18 } else { 10 })
         };
         let push_fill = if dark {
-            rgba(255, 255, 255, 30)
+            rgba(255, 255, 255, if hc { 52 } else { 30 })
         } else {
-            rgba(0, 0, 0, 16)
+            rgba(0, 0, 0, if hc { 32 } else { 16 })
         };
         let r = control.rect;
         let r = R::new(r.x + ox, r.y + oy, r.w, r.h);
@@ -2235,7 +2317,7 @@ impl Panel {
         let disabled = interactive && control.action.is_none();
         let fg = if disabled { p.text_tertiary } else { p.text };
         if control.divider {
-            stroke_line(pm, r.x + 14.0, r.y, r.x + r.w - 14.0, r.y, 0.5, p.separator);
+            stroke_line(pm, r.x + 14.0, r.y, r.x + r.w - 14.0, r.y, if hc { 1.0 } else { 0.5 }, p.separator);
         }
         // Label/detail block of a form row.
         let row_text = |pm: &mut PixmapMut, fonts: &mut FontSystem, reserve: f32| {
@@ -2275,12 +2357,18 @@ impl Panel {
             }
             Style::Hero(page) => {
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 12.0, group_fill);
+                if hc {
+                    stroke_rounded_rect(pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, 12.0, 1.0, p.separator);
+                }
                 draw_page_icon(pm, page, r.x + 14.0, r.y + 14.0, 44.0);
                 fonts.draw_text_clipped(pm, &control.label, r.x + 72.0, r.y + 17.0, r.w - 86.0, 15.0, p.text, true);
                 fonts.draw_text_clipped(pm, &control.detail, r.x + 72.0, r.y + 40.0, r.w - 86.0, 12.0, p.text_secondary, false);
             }
             Style::Display => {
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 12.0, group_fill);
+                if hc {
+                    stroke_rounded_rect(pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, 12.0, 1.0, p.separator);
+                }
                 let (mw, mh) = (150.0, 88.0);
                 let mx = r.x + (r.w - mw) / 2.0;
                 let my = r.y + 16.0;
@@ -2307,6 +2395,9 @@ impl Panel {
             }
             Style::Group => {
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 12.0, group_fill);
+                if hc {
+                    stroke_rounded_rect(pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, 12.0, 1.0, p.separator);
+                }
             }
             Style::Row => {
                 let reserve = if control.value.is_empty() {
@@ -2330,18 +2421,21 @@ impl Panel {
                 let tx = r.x + r.w - 14.0 - tw;
                 let ty = r.y + (r.h - th) / 2.0;
                 let off = if dark {
-                    rgba(255, 255, 255, 40)
+                    rgba(255, 255, 255, if hc { 72 } else { 40 })
                 } else {
-                    rgba(0, 0, 0, 30)
+                    rgba(0, 0, 0, if hc { 56 } else { 30 })
                 };
                 let track = if on { p.accent } else { off };
                 fill_rounded_rect(pm, tx, ty, tw, th, th / 2.0, if disabled { with_alpha(track, 0.45) } else { track });
+                if hc && !on {
+                    stroke_rounded_rect(pm, tx + 0.5, ty + 0.5, tw - 1.0, th - 1.0, th / 2.0, 1.0, p.separator);
+                }
                 let kx = if on { tx + tw - 12.0 } else { tx + 12.0 };
                 fill_circle(pm, kx, ty + 12.5, 10.0, rgba(0, 0, 0, 22));
                 fill_circle(pm, kx, ty + 12.0, 10.0, rgba(255, 255, 255, 255));
             }
             Style::Track => {
-                fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, if dark { rgba(255, 255, 255, 22) } else { rgba(0, 0, 0, 14) });
+                fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, if dark { rgba(255, 255, 255, if hc { 42 } else { 22 }) } else { rgba(0, 0, 0, if hc { 28 } else { 14 }) });
             }
             Style::Segment(selected) => {
                 if hover && !selected && !disabled {
@@ -2382,6 +2476,9 @@ impl Panel {
             Style::Push(primary) => {
                 let fill = if primary { p.accent } else { push_fill };
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, if disabled { with_alpha(fill, 0.5) } else { fill });
+                if hc && !primary {
+                    stroke_rounded_rect(pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, r.h / 2.0, 1.0, p.separator);
+                }
                 if hover && !disabled {
                     let over = if primary { rgba(255, 255, 255, 36) } else { hover_fill };
                     fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, over);
@@ -2399,6 +2496,9 @@ impl Panel {
             }
             Style::Popup => {
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, push_fill);
+                if hc {
+                    stroke_rounded_rect(pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, r.h / 2.0, 1.0, p.separator);
+                }
                 if hover && !disabled {
                     fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, hover_fill);
                 }
@@ -2649,6 +2749,7 @@ impl crate::FeatherCompositor {
             night: self.night.prefs,
             night_active: self.night.active(),
             notify_apps: &self.shell.notify_apps,
+            sticky_keys: self.sticky_keys,
         }
     }
 
@@ -3110,6 +3211,28 @@ impl crate::FeatherCompositor {
                     self.save_settings();
                 }
             }
+            Action::HighContrast => {
+                crate::theme::set_high_contrast(!crate::theme::high_contrast());
+                self.shell.invalidate_all();
+                self.mark_builtin_windows_dirty();
+                self.lock.repaint();
+                self.save_settings();
+            }
+            Action::ReduceTransparency => {
+                crate::theme::set_reduce_transparency(!crate::theme::reduce_transparency());
+                self.shell.invalidate_all();
+                self.mark_builtin_windows_dirty();
+                self.lock.repaint();
+                self.save_settings();
+            }
+            Action::StickyKeys => {
+                self.sticky_keys = !self.sticky_keys;
+                if !self.sticky_keys {
+                    let time = self.start_time.elapsed().as_millis() as u32;
+                    self.release_latched_modifiers(time);
+                }
+                self.save_settings();
+            }
             Action::Animations => {
                 let enabled = !self.animations.enabled();
                 self.animations
@@ -3556,6 +3679,7 @@ mod tests {
             night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
             night_active: true,
             notify_apps: &apps,
+            sticky_keys: false,
         };
         let mut context = context;
         context.audio = crate::controls::Audio {
@@ -3730,6 +3854,14 @@ mod tests {
             for ts in TextSize::ALL {
                 assert!(controls.iter().any(|c| matches!(c.action, Some(Action::TextSize(s)) if s == ts)));
             }
+            let acc_panel = Panel { page: Page::Accessibility, ..Default::default() };
+            let acc_controls = acc_panel.controls(800.0, 540.0, &context);
+            for ts in TextSize::ALL {
+                assert!(acc_controls.iter().any(|c| matches!(c.action, Some(Action::TextSize(s)) if s == ts)));
+            }
+            assert!(acc_controls.iter().any(|c| matches!(c.action, Some(Action::HighContrast))));
+            assert!(acc_controls.iter().any(|c| matches!(c.action, Some(Action::ReduceTransparency))));
+            assert!(acc_controls.iter().any(|c| matches!(c.action, Some(Action::StickyKeys))));
         }
         context.system.apps = std::sync::Arc::new(vec![
             crate::system_preferences::DesktopApp {
@@ -3936,6 +4068,7 @@ mod tests {
             night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
             night_active: true,
             notify_apps: &[],
+            sticky_keys: false,
         };
         let mut p = Panel {
             page: Page::Keyboard,

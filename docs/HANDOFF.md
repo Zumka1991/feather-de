@@ -6,6 +6,17 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Универсальный доступ (крупный текст, контраст, меньше прозрачности, залипание клавиш), 2026-10-25 (Gemini/agy):**
+в `feather-ui` (`scale.rs`, `appearance.rs`), `src/theme.rs`, `src/shell.rs`, `src/raster.rs`,
+`src/settings.rs`, `src/input.rs` и `src/system_settings.rs` реализована страница
+«Системные настройки → Универсальный доступ» (`Page::Accessibility`), режимы «Увеличить контраст»
+(`high_contrast`), «Уменьшить прозрачность» (`reduce_transparency`, сплошной фон вместо размытия
+`ui_raster::frosted` в меню, Dock, Пункте управления и окнах) с живой синхронизацией в «Файлы» и
+«Заметки», а также залипание модификаторов `Shift`/`Ctrl`/`Alt`/`Super` (`sticky_keys`,
+`latched_modifiers`, `release_latched_modifiers`). 190 тестов и `cargo build --release` без
+предупреждений; вложенная проверка `FEATHER_DEBUG_ACCESSIBILITY=1`: 0 тиков CPU в простое,
+`RssAnon` 54,84 МиБ.
+
 **«Об этом компьютере» (процессор, память, видеокарта, диски), 2026-10-25 (Gemini/agy):**
 в `src/system_preferences.rs` добавлен сбор `HardwareInfo` на фоновом потоке `feather-system`
 (`/proc/cpuinfo`, `/proc/meminfo`, `/sys/class/drm` + потоковый поиск в `pci.ids` + `mem_info_vram_total`,

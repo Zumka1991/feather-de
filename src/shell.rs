@@ -69,10 +69,26 @@ pub struct BarColors {
 
 impl BarColors {
     pub fn for_background(dark: bool) -> Self {
+        let opaque = crate::theme::reduce_transparency();
+        let hc = crate::theme::high_contrast();
         if dark {
-            Self { tint: rgba(0, 0, 0, 36), text: rgba(255, 255, 255, 240), dim: rgba(255, 255, 255, 120), highlight: rgba(255, 255, 255, 42), chip: rgba(255, 255, 255, 50), dark }
+            Self {
+                tint: if opaque { rgba(34, 34, 38, 255) } else { rgba(0, 0, 0, 36) },
+                text: rgba(255, 255, 255, if hc { 255 } else { 240 }),
+                dim: rgba(255, 255, 255, if hc { 170 } else { 120 }),
+                highlight: rgba(255, 255, 255, if hc { 64 } else { 42 }),
+                chip: rgba(255, 255, 255, 50),
+                dark,
+            }
         } else {
-            Self { tint: rgba(255, 255, 255, 70), text: rgba(0, 0, 0, 225), dim: rgba(0, 0, 0, 105), highlight: rgba(0, 0, 0, 28), chip: rgba(0, 0, 0, 34), dark }
+            Self {
+                tint: if opaque { rgba(244, 244, 246, 255) } else { rgba(255, 255, 255, 70) },
+                text: rgba(0, 0, 0, if hc { 255 } else { 225 }),
+                dim: rgba(0, 0, 0, if hc { 155 } else { 105 }),
+                highlight: rgba(0, 0, 0, if hc { 44 } else { 28 }),
+                chip: rgba(0, 0, 0, 34),
+                dark,
+            }
         }
     }
 }
@@ -1375,7 +1391,12 @@ impl MacShell {
     }
 
     pub fn bar_colors(&self) -> BarColors {
-        BarColors::for_background(self.bar_on_dark.unwrap_or(appearance() == Appearance::Dark))
+        let dark = if crate::theme::reduce_transparency() {
+            appearance() == Appearance::Dark
+        } else {
+            self.bar_on_dark.unwrap_or(appearance() == Appearance::Dark)
+        };
+        BarColors::for_background(dark)
     }
 
     pub fn has_visible_overlay(&self) -> bool {
@@ -2166,8 +2187,18 @@ impl MacShell {
         let mut pixels = tiny_skia::Pixmap::new(bounds.size.w as u32, bounds.size.h as u32).unwrap();
         let mut pm = pixels.as_mut();
         draw_glass_panel(&mut pm, panel.x - ox, panel.y - oy, panel.w, panel.h, 22.0, false);
-        let card = if appearance() == Appearance::Dark { rgba(255, 255, 255, 20) } else { rgba(255, 255, 255, 140) };
-        for (r, _) in items { fill_rounded_rect(&mut pm, r.x - ox, r.y - oy, r.w, r.h, 14.0, card); }
+        let hc = crate::theme::high_contrast();
+        let card = if appearance() == Appearance::Dark {
+            rgba(255, 255, 255, if hc { 38 } else { 20 })
+        } else {
+            rgba(255, 255, 255, if hc { 215 } else { 140 })
+        };
+        for (r, _) in items {
+            fill_rounded_rect(&mut pm, r.x - ox, r.y - oy, r.w, r.h, 14.0, card);
+            if hc {
+                stroke_rounded_rect(&mut pm, r.x - ox + 0.5, r.y - oy + 0.5, r.w - 1.0, r.h - 1.0, 13.5, 0.75, palette().separator);
+            }
+        }
         CcBackdrop { bounds, pixels }
     }
 

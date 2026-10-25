@@ -272,6 +272,10 @@ pub struct FeatherCompositor {
     pub keyboard_config: crate::settings::Keyboard,
     pub keybindings: crate::shortcuts::Bindings,
     pub key_repeat: crate::key_repeat::Repeat,
+    pub sticky_keys: bool,
+    pub physically_held_modifiers: std::collections::HashSet<smithay::input::keyboard::Keycode>,
+    pub latched_modifiers: std::collections::HashSet<smithay::input::keyboard::Keycode>,
+    pub modifier_used_while_held: bool,
     pub audio_hud: crate::audio_hud::Hud,
     pub preferences: Option<crate::settings::Worker>,
     pub wallpaper_picker: Option<crate::wallpaper::Picker>,
@@ -708,6 +712,9 @@ impl FeatherCompositor {
             accent_color: crate::theme::accent_color(),
             highlight_color: crate::theme::highlight_choice(),
             text_size: crate::theme::text_size(),
+            high_contrast: crate::theme::high_contrast(),
+            reduce_transparency: crate::theme::reduce_transparency(),
+            sticky_keys: self.sticky_keys,
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.clone(),
             default_browser: self.system_preferences.browser.clone(),
@@ -1616,6 +1623,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     crate::theme::set_accent_color(saved.accent_color);
     crate::theme::set_highlight_choice(saved.highlight_color);
     crate::theme::set_text_size(saved.text_size);
+    crate::theme::set_high_contrast(saved.high_contrast);
+    crate::theme::set_reduce_transparency(saved.reduce_transparency);
     let explicit_scale = parse_explicit_scale().or(saved.scale);
     let init_scale =
         explicit_scale.unwrap_or_else(|| auto_scale_for_resolution(phys_w, host_scale));
@@ -1850,6 +1859,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         keyboard_config: saved.keyboard.clone(),
         keybindings: saved.keybindings.clone(),
         key_repeat: Default::default(),
+        sticky_keys: saved.sticky_keys,
+        physically_held_modifiers: Default::default(),
+        latched_modifiers: Default::default(),
+        modifier_used_while_held: false,
         audio_hud: Default::default(),
         preferences: None,
         wallpaper_picker: None,
@@ -2155,6 +2168,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("settings-network") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Network)),
         Ok("settings-bluetooth") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth)),
         Ok("settings-defaults") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults)),
+        Ok("settings-accessibility") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Accessibility)),
         Ok("about") => state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather),
         _ => {}
     }

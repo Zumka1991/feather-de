@@ -1774,5 +1774,86 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-dock-check] Alt+Tab icon click activated the chosen app");
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_ACCESSIBILITY").is_some() {
+        use crate::system_settings::{Action as A, Page};
+        fn click(state: &mut FeatherCompositor, predicate: impl Fn(&A) -> bool) {
+            let w = state
+                .windows
+                .iter()
+                .find(|w| w.app_id == "builtin.settings")
+                .unwrap();
+            let (x, y) = state
+                .system_settings
+                .debug_point(
+                    w.width as f32,
+                    w.height as f32,
+                    &state.settings_context(),
+                    predicate,
+                )
+                .expect("accessibility control");
+            let point = (
+                w.x as f64 + x as f64,
+                (w.y + w.titlebar_h()) as f64 + y as f64,
+            );
+            state.debug_pointer_motion(point.0, point.1);
+            state.debug_pointer_button(0x110, true);
+            state.debug_pointer_button(0x110, false);
+        }
+        at(state, 900, |s| {
+            s.apply_system_setting(A::Page(Page::Accessibility));
+        })?;
+        at(state, 1300, |s| {
+            assert!(!crate::theme::high_contrast());
+            assert!(!crate::theme::reduce_transparency());
+            assert!(!s.sticky_keys);
+            click(s, |a| matches!(a, A::HighContrast));
+            click(s, |a| matches!(a, A::ReduceTransparency));
+            click(s, |a| matches!(a, A::StickyKeys));
+            click(s, |a| matches!(a, A::TextSize(crate::theme::TextSize::Large)));
+            assert!(crate::theme::high_contrast());
+            assert!(crate::theme::reduce_transparency());
+            assert!(s.sticky_keys);
+            assert_eq!(crate::theme::text_size(), crate::theme::TextSize::Large);
+            assert_eq!(crate::theme::palette().glass_fill.alpha(), 1.0);
+            assert_eq!(crate::theme::palette().dock_fill.alpha(), 1.0);
+        })?;
+        at(state, 1800, |s| {
+            s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::QuickNotes);
+            s.notes_buffer.clear();
+            // Tap Left Shift (evdev 42): latches Shift on release
+            s.debug_keyboard_key(42, true);
+            s.debug_keyboard_key(42, false);
+            assert_eq!(s.latched_modifiers.len(), 1);
+            assert!(s.keyboard.modifier_state().shift);
+            // Press 'a' (evdev 30): types 'A' and unlatches Shift
+            s.debug_keyboard_key(30, true);
+            s.debug_keyboard_key(30, false);
+            assert!(s.latched_modifiers.is_empty());
+            assert!(!s.keyboard.modifier_state().shift);
+            // Press 'a' again: types 'a'
+            s.debug_keyboard_key(30, true);
+            s.debug_keyboard_key(30, false);
+            // Tap Left Shift twice: latches on first tap, unlatches on second tap
+            s.debug_keyboard_key(42, true);
+            s.debug_keyboard_key(42, false);
+            assert_eq!(s.latched_modifiers.len(), 1);
+            s.debug_keyboard_key(42, true);
+            s.debug_keyboard_key(42, false);
+            assert!(s.latched_modifiers.is_empty());
+            assert!(!s.keyboard.modifier_state().shift);
+            // Press 'b' (evdev 48): types 'b'
+            s.debug_keyboard_key(48, true);
+            s.debug_keyboard_key(48, false);
+            assert_eq!(s.notes_buffer, "Aab");
+            let saved = crate::settings::Settings::load();
+            assert!(saved.high_contrast);
+            assert!(saved.reduce_transparency);
+            assert!(saved.sticky_keys);
+            assert_eq!(saved.text_size, crate::theme::TextSize::Large);
+            s.windows.retain(|w| w.app_id != "builtin.notes");
+            s.refresh_focus();
+            eprintln!("[feather-accessibility-check] high contrast, reduce transparency, large text and sticky keys passed");
+        })?;
+    }
     Ok(())
 }
