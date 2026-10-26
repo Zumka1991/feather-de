@@ -382,7 +382,8 @@ pub(crate) fn build_scene(
             if let Some((x, y, size)) = shell.dock_slot_global(b.target) {
                 let (lift, _) = b.offset(Instant::now());
                 // Keep the edge-dependent resting position, but always bounce upwards on screen.
-                let inset = (size - crate::theme::dock_icon()) as f64 * 0.5;
+                let base_size = (b.px as f64 / scale).max(1.0);
+                let inset = (size as f64 - base_size) * 0.5;
                 let lift = lift as f64;
                 let (x, y) = (x as f64, y as f64);
                 let (lx, ly) = match edge {

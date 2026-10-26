@@ -776,6 +776,7 @@ pub struct MacShell {
     dock_anchor: Option<(DockTarget, f32)>,
     dock_slots: Vec<DockSlot>,
     dock_bar: R,
+    dock_slot_gap: f32,
     dock_painted: Vec<Rectangle<i32, Buffer>>,
 
     pub spotlight_open: bool,
@@ -893,6 +894,7 @@ impl MacShell {
             dock_anchor: None,
             dock_slots: Vec::new(),
             dock_bar: R::new(0.0, 0.0, 0.0, 0.0),
+            dock_slot_gap: DOCK_ICON_GAP,
             dock_painted: Vec::new(),
             spotlight_open: false,
             spotlight_query: String::new(),
@@ -1560,7 +1562,7 @@ impl MacShell {
         self.dock_slots.iter().zip(&self.dock_items)
             .filter(|(_, item)| item.pinned)
             .next_back()
-            .is_some_and(|(slot, _)| lx <= slot.x + slot.size + DOCK_ICON_GAP * 0.5)
+            .is_some_and(|(slot, _)| lx <= slot.x + slot.size + self.dock_slot_gap * 0.5)
     }
 
     pub fn set_dock_gap(&mut self, gap: Option<usize>) {
@@ -1573,6 +1575,54 @@ impl MacShell {
     pub fn set_ghost(&mut self, ghost: Option<Ghost>) {
         self.ghost_dirty = ghost.is_some();
         self.ghost = ghost;
+    }
+
+    /// Along-the-edge safe bounds `(min_along, max_along)` for the Dock bar
+    fn dock_along_bounds(&self) -> (f32, f32) {
+        let buf_w = self.dock_buf_w as f32;
+        let min_along = if crate::theme::dock_edge().vertical() {
+            TOP_BAR_HEIGHT as f32 + 6.0
+        } else {
+            6.0
+        };
+        let max_along = (buf_w - 6.0).max(min_along + 1.0);
+        (min_along, max_along)
+    }
+
+    /// Separator indices (before first minimized window and/or before Trash)
+    fn dock_separator_boundaries(&self) -> Vec<usize> {
+        let first_min = self.dock_items.iter().position(|i| matches!(i.target, DockTarget::Minimized(_)));
+        let trash_at = self.dock_items.iter().position(|i| i.target == DockTarget::Trash);
+        let mut boundaries: Vec<usize> = Vec::with_capacity(2);
+        if let Some(start) = first_min.or(trash_at).filter(|&s| s > 0) {
+            boundaries.push(start);
+        }
+        if let (Some(_), Some(t)) = (first_min, trash_at) {
+            boundaries.push(t);
+        }
+        boundaries
+    }
+
+    /// Proportional scale factor (`<= 1.0`) that shrinks the resting Dock so all items fit on screen, like macOS
+    pub fn dock_fit_scale(&self) -> f32 {
+        const SEP: f32 = 14.0;
+        let (min_along, max_along) = self.dock_along_bounds();
+        let avail_span = (max_along - min_along).max(1.0);
+        let total_slots = self.dock_items.len() + usize::from(self.dock_gap.is_some());
+        let num_seps = self.dock_separator_boundaries().len() as f32;
+        let raw_base_bar_w = total_slots as f32 * dock_icon()
+            + total_slots.saturating_sub(1) as f32 * DOCK_ICON_GAP
+            + num_seps * SEP
+            + DOCK_PAD_X * 2.0;
+        if raw_base_bar_w > avail_span {
+            (avail_span / raw_base_bar_w).clamp(0.15, 1.0)
+        } else {
+            1.0
+        }
+    }
+
+    pub fn dock_base_icon(&self) -> f32 {
+        dock_icon() * self.dock_fit_scale()
     }
 
     pub fn open_dock_menu(&mut self, target: DockTarget, anchor: R, items: Vec<(String, DockMenuAction)>, fonts: &mut FontSystem) {
@@ -1757,9 +1807,10 @@ impl MacShell {
     pub fn start_bounce(&mut self, app: usize, first_new_window: u64, fonts: &mut FontSystem) {
         let target = DockTarget::App(app);
         let Some(item) = self.dock_items.iter().find(|i| i.target == target).cloned() else { return };
-        let px = to_phys(dock_icon() as i32);
+        let base_size = self.dock_base_icon().round().max(16.0);
+        let px = to_phys(base_size as i32).max(1);
         let Some(mut pm) = tiny_skia::Pixmap::new(px as u32, px as u32) else { return };
-        draw_any_icon(&mut pm.as_mut(), fonts, &mut self.icons, &item.icon, &item.label, 0.0, 0.0, dock_icon());
+        draw_any_icon(&mut pm.as_mut(), fonts, &mut self.icons, &item.icon, &item.label, 0.0, 0.0, base_size);
         let buffer = MemoryRenderBuffer::from_slice(pm.data(), smithay::backend::allocator::Fourcc::Abgr8888, (px, px), 1, smithay::utils::Transform::Normal, None);
         self.bounce = Some(Bounce { target, app, started: Instant::now(), first_new_window, finish_at: None, buffer, px });
         self.dock_dirty = true;
@@ -2600,10 +2651,11 @@ impl MacShell {
             .iter()
             .any(|s| R::new(s.x, s.y, s.size, s.size).contains(lx, ly));
         if self.dock_bar.contains(lx, ly) || on_icon {
+            let half_gap = self.dock_slot_gap * 0.5;
             let slot = self
                 .dock_slots
                 .iter()
-                .find(|s| lx >= s.x - DOCK_ICON_GAP * 0.5 && lx < s.x + s.size + DOCK_ICON_GAP * 0.5);
+                .find(|s| lx >= s.x - half_gap && lx < s.x + s.size + half_gap);
             return Some(match slot.map(|s| s.target) {
                 Some(target) => ShellClickAction::DockPress(target),
                 None => ShellClickAction::None,
@@ -2774,61 +2826,84 @@ impl MacShell {
         let p = palette();
         let n = self.dock_items.len();
         // Separators: apps | minimized windows | Trash (the Trash keeps its own section).
-        let first_min = self.dock_items.iter().position(|i| matches!(i.target, DockTarget::Minimized(_)));
-        let trash_at = self.dock_items.iter().position(|i| i.target == DockTarget::Trash);
-        let mut boundaries: Vec<usize> = Vec::with_capacity(2);
-        if let Some(start) = first_min.or(trash_at).filter(|&s| s > 0) {
-            boundaries.push(start);
-        }
-        if let (Some(_), Some(t)) = (first_min, trash_at) {
-            boundaries.push(t);
-        }
+        let boundaries = self.dock_separator_boundaries();
         const SEP: f32 = 14.0;
-        let sep_w = SEP * boundaries.len() as f32;
+        let num_seps = boundaries.len() as f32;
         let buf_w = self.dock_buf_w as f32;
         let buf_h = self.dock_buf_h as f32;
+        let (min_along, max_along) = self.dock_along_bounds();
+        let avail_span = (max_along - min_along).max(1.0);
+        let clamp_along = |w: f32| ((buf_w - w) * 0.5).clamp(min_along, (max_along - w).max(min_along));
 
-        // Base layout (unmagnified) to know where the cursor is relative to icons
-        let base_total = n as f32 * dock_icon() + n.saturating_sub(1) as f32 * DOCK_ICON_GAP + sep_w;
-        let base_x0 = (buf_w - base_total) * 0.5;
+        // Base layout (unmagnified), shrunk proportionally when needed so a huge Dock fits on screen like macOS
+        let gap = self.dock_gap;
+        let base_fit = self.dock_fit_scale();
+        let base_icon = dock_icon() * base_fit;
+        let base_gap = DOCK_ICON_GAP * base_fit;
+        let base_sep = SEP * base_fit;
+        let base_pad_x = DOCK_PAD_X * base_fit;
+        let base_gap_w = if gap.is_some() { base_icon + base_gap } else { 0.0 };
+        let base_total = n as f32 * base_icon + n.saturating_sub(1) as f32 * base_gap + num_seps * base_sep;
+        let base_bar_w = base_total + base_gap_w + base_pad_x * 2.0;
+        let base_x0 = clamp_along(base_bar_w) + base_pad_x;
         let base_center = |i: usize| {
             base_x0
-                + i as f32 * (dock_icon() + DOCK_ICON_GAP)
-                + SEP * boundaries.iter().filter(|&&b| i >= b).count() as f32
-                + dock_icon() * 0.5
+                + if gap.is_some_and(|g| i >= g) { base_gap_w } else { 0.0 }
+                + i as f32 * (base_icon + base_gap)
+                + base_sep * boundaries.iter().filter(|&&b| i >= b).count() as f32
+                + base_icon * 0.5
         };
 
-        let sizes: Vec<f32> = (0..n)
+        let mag_peak = (dock_icon() * (1.0 + DOCK_MAGNIFY)).min(base_icon * 2.2);
+        let mut sizes: Vec<f32> = (0..n)
             .map(|i| match (self.dock_zoom_enabled, self.dock_cursor_x) {
                 (true, Some(cx)) => {
-                    let d = ((cx - base_center(i)) / (dock_icon() * 2.6)).abs();
+                    let d = ((cx - base_center(i)) / (base_icon * 2.6)).abs();
                     let f = if d < 1.0 { (d * std::f32::consts::FRAC_PI_2).cos().powi(2) } else { 0.0 };
-                    dock_icon() * (1.0 + DOCK_MAGNIFY * f)
+                    base_icon + (mag_peak - base_icon) * f
                 }
-                _ => dock_icon(),
+                _ => base_icon,
             })
             .collect();
 
-        // An empty slot opens where a dragged app would land
-        let gap = self.dock_gap;
-        let gap_w = if gap.is_some() { dock_icon() + DOCK_ICON_GAP } else { 0.0 };
+        // If hover magnification would push the Dock past the screen edges, compress proportionally so all icons stay on screen
+        let raw_content_w: f32 =
+            sizes.iter().sum::<f32>() + n.saturating_sub(1) as f32 * base_gap + num_seps * base_sep + base_gap_w;
+        let raw_bar_w = raw_content_w + base_pad_x * 2.0;
+        let mag_fit = if raw_bar_w > avail_span {
+            (avail_span / raw_bar_w).clamp(0.15, 1.0)
+        } else {
+            1.0
+        };
+        if mag_fit < 1.0 {
+            for s in &mut sizes {
+                *s *= mag_fit;
+            }
+        }
+        let fit = base_fit * mag_fit;
+        let icon_gap = DOCK_ICON_GAP * fit;
+        let sep_step = SEP * fit;
+        let pad_x = DOCK_PAD_X * fit;
+        let pad_y = DOCK_PAD_Y * fit;
+        let shelf_icon = dock_icon() * fit;
+        let gap_w = base_gap_w * mag_fit;
         let content_w: f32 =
-            sizes.iter().sum::<f32>() + n.saturating_sub(1) as f32 * DOCK_ICON_GAP + sep_w + gap_w;
-        let bar_h = dock_icon() + DOCK_PAD_Y * 2.0;
-        let bar_w = content_w + DOCK_PAD_X * 2.0;
-        let mut bar = R::new((buf_w - bar_w) * 0.5, buf_h - bar_h - DOCK_BOTTOM_MARGIN as f32, bar_w, bar_h);
-        let baseline = bar.y + bar.h - DOCK_PAD_Y;
+            sizes.iter().sum::<f32>() + n.saturating_sub(1) as f32 * icon_gap + num_seps * sep_step + gap_w;
+        let bar_h = shelf_icon + pad_y * 2.0;
+        let bar_w = content_w + pad_x * 2.0;
+        let mut bar = R::new(clamp_along(bar_w), buf_h - bar_h - DOCK_BOTTOM_MARGIN as f32, bar_w, bar_h);
+        let baseline = bar.y + bar.h - pad_y;
 
         let mut slots = Vec::with_capacity(n);
-        let mut x = bar.x + DOCK_PAD_X;
+        let mut x = bar.x + pad_x;
         let mut sep_x: Vec<f32> = Vec::with_capacity(2);
         for (i, item) in self.dock_items.iter().enumerate() {
             if gap == Some(i) {
                 x += gap_w;
             }
             if boundaries.contains(&i) {
-                sep_x.push(x + SEP * 0.5 - DOCK_ICON_GAP * 0.5);
-                x += SEP;
+                sep_x.push(x + sep_step * 0.5 - icon_gap * 0.5);
+                x += sep_step;
             }
             slots.push(DockSlot {
                 target: item.target,
@@ -2836,12 +2911,13 @@ impl MacShell {
                 y: baseline - sizes[i],
                 size: sizes[i],
             });
-            x += sizes[i] + DOCK_ICON_GAP;
+            x += sizes[i] + icon_gap;
         }
 
         if let Some((target, center)) = self.dock_anchor {
             if let Some(slot) = slots.iter().find(|s| s.target == target) {
-                let shift = center - (slot.x + slot.size * 0.5);
+                let shift = (center - (slot.x + slot.size * 0.5))
+                    .clamp(min_along - bar.x, (max_along - (bar.x + bar.w)).max(min_along - bar.x));
                 bar.x += shift;
                 for slot in &mut slots { slot.x += shift; }
                 for sx in &mut sep_x { *sx += shift; }
@@ -2851,7 +2927,7 @@ impl MacShell {
         let hovered = self.dock_cursor_x.and_then(|cx| {
             slots
                 .iter()
-                .position(|s| cx >= s.x - DOCK_ICON_GAP * 0.5 && cx < s.x + s.size + DOCK_ICON_GAP * 0.5)
+                .position(|s| cx >= s.x - icon_gap * 0.5 && cx < s.x + s.size + icon_gap * 0.5)
         });
 
         // Damage: previous and current painted areas only
@@ -2876,6 +2952,9 @@ impl MacShell {
         crate::theme::set_glass_origin(dock_ox, dock_oy);
         let icons = &mut self.icons;
         let clear = damage.clone();
+        let radius = (DOCK_RADIUS * fit).max(8.0);
+        let sep_pad = (10.0 * fit).clamp(4.0, 10.0);
+        let dot_scale = fit.clamp(0.5, 1.0);
         let mut ctx = self.dock_buffer.render();
         let _ = ctx.draw(|buf| {
             clear_rects(buf, pw, &clear);
@@ -2883,24 +2962,24 @@ impl MacShell {
                 // Liquid-glass shelf over the frosted desktop (positions mapped for a side Dock)
                 let b = map.rect(bar);
                 let shadow = map.rect(R::new(bar.x, bar.y + 2.0, bar.w, bar.h));
-                fill_rounded_rect(&mut pm, shadow.x, shadow.y, shadow.w, shadow.h, DOCK_RADIUS, rgba(0, 0, 0, 22));
-                crate::theme::fill_frosted(&mut pm, b.x, b.y, b.w, b.h, DOCK_RADIUS);
-                fill_rounded_rect(&mut pm, b.x, b.y, b.w, b.h, DOCK_RADIUS, p.dock_fill);
-                stroke_rounded_rect(&mut pm, b.x + 0.75, b.y + 0.75, b.w - 1.5, b.h - 1.5, DOCK_RADIUS - 0.75, 1.0, p.glass_edge);
-                stroke_rounded_rect(&mut pm, b.x - 0.25, b.y - 0.25, b.w + 0.5, b.h + 0.5, DOCK_RADIUS + 0.25, 0.5, p.glass_outline);
+                fill_rounded_rect(&mut pm, shadow.x, shadow.y, shadow.w, shadow.h, radius, rgba(0, 0, 0, 22));
+                crate::theme::fill_frosted(&mut pm, b.x, b.y, b.w, b.h, radius);
+                fill_rounded_rect(&mut pm, b.x, b.y, b.w, b.h, radius, p.dock_fill);
+                stroke_rounded_rect(&mut pm, b.x + 0.75, b.y + 0.75, b.w - 1.5, b.h - 1.5, radius - 0.75, 1.0, p.glass_edge);
+                stroke_rounded_rect(&mut pm, b.x - 0.25, b.y - 0.25, b.w + 0.5, b.h + 0.5, radius + 0.25, 0.5, p.glass_outline);
 
                 for &sx in &sep_x {
-                    let (x0, y0) = map.point(sx, bar.y + 10.0);
-                    let (x1, y1) = map.point(sx, bar.y + bar.h - 10.0);
+                    let (x0, y0) = map.point(sx, bar.y + sep_pad);
+                    let (x1, y1) = map.point(sx, bar.y + bar.h - sep_pad);
                     stroke_line(&mut pm, x0, y0, x1, y1, 1.0, p.separator);
                 }
 
                 for (slot, item) in slots.iter().zip(items.iter()) {
                     let n = item.windows.min(3) as f32;
                     for k in 0..n as usize {
-                        let dx = (k as f32 - (n - 1.0) * 0.5) * 5.0;
-                        let (cx, cy) = map.point(slot.x + slot.size * 0.5 + dx, bar.y + bar.h - 3.0);
-                        fill_circle(&mut pm, cx, cy, 1.9, p.dock_dot);
+                        let dx = (k as f32 - (n - 1.0) * 0.5) * 5.0 * dot_scale;
+                        let (cx, cy) = map.point(slot.x + slot.size * 0.5 + dx, bar.y + bar.h - (3.0 * dot_scale).max(1.5));
+                        fill_circle(&mut pm, cx, cy, 1.9 * dot_scale, p.dock_dot);
                     }
                     // The bouncing icon is drawn as its own GPU element above the Dock
                     if bouncing == Some(item.target) {
@@ -2920,11 +2999,12 @@ impl MacShell {
                     let (lx, ly) = if map.edge.vertical() {
                         // Beside the icon, on the screen's inner side
                         let r = map.rect(R::new(slot.x, slot.y, slot.size, slot.size));
-                        let ly = r.y + r.h * 0.5 - 12.0;
+                        let ly = (r.y + r.h * 0.5 - 12.0).clamp(min_along, (buf_w - 28.0).max(min_along));
                         if map.edge == crate::theme::DockEdge::Left { (r.x + r.w + 12.0, ly) } else { (r.x - lw - 12.0, ly) }
                     } else {
                         ((slot.x + slot.size * 0.5 - lw * 0.5).clamp(4.0, buf_w - lw - 4.0), slot.y - 34.0)
-                    };
+                    }
+                    ;
                     draw_glass_panel(&mut pm, lx, ly, lw, 24.0, 8.0, true);
                     fonts.draw_text(&mut pm, label, lx + 10.0, ly + 4.5, 13.0, p.text, false);
                 }
@@ -2934,6 +3014,7 @@ impl MacShell {
         drop(ctx);
         self.dock_slots = slots;
         self.dock_bar = bar;
+        self.dock_slot_gap = icon_gap;
         self.update_dock_menu_anchor();
     }
 
@@ -3530,6 +3611,50 @@ mod dock_tests {
         assert_eq!(b.offset(start + Duration::from_millis(630)), (0.0, true));
         let b = bounce(start);
         assert_eq!(b.offset(start + Duration::from_secs(6)), (0.0, true));
+    }
+
+    #[test]
+    fn huge_dock_scales_to_fit_screen_in_resting_and_magnified_states() {
+        let mut fonts = FontSystem::new();
+        let mut shell = MacShell::new(1440, 900);
+        let mut items: Vec<_> = (0..30).map(|i| item(DockTarget::App(i))).collect();
+        items.extend((0..5).map(|i| item(DockTarget::Minimized(i))));
+        items.push(item(DockTarget::Trash));
+        shell.set_dock_items(items);
+        shell.ensure_dock_rendered(&mut fonts);
+
+        assert!(shell.dock_fit_scale() < 1.0, "36 items must shrink to fit 1440px width");
+        assert!(shell.dock_bar.x >= 5.9 && shell.dock_bar.x + shell.dock_bar.w <= 1434.1);
+        assert_eq!(shell.dock_slots.len(), 36);
+        let first = shell.dock_slots.first().unwrap().clone();
+        let last = shell.dock_slots.last().unwrap().clone();
+        assert!(first.x >= shell.dock_bar.x && last.x + last.size <= shell.dock_bar.x + shell.dock_bar.w + 0.1);
+        let (ox, oy) = shell.dock_origin();
+        assert_eq!(
+            shell.dock_target_at((ox + first.x + first.size * 0.5) as f64, (oy + first.y + first.size * 0.5) as f64).map(|(t, _)| t),
+            Some(DockTarget::App(0))
+        );
+        assert_eq!(
+            shell.dock_target_at((ox + last.x + last.size * 0.5) as f64, (oy + last.y + last.size * 0.5) as f64).map(|(t, _)| t),
+            Some(DockTarget::Trash)
+        );
+
+        for hover_idx in [0usize, 18, 35] {
+            let cx = shell.dock_slots[hover_idx].x + shell.dock_slots[hover_idx].size * 0.5;
+            shell.dock_cursor_x = Some(cx);
+            shell.dock_dirty = true;
+            shell.ensure_dock_rendered(&mut fonts);
+            assert!(
+                shell.dock_bar.x >= 5.9 && shell.dock_bar.x + shell.dock_bar.w <= 1434.1,
+                "magnified huge Dock must stay within screen bounds at hover_idx={hover_idx}: {:?}",
+                shell.dock_bar
+            );
+            let far_idx = (hover_idx + 18) % 36;
+            assert!(
+                shell.dock_slots[hover_idx].size > shell.dock_slots[far_idx].size,
+                "hovered icon in huge Dock must still magnify relative to unhovered icons"
+            );
+        }
     }
 }
 
