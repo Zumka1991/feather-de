@@ -5,13 +5,23 @@
 #   - локальную установку в профиль пользователя (./packaging/install.sh --user)
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUNDLE=0
+if [[ -d "$SCRIPT_DIR/usr/bin" ]]; then
+    ROOT_DIR="$SCRIPT_DIR"
+    BUNDLE=1
+fi
 PREFIX="${PREFIX:-/usr}"
 SYSCONFDIR="${SYSCONFDIR:-/etc}"
 DESTDIR="${DESTDIR:-}"
 USER_MODE=0
 NO_BUILD=0
-TARGET_DIR="$ROOT_DIR/target/release"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/release"
+if (( BUNDLE )); then
+    TARGET_DIR="$ROOT_DIR/usr/bin"
+    NO_BUILD=1
+fi
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -45,8 +55,14 @@ done
 
 if [[ "$NO_BUILD" -eq 0 ]]; then
     echo "==> Сборка Пёрышка (release, все программы рабочего окружения)…"
-    (cd "$ROOT_DIR" && cargo build --release --workspace)
+    (cd "$ROOT_DIR" && cargo build --release --locked --workspace)
 fi
+
+# Validate all sources before writing anything to the destination.
+BINS=(feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc)
+for bin in "${BINS[@]}"; do
+    [[ -x "$TARGET_DIR/$bin" ]] || { echo "Нет бинарника: $TARGET_DIR/$bin" >&2; exit 1; }
+done
 
 BIN_DEST="${DESTDIR}${PREFIX}/bin"
 APP_DEST="${DESTDIR}${PREFIX}/share/applications"
@@ -55,16 +71,6 @@ PORTAL_CONF_DEST="${DESTDIR}${PREFIX}/share/xdg-desktop-portal"
 DOC_DEST="${DESTDIR}${PREFIX}/share/doc/feather-de"
 
 install -d "$BIN_DEST" "$APP_DEST" "$PORTAL_DEST" "$PORTAL_CONF_DEST" "$DOC_DEST"
-
-BINS=(
-    feather-de
-    feather-files
-    feather-terminal
-    feather-notes
-    feather-preview
-    feather-textedit
-    feather-calc
-)
 
 echo "==> Установка бинарных файлов в $BIN_DEST…"
 for bin in "${BINS[@]}"; do
@@ -87,6 +93,7 @@ export PLASMA_INTEGRATION_USE_PORTAL="1"
 export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-xdgdesktopportal}"
 export ELECTRON_OZONE_PLATFORM_HINT="auto"
 export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-logind}"
+export PATH="$(cd "$(dirname "$0")" && pwd):$PATH"
 if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]]; then
     export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus"
 fi
@@ -96,15 +103,33 @@ EOF
 chmod 755 "$BIN_DEST/feather-session"
 
 echo "==> Установка ярлыков приложений (.desktop) и конфигурации портала…"
-for desktop in "$ROOT_DIR"/packaging/desktop/*.desktop; do
+DESKTOP_SOURCE="$ROOT_DIR/packaging/desktop"
+PORTAL_SOURCE="$ROOT_DIR/packaging/portal"
+DOC_SOURCE="$ROOT_DIR"
+if (( BUNDLE )); then
+    DESKTOP_SOURCE="$ROOT_DIR/usr/share/applications"
+    PORTAL_SOURCE="$ROOT_DIR/usr/share/xdg-desktop-portal"
+    DOC_SOURCE="$ROOT_DIR/usr/share/doc/feather-de"
+fi
+for desktop in "$DESKTOP_SOURCE"/*.desktop; do
     install -Dm644 "$desktop" "$APP_DEST/$(basename "$desktop")"
 done
-install -Dm644 "$ROOT_DIR/packaging/portal/feather.portal" "$PORTAL_DEST/feather.portal"
-install -Dm644 "$ROOT_DIR/packaging/portal/feather-portals.conf" "$PORTAL_CONF_DEST/featherde-portals.conf"
-install -Dm644 "$ROOT_DIR/README.md" "$DOC_DEST/README.md"
-install -Dm644 "$ROOT_DIR/CHANGELOG.md" "$DOC_DEST/CHANGELOG.md"
-install -Dm644 "$ROOT_DIR/docs/SPEC.md" "$DOC_DEST/SPEC.md"
-install -Dm644 "$ROOT_DIR/docs/ROADMAP.md" "$DOC_DEST/ROADMAP.md"
+if (( BUNDLE )); then
+    install -Dm644 "$PORTAL_SOURCE/portals/feather.portal" "$PORTAL_DEST/feather.portal"
+    install -Dm644 "$PORTAL_SOURCE/featherde-portals.conf" "$PORTAL_CONF_DEST/featherde-portals.conf"
+    for doc in README.md CHANGELOG.md SPEC.md ROADMAP.md; do
+        install -Dm644 "$DOC_SOURCE/$doc" "$DOC_DEST/$doc"
+    done
+    install -Dm644 "$ROOT_DIR/README-TEST.md" "$DOC_DEST/README-TEST.md"
+else
+    install -Dm644 "$PORTAL_SOURCE/feather.portal" "$PORTAL_DEST/feather.portal"
+    install -Dm644 "$PORTAL_SOURCE/feather-portals.conf" "$PORTAL_CONF_DEST/featherde-portals.conf"
+    install -Dm644 "$ROOT_DIR/README.md" "$DOC_DEST/README.md"
+    install -Dm644 "$ROOT_DIR/CHANGELOG.md" "$DOC_DEST/CHANGELOG.md"
+    install -Dm644 "$ROOT_DIR/docs/SPEC.md" "$DOC_DEST/SPEC.md"
+    install -Dm644 "$ROOT_DIR/docs/ROADMAP.md" "$DOC_DEST/ROADMAP.md"
+    install -Dm644 "$ROOT_DIR/packaging/README-TEST.md" "$DOC_DEST/README-TEST.md"
+fi
 
 if [[ "$USER_MODE" -eq 0 ]]; then
     WSESSIONS_DEST="${DESTDIR}${PREFIX}/share/wayland-sessions"
@@ -123,8 +148,13 @@ Keywords=wayland;compositor;macos;feather;rust;drm;
 EOF
     chmod 644 "$WSESSIONS_DEST/feather-de-drm.desktop"
 
-    install -Dm644 "$ROOT_DIR/session/feather-lock.pam" "$PAM_DEST/feather-lock"
-    install -Dm644 "$ROOT_DIR/session/feather-greeter.toml" "$GREETD_DEST/feather-greeter.toml"
+    if (( BUNDLE )); then
+        install -Dm644 "$ROOT_DIR/etc/pam.d/feather-lock" "$PAM_DEST/feather-lock"
+        install -Dm644 "$ROOT_DIR/etc/greetd/feather-greeter.toml" "$GREETD_DEST/feather-greeter.toml"
+    else
+        install -Dm644 "$ROOT_DIR/session/feather-lock.pam" "$PAM_DEST/feather-lock"
+        install -Dm644 "$ROOT_DIR/session/feather-greeter.toml" "$GREETD_DEST/feather-greeter.toml"
+    fi
 fi
 
 echo "==> Установка Пёрышка завершена успешно."

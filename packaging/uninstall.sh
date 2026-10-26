@@ -6,8 +6,10 @@ PREFIX="${PREFIX:-/usr}"
 SYSCONFDIR="${SYSCONFDIR:-/etc}"
 DESTDIR="${DESTDIR:-}"
 
+USER_MODE=0
 if [[ "${1:-}" == "--user" ]]; then
     PREFIX="$HOME/.local"
+    USER_MODE=1
 fi
 
 BIN_DEST="${DESTDIR}${PREFIX}/bin"
@@ -28,5 +30,9 @@ done
 rm -f "$PORTAL_DEST/feather.portal" "$PORTAL_CONF_DEST/featherde-portals.conf"
 rm -f "$WSESSIONS_DEST/feather-de-drm.desktop"
 rm -rf "$DOC_DEST"
+if (( ! USER_MODE )); then
+    rm -f "${DESTDIR}${SYSCONFDIR}/pam.d/feather-lock"
+    rm -f "${DESTDIR}${SYSCONFDIR}/greetd/feather-greeter.toml"
+fi
 
 echo "==> Пёрышко (Feather DE) удалено из ${DESTDIR}${PREFIX}."

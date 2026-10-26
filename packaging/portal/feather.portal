@@ -1,3 +1,4 @@
-[Portal]
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.feather
 Interfaces=org.freedesktop.impl.portal.FileChooser;org.freedesktop.impl.portal.Screenshot;org.freedesktop.impl.portal.ScreenCast;org.freedesktop.impl.portal.Access;
-UseIn=FeatherDE
+UseIn=FeatherDE;

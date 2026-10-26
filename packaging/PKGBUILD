@@ -1,33 +1,41 @@
 # Maintainer: Feather DE Team <feather@local>
 pkgname=feather-de
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Пёрышко (Feather DE) — сверхбыстрое окружение рабочего стола Wayland в стиле macOS Tahoe на Rust"
 arch=('x86_64' 'aarch64')
-url="https://github.com/Withaire/silly-tesla"
-license=('MIT')
+url="https://github.com/Zumka1991/feather-de"
+# Лицензия проекта ещё не выбрана автором; не объявляем MIT без LICENSE.
+license=()
 depends=(
-    'glibc'
+    'glibc>=2.44'
     'gcc-libs'
     'libinput'
     'libxkbcommon'
-    'libseat'
+    'seatd'
     'mesa'
     'pam'
     'systemd-libs'
     'wayland'
+    'libglvnd'
+    'fontconfig'
+    'noto-fonts'
+    'dbus'
 )
 optdepends=(
     'labwc: запуск в режиме совместимости (nested/kiosk)'
     'xwayland-satellite: поддержка X11-программ без корневого Xwayland'
     'xdg-desktop-portal: системные диалоги выбора файлов и захвата экрана'
     'pipewire: управление звуком в Центре управления'
+    'libpulse: pactl для управления звуком'
+    'pipewire-pulse: сервер совместимости PulseAudio'
     'networkmanager: управление Wi-Fi в Центре управления и Настройках'
     'bluez: управление Bluetooth в Центре управления и Настройках'
     'greetd: экран входа Пёрышка (--login)'
-    'mupdf-tools: рендеринг документов PDF в Просмотре (feather-preview)'
+    'poppler: pdftoppm для полного рендеринга PDF в Просмотре'
 )
 makedepends=('cargo' 'rust' 'pkgconf')
+options=('!debug' '!lto')
 backup=(
     'etc/pam.d/feather-lock'
     'etc/greetd/feather-greeter.toml'
@@ -37,16 +45,16 @@ sha256sums=()
 
 build() {
     cd "$startdir/.."
-    CARGO_TARGET_DIR="$srcdir/target" cargo build --release --locked --workspace
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$srcdir/target}" cargo build --release --locked --workspace
 }
 
 check() {
     cd "$startdir/.."
-    CARGO_TARGET_DIR="$srcdir/target" cargo test --release --locked --bin feather-de first_run
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$srcdir/target}" cargo test --release --locked --bin feather-de first_run
 }
 
 package() {
     cd "$startdir/.."
-    CARGO_TARGET_DIR="$srcdir/target" DESTDIR="$pkgdir" PREFIX="/usr" SYSCONFDIR="/etc" \
-        ./packaging/install.sh --no-build --target-dir "$srcdir/target/release"
+    DESTDIR="$pkgdir" PREFIX="/usr" SYSCONFDIR="/etc" \
+        ./packaging/install.sh --no-build --target-dir "${CARGO_TARGET_DIR:-$srcdir/target}/release"
 }
