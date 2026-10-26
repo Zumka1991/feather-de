@@ -975,7 +975,6 @@ impl FeatherCompositor {
     fn switcher_step(&mut self, reverse: bool) {
         if self.shell.switcher.is_some() {
             self.shell.switcher_step(if reverse { -1 } else { 1 });
-            if let Some(sw)=self.shell.switcher.as_mut() { sw.pointer_anchor=Some((self.pointer_location.x,self.pointer_location.y)); }
             return;
         }
         let items = self.switcher_items();
@@ -987,7 +986,6 @@ impl FeatherCompositor {
         self.shell.open_switcher(items, reverse);
         self.refresh_focus();
         let opened_at=self.shell.switcher.as_ref().unwrap().opened_at;
-        self.shell.switcher.as_mut().unwrap().pointer_anchor=Some((self.pointer_location.x,self.pointer_location.y));
         let _ = self.loop_handle.insert_source(
             smithay::reexports::calloop::timer::Timer::from_duration(SWITCHER_SHOW_DELAY),
             move |_, _, state| {
@@ -1148,10 +1146,6 @@ impl FeatherCompositor {
         }
 
         if self.shell.switcher.as_ref().is_some_and(|s|s.visible){
-            let intentional=self.shell.switcher.as_mut().unwrap().allow_pointer(pos.x,pos.y);
-            if let Some(index)=intentional.then(||self.shell.switcher_hit(pos.x,pos.y)).flatten(){
-                if let Some(sw)=self.shell.switcher.as_mut(){if sw.selected!=index{sw.selected=index;self.shell.switcher_dirty=true;self.needs_redraw=true;}}
-            }
             self.pointer_focus_dirty=true;return false;
         }
         if self.system_settings.audio_drag.is_some() {

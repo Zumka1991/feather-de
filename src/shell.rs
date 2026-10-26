@@ -513,17 +513,6 @@ pub struct Switcher {
     pub opened_at: Instant,
     /// Shown only after a short hold, so a quick Alt+Tab tap switches without a flash
     pub visible: bool,
-    /// Keyboard selection wins until the mouse deliberately moves at least six points.
-    pub pointer_anchor: Option<(f64, f64)>,
-}
-impl Switcher {
-    pub fn allow_pointer(&mut self, x: f64, y: f64) -> bool {
-        if let Some((ax, ay)) = self.pointer_anchor {
-            if (x-ax)*(x-ax)+(y-ay)*(y-ay) < 36.0 { return false; }
-            self.pointer_anchor = None;
-        }
-        true
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3466,7 +3455,6 @@ impl MacShell {
             selected,
             opened_at: Instant::now(),
             visible: false,
-            pointer_anchor: None,
         });
         self.switcher_dirty = true;
     }
@@ -3563,14 +3551,6 @@ mod dock_tests {
             assert_eq!(pixels.len(),expected);assert!(pixels.iter().any(|v|*v!=0));
             Ok::<_,()>(Vec::new())
         }).unwrap();
-    }
-    #[test]
-    fn keyboard_selection_ignores_pointer_jitter_but_allows_deliberate_hover() {
-        let mut shell=MacShell::new(1440,900);shell.open_switcher(switch_items(3),false);
-        let sw=shell.switcher.as_mut().unwrap();sw.pointer_anchor=Some((500.0,400.0));
-        assert!(!sw.allow_pointer(500.0,400.0));assert!(!sw.allow_pointer(502.0,402.0));assert_eq!(sw.selected,1);
-        assert!(sw.allow_pointer(507.0,400.0));assert!(sw.allow_pointer(501.0,400.0));
-        sw.pointer_anchor=Some((501.0,400.0));assert!(!sw.allow_pointer(502.0,400.0));
     }
 
     #[test]

@@ -246,6 +246,29 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             assert!(!s.windows.iter().find(|w|w.id==ids[0]).unwrap().minimized);
             eprintln!("[feather-switcher-check] minimized window on another desktop: ok");
         })?;
+        at(state,4850,|s| {
+            let ids=fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",0,false)]);
+            begin(s);
+            s.shell.switcher.as_mut().unwrap().visible=true;
+            s.shell.ensure_switcher_rendered(&mut s.fonts);
+            let r=s.shell.switcher_rect;
+            let cell=((s.shell.screen_w as f32-108.0)/3.0).clamp(40.0,96.0);
+            let (hx,hy)=((r.x+14.0+cell*2.5) as f64,(r.y+14.0+cell*0.5) as f64);
+            s.debug_pointer_motion(hx,hy);
+            assert_eq!(s.shell.switcher.as_ref().unwrap().selected,1,"pointer hover must not change Alt+Tab selection");
+            finish(s);
+            assert_eq!(front(s),ids[1],"releasing Alt+Tab while hovering another icon must activate keyboard selection");
+            begin(s);
+            s.shell.switcher.as_mut().unwrap().visible=true;
+            s.shell.ensure_switcher_rendered(&mut s.fonts);
+            s.debug_pointer_motion(hx,hy);
+            s.debug_pointer_button(0x110,true);
+            s.debug_pointer_button(0x110,false);
+            finish(s);
+            assert!(s.shell.switcher.is_none());
+            assert_eq!(front(s),ids[0],"clicking an Alt+Tab icon must activate the clicked window");
+            eprintln!("[feather-switcher-check] pointer hover ignored / manual click selects: ok");
+        })?;
         at(state,5200,|s| {
             fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",0,false)]);
             begin(s);
