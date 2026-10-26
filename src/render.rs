@@ -381,14 +381,14 @@ pub(crate) fn build_scene(
         if let Some(b) = shell.bounce.as_ref() {
             if let Some((x, y, size)) = shell.dock_slot_global(b.target) {
                 let (lift, _) = b.offset(Instant::now());
-                // Centred along the bar, resting on the edge side, jumping away from the edge
+                // Keep the edge-dependent resting position, but always bounce upwards on screen.
                 let inset = (size - crate::theme::dock_icon()) as f64 * 0.5;
                 let lift = lift as f64;
                 let (x, y) = (x as f64, y as f64);
                 let (lx, ly) = match edge {
                     DockEdge::Bottom => (x + inset, y + inset * 2.0 - lift),
-                    DockEdge::Left => (x + lift, y + inset),
-                    DockEdge::Right => (x + inset * 2.0 - lift, y + inset),
+                    DockEdge::Left => (x, y + inset - lift),
+                    DockEdge::Right => (x + inset * 2.0, y + inset - lift),
                 };
                 let src = smithay::utils::Rectangle::new((0.0, 0.0).into(), (b.px as f64, b.px as f64).into());
                 mem(&mut out, ((lx * scale).round(), (ly * scale).round()), &b.buffer, Some(src), crate::animation::Visual::default());
