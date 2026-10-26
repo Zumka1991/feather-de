@@ -454,6 +454,13 @@ async fn worker(
         .method_timeout(Duration::from_secs(2))
         .build()
         .await?;
+    // A full signal stream blocks zbus's socket reader, including RPC replies
+    // and AddMatch/RemoveMatch. Keep it off the connection used for GetAll,
+    // actions and the watcher object while this worker awaits those calls.
+    let signals = zbus::connection::Builder::session()?
+        .method_timeout(Duration::from_secs(2))
+        .build()
+        .await?;
     let registry: Registry = Arc::new(Mutex::new(BTreeMap::new()));
     let (changed, changes) = async_channel::bounded(1);
     conn.object_server()
@@ -477,8 +484,8 @@ async fn worker(
         .cache_properties(CacheProperties::No)
         .build()
         .await?;
-    let mut watcher_signals = subscribe(&conn, WATCHER).await?;
-    let mut item_signals = subscribe(&conn, ITEM).await?;
+    let mut watcher_signals = subscribe(&signals, WATCHER).await?;
+    let mut item_signals = subscribe(&signals, ITEM).await?;
     let properties_rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .interface("org.freedesktop.DBus.Properties")?
@@ -486,14 +493,14 @@ async fn worker(
         .arg(0, ITEM)?
         .build();
     let mut properties =
-        zbus::MessageStream::for_match_rule(properties_rule, &conn, Some(64)).await?;
+        zbus::MessageStream::for_match_rule(properties_rule, &signals, Some(64)).await?;
     let owner_rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .sender("org.freedesktop.DBus")?
         .interface("org.freedesktop.DBus")?
         .member("NameOwnerChanged")?
         .build();
-    let mut owners = zbus::MessageStream::for_match_rule(owner_rule, &conn, Some(64)).await?;
+    let mut owners = zbus::MessageStream::for_match_rule(owner_rule, &signals, Some(64)).await?;
     let _: zbus::Result<()> = watcher
         .call("RegisterStatusNotifierHost", &(host.as_str(),))
         .await;
@@ -504,7 +511,8 @@ async fn worker(
         .msg_type(zbus::message::Type::Signal)
         .interface("com.canonical.dbusmenu")?
         .build();
-    let mut menu_signals = zbus::MessageStream::for_match_rule(menu_rule, &conn, Some(32)).await?;
+    let mut menu_signals =
+        zbus::MessageStream::for_match_rule(menu_rule, &signals, Some(32)).await?;
     loop {
         if rescan {
             let own = owner(&conn, WATCHER).await.ok().as_deref()
@@ -540,9 +548,17 @@ async fn worker(
                 next
             };
             for entry in next.values_mut() {
+                if let Some(previous) = entries
+                    .get(&entry.key)
+                    .filter(|previous| previous.owner == entry.owner && previous.path == entry.path)
+                {
+                    entry.item = previous.item.clone();
+                    entry.menu = previous.menu.clone();
+                }
                 if let Err(err) = load_item(&conn, entry).await {
                     tracing::debug!("Tray item {}: {err}", entry.key);
-                    entry.item = None;
+                    // A failed refresh is not an unregistration or Passive.
+                    // Preserve the last successful snapshot for the same owner.
                 }
             }
             entries = next;
@@ -937,6 +953,91 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    struct BusyItem {
+        burst: Arc<AtomicBool>,
+        refreshed: AtomicBool,
+    }
+    #[zbus::interface(name = "org.kde.StatusNotifierItem")]
+    impl BusyItem {
+        #[zbus(property)]
+        async fn title(&self, #[zbus(connection)] conn: &Connection) -> String {
+            if self.burst.swap(false, Ordering::Relaxed) {
+                // More than the tray's bounded NameOwnerChanged queue, while
+                // GetAll is pending. None of these names belongs to a tray item.
+                for _ in 0..80 {
+                    conn.request_name("org.example.TrayBurst").await.unwrap();
+                    conn.release_name("org.example.TrayBurst").await.unwrap();
+                }
+                self.refreshed.store(true, Ordering::Relaxed);
+            }
+            if self.refreshed.load(Ordering::Relaxed) {
+                "Refreshed tray fixture".into()
+            } else {
+                "Busy tray fixture".into()
+            }
+        }
+        #[zbus(property)]
+        fn status(&self) -> &str {
+            "Active"
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an isolated session bus"]
+    fn isolated_signal_burst_during_get_all_keeps_the_tray_visible() {
+        let burst = Arc::new(AtomicBool::new(false));
+        let client = future::block_on(
+            zbus::connection::Builder::session()
+                .unwrap()
+                .serve_at(
+                    "/Item",
+                    BusyItem {
+                        burst: burst.clone(),
+                        refreshed: AtomicBool::new(false),
+                    },
+                )
+                .unwrap()
+                .build(),
+        )
+        .unwrap();
+        let (tx, rx) = async_channel::bounded(64);
+        let (updates, source) = channel::sync_channel(4);
+        let thread = std::thread::spawn(move || future::block_on(worker(rx, updates)).unwrap());
+        wait_update(&source, |u| matches!(u, Update::Items(v) if v.is_empty()));
+        let watcher = future::block_on(Proxy::new(&client, WATCHER, PATH, WATCHER)).unwrap();
+        future::block_on(watcher.call::<_, _, ()>("RegisterStatusNotifierItem", &("/Item",)))
+            .unwrap();
+        wait_update(&source, |u| matches!(u, Update::Items(v) if v.len() == 1));
+        burst.store(true, Ordering::Relaxed);
+        future::block_on(watcher.call::<_, _, ()>(
+            "RegisterStatusNotifierHost",
+            &(client.unique_name().unwrap().as_str(),),
+        ))
+        .unwrap();
+        wait_update(&source, |u| {
+            if let Update::Items(items) = u {
+                assert_eq!(
+                    items.len(),
+                    1,
+                    "signal burst made an active tray item disappear"
+                );
+                items[0].title == "Refreshed tray fixture"
+            } else {
+                false
+            }
+        });
+        // A second round also checks that the reader recovered and still serves registrations.
+        future::block_on(watcher.call::<_, _, ()>(
+            "RegisterStatusNotifierHost",
+            &(client.unique_name().unwrap().as_str(),),
+        ))
+        .unwrap();
+        wait_update(&source, |u| matches!(u, Update::Items(v) if v.len() == 1));
+        drop(tx);
+        drop(source);
+        thread.join().unwrap();
     }
     #[test]
     #[ignore = "requires an isolated session bus: dbus-run-session -- cargo test -- --include-ignored"]
