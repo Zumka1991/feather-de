@@ -184,6 +184,7 @@ pub enum Action {
     TapToClick,
     LeftHanded,
     Scale(f64),
+    XwaylandHidpi,
     ModeStep(i32),
     PrimaryMonitor(String),
     PositionMonitor(String,u8),
@@ -252,6 +253,7 @@ pub struct Context<'a> {
     pub animations: bool,
     pub dock_zoom: bool,
     pub scale: f64,
+    pub xwayland_hidpi: bool,
     pub display_name: &'a str,
     pub monitors: Vec<crate::monitors::Info>,
     pub modes: &'a [Mode],
@@ -291,6 +293,7 @@ pub struct FrameJob {
     pub animations: bool,
     pub dock_zoom: bool,
     pub scale: f64,
+    pub xwayland_hidpi: bool,
     pub display_name: String,
     pub monitors: Vec<crate::monitors::Info>,
     pub modes: Vec<Mode>,
@@ -339,6 +342,7 @@ impl FrameJob {
             animations: c.animations,
             dock_zoom: c.dock_zoom,
             scale: c.scale,
+            xwayland_hidpi: c.xwayland_hidpi,
             display_name: c.display_name.into(),
             monitors: c.monitors.clone(),
             modes: c.modes.to_vec(),
@@ -378,6 +382,7 @@ impl FrameJob {
             animations: self.animations,
             dock_zoom: self.dock_zoom,
             scale: self.scale,
+            xwayland_hidpi: self.xwayland_hidpi,
             display_name: &self.display_name,
             monitors: self.monitors.clone(),
             modes: &self.modes,
@@ -1855,6 +1860,7 @@ impl Panel {
                         (!self.confirming).then_some(Action::Scale(scale)),
                     );
                 }
+                l.row(52.0, "Увеличивать Wine и старые приложения", "Системный масштаб; возможна небольшая размытость".into(), Style::Toggle(c.xwayland_hidpi), Some(Action::XwaylandHidpi));
                 let selected = self
                     .selected_mode
                     .and_then(|i| c.modes.get(i))
@@ -3127,6 +3133,7 @@ impl crate::FeatherCompositor {
             animations: self.animations.enabled(),
             dock_zoom: self.shell.dock_zoom_enabled,
             scale: self.scale_factor,
+            xwayland_hidpi: self.xwayland_hidpi,
             display_name: &self.display_name,
             monitors: self.monitors.iter().map(|m|m.info.clone()).collect(),
             modes: &self.display_modes,
@@ -3925,6 +3932,11 @@ impl crate::FeatherCompositor {
                 self.apply_pointer_config();
                 self.save_settings();
             }
+            Action::XwaylandHidpi => {
+                self.xwayland_hidpi = !self.xwayland_hidpi;
+                self.apply_hidpi_scale(self.scale_factor);
+                self.save_settings();
+            }
             Action::Scale(scale) => {
                 if !scale.is_finite() || !(1.0..=2.5).contains(&scale) {
                     return;
@@ -4254,6 +4266,7 @@ mod tests {
             animations: true,
             dock_zoom: true,
             scale: 2.0,
+            xwayland_hidpi: true,
             display_name: "DP-1",
             monitors: vec![crate::monitors::Info{name:"DP-1".into(),rect:crate::monitors::Rect{x:0,y:0,w:1920,h:1080},mode,primary:true},crate::monitors::Info{name:"HDMI-A-1".into(),rect:crate::monitors::Rect{x:-1280,y:0,w:1280,h:720},mode:Mode{width:2560,height:1440,refresh:60000},primary:false}],
             modes: &[mode],
@@ -4687,6 +4700,7 @@ mod tests {
             animations: false,
             dock_zoom: false,
             scale: 1.0,
+            xwayland_hidpi: true,
             display_name: "Window",
             monitors: Vec::new(),
             modes: &[mode],

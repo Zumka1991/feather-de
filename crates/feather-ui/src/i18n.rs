@@ -534,6 +534,8 @@ fn pick(e: &Entry, l: Lang) -> &'static str {
 }
 
 static TABLE: &[Entry] = &[
+    ("Увеличивать Wine и старые приложения", "Enlarge Wine and legacy apps", "Ampliar Wine y aplicaciones antiguas", "Wine und ältere Apps vergrößern", "Agrandir Wine et les anciennes apps", "放大 Wine 和旧版应用"),
+    ("Системный масштаб; возможна небольшая размытость", "System scaling; may look slightly blurry", "Escala del sistema; puede verse algo borroso", "Systemskalierung; kann leicht unscharf wirken", "Échelle du système ; peut paraître légèrement flou", "使用系统缩放；可能略显模糊"),
     // ── Brand & Core Apps ──
     ("Пёрышко", "Feather", "Feather", "Feather", "Feather", "轻羽"),
     (

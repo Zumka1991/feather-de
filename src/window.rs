@@ -540,7 +540,10 @@ impl ManagedWindow {
 
     /// Resize edges under the pointer in the invisible band around a decorated window
     pub fn resize_edges_at(&self, px: f64, py: f64) -> Option<Edges> {
-        if !self.is_visible() || !self.has_titlebar() || self.maximized {
+        // Satellite can give Wine its own decorations. Its outer resize band
+        // must remain available even when Feather does not draw a titlebar.
+        let x11 = self.wl_surface().is_some_and(crate::xwayland::is_xwayland_surface);
+        if !self.is_visible() || self.fullscreen || !(self.has_titlebar() || x11) || self.maximized {
             return None;
         }
         let b = RESIZE_BAND as f64;
@@ -774,6 +777,16 @@ impl ManagedWindow {
         }
     }
 
+    pub fn set_resizing(&self, resizing: bool) {
+        if let Some(t) = self.toplevel() {
+            t.with_pending_state(|state| {
+                if resizing { state.states.set(xdg_toplevel::State::Resizing); }
+                else { state.states.unset(xdg_toplevel::State::Resizing); }
+            });
+            if t.is_initial_configure_sent() { t.send_pending_configure(); }
+        }
+    }
+
     pub fn set_activated(&mut self, active: bool) {
         if self.activated == active {
             return;
@@ -796,6 +809,24 @@ impl ManagedWindow {
                 t.send_pending_configure();
             }
         }
+    }
+
+    /// xdg title/app_id requests take effect immediately, without a buffer commit.
+    pub fn sync_app_metadata(&mut self) -> bool {
+        let Some(surface) = self.wl_surface() else { return false; };
+        let (title, app_id) = with_states(surface, |states| {
+            states.data_map.get::<XdgToplevelSurfaceData>().map(|d| {
+                let role = d.lock().unwrap(); (role.title.clone(), role.app_id.clone())
+            }).unwrap_or_default()
+        });
+        let mut changed = false;
+        if let Some(title) = title.filter(|s| !s.is_empty() && *s != self.title) {
+            self.title = title; self.dirty = true; changed = true;
+        }
+        if let Some(app_id) = app_id.filter(|s| !s.is_empty() && *s != self.app_id) {
+            self.app_id = app_id; changed = true;
+        }
+        changed
     }
 
     /// Pulls title, app_id, window geometry and mapped state from the client after a commit
@@ -1375,6 +1406,7 @@ mod settings_tests {
                 animations: true,
                 dock_zoom: true,
                 scale: 1.25,
+                xwayland_hidpi: true,
                 display_name: "Window",
                 monitors: Vec::new(),
                 modes: &[mode],
@@ -1477,6 +1509,7 @@ mod settings_tests {
                             animations: true,
                             dock_zoom: true,
                             scale: 2.0,
+                            xwayland_hidpi: true,
                             display_name: "DP-1",
                             monitors: Vec::new(),
                             modes: &[mode],

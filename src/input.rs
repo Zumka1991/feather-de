@@ -269,12 +269,14 @@ impl FeatherCompositor {
         if activity && self.activity() {
             return;
         }
+        if activity { self.pointer_capture_suspended = false; }
         self.needs_redraw = true;
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => {
                 // Relative motion (mice/touchpads on DRM): libinput already applied acceleration
                 let delta = event.delta();
+                self.game_relative_motion(delta, event.delta_unaccel(), Event::time(&event));
                 let p = crate::monitors::project(
                     &self.monitor_rects(),
                     (self.pointer_location.x + delta.x, self.pointer_location.y + delta.y),
@@ -989,12 +991,14 @@ impl FeatherCompositor {
     /// End-to-end tests inside our own nested compositor and test clients only
     /// (FEATHER_DEBUG_DND); the host never receives these events
     pub fn debug_pointer_motion(&mut self, x: f64, y: f64) {
+        self.pointer_capture_suspended = false;
         let time = self.start_time.elapsed().as_millis() as u32;
         self.needs_redraw = true;
         self.on_pointer_motion((x, y).into(), time);
     }
 
     pub fn debug_pointer_button(&mut self, button: u32, pressed: bool) {
+        self.pointer_capture_suspended = false;
         let time = self.start_time.elapsed().as_millis() as u32;
         self.needs_redraw = true;
         let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
@@ -1012,6 +1016,8 @@ impl FeatherCompositor {
     }
 
     pub(crate) fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
+        let pos = self.constrained_position(pos);
+        if self.pointer_locked() { return; }
         self.pointer_location = pos;
         if self.mission_open() {
             self.mission_motion(pos.x, pos.y);
@@ -1174,7 +1180,7 @@ impl FeatherCompositor {
     }
 
     /// The toplevel surface owning `surface` (through subsurfaces), and whether it is a popup
-    fn owner_of_surface(&self, surface: &WlSurface) -> (Option<WlSurface>, bool) {
+    pub(crate) fn owner_of_surface(&self, surface: &WlSurface) -> (Option<WlSurface>, bool) {
         let mut root = surface.clone();
         while let Some(parent) = get_parent(&root) {
             root = parent;
@@ -1201,6 +1207,7 @@ impl FeatherCompositor {
     fn start_resize(&mut self, idx: usize, edges: Edges) {
         let pos = self.pointer_location;
         let win = &mut self.windows[idx];
+        win.set_resizing(true);
         win.resize_anchor = Some(ResizeAnchor {
             edges,
             right: win.x + win.width,
@@ -1289,7 +1296,11 @@ impl FeatherCompositor {
                 self.desktop_release();
             }
             self.pressed_buttons.retain(|&b| b != button);
-            let was_dragging = self.active_drag.take().is_some();
+            let drag = self.active_drag.take();
+            if let Some(DragOperation::ResizeWindow { win_id, .. }) = drag {
+                if let Some(win) = self.windows.iter().find(|w| w.id == win_id) { win.set_resizing(false); }
+            }
+            let was_dragging = drag.is_some();
             // Don't send a release for a press the client never saw
             if let Some(i) = self.consumed_buttons.iter().position(|&b| b == button) {
                 self.consumed_buttons.swap_remove(i);
@@ -1592,7 +1603,7 @@ impl FeatherCompositor {
     /// Re-sends pointer focus for the current location (after stacking/geometry changes)
     pub fn refresh_pointer_focus(&mut self) {
         self.pointer_focus_dirty = false;
-        if self.active_drag.is_some() || self.pointer.is_grabbed() {
+        if self.active_drag.is_some() || self.pointer.is_grabbed() || self.pointer_locked() {
             return;
         }
         let pos = self.pointer_location;
@@ -1638,7 +1649,9 @@ impl FeatherCompositor {
         self.pressed_buttons.clear();
         self.consumed_buttons.clear();
         self.system_settings.audio_drag = None;
-        self.active_drag = None;
+        if let Some(DragOperation::ResizeWindow { win_id, .. }) = self.active_drag.take() {
+            if let Some(win) = self.windows.iter().find(|w| w.id == win_id) { win.set_resizing(false); }
+        }
         if self.shell.switcher.take().is_some() {
             self.needs_redraw = true;
         }
@@ -1661,6 +1674,8 @@ impl FeatherCompositor {
         self.gestures = Default::default();
         self.shell.switcher_keys.clear();
         self.pointer_focus_dirty = true;
+        self.pointer_capture_suspended = true;
+        self.sync_pointer_constraint();
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {

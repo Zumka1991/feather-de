@@ -57,6 +57,7 @@ use crate::{
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    pub xwayland: std::sync::atomic::AtomicBool,
 }
 
 impl ClientData for ClientState {
@@ -143,6 +144,12 @@ impl FeatherCompositor {
             self.shell.topbar_dirty = true;
             self.dock_model_dirty = true;
         }
+        if changes.title_changed || changes.newly_mapped {
+            if self.windows.iter().any(|w| w.wl_surface() == Some(surface)) {
+                let scale = crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(surface), self.xwayland_hidpi, self.scale_factor);
+                with_states(surface, |states| fractional_scale::with_fractional_scale(states, |fs| fs.set_preferred_scale(scale)));
+            }
+        }
     }
 
     /// Electron/Chromium recreate the xdg_toplevel on the same wl_surface when a window is
@@ -205,6 +212,7 @@ impl FeatherCompositor {
             }
             Some(edges) => {
                 let win = &mut self.windows[idx];
+                win.set_resizing(true);
                 win.resize_anchor = Some(ResizeAnchor {
                     edges,
                     right: win.x + win.width,
@@ -247,7 +255,7 @@ impl BufferHandler for FeatherCompositor {
 
 impl FractionalScaleHandler for FeatherCompositor {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
-        let scale = self.scale_factor;
+        let scale = crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(&surface), self.xwayland_hidpi, self.scale_factor);
         with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -259,6 +267,23 @@ impl FractionalScaleHandler for FeatherCompositor {
 impl XdgShellHandler for FeatherCompositor {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
         &mut self.xdg_shell_state
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        if let Some(w) = self.window_for_toplevel_mut(surface.wl_surface()) {
+            if w.sync_app_metadata() {
+                self.dock_model_dirty = true;
+                self.shell.topbar_dirty = true;
+                self.shell.switcher_dirty = true;
+                self.needs_redraw = true;
+                let top = self.windows.iter().rposition(|w| w.is_visible() && !self.auxiliary_game_window(w));
+                if self.windows.iter().position(|w| w.activated) != top { self.refresh_focus(); }
+            }
+        }
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        self.title_changed(surface);
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {

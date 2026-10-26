@@ -52,6 +52,103 @@ fn polkit_fake_helper(path: &std::path::Path) -> std::io::Result<()> {
 }
 
 pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("FEATHER_DEBUG_GAME_X11").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only { return Err("game X11 check requires isolated windowed input".into()); }
+        fn game(st: &FeatherCompositor) -> (u64, f64, f64) {
+            let w=st.windows.iter().find(|w|w.title=="Lineage fixture"&&w.mapped).expect("X11 fixture did not map");
+            assert!(crate::xwayland::is_xwayland_surface(w.wl_surface().unwrap()));
+            let p=w.surface_origin();(w.id,p.x as f64,p.y as f64)
+        }
+        fn click(st: &mut FeatherCompositor, dx:f64,dy:f64) {
+            let (id,x,y)=game(st);st.execute_shell_action(ShellClickAction::FocusWindow(id));
+            st.debug_pointer_motion(x+dx,y+dy);st.debug_pointer_button(0x110,true);st.debug_pointer_button(0x110,false);
+        }
+        at(state,1000,|st| {
+            let (id,_,_)=game(st);let w=st.windows.iter().find(|w|w.id==id).unwrap();assert_eq!((w.width,w.height),(640,360));
+            click(st,200.0,100.0);
+        })?;
+        at(state,1500,|st| st.apply_system_setting(crate::system_settings::Action::XwaylandHidpi))?;
+        at(state,2100,|st| {
+            let (id,_,_)=game(st);let w=st.windows.iter().find(|w|w.id==id).unwrap();assert_eq!((w.width,w.height),(320,180));
+            click(st,100.0,50.0);
+        })?;
+        at(state,2500,|st| st.apply_system_setting(crate::system_settings::Action::XwaylandHidpi))?;
+        at(state,3200,|st| {
+            let (id,_,_)=game(st);let w=st.windows.iter().find(|w|w.id==id).unwrap();assert_eq!((w.width,w.height),(640,360));
+            let surface=w.wl_surface().unwrap().clone();let count=st.windows.len();
+            let docks=st.build_dock_items();
+            assert!(docks.iter().any(|d|d.label=="Lineage fixture"&&d.target==DockTarget::Window(id)));
+            assert!(docks.iter().any(|d|d.label=="Other game fixture"));
+            assert!(!docks.iter().any(|d|d.label=="Окно Wayland"));
+            assert_eq!(st.switcher_items().iter().filter(|i|i.label.ends_with("fixture")).count(),2);
+            let other=st.windows.iter().find(|w|w.title=="Other game fixture").unwrap().id;
+            st.execute_shell_action(ShellClickAction::FocusWindow(other));
+            let (x,y,size)=st.shell.dock_slot_global(DockTarget::Window(id)).unwrap();
+            st.debug_pointer_motion((x+size*0.5) as f64,(y+size*0.5) as f64);
+            st.debug_pointer_button(0x110,true);st.debug_pointer_button(0x110,false);
+            assert_eq!(st.keyboard.current_focus(),Some(surface));assert_eq!(st.windows.len(),count);
+        })?;
+        at(state,3800,|st| {
+            let (id,_,_)=game(st);let w=st.windows.iter().find(|w|w.id==id).unwrap();
+            let (x,y)=((w.x+w.width+2) as f64,(w.y+w.total_height()+2) as f64);
+            st.debug_pointer_motion(x,y);st.debug_pointer_button(0x110,true);
+            assert!(matches!(st.active_drag,Some(crate::DragOperation::ResizeWindow{..})),"X11 outer resize did not start: pos={:?}, windows={:?}",st.pointer_location,st.windows.iter().map(|w|(w.id,w.title.as_str(),w.x,w.y,w.width,w.height,w.ssd,w.resize_edges_at(x,y))).collect::<Vec<_>>());
+            st.debug_pointer_motion(x+120.0,y+80.0);
+        })?;
+        at(state,4200,|st| st.debug_pointer_button(0x110,false))?;
+        at(state,4600,|st| {
+            let (id,_,_)=game(st);let w=st.windows.iter().find(|w|w.id==id).unwrap();
+            assert_eq!((w.width,w.height),(760,440),"X11 client did not commit resized buffer");
+            eprintln!("[feather-game-x11-check] scaled geometry, input coordinates, anonymous helper, separate games, Dock activation and X11 client resize passed");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_GAME_POINTER").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only { return Err("game pointer check requires isolated windowed input".into()); }
+        fn game(st: &FeatherCompositor) -> (u64, f64, f64) {
+            let w = st.windows.iter().find(|w| w.app_id.starts_with("feather-game-fixture") && w.mapped).expect("game pointer fixture did not map");
+            let p = w.surface_origin(); (w.id, p.x as f64, p.y as f64)
+        }
+        at(state, 1000, |st| { let (_, x, y) = game(st); st.debug_pointer_motion(x+150.0,y+100.0); })?;
+        at(state, 1100, |st| {
+            let (id,_,_)=game(st);let w=st.windows.iter().find(|w|w.id==id).unwrap();
+            assert_eq!(w.app_id,"feather-game-fixture-updated");assert_eq!(w.title,"Game metadata updated");
+        })?;
+        at(state, 1200, |st| st.debug_pointer_button(0x111,true))?;
+        at(state, 1400, |st| {
+            assert!(st.pointer_locked()); let before=st.pointer_location;
+            st.game_relative_motion((3.0,-2.0).into(),(7.0,-5.0).into(),1_000_000);
+            st.on_pointer_motion((before.x+3.0,before.y-2.0).into(),1400);
+            assert_eq!(st.pointer_location,before);
+        })?;
+        at(state, 1500, |st| {
+            assert!(st.pointer_locked()); let before=st.pointer_location;
+            st.game_relative_motion((-5.0,1.0).into(),(-9.0,4.0).into(),1_000_100);
+            st.on_pointer_motion((10000.0,10000.0).into(),1500);
+            assert_eq!(st.pointer_location,before);
+        })?;
+        at(state, 1700, |st| st.debug_pointer_button(0x111,false))?;
+        at(state, 1900, |st| {
+            assert!(!st.pointer_locked()); let (_,x,y)=game(st);
+            assert!((st.pointer_location.x-x-140.0).abs()<0.01 && (st.pointer_location.y-y-80.0).abs()<0.01,"unlock hint was not restored");
+            st.debug_pointer_button(0x111,true);
+        })?;
+        at(state, 2100, |st| { assert!(st.pointer_locked()); st.open_or_focus_builtin(crate::apps::BuiltinWindowKind::AboutFeather); })?;
+        at(state, 2300, |st| {
+            assert!(!st.pointer_locked()); st.debug_pointer_button(0x111,false);
+            let (id,x,y)=game(st); st.execute_shell_action(ShellClickAction::FocusWindow(id)); st.debug_pointer_motion(x+150.0,y+100.0);
+        })?;
+        at(state, 2500, |st| st.debug_pointer_button(0x112,true))?;
+        at(state, 2700, |st| {
+            assert!(st.active_constraint.as_ref().is_some_and(|c| !c.locked));
+            let (_,x,y)=game(st); st.debug_pointer_motion(x+800.0,y+500.0);
+            assert!(st.pointer_location.x>=x+100.0 && st.pointer_location.x<x+300.0);
+            assert!(st.pointer_location.y>=y+80.0 && st.pointer_location.y<y+240.0);
+            st.debug_pointer_button(0x112,false);
+        })?;
+        at(state, 2900, |st| { assert!(st.active_constraint.is_none()); let (_,x,y)=game(st); st.debug_pointer_motion(x+150.0,y+100.0); st.debug_pointer_button(0x111,true); })?;
+        at(state, 3100, |st| { assert!(st.pointer_locked()); st.release_all_input(); })?;
+        at(state, 3300, |st| { assert!(!st.pointer_locked()); assert!(st.pointer_capture_suspended); eprintln!("[feather-game-check] relative motion, lock, unlock hint, focus, confinement and host leave passed"); })?;
+    }
     crate::monitors::install_checks(state)?;
     if std::env::var_os("FEATHER_DEBUG_SWITCHER").is_some() {
         if state.backend.is_drm() || !state.debug_input_only { return Err("switcher check requires isolated windowed input".into()); }

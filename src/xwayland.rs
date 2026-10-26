@@ -72,7 +72,19 @@ pub fn display() -> Option<String> {
     X_DISPLAY.lock().unwrap().clone()
 }
 
+/// Satellite shares one XSETTINGS DPI across all windows. Scale its entire display
+/// consistently: mixing per-window DPI would shrink other X11 applications.
+pub fn preferred_scale(xwayland: bool, hidpi: bool, desktop_scale: f64) -> f64 {
+    if xwayland && hidpi { 1.0 } else { desktop_scale }
+}
+
+pub fn is_xwayland_surface(surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) -> bool {
+    use smithay::reexports::wayland_server::Resource;
+    surface.client().and_then(|c| c.get_data::<crate::handlers::ClientState>().map(|s| s.xwayland.load(std::sync::atomic::Ordering::Relaxed))).unwrap_or(false)
+}
+
 pub struct Xwayland {
+    pub running_pid: Option<u32>,
     number: u32,
     satellite: PathBuf,
     wayland_socket: String,
@@ -162,6 +174,7 @@ impl Xwayland {
         }
         tracing::info!("XWayland: DISPLAY=:{number}, xwayland-satellite запустится по первому X-клиенту");
         let mut x = Self {
+            running_pid: None,
             number,
             satellite,
             wayland_socket: wayland_socket.to_owned(),
@@ -220,6 +233,7 @@ impl Xwayland {
         }
         match cmd.spawn() {
             Ok(mut child) => {
+                self.running_pid = Some(child.id());
                 self.running = true;
                 self.started = Instant::now();
                 tracing::info!("XWayland: xwayland-satellite запущен (pid {})", child.id());
@@ -247,6 +261,7 @@ impl Xwayland {
 
     fn exited(&mut self, handle: &LoopHandle<'static, FeatherCompositor>) -> bool {
         self.running = false;
+        self.running_pid = None;
         let quick = self.started.elapsed() < Duration::from_secs(3);
         self.failures = if quick { self.failures + 1 } else { 0 };
         if self.failures >= MAX_FAILURES {

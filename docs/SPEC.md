@@ -68,6 +68,7 @@ calloop EventLoop (один поток)
 | `main.rs` | Состояние, фокус (`refresh_focus` — единственный источник истины), действия оболочки, модель Dock/Alt+Tab, настройки |
 | `handlers.rs` | Протоколы Wayland: xdg-shell (+попапы), decoration, activation, dmabuf v4, cursor-shape, selection |
 | `input.rs` | Клавиатура (фильтр, хоткеи, Alt+Tab), указатель, drag/resize, грабы |
+| `pointer_constraints.rs` | Игровой relative pointer, lock/confine, безопасное снятие захвата при смене фокуса |
 | `animation.rs` | Аналитические пружины окон и панелей; трансформации и alpha, остановка без таймера |
 | `appmenu.rs` | KDE Wayland appmenu, асинхронный DBusMenu/Registrar в отдельном потоке, отмена старых RPC при смене фокуса |
 | `tray.rs` | StatusNotifierWatcher/host, значки и DBusMenu трея; worker, bounded очереди, сигналы без опроса |

@@ -300,6 +300,7 @@ pub struct Settings {
     pub default_browser: Option<String>,
     pub default_terminal: Option<String>,
     pub scale: Option<f64>,
+    pub xwayland_hidpi: bool,
     pub dock_zoom: bool,
     pub dock_locked: bool,
     pub dock_size: f32,
@@ -349,6 +350,7 @@ impl Default for Settings {
             default_browser: None,
             default_terminal: None,
             scale: None,
+            xwayland_hidpi: true,
             dock_zoom: true,
             dock_locked: false,
             dock_size: 50.0,
@@ -537,6 +539,7 @@ impl Settings {
                         s.dock_zoom = v;
                     }
                 }
+                "xwayland_hidpi" => { if let Ok(v) = v.parse() { s.xwayland_hidpi = v; } }
                 "dock_locked" => {
                     if let Ok(v) = v.parse() {
                         s.dock_locked = v;
@@ -718,6 +721,7 @@ impl Settings {
         text.push_str(&format!("first_run_completed={}\n", self.first_run_completed));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
+        text.push_str(&format!("xwayland_hidpi={}\n", self.xwayland_hidpi));
         text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_edge={}\ngtk_theme={}\n", self.dock_size, self.dock_autohide, self.dock_edge.id(), self.gtk_theme));
         text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
         text.push_str(&format!("alert_sounds={}\nalert_sound={}\nalert_volume={}\ninterface_sounds={}\nvolume_feedback={}\n",

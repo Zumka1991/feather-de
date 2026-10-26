@@ -23,6 +23,7 @@ mod monitors;
 mod handlers;
 mod icons;
 mod input;
+mod pointer_constraints;
 mod shortcuts;
 mod key_repeat;
 mod audio_hud;
@@ -213,6 +214,10 @@ pub struct FeatherCompositor {
     pub viewporter_state: ViewporterState,
     pub fractional_scale_state: FractionalScaleManagerState,
     pub cursor_shape_state: CursorShapeManagerState,
+    pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
+    pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    pub active_constraint: Option<crate::pointer_constraints::ActiveConstraint>,
+    pub pointer_capture_suspended: bool,
     pub popups: PopupManager,
 
     pub seat: Seat<Self>,
@@ -227,6 +232,7 @@ pub struct FeatherCompositor {
     pub phys_w: i32,
     pub phys_h: i32,
     pub scale_factor: f64,
+    pub xwayland_hidpi: bool,
     pub explicit_scale: Option<f64>,
 
     pub wayland_socket_name: String,
@@ -303,7 +309,7 @@ impl FeatherCompositor {
     /// The topmost visible window is active; only Wayland windows receive keyboard focus.
     pub fn refresh_focus(&mut self) {
         self.cancel_key_repeat();
-        let top = self.windows.iter().rposition(|w| w.is_visible());
+        let top = self.windows.iter().rposition(|w| w.is_visible() && !self.auxiliary_game_window(w));
         // The desktop keeps the keyboard until another window comes to the front
         if self.shell.desktop.focused && top.map(|i| self.windows[i].id) != self.desktop_focus_top {
             self.shell.desktop.focused = false;
@@ -318,6 +324,7 @@ impl FeatherCompositor {
         if keyboard.current_focus() != target {
             keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
         }
+        self.sync_pointer_constraint();
         self.shell.topbar_dirty = true;
         self.pointer_focus_dirty = true;
         self.dock_model_dirty = true;
@@ -352,10 +359,11 @@ impl FeatherCompositor {
     }
 
     pub fn apply_cursor(&mut self, image: CursorImageStatus) {
+        self.cursor.status = image.clone();
+        let image = if self.pointer_locked() { CursorImageStatus::Hidden } else { image };
         let window = match &self.backend {
             crate::backend::Backend::Winit(b) => b.window(),
             crate::backend::Backend::Drm(_) => {
-                self.cursor.status = image;
                 self.needs_redraw = true;
                 return;
             }
@@ -397,7 +405,12 @@ impl FeatherCompositor {
         for win in &mut self.windows {
             win.dirty=true;
             if let WindowBackend::Wayland(ref toplevel)=win.backend {
-                with_states(toplevel.wl_surface(),|states|fractional_scale::with_fractional_scale(states,|fs|fs.set_preferred_scale(clamped)));
+                with_states(toplevel.wl_surface(),|states|fractional_scale::with_fractional_scale(states,|fs|fs.set_preferred_scale(crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(toplevel.wl_surface()), self.xwayland_hidpi, clamped))));
+                // Static X11 clients may not redraw for a DPI change. A configure
+                // makes satellite commit its pending viewport even without damage.
+                if crate::xwayland::is_xwayland_surface(toplevel.wl_surface()) && toplevel.is_initial_configure_sent() {
+                    toplevel.send_configure();
+                }
             }
         }
         let pending=self.pending_display;let queued=self.system_settings.queued_mode;let confirming=self.system_settings.confirming;
@@ -451,6 +464,8 @@ impl FeatherCompositor {
 
     /// Which app a window belongs to (unknown apps are grouped by app_id)
     pub fn app_key(&self, w: &ManagedWindow) -> AppKey {
+        // Proton/UMU uses this placeholder for unrelated games and helper windows.
+        if w.app_id.eq_ignore_ascii_case("steam_app_default") { return AppKey::Window(w.id); }
         if let Some(i) = self.app_registry.app_for_app_id(&w.app_id) {
             return AppKey::App(i);
         }
@@ -462,6 +477,11 @@ impl FeatherCompositor {
             .min()
             .unwrap_or(w.id);
         AppKey::Window(first)
+    }
+
+    fn auxiliary_game_window(&self, w: &ManagedWindow) -> bool {
+        w.app_id.eq_ignore_ascii_case("steam_app_default") && w.title == "Окно Wayland"
+            && self.windows.iter().any(|other| other.mapped && other.app_id.eq_ignore_ascii_case("steam_app_default") && other.title != "Окно Wayland")
     }
 
     fn icon_for_key(&self, key: AppKey, w: Option<&ManagedWindow>) -> (String, AppIcon) {
@@ -489,7 +509,7 @@ impl FeatherCompositor {
         let keys: Vec<(AppKey, &ManagedWindow)> = self
             .windows
             .iter()
-            .filter(|w| w.mapped)
+            .filter(|w| w.mapped && !self.auxiliary_game_window(w))
             .map(|w| (self.app_key(w), w))
             .collect();
 
@@ -575,8 +595,8 @@ impl FeatherCompositor {
             .windows
             .iter()
             .rev()
-            .filter(|w| w.mapped && !w.minimized)
-            .chain(self.windows.iter().rev().filter(|w| w.mapped && w.minimized));
+            .filter(|w| w.mapped && !w.minimized && !self.auxiliary_game_window(w))
+            .chain(self.windows.iter().rev().filter(|w| w.mapped && w.minimized && !self.auxiliary_game_window(w)));
         for w in order {
             let key = self.app_key(w);
             if items.iter().any(|i| i.key == key) {
@@ -600,7 +620,7 @@ impl FeatherCompositor {
         self.windows
             .iter()
             .rev()
-            .find(|w| w.is_visible())
+            .find(|w| w.is_visible() && !self.auxiliary_game_window(w))
             .map(|w| self.app_key(w))
     }
 
@@ -738,6 +758,7 @@ impl FeatherCompositor {
             default_browser: self.system_preferences.browser.clone(),
             default_terminal: Some(self.system_preferences.terminal.clone()),
             scale: self.explicit_scale,
+            xwayland_hidpi: self.xwayland_hidpi,
             dock_zoom: self.shell.dock_zoom_enabled,
             dock_locked: self.dock_locked,
             dock_size: crate::theme::dock_icon(),
@@ -1511,6 +1532,7 @@ impl FeatherCompositor {
             WinitEvent::Redraw => self.on_host_frame(),
             WinitEvent::CloseRequested => self.loop_signal.stop(),
             WinitEvent::Focus(false) if !self.debug_input_only => self.release_all_input(),
+            WinitEvent::Focus(true) if !self.debug_input_only => { self.pointer_capture_suspended = false; self.pointer_focus_dirty = true; },
             WinitEvent::Focus(_) => {}
         }
     }
@@ -1651,6 +1673,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let viewporter_state = ViewporterState::new::<FeatherCompositor>(&dh);
     let fractional_scale_state = FractionalScaleManagerState::new::<FeatherCompositor>(&dh);
     let cursor_shape_state = CursorShapeManagerState::new::<FeatherCompositor>(&dh);
+    let relative_pointer_state = smithay::wayland::relative_pointer::RelativePointerManagerState::new::<FeatherCompositor>(&dh);
+    let pointer_constraints_state = smithay::wayland::pointer_constraints::PointerConstraintsState::new::<FeatherCompositor>(&dh);
 
     let args: Vec<String> = std::env::args().collect();
     let is_windowed = args.iter().any(|a| a == "--windowed");
@@ -1782,11 +1806,18 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
 
     // New Wayland clients
     handle.insert_source(socket, |stream, _, state: &mut FeatherCompositor| {
-        if let Err(err) = state
+        match state
             .display_handle
             .insert_client(stream, Arc::new(ClientState::default()))
         {
-            tracing::warn!("Не удалось принять клиента: {err}");
+            Ok(client) => {
+                if let Ok(credentials) = client.get_credentials(&state.display_handle) {
+                    if state.xwayland.as_ref().and_then(|x| x.running_pid) == Some(credentials.pid as u32) {
+                        client.get_data::<ClientState>().unwrap().xwayland.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+            Err(err) => tracing::warn!("Не удалось принять клиента: {err}"),
         }
     })?;
 
@@ -1907,6 +1938,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         viewporter_state,
         fractional_scale_state,
         cursor_shape_state,
+        relative_pointer_state,
+        pointer_constraints_state,
+        active_constraint: None,
+        pointer_capture_suspended: false,
         popups: PopupManager::default(),
         seat,
         keyboard,
@@ -1919,6 +1954,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         phys_w,
         phys_h,
         scale_factor: init_scale,
+        xwayland_hidpi: saved.xwayland_hidpi,
         explicit_scale,
         wayland_socket_name: socket_name.clone(),
         fonts: FontSystem::new(),
@@ -2393,6 +2429,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         if state.pointer_focus_dirty {
             state.refresh_pointer_focus();
         }
+        state.sync_pointer_constraint();
         state.refresh_lock();
         state.sync_idle_inhibit();
         state.flush_hotplug();

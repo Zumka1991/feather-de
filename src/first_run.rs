@@ -908,6 +908,7 @@ mod tests {
             animations: true,
             dock_zoom: true,
             scale: 1.0,
+            xwayland_hidpi: true,
             display_name: "Feather-Display-1",
             monitors: Vec::new(),
             modes: &[mode],

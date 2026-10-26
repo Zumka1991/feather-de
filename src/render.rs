@@ -695,7 +695,7 @@ impl FeatherCompositor {
             let ctx = BuiltinContext {
                 settings: &self.system_settings,
                 first_run: &self.first_run,
-                settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,display_name:&self.display_name,monitors:self.monitors.iter().map(|m|m.info.clone()).collect(),modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref(),dnd:self.shell.dnd_active(),dnd_schedule:self.shell.dnd_schedule,notify_sounds:self.shell.notify_sounds,sounds:self.sound_preferences,audio:self.shell.cc.audio.clone(),wifi:self.shell.cc.wifi.clone(),bluetooth:self.shell.cc.bluetooth.clone(),hot_corners:self.hot_corners.actions,night:self.night.prefs,night_active:self.night.active(),notify_apps:&self.shell.notify_apps,screen_capture_policy:self.screen_capture_policy,screen_capture_cursor:self.screen_capture_cursor,screen_capture_apps:&self.screen_capture_apps,sticky_keys:self.sticky_keys},
+                settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,xwayland_hidpi:self.xwayland_hidpi,display_name:&self.display_name,monitors:self.monitors.iter().map(|m|m.info.clone()).collect(),modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref(),dnd:self.shell.dnd_active(),dnd_schedule:self.shell.dnd_schedule,notify_sounds:self.shell.notify_sounds,sounds:self.sound_preferences,audio:self.shell.cc.audio.clone(),wifi:self.shell.cc.wifi.clone(),bluetooth:self.shell.cc.bluetooth.clone(),hot_corners:self.hot_corners.actions,night:self.night.prefs,night_active:self.night.active(),notify_apps:&self.shell.notify_apps,screen_capture_policy:self.screen_capture_policy,screen_capture_cursor:self.screen_capture_cursor,screen_capture_apps:&self.screen_capture_apps,sticky_keys:self.sticky_keys},
                 notes_text: &self.notes_buffer,
                 rss_mb: self.shell.last_rss_mb,
                 window_count: visible_count,
@@ -919,6 +919,7 @@ impl FeatherCompositor {
 
     /// Direct DRM: compose (or scan out directly) and queue the frame for the next vblank
     fn render_drm(&mut self) -> Option<Duration> {
+        let pointer_locked = self.pointer_locked();
         use smithay::backend::drm::compositor::{FrameFlags, PrimaryPlaneElement};
         let crate::backend::Backend::Drm(d)=&mut self.backend else{return None};
         let scale=self.scale_factor;let pointer=(self.pointer_location.x,self.pointer_location.y);
@@ -970,7 +971,7 @@ impl FeatherCompositor {
                 e.extend(self.lock.monitor_elements(&mut d.renderer,scale,info,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size))));
                 output_elements(e,crate::monitors::Rect{x:0,y:0,..info.rect},scale)
             }else{
-                let mut e=cursor_elements(&mut d.renderer,&mut self.cursor,pointer,scale);
+                let mut e=if pointer_locked {Vec::new()} else {cursor_elements(&mut d.renderer,&mut self.cursor,pointer,scale)};
                 if info.primary {
                     e.extend(self.auth.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h),(self.phys_w,self.phys_h)));
                     e.extend(self.audio_hud.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));
@@ -1101,7 +1102,7 @@ impl FeatherCompositor {
                 continue;
             }
             let Some(surface) = win.wl_surface() else {
-                if win.contains_point(px, py) {
+                if win.contains_point(px, py) || win.resize_edges_at(px, py).is_some() {
                     return None;
                 }
                 continue;
@@ -1119,6 +1120,9 @@ impl FeatherCompositor {
                     return Some((surf, sub_loc.to_f64()));
                 }
             }
+            // A top window's outer resize band takes precedence over a client
+            // underneath it. Otherwise clicking its edge focuses the lower window.
+            if win.resize_edges_at(px, py).is_some() { return None; }
             if win.contains_point(px, py) || win.client_shadow {
                 if let Some((surf, sub_loc)) = smithay::desktop::utils::under_from_surface_tree(
                     surface,
