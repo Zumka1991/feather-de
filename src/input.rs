@@ -149,6 +149,9 @@ pub(crate) enum KeyAction {
     SwitchVt(i32),
     /// Print: screen, Shift+Print: region/window selection, Alt+Print: active window
     Screenshot { shift: bool, alt: bool },
+    /// Super+Shift+5 / Ctrl+Shift+Print: macOS-style Screen Capture & Video Recording HUD
+    ScreenRecorder,
+    ScreenRecorderStart,
     Auth(crate::auth_dialog::Cmd),
     Lock,
     Unlock,
@@ -657,6 +660,30 @@ impl FeatherCompositor {
                     deferred = Some(KeyAction::Shell(ShellClickAction::SetBrightness(((value * 10.0).round() / 10.0).clamp(0.0, 1.0))));
                     return FilterResult::Intercept(());
                 }
+                // Ctrl+Shift+Print or Super+Shift+5: macOS-style Screen Capture & Video Recording HUD
+                if (raw == keysyms::KEY_Print || raw == keysyms::KEY_Sys_Req) && mods.ctrl && mods.shift {
+                    deferred = Some(KeyAction::ScreenRecorder);
+                    return FilterResult::Intercept(());
+                }
+                if mods.logo && mods.shift {
+                    let latin = keysym_handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw());
+                    if matches!(raw, keysyms::KEY_5 | keysyms::KEY_percent)
+                        || matches!(latin, Some(keysyms::KEY_5 | keysyms::KEY_percent))
+                    {
+                        deferred = Some(KeyAction::ScreenRecorder);
+                        return FilterResult::Intercept(());
+                    }
+                }
+                if st.screencast.is_open() {
+                    if raw == keysyms::KEY_Escape {
+                        deferred = Some(KeyAction::ScreenRecorder);
+                        return FilterResult::Intercept(());
+                    }
+                    if matches!(raw, keysyms::KEY_Return | keysyms::KEY_KP_Enter | keysyms::KEY_space) {
+                        deferred = Some(KeyAction::ScreenRecorderStart);
+                        return FilterResult::Intercept(());
+                    }
+                }
                 // Alt+Print arrives as Sys_Req on most layouts
                 if raw == keysyms::KEY_Print || raw == keysyms::KEY_Sys_Req {
                     deferred = Some(KeyAction::Screenshot { shift: mods.shift, alt: mods.alt });
@@ -814,6 +841,8 @@ impl FeatherCompositor {
                 }
             }
             Some(KeyAction::SwitchVt(vt)) => self.switch_vt(vt),
+            Some(KeyAction::ScreenRecorder) => self.toggle_screen_recorder(),
+            Some(KeyAction::ScreenRecorderStart) => self.trigger_screencast_start(),
             // Any shortcut while selecting (Esc too) ends the selection first
             Some(KeyAction::Screenshot { .. }) if self.screenshot_select.is_some() => self.cancel_screenshot_selection(),
             Some(KeyAction::Screenshot { shift: true, .. }) => self.start_screenshot_selection(),
@@ -1133,7 +1162,7 @@ impl FeatherCompositor {
             self.needs_redraw = true;
             return false;
         }
-        if self.screenshot_motion() || self.desktop_motion() {
+        if self.screencast_motion() || self.screenshot_motion() || self.desktop_motion() {
             return false;
         }
         if self.shell.control_center_open && self.shell.cc.motion(pos.x as f32) {
@@ -1349,7 +1378,10 @@ impl FeatherCompositor {
 
         // A release of a press that started before the selection still belongs to the client
         let earlier_press = btn_state == ButtonState::Released && self.pressed_buttons.contains(&button);
-        if !earlier_press && self.screenshot_button(button == BTN_LEFT, btn_state == ButtonState::Pressed) {
+        if !earlier_press
+            && (self.screencast_button(button == BTN_LEFT, btn_state == ButtonState::Pressed)
+                || self.screenshot_button(button == BTN_LEFT, btn_state == ButtonState::Pressed))
+        {
             return;
         }
         let serial = SERIAL_COUNTER.next_serial();

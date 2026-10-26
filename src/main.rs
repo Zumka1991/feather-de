@@ -32,6 +32,7 @@ mod render;
 mod raster;
 mod rounded;
 mod screenshot;
+mod screencast;
 mod settings;
 mod system_settings;
 mod system_preferences;
@@ -262,6 +263,7 @@ pub struct FeatherCompositor {
     pub client_clipboard_mimes: Vec<String>,
     /// Finished screenshots (encoded off the event loop) come back here
     pub screenshot_tx: smithay::reexports::calloop::channel::Sender<Option<crate::screenshot::Finished>>,
+    pub screencast: crate::screencast::ScreenRecorderState,
     /// Presses handled by the compositor whose release must not reach clients
     pub consumed_buttons: Vec<u32>,
     pub compositor_cursor: Option<CursorIcon>,
@@ -1185,7 +1187,10 @@ impl FeatherCompositor {
                 AppAction::BuiltinWindow(kind) => self.open_or_focus_builtin(kind),
                 AppAction::HotReloadShell => self.trigger_hot_reload(),
                 AppAction::OpenLaunchpad => self.toggle_launchpad(),
+                AppAction::OpenScreenRecorder => self.toggle_screen_recorder(),
             },
+            ShellClickAction::ToggleScreenRecorder => self.toggle_screen_recorder(),
+            ShellClickAction::StopRecording => self.stop_screen_recording(),
             ShellClickAction::DockPress(target) => {
                 self.shell.anchor_dock_target(target);
                 // Executed on release if the icon was not dragged, or as a direct click.
@@ -1846,6 +1851,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         state.night_tick();
         if state.night.active() != night { state.mark_settings_dirty(); }
         let ticked = state.shell.tick();
+        if state.screencast_tick() { state.needs_redraw = true; }
         // A scheduled «Не беспокоить» started or ended: the Settings switch follows
         if state.shell.dnd_active() != dnd { state.mark_settings_dirty(); }
         if state.lock.clock_stale() { state.needs_redraw = true; }
@@ -1862,6 +1868,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     event_loop.handle().insert_source(screenshot_rx, |event, _, state| {
         if let smithay::reexports::calloop::channel::Event::Msg(finished) = event {
             state.install_screenshot(finished);
+        }
+    })?;
+    let (screencast_tx, screencast_rx) = crate::screencast::channel_source();
+    event_loop.handle().insert_source(screencast_rx, |event, _, state| {
+        if let smithay::reexports::calloop::channel::Event::Msg(finished) = event {
+            state.install_recording(finished);
         }
     })?;
 
@@ -1985,6 +1997,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         desktop_focus_top: None,
         client_clipboard_mimes: Vec::new(),
         screenshot_tx,
+        screencast: crate::screencast::ScreenRecorderState::new(screencast_tx),
         consumed_buttons: Vec::new(),
         compositor_cursor: None,
         user_interacted: false,
@@ -2284,6 +2297,17 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             TimeoutAction::Drop
         })?;
     }
+    // Screen video recording pipeline test without synthetic input: FEATHER_DEBUG_RECORD=1
+    if std::env::var_os("FEATHER_DEBUG_RECORD").is_some() {
+        state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(800)), |_, _, state| {
+            state.start_screen_recording(None);
+            TimeoutAction::Drop
+        })?;
+        state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(2200)), |_, _, state| {
+            state.stop_screen_recording();
+            TimeoutAction::Drop
+        })?;
+    }
     if (args.iter().any(|a| a == "--boot-splash")
         || ((is_standalone || use_drm) && std::env::var_os("FEATHER_NO_BOOT_SPLASH").is_none()))
         && std::env::var_os("FEATHER_DEBUG_OPEN").is_none()
@@ -2312,6 +2336,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Development aid for screenshot tests: FEATHER_DEBUG_OPEN=launchpad
     match std::env::var("FEATHER_DEBUG_OPEN").as_deref() {
         Ok("launchpad") => state.toggle_launchpad(),
+        Ok("screencap" | "screencast") => state.toggle_screen_recorder(),
         Ok("boot-splash") => state.start_boot_splash(Some(0.68)),
         Ok("login") => state.open_login_screen(),
         Ok("menu-feather") => state.shell.open_menu = Some(crate::shell::TopMenu::Feather),

@@ -536,6 +536,7 @@ enum TopbarItem {
     Clock,
     Tray(usize),
     TrayOverflow,
+    StopRecording,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,6 +596,8 @@ pub enum ShellClickAction {
     ToggleDoNotDisturb,
     SetBrightness(f32),
     FirstRun(crate::first_run::Action),
+    ToggleScreenRecorder,
+    StopRecording,
 }
 
 /// Menus of the menu bar
@@ -677,6 +680,7 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
             Separator,
             item("Системные настройки…", "", builtin(BuiltinWindowKind::SystemSettings, "Системные настройки")),
             item("Мониторинг системы", "", builtin(BuiltinWindowKind::ActivityMonitor, "Мониторинг системы")),
+            item("Запись экрана…", "⇧⌘5", Some(ShellClickAction::ToggleScreenRecorder)),
             item("Программы", "⌘A", Some(ShellClickAction::LaunchApp(crate::apps::AppAction::OpenLaunchpad, "Программы".into()))),
             Separator,
             item("Перезагрузить оболочку", "⇧⌘R", Some(ShellClickAction::HotReloadShell)),
@@ -863,6 +867,8 @@ pub struct MacShell {
     pub last_rss_mb: f32,
     pub last_rss_check: Instant,
     pub reload_count: u32,
+    /// Elapsed seconds of active screen recording (`Some(secs)` shows `[⏹ MM:SS]` in the menu bar)
+    pub recording_secs: Option<u64>,
 }
 
 impl MacShell {
@@ -960,6 +966,7 @@ impl MacShell {
             last_rss_mb: Self::read_process_rss_mb(),
             last_rss_check: Instant::now(),
             reload_count: 0,
+            recording_secs: None,
         };
         // Buffer and axes for the saved Dock edge (a side Dock's is turned)
         shell.resize_dock();
@@ -2528,6 +2535,9 @@ impl MacShell {
                 Some(TopbarItem::TrayOverflow) => {
                     return Some(ShellClickAction::TrayOverflow);
                 }
+                Some(TopbarItem::StopRecording) => {
+                    return Some(ShellClickAction::StopRecording);
+                }
                 None => {}
             }
             self.overlay_dirty = true;
@@ -2708,7 +2718,9 @@ impl MacShell {
         let bar = self.bar_colors();
         let mut hits = Vec::with_capacity(16);
         let tray=self.tray_items.clone();let visible_tray=self.tray_visible_count();
-        let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0};
+        let rec_secs = self.recording_secs;
+        let rec_width = if rec_secs.is_some() { 70.0 } else { 0.0 };
+        let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0} + rec_width;
         let input=self.input_sources.get(self.input_selected).copied().unwrap_or(crate::settings::SOURCES[0]);
         let hover=self.status_hover;
         let (center_open,dnd)=(self.center_open,self.dnd_active());
@@ -2777,6 +2789,24 @@ impl MacShell {
                 if open_menu==Some(TopMenu::Input)||hover==Some(TopbarItem::Layout){highlight(&mut pm,rx-31.0,rx-1.0);}
                 crate::system_settings::draw_input_badge(&mut pm,fonts,input.badge,rx-27.0,(lh-16.0)*0.5,22.0,16.0,bar.text);
                 hits.push((rx-32.0,rx,TopbarItem::Layout));rx-=40.0;
+                if let Some(secs) = rec_secs {
+                    let pill_w = 62.0;
+                    let pill_h = 18.0;
+                    let px0 = rx - pill_w;
+                    let py0 = (lh - pill_h) * 0.5;
+                    let bg = if hover == Some(TopbarItem::StopRecording) {
+                        rgba(255, 89, 78, 255)
+                    } else {
+                        rgba(255, 59, 48, 238)
+                    };
+                    fill_rounded_rect(&mut pm, px0, py0, pill_w, pill_h, 9.0, bg);
+                    // White stop square inside circle + MM:SS
+                    fill_rounded_rect(&mut pm, px0 + 7.0, lh * 0.5 - 3.5, 7.0, 7.0, 1.5, Color::WHITE);
+                    let timer_str = format!("{:02}:{:02}", secs / 60, secs % 60);
+                    fonts.draw_text(&mut pm, &timer_str, px0 + 19.0, (lh - 11.5) * 0.5 - 1.0, 11.5, Color::WHITE, true);
+                    hits.push((px0 - 2.0, rx + 2.0, TopbarItem::StopRecording));
+                    rx -= pill_w + 8.0;
+                }
                 for (index,item) in tray.iter().take(visible_tray).enumerate(){
                     let x=rx-23.0;let y=(lh-18.0)*0.5;
                     if hover==Some(TopbarItem::Tray(index)){highlight(&mut pm,rx-27.0,rx-1.0);}

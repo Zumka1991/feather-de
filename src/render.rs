@@ -254,7 +254,7 @@ fn push_window_surfaces(
 }
 
 /// Pointer image for the DRM backend (front-most elements)
-fn cursor_elements(
+pub(crate) fn cursor_elements(
     renderer: &mut GlesRenderer,
     cursor: &mut crate::cursor::CursorManager,
     pointer: (f64, f64),
@@ -686,6 +686,7 @@ impl FeatherCompositor {
         }
 
         self.auth.ensure_rendered(&mut self.fonts);
+        self.ensure_screencast_hud_rendered();
         profile.step("overlay");
         let needs_builtin_ctx = self
             .windows
@@ -860,6 +861,7 @@ impl FeatherCompositor {
                 let mut elements = if view.primary {self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h))}else{Vec::new()};
                 if view.primary {elements.extend(self.audio_hud.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h)));}
                 elements.extend(crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
+                elements.extend(crate::screencast::overlay(renderer, &self.screencast, scale, (self.phys_w, self.phys_h)));
                 drag_overlay(&mut elements, renderer, &self.shell, pointer, scale);
                 elements.extend(build_scene(
                     renderer,
@@ -977,6 +979,7 @@ impl FeatherCompositor {
                     e.extend(self.auth.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h),(self.phys_w,self.phys_h)));
                     e.extend(self.audio_hud.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));
                     e.extend(crate::screenshot::overlay(&mut d.renderer,self.screenshot_select.as_ref(),pointer,scale,(self.phys_w,self.phys_h)));
+                    e.extend(crate::screencast::overlay(&mut d.renderer,&self.screencast,scale,(self.phys_w,self.phys_h)));
                 }
                 drag_overlay(&mut e,&mut d.renderer,&self.shell,pointer,scale);
                 e.extend(build_scene(&mut d.renderer,&self.shell,&self.windows,scale,pointer,self.rounded_program.as_ref(),&self.animations,info.rect));

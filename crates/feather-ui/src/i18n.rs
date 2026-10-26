@@ -1229,6 +1229,19 @@ static TABLE: &[Entry] = &[
     ("Launchpad — сетка всех приложений", "Launchpad — full-screen application grid", "Launchpad — cuadrícula de todas las aplicaciones", "Launchpad — Vollbild-Programmübersicht", "Launchpad — grille de toutes les applications", "启动台 — 全屏应用网格"),
     ("Mission Control — обзор окон и рабочих столов", "Mission Control — overview of windows and desktops", "Mission Control — vista general de ventanas y escritorios", "Mission Control — Übersicht über Fenster und Schreibtische", "Mission Control — aperçu des fenêtres et bureaux", "调度中心 — 窗口与桌面概览"),
     ("Мгновенная блокировка экрана", "Lock screen immediately", "Bloquear pantalla al instante", "Bildschirm sofort sperren", "Verrouiller l’écran immédiatement", "立即锁定屏幕"),
+
+    // ── Screen Capture & Video Recording («Запись экрана» / ⇧⌘5) ──
+    ("Запись экрана", "Screen Recording", "Grabación de pantalla", "Bildschirmaufnahme", "Enregistrement de l’écran", "屏幕录制"),
+    ("Запись экрана…", "Screen Recording…", "Grabación de pantalla…", "Bildschirmaufnahme…", "Enregistrement de l’écran…", "屏幕录制…"),
+    ("Снимок и видеозапись экрана (Super+Shift+5)", "Screen Capture & Video Recording (Super+Shift+5)", "Captura y grabación de pantalla (Super+Shift+5)", "Bildschirmfoto & Videoaufnahme (Super+Shift+5)", "Capture et enregistrement d’écran (Super+Shift+5)", "屏幕截图与录制 (Super+Shift+5)"),
+    ("Весь экран", "Entire Screen", "Toda la pantalla", "Gesamter Bildschirm", "Tout l’écran", "整个屏幕"),
+    ("Область", "Portion", "Selección", "Bereich", "Sélection", "所选部分"),
+    ("Запись области", "Record Portion", "Grabar selección", "Bereich aufnehmen", "Enregistrer la sélection", "录制所选部分"),
+    ("Таймер", "Timer", "Temporizador", "Timer", "Minuteur", "计时器"),
+    ("Микрофон", "Microphone", "Micrófono", "Mikrofon", "Microphone", "麦克风"),
+    ("Курсор", "Cursor", "Cursor", "Zeiger", "Curseur", "指针"),
+    ("Записать", "Record", "Grabar", "Aufnehmen", "Enregistrer", "录制"),
+    ("Снять", "Capture", "Capturar", "Aufnahme", "Capturer", "捕捉"),
 ];
 
 fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {

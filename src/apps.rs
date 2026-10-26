@@ -20,6 +20,7 @@ pub enum IconKind {
     Preview,
     TextEdit,
     Calculator,
+    ScreenRecord,
     ActivityMonitor,
     Settings,
     Launchpad,
@@ -38,6 +39,8 @@ pub enum AppAction {
     HotReloadShell,
     /// Shows the full-screen app grid (Launchpad)
     OpenLaunchpad,
+    /// Opens the macOS-style Screen Capture & Video Recording HUD (Super+Shift+5)
+    OpenScreenRecorder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,6 +240,16 @@ impl AppRegistry {
             .with_aliases(&["feather-calc"])
             .with_own_icon(),
             AppEntry::new(
+                "builtin.screencap",
+                "Запись экрана",
+                "Снимок и видеозапись экрана (Super+Shift+5)",
+                IconKind::ScreenRecord,
+                OpenScreenRecorder,
+                true,
+            )
+            .with_aliases(&["screenshot", "screencast", "screen-recorder"])
+            .with_own_icon(),
+            AppEntry::new(
                 "builtin.monitor",
                 "Мониторинг системы",
                 "Память, окна Wayland и рендер",
@@ -428,7 +441,7 @@ impl AppRegistry {
             .apps
             .iter()
             .enumerate()
-            .filter(|(_, a)| matches!(a.action, AppAction::Exec(_) | AppAction::BuiltinWindow(_)))
+            .filter(|(_, a)| matches!(a.action, AppAction::Exec(_) | AppAction::BuiltinWindow(_) | AppAction::OpenScreenRecorder))
             .filter(|(_, a)| {
                 q.is_empty()
                     || a.name.to_lowercase().contains(&q)
@@ -1084,6 +1097,30 @@ pub fn draw_app_icon(
                     fill_circle(pixmap, x + size * cx, y + size * ry, size * 0.068, col);
                 }
             }
+        }
+        IconKind::ScreenRecord => {
+            // Screen Capture & Recording («Запись экрана»): dark graphite Tahoe tile with viewfinder corner brackets and glowing red record button
+            tile(pixmap, rgba(62, 66, 76, 255), rgba(24, 26, 32, 255));
+            let m = size * 0.19;
+            let len = size * 0.15;
+            let w = (size * 0.042).max(1.5);
+            let bracket = rgba(235, 240, 248, 235);
+            let (x0, y0, x1, y1) = (x + m, y + m, x + size - m, y + size - m);
+            // 4 viewfinder corner L-brackets
+            stroke_line(pixmap, x0, y0, x0 + len, y0, w, bracket);
+            stroke_line(pixmap, x0, y0, x0, y0 + len, w, bracket);
+            stroke_line(pixmap, x1 - len, y0, x1, y0, w, bracket);
+            stroke_line(pixmap, x1, y0, x1, y0 + len, w, bracket);
+            stroke_line(pixmap, x0, y1 - len, x0, y1, w, bracket);
+            stroke_line(pixmap, x0, y1, x0 + len, y1, w, bracket);
+            stroke_line(pixmap, x1 - len, y1, x1, y1, w, bracket);
+            stroke_line(pixmap, x1, y1 - len, x1, y1, w, bracket);
+            // Center record target ring + glowing crimson core
+            let (cx, cy) = (x + size * 0.5, y + size * 0.5);
+            fill_circle(pixmap, cx, cy, size * 0.21, rgba(255, 255, 255, 38));
+            crate::theme::stroke_circle(pixmap, cx, cy, size * 0.21, (size * 0.025).max(1.0), rgba(255, 255, 255, 210));
+            fill_circle(pixmap, cx, cy, size * 0.145, rgba(255, 69, 58, 255));
+            fill_circle(pixmap, cx - size * 0.035, cy - size * 0.035, size * 0.04, rgba(255, 195, 190, 150));
         }
         IconKind::ActivityMonitor => {
             tile(pixmap, rgba(58, 58, 64, 255), rgba(22, 22, 26, 255));
