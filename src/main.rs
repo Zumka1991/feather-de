@@ -1324,6 +1324,10 @@ impl FeatherCompositor {
                 self.shell.dock_dirty = true;
                 self.refresh_focus();
             }
+            ShellClickAction::SleepSystem => self.sleep_system(),
+            ShellClickAction::ConfirmRestart => self.confirm_restart(),
+            ShellClickAction::ConfirmPowerOff => self.confirm_power_off(),
+            ShellClickAction::LockScreen => self.lock_session(),
             ShellClickAction::QuitCompositor => self.loop_signal.stop(),
             ShellClickAction::HideApp => {
                 if let Some(key) = self.focused_app() {
@@ -1509,10 +1513,24 @@ impl FeatherCompositor {
         let scale = self
             .explicit_scale
             .unwrap_or_else(|| auto_scale_for_resolution(self.phys_w, host_scale));
+        let recenter = !self.user_interacted;
+        let saved_overlay = recenter.then_some((
+            self.shell.open_menu,
+            self.shell.control_center_open,
+            self.shell.center_open,
+            self.shell.cc.page,
+        ));
         self.apply_hidpi_scale(scale);
+        if let Some((open_menu, cc_open, center_open, cc_page)) = saved_overlay {
+            self.shell.open_menu = open_menu;
+            self.shell.control_center_open = cc_open;
+            self.shell.center_open = center_open;
+            self.shell.cc.page = cc_page;
+            self.shell.topbar_dirty = true;
+            self.shell.overlay_dirty = true;
+        }
 
         let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-        let recenter = !self.user_interacted;
         for (idx, win) in self.windows.iter_mut().enumerate() {
             if win.maximized || win.fullscreen {
                 continue;
@@ -2339,6 +2357,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("screencap" | "screencast") => state.toggle_screen_recorder(),
         Ok("boot-splash") => state.start_boot_splash(Some(0.68)),
         Ok("login") => state.open_login_screen(),
+        Ok("confirm-restart") => state.confirm_restart(),
+        Ok("confirm-poweroff") => state.confirm_power_off(),
         Ok("menu-feather") => state.shell.open_menu = Some(crate::shell::TopMenu::Feather),
         Ok("menu-app") => state.shell.open_menu = Some(crate::shell::TopMenu::App),
         Ok("menu-window") => state.shell.open_menu = Some(crate::shell::TopMenu::Window),

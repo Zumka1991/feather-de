@@ -1242,6 +1242,55 @@ static TABLE: &[Entry] = &[
     ("Курсор", "Cursor", "Cursor", "Zeiger", "Curseur", "指针"),
     ("Записать", "Record", "Grabar", "Aufnehmen", "Enregistrer", "录制"),
     ("Снять", "Capture", "Capturar", "Aufnahme", "Capturer", "捕捉"),
+
+    // ── Power & Session Actions («Режим сна» / «Перезагрузить…» / «Выключить…») ──
+    ("Режим сна", "Sleep", "Reposo", "Ruhezustand", "Suspendre", "睡眠"),
+    ("Перезагрузить…", "Restart…", "Reiniciar…", "Neustart…", "Redémarrer…", "重新启动…"),
+    ("Выключить…", "Shut Down…", "Apagar…", "Ausschalten…", "Éteindre…", "关机…"),
+    ("Заблокировать экран", "Lock Screen", "Bloquear pantalla", "Bildschirm sperren", "Verrouiller l’écran", "锁定屏幕"),
+    ("Отменить", "Cancel", "Cancelar", "Abbrechen", "Annuler", "取消"),
+    (
+        "Вы действительно хотите перезагрузить компьютер сейчас?",
+        "Are you sure you want to restart your computer now?",
+        "¿Seguro que quieres reiniciar el ordenador ahora?",
+        "Möchten Sie Ihren Computer jetzt wirklich neu starten?",
+        "Voulez-vous vraiment redémarrer votre ordinateur maintenant ?",
+        "您确定现在要重新启动电脑吗？",
+    ),
+    (
+        "Вы действительно хотите выключить компьютер сейчас?",
+        "Are you sure you want to shut down your computer now?",
+        "¿Seguro que quieres apagar el ordenador ahora?",
+        "Möchten Sie Ihren Computer jetzt wirklich ausschalten?",
+        "Voulez-vous vraiment éteindre votre ordinateur maintenant ?",
+        "您确定现在要关闭电脑吗？",
+    ),
+    (
+        "Несохранённые изменения в открытых программах могут быть потеряны.",
+        "Unsaved changes in open applications may be lost.",
+        "Los cambios no guardados en las aplicaciones abiertas podrían perderse.",
+        "Nicht gesicherte Änderungen in geöffneten Programmen gehen möglicherweise verloren.",
+        "Les modifications non enregistrées dans les applications ouvertes risquent d’être perdues.",
+        "打开的应用程序中未保存的更改可能会丢失。",
+    ),
+    ("Перезагрузка системы", "System Restart", "Reinicio del sistema", "Systemneustart", "Redémarrage du système", "重新启动系统"),
+    ("Выключение системы", "System Shut Down", "Apagado del sistema", "System ausschalten", "Extinction du système", "关闭系统"),
+    (
+        "Перезагрузка доступна в основном сеансе Пёрышка",
+        "Restart is available in the primary Feather session",
+        "El reinicio está disponible en la sesión principal de Feather",
+        "Neustart ist in der primären Feather-Sitzung verfügbar",
+        "Le redémarrage est disponible dans la session principale de Feather",
+        "重新启动仅在轻羽桌面主会话中可用",
+    ),
+    (
+        "Выключение доступно в основном сеансе Пёрышка",
+        "Shut down is available in the primary Feather session",
+        "El apagado está disponible en la sesión principal de Feather",
+        "Ausschalten ist in der primären Feather-Sitzung verfügbar",
+        "L’extinction est disponible dans la session principale de Feather",
+        "关机仅在轻羽桌面主会话中可用",
+    ),
 ];
 
 fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {

@@ -81,6 +81,15 @@ impl Power {
     pub fn protected(&self) {
         self.send(Command::Protected);
     }
+    pub fn suspend(&self) {
+        self.send(Command::Suspend);
+    }
+    pub fn reboot(&self) {
+        self.send(Command::Reboot);
+    }
+    pub fn power_off(&self) {
+        self.send(Command::PowerOff);
+    }
 }
 #[derive(Clone, Copy)]
 enum Command {
@@ -88,6 +97,8 @@ enum Command {
     Protected,
     Idle(bool),
     Suspend,
+    Reboot,
+    PowerOff,
 }
 #[derive(Debug)]
 enum Event {
@@ -334,6 +345,79 @@ impl FeatherCompositor {
                 }
             });
     }
+
+    pub fn sleep_system(&mut self) {
+        self.lock_session();
+        if self.backend.is_drm() && self.power.ready {
+            self.power.suspend();
+        } else if self.own_session {
+            crate::apps::spawn_wayland_command("systemctl suspend", &self.wayland_socket_name);
+        } else {
+            self.lock.message = "Переход в режим сна…";
+            self.lock.dirty = true;
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn restart_system(&mut self) {
+        if self.backend.is_drm() && self.power.ready {
+            self.power.reboot();
+        } else if self.own_session {
+            crate::apps::spawn_wayland_command("systemctl reboot", &self.wayland_socket_name);
+        } else if self.lock.active {
+            self.lock.message = "Перезагрузка доступна в основном сеансе";
+            self.lock.dirty = true;
+            self.needs_redraw = true;
+        } else {
+            self.shell.notify(
+                "Перезагрузка системы",
+                "Перезагрузка доступна в основном сеансе Пёрышка",
+            );
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn poweroff_system(&mut self) {
+        if self.backend.is_drm() && self.power.ready {
+            self.power.power_off();
+        } else if self.own_session {
+            crate::apps::spawn_wayland_command("systemctl poweroff", &self.wayland_socket_name);
+        } else if self.lock.active {
+            self.lock.message = "Выключение доступно в основном сеансе";
+            self.lock.dirty = true;
+            self.needs_redraw = true;
+        } else {
+            self.shell.notify(
+                "Выключение системы",
+                "Выключение доступно в основном сеансе Пёрышка",
+            );
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn confirm_restart(&mut self) {
+        self.auth.confirm(crate::auth_dialog::Confirm {
+            title: "Вы действительно хотите перезагрузить компьютер сейчас?".into(),
+            message: "Несохранённые изменения в открытых программах могут быть потеряны.".into(),
+            ok: "Перезагрузить".into(),
+            action: crate::auth_dialog::ConfirmAction::Restart,
+        });
+        self.shell.close_menus();
+        self.refresh_focus();
+        self.needs_redraw = true;
+    }
+
+    pub fn confirm_power_off(&mut self) {
+        self.auth.confirm(crate::auth_dialog::Confirm {
+            title: "Вы действительно хотите выключить компьютер сейчас?".into(),
+            message: "Несохранённые изменения в открытых программах могут быть потеряны.".into(),
+            ok: "Выключить".into(),
+            action: crate::auth_dialog::ConfirmAction::PowerOff,
+        });
+        self.shell.close_menus();
+        self.refresh_focus();
+        self.needs_redraw = true;
+    }
 }
 
 async fn logind(
@@ -441,6 +525,32 @@ async fn logind_connected(
                     )
                     .detach();
             }
+            Next::Command(Ok(Command::Reboot)) => {
+                let manager = manager.clone();
+                conn.executor()
+                    .spawn(
+                        async move {
+                            if let Err(e) = manager.call::<_, _, ()>("Reboot", &(true,)).await {
+                                tracing::warn!("Перезагрузка: {e}");
+                            }
+                        },
+                        "feather-reboot",
+                    )
+                    .detach();
+            }
+            Next::Command(Ok(Command::PowerOff)) => {
+                let manager = manager.clone();
+                conn.executor()
+                    .spawn(
+                        async move {
+                            if let Err(e) = manager.call::<_, _, ()>("PowerOff", &(true,)).await {
+                                tracing::warn!("Выключение: {e}");
+                            }
+                        },
+                        "feather-poweroff",
+                    )
+                    .detach();
+            }
             _ => break,
         }
     }
@@ -465,6 +575,8 @@ mod tests {
         locked: std::sync::atomic::AtomicBool,
         idle: std::sync::atomic::AtomicBool,
         suspends: std::sync::atomic::AtomicUsize,
+        reboots: std::sync::atomic::AtomicUsize,
+        poweroffs: std::sync::atomic::AtomicUsize,
     }
     struct FakeManager(std::sync::Arc<Observed>);
     #[zbus::interface(name = "org.freedesktop.login1.Manager")]
@@ -490,6 +602,19 @@ mod tests {
             assert!(!interactive);
             self.0
                 .suspends
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn reboot(&self, interactive: bool) {
+            assert!(interactive);
+            self.0
+                .reboots
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        #[zbus(name = "PowerOff")]
+        fn power_off(&self, interactive: bool) {
+            assert!(interactive);
+            self.0
+                .poweroffs
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
@@ -636,11 +761,15 @@ mod tests {
         commands.send_blocking(Command::Locked(true)).unwrap();
         commands.send_blocking(Command::Idle(true)).unwrap();
         commands.send_blocking(Command::Suspend).unwrap();
+        commands.send_blocking(Command::Reboot).unwrap();
+        commands.send_blocking(Command::PowerOff).unwrap();
         let until = Instant::now() + Duration::from_secs(5);
         while observed.peers.lock().unwrap().len() < 2
             || !observed.locked.load(Ordering::SeqCst)
             || !observed.idle.load(Ordering::SeqCst)
             || observed.suspends.load(Ordering::SeqCst) != 1
+            || observed.reboots.load(Ordering::SeqCst) != 1
+            || observed.poweroffs.load(Ordering::SeqCst) != 1
         {
             assert!(Instant::now() < until);
             std::thread::sleep(Duration::from_millis(5));

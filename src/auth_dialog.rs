@@ -43,6 +43,8 @@ pub enum Cmd {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConfirmAction {
     EmptyTrash,
+    Restart,
+    PowerOff,
 }
 
 /// A macOS alert for a destructive action, shown in the same modal layer.
@@ -520,8 +522,12 @@ impl AuthUi {
         let p = palette();
         let dark = appearance() == Appearance::Dark;
         let inner = W - 48.0;
-        let title_lines = wrap(fonts, &c.title, inner, 14.0, true, 3);
-        let body_lines = wrap(fonts, &c.message, inner, 12.0, false, 4);
+        let title_str = feather_ui::i18n::tr(&c.title);
+        let body_str = feather_ui::i18n::tr(&c.message);
+        let ok_str = feather_ui::i18n::tr(&c.ok).into_owned();
+        let action = c.action;
+        let title_lines = wrap(fonts, &title_str, inner, 14.0, true, 3);
+        let body_lines = wrap(fonts, &body_str, inner, 12.0, false, 4);
         let title_y = 22.0 + 64.0 + 14.0;
         let body_y = title_y + title_lines.len() as f32 * 19.0 + 4.0;
         let buttons_y = body_y + body_lines.len() as f32 * 16.0 + 20.0;
@@ -546,14 +552,14 @@ impl AuthUi {
             let pm = &mut pm;
             let (ox, oy) = (M, M);
             paint_panel(pm, ox, oy, h, dark);
-            crate::apps::draw_app_icon(pm, fonts, crate::apps::IconKind::TrashFull, "", ox + (W - 64.0) / 2.0, oy + 22.0, 64.0);
+            draw_confirm_icon(pm, fonts, action, ox + (W - 64.0) / 2.0, oy + 22.0, 64.0);
             for (i, line) in title_lines.iter().enumerate() {
                 fonts.draw_text_centered(pm, line, ox + W / 2.0, oy + title_y + i as f32 * 19.0, 14.0, p.text, true);
             }
             for (i, line) in body_lines.iter().enumerate() {
                 fonts.draw_text_centered(pm, line, ox + W / 2.0, oy + body_y + i as f32 * 16.0, 12.0, p.text_secondary, false);
             }
-            paint_buttons(pm, fonts, ox + 24.0, oy + buttons_y, bw, &c.ok, false, dark, self.hover);
+            paint_buttons(pm, fonts, ox + 24.0, oy + buttons_y, bw, &ok_str, false, dark, self.hover);
             Result::<_, ()>::Ok(vec![Rectangle::from_size(phys.into())])
         });
     }
@@ -582,6 +588,51 @@ impl AuthUi {
             out.push(crate::render::SceneElement::Memory(e).into());
         }
         out
+    }
+}
+
+fn draw_confirm_icon(
+    pm: &mut PixmapMut,
+    fonts: &mut FontSystem,
+    action: ConfirmAction,
+    x: f32,
+    y: f32,
+    s: f32,
+) {
+    match action {
+        ConfirmAction::EmptyTrash => {
+            crate::apps::draw_app_icon(pm, fonts, crate::apps::IconKind::TrashFull, "", x, y, s);
+        }
+        ConfirmAction::Restart | ConfirmAction::PowerOff => {
+            let dark = appearance() == Appearance::Dark;
+            let (top, bottom) = if dark {
+                (rgba(82, 84, 94, 255), rgba(50, 52, 60, 255))
+            } else {
+                (rgba(250, 250, 253, 255), rgba(220, 222, 230, 255))
+            };
+            if let Some(path) = squircle_path(x, y, s) {
+                fill_path_gradient(pm, &path, y, y + s, top, bottom);
+            }
+            stroke_squircle(pm, x, y, s, 0.5, rgba(0, 0, 0, if dark { 90 } else { 40 }));
+            let cx = x + s * 0.5;
+            let cy = y + s * 0.5;
+            let r = s * 0.31;
+            let badge = if action == ConfirmAction::Restart {
+                palette().accent
+            } else {
+                rgba(255, 69, 58, 255)
+            };
+            fill_circle(pm, cx, cy, r, badge);
+            let white = rgba(255, 255, 255, 250);
+            if action == ConfirmAction::Restart {
+                feather_ui::draw::stroke_circle(pm, cx, cy, r * 0.52, 2.3, white);
+                stroke_line(pm, cx + r * 0.20, cy - r * 0.62, cx + r * 0.58, cy - r * 0.45, 2.3, white);
+                stroke_line(pm, cx + r * 0.58, cy - r * 0.45, cx + r * 0.36, cy - r * 0.10, 2.3, white);
+            } else {
+                feather_ui::draw::stroke_circle(pm, cx, cy + r * 0.08, r * 0.50, 2.3, white);
+                stroke_line(pm, cx, cy - r * 0.58, cx, cy + r * 0.05, 2.6, white);
+            }
+        }
     }
 }
 
@@ -646,6 +697,8 @@ impl crate::FeatherCompositor {
                 if matches!(cmd, Cmd::Submit) {
                     match confirm.action {
                         ConfirmAction::EmptyTrash => self.empty_trash_now(),
+                        ConfirmAction::Restart => self.restart_system(),
+                        ConfirmAction::PowerOff => self.poweroff_system(),
                     }
                 }
                 self.auth.dirty = true;

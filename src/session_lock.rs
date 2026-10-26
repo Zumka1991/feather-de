@@ -411,11 +411,11 @@ pub struct Lock {
     generation: u64,
     input: TextInput,
     verifying: bool,
-    message: &'static str,
+    pub(crate) message: &'static str,
     caps: bool,
     layout: String,
     hover_action: Option<u8>,
-    dirty: bool,
+    pub(crate) dirty: bool,
     status_dirty: bool,
     /// Account & power actions panel at the bottom: avatar, name, password field, Sleep/Restart/Shut Down
     buffer: MemoryRenderBuffer,
@@ -1325,39 +1325,9 @@ impl FeatherCompositor {
                 self.lock.status_dirty = true;
                 self.lock.dirty = true;
             }
-            LockClick::Sleep => {
-                if self.own_session {
-                    crate::apps::spawn_wayland_command(
-                        "systemctl suspend",
-                        &self.wayland_socket_name,
-                    );
-                } else {
-                    self.lock.message = "Переход в режим сна…";
-                    self.lock.dirty = true;
-                }
-            }
-            LockClick::Restart => {
-                if self.own_session {
-                    crate::apps::spawn_wayland_command(
-                        "systemctl reboot",
-                        &self.wayland_socket_name,
-                    );
-                } else {
-                    self.lock.message = "Перезагрузка доступна в основном сеансе";
-                    self.lock.dirty = true;
-                }
-            }
-            LockClick::PowerOff => {
-                if self.own_session {
-                    crate::apps::spawn_wayland_command(
-                        "systemctl poweroff",
-                        &self.wayland_socket_name,
-                    );
-                } else {
-                    self.lock.message = "Выключение доступно в основном сеансе";
-                    self.lock.dirty = true;
-                }
-            }
+            LockClick::Sleep => self.sleep_system(),
+            LockClick::Restart => self.restart_system(),
+            LockClick::PowerOff => self.poweroff_system(),
         }
     }
 

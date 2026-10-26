@@ -2,6 +2,29 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-27 — Сон, перезагрузка, выключение и блокировка экрана в меню `🪶` (Gemini/agy)
+
+- В `src/shell.rs`, `src/power.rs`, `src/auth_dialog.rs`, `src/session_lock.rs`, `src/main.rs` и
+  `crates/feather-ui/src/i18n.rs` реализовано управление питанием и сеансом из системного меню `🪶`
+  (`TopMenu::Feather`) в стиле macOS Tahoe:
+  - В нижнюю часть меню `🪶` добавлены пункты **«Режим сна»**, **«Перезагрузить…»**, **«Выключить…»**,
+    разделитель, **«Заблокировать экран»** (`⌘L`) и **«Выйти из Пёрышка…»** (`⌃⌥⌫`).
+  - Для **«Перезагрузить…»** (`ConfirmAction::Restart`) и **«Выключить…»** (`ConfirmAction::PowerOff`)
+    добавлены модальные диалоги подтверждения в `src/auth_dialog.rs` с фирменными 64×64 squircle-значками
+    (круговая стрелка перезагрузки и символ питания `⏻`), поддержкой `Enter` / `Escape` и переводом на
+    все 6 языков интерфейса (`Ru`, `En`, `Es`, `De`, `Fr`, `Zh`).
+  - В фоновом потоке `feather-logind` (`src/power.rs`) добавлены неблокирующие D-Bus вызовы
+    `org.freedesktop.login1.Manager.Reboot(true)` и `PowerOff(true)` (в дополнение к `Suspend(true)`),
+    а также единые методы `FeatherCompositor::{sleep_system, restart_system, poweroff_system}` с
+    автоматической блокировкой экрана перед уходом в сон (`lock_on_sleep`), резервным вызовом
+    `systemctl suspend|reboot|poweroff` и защитой от случайного выключения/сна хост-системы при запуске
+    во вложенном `--windowed` режиме без `--standalone`. Кнопки `Сон` / `Перезагрузка` / `Выключить` на
+    экране блокировки (`src/session_lock.rs`) переведены на те же общие методы.
+- Расширен модульный тест `power::tests::private_logind_waits_for_protected_frame_and_reacquires_inhibitor_on_resume`
+  проверкой вызовов `Reboot` и `PowerOff` на тестовой D-Bus шине; `cargo build --release` без
+  предупреждений; визуально проверены снимки `FEATHER_DEBUG_OPEN=menu-feather`, `confirm-restart` и
+  `confirm-poweroff`.
+
 ## 2026-10-26 — Стандартное приложение «Запись экрана» в стиле macOS (`Screenshot.app` / `⇧⌘5`) (Gemini/agy)
 
 - В `src/screencast.rs`, `src/apps.rs`, `src/shell.rs`, `src/render.rs`, `src/input.rs`, `src/main.rs` и

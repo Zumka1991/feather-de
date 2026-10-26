@@ -598,6 +598,10 @@ pub enum ShellClickAction {
     FirstRun(crate::first_run::Action),
     ToggleScreenRecorder,
     StopRecording,
+    SleepSystem,
+    ConfirmRestart,
+    ConfirmPowerOff,
+    LockScreen,
 }
 
 /// Menus of the menu bar
@@ -686,7 +690,12 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
             item("Перезагрузить оболочку", "⇧⌘R", Some(ShellClickAction::HotReloadShell)),
             item("Свернуть все окна", "", Some(ShellClickAction::MinimizeAllWindows)),
             Separator,
-            item("Выйти из Пёрышка…", "", Some(ShellClickAction::QuitCompositor)),
+            item("Режим сна", "", Some(ShellClickAction::SleepSystem)),
+            item("Перезагрузить…", "", Some(ShellClickAction::ConfirmRestart)),
+            item("Выключить…", "", Some(ShellClickAction::ConfirmPowerOff)),
+            Separator,
+            item("Заблокировать экран", "⌘L", Some(ShellClickAction::LockScreen)),
+            item("Выйти из Пёрышка…", "⌃⌥⌫", Some(ShellClickAction::QuitCompositor)),
         ],
         TopMenu::App => {
             let name = if has_app { ctx.app_name.as_str() } else { "Пёрышко" };
