@@ -374,6 +374,88 @@ impl FeatherCompositor {
         let key_state = event.state();
         self.process_keyboard_key(keycode,key_state,Event::time_msec(&event));
     }
+}
+
+struct DiscardKeyGrab {
+    start_data: smithay::input::keyboard::GrabStartData<FeatherCompositor>,
+}
+
+impl smithay::input::keyboard::KeyboardGrab<FeatherCompositor> for DiscardKeyGrab {
+    fn input(
+        &mut self,
+        _data: &mut FeatherCompositor,
+        _handle: &mut smithay::input::keyboard::KeyboardInnerHandle<'_, FeatherCompositor>,
+        _keycode: smithay::input::keyboard::Keycode,
+        _state: KeyState,
+        _modifiers: Option<smithay::input::keyboard::ModifiersState>,
+        _serial: smithay::utils::Serial,
+        _time: u32,
+    ) {
+    }
+    fn set_focus(
+        &mut self,
+        data: &mut FeatherCompositor,
+        handle: &mut smithay::input::keyboard::KeyboardInnerHandle<'_, FeatherCompositor>,
+        focus: Option<WlSurface>,
+        serial: smithay::utils::Serial,
+    ) {
+        handle.set_focus(data, focus, serial);
+    }
+    fn start_data(&self) -> &smithay::input::keyboard::GrabStartData<FeatherCompositor> {
+        &self.start_data
+    }
+    fn unset(&mut self, _data: &mut FeatherCompositor) {}
+}
+
+impl FeatherCompositor {
+    pub(crate) fn clear_forwarded_pressed_key(
+        &mut self,
+        keycode: smithay::input::keyboard::Keycode,
+        serial: smithay::utils::Serial,
+        time: u32,
+        sync_mods: bool,
+    ) {
+        let keyboard = self.keyboard.clone();
+        if !keyboard.is_grabbed() {
+            keyboard.set_grab(
+                self,
+                DiscardKeyGrab {
+                    start_data: smithay::input::keyboard::GrabStartData { focus: None },
+                },
+                serial,
+            );
+            keyboard.input_forward(self, keycode, KeyState::Released, serial, time, false);
+            keyboard.unset_grab(self);
+        }
+        if sync_mods {
+            if let Some(focus) = keyboard.current_focus() {
+                let seat = self.seat.clone();
+                smithay::input::keyboard::KeyboardTarget::modifiers(
+                    &focus,
+                    &seat,
+                    self,
+                    keyboard.modifier_state(),
+                    serial,
+                );
+            }
+        }
+    }
+    pub(crate) fn clear_all_forwarded_pressed_keys(&mut self) {
+        let held: Vec<_> = self.keyboard.pressed_keys().into_iter().collect();
+        for keycode in held {
+            self.clear_forwarded_pressed_key(keycode, SERIAL_COUNTER.next_serial(), 0, false);
+        }
+    }
+    pub(crate) fn consume_held_switcher_modifiers(&mut self) {
+        let held = self.keyboard.pressed_keys();
+        for evdev in [56u32, 100, 125, 126] {
+            let code: smithay::input::keyboard::Keycode = (evdev + 8).into();
+            if held.contains(&code) {
+                self.shell.switcher_keys.insert(code);
+                self.clear_forwarded_pressed_key(code, SERIAL_COUNTER.next_serial(), 0, false);
+            }
+        }
+    }
     pub fn debug_keyboard_key(&mut self,evdev:u32,pressed:bool){
         self.process_keyboard_key((evdev+8).into(),if pressed{KeyState::Pressed}else{KeyState::Released},self.start_time.elapsed().as_millis() as u32);
     }
@@ -391,14 +473,17 @@ impl FeatherCompositor {
         for mod_code in to_release {
             self.latched_modifiers.remove(&mod_code);
             let consumed = self.shell.switcher_keys.remove(&mod_code);
-            keyboard.input::<(), _>(
+            let serial = SERIAL_COUNTER.next_serial();
+            if keyboard.input::<(), _>(
                 self,
                 mod_code,
                 KeyState::Released,
-                SERIAL_COUNTER.next_serial(),
+                serial,
                 time,
                 |_, _, _| if consumed { FilterResult::Intercept(()) } else { FilterResult::Forward },
-            );
+            ).is_some() {
+                self.clear_forwarded_pressed_key(mod_code, serial, time, true);
+            }
         }
     }
     fn process_keyboard_key(&mut self,keycode:smithay::input::keyboard::Keycode,key_state:KeyState,time:u32){
@@ -453,7 +538,7 @@ impl FeatherCompositor {
         };
         let switcher_alt = down(56);
         let switcher_shift = down(42) || down(54);
-        keyboard.input::<(), _>(self, keycode, key_state, serial, time, |st, mods, keysym_handle| {
+        let intercepted = keyboard.input::<(), _>(self, keycode, key_state, serial, time, |st, mods, keysym_handle| {
             if key_state==KeyState::Released && st.shell.switcher_keys.remove(&keycode) {
                 return FilterResult::Intercept(());
             }
@@ -522,14 +607,10 @@ impl FeatherCompositor {
                 if key_state == KeyState::Released {
                     if !mods.alt && !switcher_alt && !mods.logo {
                         deferred = Some(KeyAction::SwitcherCommit);
-                        // If focus moves to another app, the old one must not see a lone Alt
-                        // release (Firefox & co. would open their menu bar); it gets
-                        // wl_keyboard.leave instead, which resets its key state.
-                        return if st.switcher_changes_focus() {
-                            FilterResult::Intercept(())
-                        } else {
-                            FilterResult::Forward
-                        };
+                        // Focus left the old window when the switcher opened; intercepting the
+                        // Alt release keeps Smithay's forwarded_pressed_keys clean and avoids a
+                        // lone Alt release into the client (Firefox menu bar).
+                        return FilterResult::Intercept(());
                     }
                     // Keys the switcher consumed must not be released into the client
                     return match sym {
@@ -610,6 +691,7 @@ impl FeatherCompositor {
                 // The key left of 1 in any layout (` in Latin, ё in Russian)
                 let latin = keysym_handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw());
                 if matches!(latin, Some(keysyms::KEY_grave | keysyms::KEY_asciitilde)) {
+                    st.shell.switcher_keys.insert(keycode);
                     deferred = Some(KeyAction::CycleAppWindows { reverse: mods.shift });
                     return FilterResult::Intercept(());
                 }
@@ -699,7 +781,10 @@ impl FeatherCompositor {
             }
 
             FilterResult::Forward
-        });
+        }).is_some();
+        if intercepted && key_state == KeyState::Released {
+            self.clear_forwarded_pressed_key(keycode, serial, time, is_modifier);
+        }
 
         if deferred.is_none() {
             if let Some(candidate) = repeat_candidate { self.arm_key_repeat(candidate); }
@@ -739,8 +824,8 @@ impl FeatherCompositor {
             Some(KeyAction::Screenshot { .. }) => self.take_screenshot(crate::screenshot::Target::Screen),
             Some(KeyAction::SwitcherCancel) => {
                 self.shell.switcher = None;
-                self.pointer_focus_dirty = true;
-                self.needs_redraw = true;
+                self.consume_held_switcher_modifiers();
+                self.refresh_focus();
             }
             Some(KeyAction::Shell(act)) => self.execute_shell_action(act),
             Some(KeyAction::CloseTop) => self.close_top_window(),
@@ -868,8 +953,10 @@ impl FeatherCompositor {
         if items.is_empty() {
             return;
         }
+        self.clear_all_forwarded_pressed_keys();
         self.shell.close_menus();
         self.shell.open_switcher(items, reverse);
+        self.refresh_focus();
         let opened_at=self.shell.switcher.as_ref().unwrap().opened_at;
         self.shell.switcher.as_mut().unwrap().pointer_anchor=Some((self.pointer_location.x,self.pointer_location.y));
         let _ = self.loop_handle.insert_source(
@@ -885,21 +972,6 @@ impl FeatherCompositor {
         );
     }
 
-    /// Whether committing the switcher would focus a different app than the current one
-    fn switcher_changes_focus(&self) -> bool {
-        let Some(sw) = self.shell.switcher.as_ref() else {
-            return false;
-        };
-        let target = sw.items.get(sw.selected).and_then(|item| self.windows.iter().find(|w|w.mapped && w.id==item.window_id)).map(|w|self.app_key(w));
-        let current = self
-            .windows
-            .iter()
-            .rev()
-            .find(|w| w.is_visible())
-            .map(|w| self.app_key(w));
-        target.is_some() && target != current
-    }
-
     fn switcher_commit(&mut self) {
         // Resolve through a live window: unknown-app group ids and registry indices can
         // change while Alt is held. A closed selection must never launch an application.
@@ -907,8 +979,10 @@ impl FeatherCompositor {
             .and_then(|item| self.windows.iter().find(|w|w.mapped && w.id==item.window_id))
             .map(|w|self.app_key(w));
         if self.shell.switcher.take().is_some() {
+            self.consume_held_switcher_modifiers();
             self.pointer_focus_dirty=true;self.needs_redraw=true;
             if let Some(key)=target {self.unfocus_desktop();self.activate_app(key);}
+            else {self.refresh_focus();}
         }
     }
 
@@ -924,6 +998,7 @@ impl FeatherCompositor {
         }
         let mut old: Vec<Option<crate::window::ManagedWindow>> = std::mem::take(&mut self.windows).into_iter().map(Some).collect();
         self.windows = order.into_iter().filter_map(|i| old[i].take()).collect();
+        self.consume_held_switcher_modifiers();
         self.unfocus_desktop();
         self.refresh_focus();
         self.needs_redraw = true;
@@ -1017,14 +1092,22 @@ impl FeatherCompositor {
 
     pub(crate) fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
         let pos = self.constrained_position(pos);
-        if self.pointer_locked() { return; }
+        if self.pointer_locked() {
+            return;
+        }
+        if !self.on_pointer_motion_unlocked(pos, time) {
+            self.pointer.clone().frame(self);
+        }
+    }
+
+    fn on_pointer_motion_unlocked(&mut self, pos: Point<f64, Logical>, time: u32) -> bool {
         self.pointer_location = pos;
         if self.mission_open() {
             self.mission_motion(pos.x, pos.y);
             // The Dock stays usable (magnification follows the pointer)
             self.shell.update_pointer_hover(pos.x, pos.y);
             self.pointer_focus_dirty = true;
-            return;
+            return false;
         }
         if self.lock.active {
             if !self.lock.external() && self.lock.motion(pos.x, pos.y, (self.shell.screen_w, self.shell.screen_h)) {
@@ -1032,7 +1115,7 @@ impl FeatherCompositor {
             }
             self.refresh_focus();
             let under=self.surface_under_pointer(pos.x,pos.y);let pointer=self.pointer.clone();
-            pointer.motion(self,under,&MotionEvent{location:pos,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);return;
+            pointer.motion(self,under,&MotionEvent{location:pos,serial:SERIAL_COUNTER.next_serial(),time});pointer.frame(self);return true;
         }
 
         if self.shell.switcher.as_ref().is_some_and(|s|s.visible){
@@ -1040,7 +1123,7 @@ impl FeatherCompositor {
             if let Some(index)=intentional.then(||self.shell.switcher_hit(pos.x,pos.y)).flatten(){
                 if let Some(sw)=self.shell.switcher.as_mut(){if sw.selected!=index{sw.selected=index;self.shell.switcher_dirty=true;self.needs_redraw=true;}}
             }
-            self.pointer_focus_dirty=true;return;
+            self.pointer_focus_dirty=true;return false;
         }
         if self.system_settings.audio_drag.is_some() {
             if let Some(action) = self.system_settings.audio_motion(pos.x as f32) {
@@ -1048,10 +1131,10 @@ impl FeatherCompositor {
             }
             self.mark_settings_dirty();
             self.needs_redraw = true;
-            return;
+            return false;
         }
         if self.screenshot_motion() || self.desktop_motion() {
-            return;
+            return false;
         }
         if self.shell.control_center_open && self.shell.cc.motion(pos.x as f32) {
             // The slider follows the pointer: a frame for every move
@@ -1063,17 +1146,17 @@ impl FeatherCompositor {
                 self.execute_shell_action(action);
             }
             self.shell.overlay_dirty=true;
-            return;
+            return false;
         }
 
         if let Some(drag) = self.active_drag {
             self.apply_drag(drag, pos);
-            return;
+            return false;
         }
         if self.icon_drag.is_some() {
             self.update_icon_drag();
             if self.icon_drag.as_ref().is_some_and(|d| d.active) {
-                return;
+                return false;
             }
         }
         self.dock_autohide_motion(pos.x, pos.y);
@@ -1122,6 +1205,7 @@ impl FeatherCompositor {
             },
         );
         pointer.frame(self);
+        true
     }
 
     fn apply_drag(&mut self, drag: DragOperation, pos: Point<f64, Logical>) {
@@ -1311,7 +1395,15 @@ impl FeatherCompositor {
             if button == BTN_LEFT && self.icon_drag.is_some() {
                 self.finish_icon_press();
             }
-            if was_dragging || self.pressed_buttons.is_empty() {
+            if was_dragging
+                || (self.pressed_buttons.is_empty()
+                    && !self
+                        .surface_under_pointer(pos.x, pos.y)
+                        .is_some_and(|(s, _)| {
+                            crate::xwayland::is_xwayland_surface(&s)
+                                && self.pointer.current_focus().as_ref() == Some(&s)
+                        }))
+            {
                 // Re-enter the surface now under the cursor with fresh coordinates
                 self.pointer_focus_dirty = true;
             }
@@ -1332,7 +1424,7 @@ impl FeatherCompositor {
                     self.switcher_commit();return;
                 }
             }
-            self.shell.switcher=None;self.pointer_focus_dirty=true;self.needs_redraw=true;return;
+            self.shell.switcher=None;self.consume_held_switcher_modifiers();self.refresh_focus();return;
         }
         if button!=BTN_LEFT && self.shell.control_center_open {
             self.consumed_buttons.push(button); return;
@@ -1652,21 +1744,26 @@ impl FeatherCompositor {
         if let Some(DragOperation::ResizeWindow { win_id, .. }) = self.active_drag.take() {
             if let Some(win) = self.windows.iter().find(|w| w.id == win_id) { win.set_resizing(false); }
         }
-        if self.shell.switcher.take().is_some() {
+        let was_switching = self.shell.switcher.take().is_some();
+        if was_switching {
+            self.consume_held_switcher_modifiers();
             self.needs_redraw = true;
         }
 
         let keyboard = self.keyboard.clone();
         for key in keyboard.pressed_keys() {
             let consumed=self.shell.switcher_keys.remove(&key);
-            keyboard.input::<(), _>(
+            let serial = SERIAL_COUNTER.next_serial();
+            if keyboard.input::<(), _>(
                 self,
                 key,
                 KeyState::Released,
-                SERIAL_COUNTER.next_serial(),
+                serial,
                 time,
                 |_, _, _| if consumed {FilterResult::Intercept(())} else {FilterResult::Forward},
-            );
+            ).is_some() {
+                self.clear_forwarded_pressed_key(key, serial, time, Self::is_modifier_keycode(key));
+            }
         }
         self.latched_modifiers.clear();
         self.physically_held_modifiers.clear();
@@ -1675,7 +1772,11 @@ impl FeatherCompositor {
         self.shell.switcher_keys.clear();
         self.pointer_focus_dirty = true;
         self.pointer_capture_suspended = true;
-        self.sync_pointer_constraint();
+        if was_switching {
+            self.refresh_focus();
+        } else {
+            self.sync_pointer_constraint();
+        }
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {

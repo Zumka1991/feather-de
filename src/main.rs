@@ -319,9 +319,10 @@ impl FeatherCompositor {
             w.set_activated(!self.lock.active && !desktop && Some(i) == top);
         }
         let password = self.auth.is_open() || (self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password);
-        let target = if self.lock.active {self.lock_focus()} else if password || desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
+        let target = if self.lock.active {self.lock_focus()} else if password || desktop || self.shell.switcher.is_some() {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus() != target {
+            self.clear_all_forwarded_pressed_keys();
             keyboard.set_focus(self, target, SERIAL_COUNTER.next_serial());
         }
         self.sync_pointer_constraint();

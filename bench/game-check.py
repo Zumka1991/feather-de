@@ -45,6 +45,8 @@ with (root/'session.log').open('w') as log:
    assert client.count('button 1 1 200 100\n')==2,client
    assert client.count('button 1 0 200 100\n')==2,client
    assert 'size 760 440\n' in client,client
+   assert 'keymap_down 0\n' in client and 'keymap_down 1\n' not in client,client
+   assert client.count('key 25 1 0\n')==2 and client.count('key 25 0 0\n')==2,client
   if a.mode=='pointer':
    relative=[line for line in client.splitlines() if line.startswith('relative ')]
    assert relative==['relative 1 0 1000000 3.000 -2.000 7.000 -5.000','relative 2 0 1000100 -5.000 1.000 -9.000 4.000'],relative

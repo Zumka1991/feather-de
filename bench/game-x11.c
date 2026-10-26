@@ -6,7 +6,7 @@
 #include <xcb/xcb.h>
 static xcb_connection_t *conn;static xcb_screen_t *screen;
 static xcb_window_t window(const char *title) {
- xcb_window_t id=xcb_generate_id(conn);uint32_t values[]={0x207048,XCB_EVENT_MASK_EXPOSURE|XCB_EVENT_MASK_BUTTON_PRESS|XCB_EVENT_MASK_BUTTON_RELEASE|XCB_EVENT_MASK_STRUCTURE_NOTIFY};
+ xcb_window_t id=xcb_generate_id(conn);uint32_t values[]={0x207048,XCB_EVENT_MASK_EXPOSURE|XCB_EVENT_MASK_BUTTON_PRESS|XCB_EVENT_MASK_BUTTON_RELEASE|XCB_EVENT_MASK_KEY_PRESS|XCB_EVENT_MASK_KEY_RELEASE|XCB_EVENT_MASK_KEYMAP_STATE|XCB_EVENT_MASK_STRUCTURE_NOTIFY};
  xcb_create_window(conn,XCB_COPY_FROM_PARENT,id,screen->root,0,0,640,360,0,XCB_WINDOW_CLASS_INPUT_OUTPUT,screen->root_visual,XCB_CW_BACK_PIXEL|XCB_CW_EVENT_MASK,values);
  const char cls[]="steam_app_default\0steam_app_default";
  xcb_change_property(conn,XCB_PROP_MODE_REPLACE,id,XCB_ATOM_WM_CLASS,XCB_ATOM_STRING,8,sizeof(cls),cls);
@@ -16,11 +16,13 @@ static xcb_window_t window(const char *title) {
 int main(void) {
  setbuf(stdout,NULL);int screen_index;conn=xcb_connect(NULL,&screen_index);assert(!xcb_connection_has_error(conn));
  xcb_screen_iterator_t it=xcb_setup_roots_iterator(xcb_get_setup(conn));for(int i=0;i<screen_index;i++)xcb_screen_next(&it);screen=it.data;
- window("");window("Lineage fixture");window("Other game fixture");xcb_flush(conn);
+ window("");xcb_window_t lineage=window("Lineage fixture");window("Other game fixture");xcb_flush(conn);
  xcb_generic_event_t *event;
  while((event=xcb_wait_for_event(conn))) {
   uint8_t type=event->response_type&~0x80;
   if(type==XCB_BUTTON_PRESS||type==XCB_BUTTON_RELEASE) {xcb_button_press_event_t *b=(xcb_button_press_event_t*)event;printf("button %u %u %d %d\n",b->detail,type==XCB_BUTTON_PRESS,b->event_x,b->event_y);}
+  if(type==XCB_KEY_PRESS||type==XCB_KEY_RELEASE) {xcb_key_press_event_t *k=(xcb_key_press_event_t*)event;if(k->event==lineage)printf("key %u %u %u\n",k->detail,type==XCB_KEY_PRESS,k->state);}
+  if(type==XCB_KEYMAP_NOTIFY) {xcb_keymap_notify_event_t *m=(xcb_keymap_notify_event_t*)event;unsigned down=0;for(int i=0;i<31;i++)if(m->keys[i])down++;printf("keymap_down %u\n",down);}
   if(type==XCB_CONFIGURE_NOTIFY) {xcb_configure_notify_event_t *c=(xcb_configure_notify_event_t*)event;printf("size %u %u\n",c->width,c->height);}
   free(event);
  }

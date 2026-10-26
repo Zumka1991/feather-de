@@ -97,9 +97,34 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
         at(state,4200,|st| st.debug_pointer_button(0x110,false))?;
         at(state,4600,|st| {
-            let (id,_,_)=game(st);let w=st.windows.iter().find(|w|w.id==id).unwrap();
+            let (id,x,y)=game(st);let w=st.windows.iter().find(|w|w.id==id).unwrap();
             assert_eq!((w.width,w.height),(760,440),"X11 client did not commit resized buffer");
-            eprintln!("[feather-game-x11-check] scaled geometry, input coordinates, anonymous helper, separate games, Dock activation and X11 client resize passed");
+            let surface=w.wl_surface().unwrap().clone();
+            st.debug_pointer_motion(x+200.0,y+150.0);
+            st.pressed_buttons.push(0x111);
+            st.debug_x11_rmb_warp_check(&surface,(x,y).into());
+            st.pressed_buttons.clear();
+            st.debug_keyboard_key(56,true);tap(st,15);
+        })?;
+        at(state,4800,|st| st.debug_keyboard_key(56,false))?;
+        at(state,5000,|st| {
+            let (id,x,y)=game(st);
+            let surface=st.windows.iter().find(|w|w.id==id).unwrap().wl_surface().unwrap().clone();
+            st.debug_pointer_motion(x+700.0,y+400.0);
+            st.debug_pointer_button(0x110,true);st.debug_pointer_button(0x110,false);
+            assert_eq!(st.keyboard.current_focus(),Some(surface));
+        })?;
+        at(state,5100,|st| tap(st,17))?;
+        at(state,5200,|st| { st.debug_keyboard_key(56,true);tap(st,15); })?;
+        at(state,5400,|st| st.debug_keyboard_key(56,false))?;
+        at(state,5600,|st| { st.debug_keyboard_key(56,true);tap(st,15); })?;
+        at(state,5800,|st| st.debug_keyboard_key(56,false))?;
+        at(state,6000,|st| {
+            let (id,_,_)=game(st);
+            let surface=st.windows.iter().find(|w|w.id==id).unwrap().wl_surface().unwrap().clone();
+            assert_eq!(st.keyboard.current_focus(),Some(surface));
+            tap(st,17);
+            eprintln!("[feather-game-x11-check] scaled geometry, input coordinates, anonymous helper, separate games, Dock activation, X11 client resize, RMB warp-lock and Alt+Tab keyboard refocus passed");
         })?;
     }
     if std::env::var_os("FEATHER_DEBUG_GAME_POINTER").is_some() {

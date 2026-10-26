@@ -11,11 +11,24 @@ use smithay::{
     },
 };
 
+#[derive(Default)]
+struct X11WarpHint(std::sync::Mutex<Option<Point<f64, Logical>>>);
+
 pub struct ActiveConstraint {
     pub surface: WlSurface,
     origin: Point<f64, Logical>,
     pub locked: bool,
+    x11_warp_lock: bool,
     hint: Option<Point<f64, Logical>>,
+}
+
+fn clamp_to_size(p: Point<f64, Logical>, size: Size<i32, Logical>) -> Point<f64, Logical> {
+    if size.w <= 0 || size.h <= 0 {
+        return p;
+    }
+    let max_x = (size.w - 1).max(0) as f64;
+    let max_y = (size.h - 1).max(0) as f64;
+    Point::from((p.x.clamp(0.0, max_x), p.y.clamp(0.0, max_y)))
 }
 
 fn confine_segment(
@@ -69,6 +82,57 @@ fn confine_segment(
 }
 
 impl FeatherCompositor {
+    fn set_x11_warp_hint(surface: &WlSurface, hint: Option<Point<f64, Logical>>) {
+        with_states(surface, |states| {
+            *states
+                .data_map
+                .get_or_insert(X11WarpHint::default)
+                .0
+                .lock()
+                .unwrap() = hint;
+        });
+    }
+
+    fn get_x11_warp_hint(surface: &WlSurface) -> Option<Point<f64, Logical>> {
+        with_states(surface, |states| {
+            states
+                .data_map
+                .get::<X11WarpHint>()
+                .and_then(|h| *h.0.lock().unwrap())
+        })
+    }
+
+    fn constraint_surface_geometry(
+        &self,
+        surface: &WlSurface,
+    ) -> Option<(Point<f64, Logical>, Size<i32, Logical>)> {
+        let size = with_renderer_surface_state(surface, |s| s.surface_size()).flatten();
+        if let Some((under, origin)) =
+            self.surface_under_pointer(self.pointer_location.x, self.pointer_location.y)
+        {
+            if &under == surface {
+                let size = size.or_else(|| {
+                    self.windows
+                        .iter()
+                        .find(|w| w.is_visible() && w.wl_surface() == Some(surface))
+                        .map(|w| Size::from((w.width, w.height)))
+                })?;
+                return Some((origin, size));
+            }
+        }
+        if crate::xwayland::is_xwayland_surface(surface) {
+            let win = self
+                .windows
+                .iter()
+                .rev()
+                .find(|w| w.is_visible() && w.wl_surface() == Some(surface))?;
+            let origin = win.surface_origin().to_f64();
+            let size = size.unwrap_or_else(|| Size::from((win.width, win.height)));
+            return Some((origin, size));
+        }
+        None
+    }
+
     fn constraint_allowed(&self, surface: &WlSurface) -> bool {
         !self.pointer_capture_suspended
             && !self.lock.active
@@ -97,11 +161,27 @@ impl FeatherCompositor {
         if let Some(active) = self.active_constraint.as_ref() {
             let focused = pointer.current_focus().as_ref() == Some(&active.surface)
                 && self.constraint_allowed(&active.surface);
-            let live = with_pointer_constraint(&active.surface, &pointer, |c| {
+            let protocol_live = with_pointer_constraint(&active.surface, &pointer, |c| {
                 c.is_some_and(|c| c.is_active() && c.region().is_none_or(|r| r.rects.len() <= 128))
             });
+            // In Wine/Proton (e.g. Lineage 2 RMB camera rotation), SetCursorPos + ClipCursor
+            // creates a short-lived XWayland pointer_warp_emulator (LockedPointer) and then
+            // grabs an InputOnly clip_window, which destroys LockedPointer without creating
+            // ConfinedPointer. Keep the relative-only lock alive until the held button is released.
+            let has_pending =
+                with_pointer_constraint(&active.surface, &pointer, |c| c.is_some());
+            if focused
+                && !protocol_live
+                && !has_pending
+                && active.x11_warp_lock
+                && !self.pressed_buttons.is_empty()
+            {
+                return;
+            }
+            let live = protocol_live && !(active.x11_warp_lock && self.pressed_buttons.is_empty());
             if !focused || !live {
                 let active = self.active_constraint.take().unwrap();
+                let is_x11 = crate::xwayland::is_xwayland_surface(&active.surface);
                 with_pointer_constraint(&active.surface, &pointer, |c| {
                     if let Some(c) = c {
                         if c.is_active() {
@@ -109,25 +189,57 @@ impl FeatherCompositor {
                         }
                     }
                 });
+                if !focused || self.pressed_buttons.is_empty() {
+                    Self::set_x11_warp_hint(&active.surface, None);
+                }
                 if focused {
+                    if !protocol_live
+                        && !has_pending
+                        && is_x11
+                        && active.locked
+                        && active.hint.is_some()
+                        && !self.pressed_buttons.is_empty()
+                    {
+                        self.active_constraint = Some(ActiveConstraint {
+                            surface: active.surface,
+                            origin: active.origin,
+                            locked: true,
+                            x11_warp_lock: true,
+                            hint: active.hint,
+                        });
+                        return;
+                    }
                     if let Some(hint) = active.hint {
-                        let target = active.origin + hint;
-                        if self
-                            .surface_under_pointer(target.x, target.y)
-                            .as_ref()
-                            .is_some_and(|(s, _)| *s == active.surface)
-                        {
-                            self.pointer_location = target;
-                            pointer.motion(
-                                self,
-                                Some((active.surface, active.origin)),
-                                &MotionEvent {
-                                    location: target,
-                                    serial: SERIAL_COUNTER.next_serial(),
-                                    time: self.start_time.elapsed().as_millis() as u32,
-                                },
-                            );
-                            pointer.frame(self);
+                        if is_x11 {
+                            // When a warp was part of a button-held camera drag (x11_warp_lock),
+                            // pointer_location stayed at SavedCursor where the button was pressed.
+                            // Only apply the hint to pointer_location for standalone warps.
+                            if !active.x11_warp_lock {
+                                let hint = self
+                                    .constraint_surface_geometry(&active.surface)
+                                    .map(|(_, size)| clamp_to_size(hint, size))
+                                    .unwrap_or(hint);
+                                self.pointer_location = active.origin + hint;
+                            }
+                        } else {
+                            let target = active.origin + hint;
+                            if self
+                                .surface_under_pointer(target.x, target.y)
+                                .as_ref()
+                                .is_some_and(|(s, _)| *s == active.surface)
+                            {
+                                self.pointer_location = target;
+                                pointer.motion(
+                                    self,
+                                    Some((active.surface, active.origin)),
+                                    &MotionEvent {
+                                        location: target,
+                                        serial: SERIAL_COUNTER.next_serial(),
+                                        time: self.start_time.elapsed().as_millis() as u32,
+                                    },
+                                );
+                                pointer.frame(self);
+                            }
                         }
                     }
                 } else {
@@ -177,16 +289,21 @@ impl FeatherCompositor {
         if !self.constraint_allowed(&surface) {
             return;
         }
-        let Some((under, origin)) =
-            self.surface_under_pointer(self.pointer_location.x, self.pointer_location.y)
-        else {
+        let Some((origin, size)) = self.constraint_surface_geometry(&surface) else {
             return;
         };
-        if under != surface {
-            return;
-        }
-        let local = self.pointer_location - origin;
-        let locked = with_pointer_constraint(&surface, &pointer, |constraint| {
+        let is_x11 = crate::xwayland::is_xwayland_surface(&surface);
+        let local = if is_x11 {
+            clamp_to_size(self.pointer_location - origin, size)
+        } else {
+            self.pointer_location - origin
+        };
+        let x11_warp_hint = if is_x11 && !self.pressed_buttons.is_empty() {
+            Self::get_x11_warp_hint(&surface)
+        } else {
+            None
+        };
+        let activated = with_pointer_constraint(&surface, &pointer, |constraint| {
             let c = constraint?;
             if c.region().is_some_and(|r| r.rects.len() > 128) {
                 return None;
@@ -197,14 +314,42 @@ impl FeatherCompositor {
                 return None;
             }
             c.activate();
-            Some(matches!(&*c, PointerConstraint::Locked(_)))
+            Some(match &*c {
+                PointerConstraint::Locked(l) => {
+                    let h = l.cursor_position_hint();
+                    (
+                        true,
+                        is_x11 && h.is_some() && !self.pressed_buttons.is_empty(),
+                        h,
+                    )
+                }
+                PointerConstraint::Confined(_) => (
+                    x11_warp_hint.is_some(),
+                    x11_warp_hint.is_some(),
+                    x11_warp_hint,
+                ),
+            })
         });
-        if let Some(locked) = locked {
+        if let Some((locked, x11_warp_lock, mut hint)) = activated {
+            if is_x11 {
+                if let Some(h) = hint {
+                    let clamped = clamp_to_size(h, size);
+                    hint = Some(clamped);
+                    if !self.pressed_buttons.is_empty() {
+                        Self::set_x11_warp_hint(&surface, Some(clamped));
+                    } else {
+                        self.pointer_location = origin + clamped;
+                    }
+                } else {
+                    self.pointer_location = origin + local;
+                }
+            }
             self.active_constraint = Some(ActiveConstraint {
                 surface,
                 origin,
                 locked,
-                hint: None,
+                x11_warp_lock,
+                hint,
             });
             self.apply_cursor(self.cursor.status.clone());
             self.needs_redraw = true;
@@ -235,7 +380,11 @@ impl FeatherCompositor {
                 utime,
             },
         );
-        pointer.frame(self);
+        // When unlocked, on_pointer_motion flushes both relative_motion and motion in a single
+        // wl_pointer.frame so XWayland sees has_relative == true and sets POINTER_NORAW.
+        if self.pointer_locked() {
+            pointer.frame(self);
+        }
     }
 
     pub fn constrained_position(&mut self, requested: Point<f64, Logical>) -> Point<f64, Logical> {
@@ -277,6 +426,64 @@ impl FeatherCompositor {
             ) + origin
         })
     }
+
+    pub(crate) fn debug_x11_rmb_warp_check(
+        &mut self,
+        surface: &WlSurface,
+        origin: Point<f64, Logical>,
+    ) {
+        let pointer = self.pointer.clone();
+        let saved = self.pointer_location;
+        self.active_constraint = Some(ActiveConstraint {
+            surface: surface.clone(),
+            origin,
+            locked: true,
+            x11_warp_lock: false,
+            hint: None,
+        });
+        PointerConstraintsHandler::cursor_position_hint(
+            self,
+            surface,
+            &pointer,
+            (380.0, 220.0).into(),
+        );
+        assert_eq!(self.pointer_location, saved);
+        assert_eq!(
+            Self::get_x11_warp_hint(surface),
+            Some(Point::from((380.0, 220.0)))
+        );
+        // Simulate XWayland destroying its 5 ms pointer_warp_emulator while RMB is still held
+        // (and Wine's InputOnly clip_window prevents ConfinedPointer): lock must stay active.
+        self.sync_pointer_constraint();
+        assert!(self.pointer_locked());
+        assert_eq!(
+            self.constrained_position(origin + Point::from((700.0, 400.0))),
+            saved
+        );
+        // Releasing RMB must immediately end x11_warp_lock and leave pointer at SavedCursor.
+        self.pressed_buttons.clear();
+        self.sync_pointer_constraint();
+        assert!(!self.pointer_locked());
+        assert_eq!(self.pointer_location, saved);
+        assert_eq!(Self::get_x11_warp_hint(surface), None);
+        // A standalone XWayland warp without held buttons updates pointer_location to the clamped hint.
+        self.active_constraint = Some(ActiveConstraint {
+            surface: surface.clone(),
+            origin,
+            locked: true,
+            x11_warp_lock: false,
+            hint: None,
+        });
+        PointerConstraintsHandler::cursor_position_hint(
+            self,
+            surface,
+            &pointer,
+            (9999.0, -50.0).into(),
+        );
+        self.sync_pointer_constraint();
+        assert!(!self.pointer_locked());
+        assert_eq!(self.pointer_location, origin + Point::from((759.0, 0.0)));
+    }
 }
 
 impl PointerConstraintsHandler for FeatherCompositor {
@@ -294,13 +501,34 @@ impl PointerConstraintsHandler for FeatherCompositor {
         _pointer: &PointerHandle<Self>,
         location: Point<f64, Logical>,
     ) {
+        if self.active_constraint.is_none() {
+            self.sync_pointer_constraint();
+        }
+        let is_x11 = crate::xwayland::is_xwayland_surface(surface);
+        let clamped = if is_x11 {
+            self.constraint_surface_geometry(surface)
+                .map(|(_, size)| clamp_to_size(location, size))
+                .unwrap_or(location)
+        } else {
+            location
+        };
+        let buttons_held = !self.pressed_buttons.is_empty();
         if let Some(c) = self
             .active_constraint
             .as_mut()
             .filter(|c| c.locked && c.surface == *surface)
         {
             // Hints are for unlocking. Warping while locked feeds game recentering back as motion.
-            c.hint = Some(location);
+            c.hint = Some(clamped);
+            if is_x11 {
+                if buttons_held {
+                    c.x11_warp_lock = true;
+                    Self::set_x11_warp_hint(surface, Some(clamped));
+                } else {
+                    let origin = c.origin;
+                    self.pointer_location = origin + clamped;
+                }
+            }
         }
     }
 }
@@ -361,5 +589,15 @@ mod tests {
             None,
         );
         assert!(p.x < 60.0 && p.x > 59.9);
+    }
+
+    #[test]
+    fn clamp_to_size_keeps_warped_points_inside_surface_bounds() {
+        let size: Size<i32, Logical> = (640, 360).into();
+        let clamped = clamp_to_size((-15.0, 720.0).into(), size);
+        assert_eq!(clamped, Point::from((0.0, 359.0)));
+        assert!(Rectangle::from_size(size).contains(clamped.to_i32_floor()));
+        let inside = clamp_to_size((320.5, 180.25).into(), size);
+        assert_eq!(inside, Point::from((320.5, 180.25)));
     }
 }

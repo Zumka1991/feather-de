@@ -2,6 +2,66 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-26 — Исправление клавиатуры после переключения с окна игры и обратно в Wine / XWayland (Gemini/agy)
+
+- В `src/input.rs` и `src/main.rs` исправлена потеря клавиатурного ввода при возврате фокуса в окно
+  Lineage II (`L2.exe` / Wine поверх `xwayland-satellite` и `Xwayland`) после `Alt+Tab` или клика по
+  другому окну, которая раньше лечилась только переключением раскладки (`Alt+Shift`):
+  1. **Очистка `forwarded_pressed_keys` при перехвате `KeyState::Released` и при любой смене
+     клавиатурного фокуса**: в Smithay (`KeyboardHandle::input`) возврат `FilterResult::Intercept`
+     на отпускание клавиши (например, `Alt_L` при закрытии `Alt+Tab` или клавиш из `switcher_keys`)
+     пропускает `input_forward`, из-за чего код клавиши (`Keycode(64)` = `Alt_L`) навсегда оставался
+     в `forwarded_pressed_keys` до следующего неотфильтрованного нажатия/отпускания `Alt` (при
+     смене языка `Alt+Shift`). При каждом последующем `wl_keyboard.enter` Smithay передавал
+     `keys = [56]` в `xwayland-satellite` → `Xwayland` (`keyboard_handle_enter`), который
+     синтезировал зажатый `Alt_L` (`Mod1Mask`) во всех X11-событиях клавиатуры и `KeymapNotify`,
+     блокируя обычный ввод в `L2.exe`. Теперь через `DiscardKeyGrab` (`clear_forwarded_pressed_key`,
+     `clear_all_forwarded_pressed_keys`, `consume_held_switcher_modifiers`) удержанные клавиши
+     удаляются из `forwarded_pressed_keys` при перехвате отпускания, при открытии/завершении
+     переключателя окон и перед каждым `keyboard.set_focus` в `refresh_focus()`.
+  2. **Снятый фокус клавиатуры на время открытого `Alt+Tab` и синхронизация `wl_keyboard.modifiers`
+     при перехваченном отпускании модификатора**: пока открыта панель `self.shell.switcher`,
+     `refresh_focus()` держит `target = None`, чтобы перехватываемые нажатия `Tab`/стрелок не
+     конфликтовали с клиентским фокусом, а при перехваченном отпускании модификатора текущему фокусу
+     сразу отправляется обновлённый `wl_keyboard.modifiers` без ожидания смены раскладки.
+- В `bench/game-x11.c`, `src/debug_checks.rs` и `bench/game-check.py` добавлена сквозная X11-проверка
+  (`KeymapNotify` без залипших модификаторов `keymap_down 0` и доставка `KeyPress`/`KeyRelease` с
+  `state & Mod1Mask == 0` после возврата в окно игры кликом мыши и по `Alt+Tab`). `cargo build --release`
+  без предупреждений; все тесты и оба сценария `bench/game-check.py` (`--mode x11`: 0 тиков CPU/5 с,
+  `RssAnon` 35076 КиБ; `--mode pointer`: 0 тиков CPU/5 с) прошли.
+
+## 2026-10-26 — Исправление сброса камеры по ПКМ в Lineage II / Wine XWayland (Gemini/agy)
+
+- В `src/pointer_constraints.rs` и `src/input.rs` устранены три причины рывков и сброса камеры
+  при вращении с зажатой ПКМ в Wine/GE-Proton (`L2.exe` / `winex11.so`) поверх `xwayland-satellite`
+  и `Xwayland`:
+  1. **Единый `wl_pointer.frame` для `relative_motion` и `motion`**: раньше `game_relative_motion`
+     завершал отдельный `wl_pointer.frame` (`has_relative = true, has_absolute = false`), а следом
+     `on_pointer_motion` отправлял второй кадр (`has_relative = false, has_absolute = true`). В
+     `Xwayland` (`xwayland-input.c`) второй кадр с `has_relative == false` обходил
+     `pointer_warp_emulator` и вызывал `dispatch_absolute_motion` без флага `POINTER_NORAW`, из-за
+     чего Xorg синтезировал ложное событие `XI_RawMotion` на разницу между центром окна `(941, 510)`
+     и старой абсолютной позицией курсора, а Wine (`broken_rawevents == 0`) передавал этот скачок
+     прямо в игру.
+  2. **Отказ от эхо-отправки `wl_pointer.motion` при снятии lock на XWayland и при отпускании
+     кнопки**: `Xwayland` сам переставляет курсор Xorg перед вызовом
+     `zwp_locked_pointer_v1.set_cursor_position_hint`; повторная отправка `wl_pointer.motion` без
+     `relative_motion` при `destroy` или отпускании кнопки на той же XWayland-поверхности вызывала
+     повторный абсолютный скачок после `XWarpPointer`.
+  3. **Удержание `x11_warp_lock` пока зажата кнопка мыши**: в `L2.exe` (`windrv.dll` /
+     `UWindowsViewport::SetMouseCapture`) при нажатии ПКМ вызываются `SetCursorPos(Center)` и
+     `ClipCursor(&ClientRect)`. Wine захватывает `InputOnly`-окно `clip_window`, из-за чего через
+     5 мс (`XFixesShowCursor`) `Xwayland` уничтожает `pointer_warp_emulator` (`LockedPointer`), не
+     создавая `ConfinedPointer`, и блокирует последующие `pointer_warp_emulator` (`XYToWindow !=
+     focus_window->toplevel`). Теперь при warp с зажатой кнопкой на XWayland-поверхности композитор
+     сохраняет режим относительного захвата (`x11_warp_lock`) и точку нажатия (`SavedCursor`) до
+     отпускания кнопки мыши.
+- `cargo build --release` без предупреждений; 142 теста композитора и оба изолированных сценария
+  `bench/game-check.py` (`--mode pointer`: 0 тиков CPU/5 с, пик `RssAnon` 36312 КиБ; `--mode x11` с
+  новой проверкой `debug_x11_rmb_warp_check`: 0 тиков CPU/5 с, пик `RssAnon` 34232 КиБ) прошли.
+  Живая DRM-сессия и запущенная игра пользователя не затрагивались; для применения нового бинарника
+  нужен перезапуск сессии Пёрышка.
+
 ## 2026-10-26 — Wine/Proton: HiDPI, игровая мышь, Dock и resize (Codex)
 
 - Добавлен сохраняемый переключатель «Увеличивать Wine и старые приложения» в

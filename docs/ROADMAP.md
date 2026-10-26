@@ -67,10 +67,10 @@
 
 - [x] XWayland (запуск X11-программ) через xwayland-satellite по требованию — [XWAYLAND.md](XWAYLAND.md)
 - [x] Wine/XWayland: сохраняемый HiDPI-масштаб с настройкой в «Дисплеях» — [GAMING.md](GAMING.md)
-- [x] Игры: relative pointer, lock/confine, снятие захвата и отпускание кнопок при смене фокуса — [GAMING.md](GAMING.md)
+- [x] Игры: relative pointer, lock/confine, единый `wl_pointer.frame` (`POINTER_NORAW`), удержание `x11_warp_lock` при вращении камеры ПКМ в Wine/XWayland, снятие захвата, отпускание кнопок и очистка `forwarded_pressed_keys` / модификаторов при смене фокуса — [GAMING.md](GAMING.md)
 - [x] Proton Dock: немедленные title/app_id, отдельные игры и фильтрация безымянного служебного окна — [GAMING.md](GAMING.md)
 - [x] Resize XWayland с CSD: внешний край поверх нижнего окна, `Resizing`, настоящий размер X11-клиента — [GAMING.md](GAMING.md)
-- [ ] Lineage II в DRM: масштаб/UI, ПКМ и камера, resize и переключение из Dock после повторного входа (проверяет пользователь)
+- [x] Lineage II в DRM: масштаб/UI, ПКМ и камера, resize и переключение из Dock после повторного входа (проверено пользователем)
 - [x] Глобальное меню GTK (`org.gtk.Menus` / `org.gtk.Actions`, `gtk_shell1`) — [APPMENU.md](APPMENU.md#gtk)
 
 ## Окна и рабочие столы

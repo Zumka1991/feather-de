@@ -6,6 +6,28 @@
 
 Задачи упорядочены по ценности. Делай по одной, каждую доводи до проверки.
 
+**Исправление клавиатуры после переключения с окна игры и обратно в Wine / XWayland, 2026-10-26 (Gemini/agy):**
+в `src/input.rs` и `src/main.rs` устранено залипание `Alt_L` (`Keycode(64)`) во внутреннем множестве
+`forwarded_pressed_keys` Smithay после перехваченного отпускания клавиши (`FilterResult::Intercept`),
+из-за которого каждый следующий `wl_keyboard.enter` передавал `keys = [56]` в `xwayland-satellite` /
+`Xwayland`, синтезируя зажатый `Alt` (`Mod1Mask`) в окне `L2.exe` вплоть до смены раскладки
+(`Alt+Shift`). Теперь `forwarded_pressed_keys` очищается через `DiscardKeyGrab` при перехвате
+`KeyState::Released`, при открытии/закрытии `Alt+Tab` и перед любой сменой фокуса в `refresh_focus()`,
+а при перехваченном отпускании модификатора текущему фокусу сразу отправляется актуальный
+`wl_keyboard.modifiers`. Сквозная проверка `bench/game-check.py --mode x11` (`keymap_down 0`,
+`key 25 1 0` после возврата кликом и по `Alt+Tab`, 0 тиков/5 с, 35076 КиБ) и `--mode pointer` прошли.
+
+**Исправление сброса камеры по ПКМ в Lineage II / Wine XWayland, 2026-10-26 (Gemini/agy):**
+в `src/pointer_constraints.rs` и `src/input.rs` объединены `relative_motion` и `wl_pointer.motion` в
+один `wl_pointer.frame` (чтобы `Xwayland` видел `has_relative == true` и выставлял `POINTER_NORAW`,
+не синтезируя ложный `XI_RawMotion` при `XWarpPointer`), отключена эхо-отправка `wl_pointer.motion`
+при снятии lock и отпускании кнопки на XWayland-поверхности, а также добавлено удержание
+относительного захвата (`x11_warp_lock`) и позиции `SavedCursor` при warp с зажатой кнопкой мыши
+(когда Wine захватывает `InputOnly`-окно `clip_window`, из-за чего `Xwayland` через 5 мс закрывает
+`pointer_warp_emulator` без создания `ConfinedPointer`). Release без предупреждений, 142 теста и оба
+сценария `bench/game-check.py` прошли (`pointer`: 0 тиков/5 с, 36312 КиБ; `x11`: 0 тиков/5 с,
+34232 КиБ). Для проверки в живой DRM-сессии пользователю нужно перезайти в Пёрышко.
+
 **Wine/Proton, 2026-10-26 (Codex):**
 в Дисплеях добавлен `xwayland_hidpi` (включён по умолчанию): единый GPU-масштаб
 своего satellite, без изменения Wine-префиксов. Реализованы relative pointer и
