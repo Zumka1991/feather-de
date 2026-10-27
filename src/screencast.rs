@@ -415,13 +415,14 @@ pub fn default_videos_dir() -> Option<PathBuf> {
 pub fn next_recording_path(dir: Option<&Path>, ext: &str) -> Option<PathBuf> {
     let dir = dir.map(PathBuf::from).or_else(default_videos_dir)?;
     std::fs::create_dir_all(&dir).ok()?;
-    let stamp = chrono::Local::now().format("%Y-%m-%d в %H.%M.%S");
-    let mut path = dir.join(format!("Запись экрана {stamp}.{ext}"));
+    let stamp = chrono::Local::now().format(feather_ui::i18n::tr_static("%Y-%m-%d в %H.%M.%S"));
+    let name = feather_ui::i18n::tr_static("Запись экрана");
+    let mut path = dir.join(format!("{name} {stamp}.{ext}"));
     for n in 2.. {
         if !path.exists() {
             break;
         }
-        path = dir.join(format!("Запись экрана {stamp} ({n}).{ext}"));
+        path = dir.join(format!("{name} {stamp} ({n}).{ext}"));
     }
     Some(path)
 }

@@ -485,6 +485,74 @@ pub fn format_lock_clock(
     (date, time)
 }
 
+/// Full date with time, as in a note's header: "27 октября 2026 г. в 14:30", "27 October 2026 at 14:30".
+pub fn format_long_datetime(day: u32, month0: usize, year: i32, hour: u32, minute: u32) -> String {
+    let lang = crate::scale::lang();
+    let time = format_time_hm(hour, minute, crate::scale::use_24h_time());
+    let m = month0.min(11);
+    match lang {
+        Lang::Ru => {
+            let month = [
+                "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября",
+                "октября", "ноября", "декабря",
+            ][m];
+            format!("{day} {month} {year} г. в {time}")
+        }
+        Lang::En => {
+            let month = [
+                "January", "February", "March", "April", "May", "June", "July", "August", "September",
+                "October", "November", "December",
+            ][m];
+            if crate::scale::region() == Region::Us {
+                format!("{month} {day}, {year} at {time}")
+            } else {
+                format!("{day} {month} {year} at {time}")
+            }
+        }
+        Lang::Es => {
+            let month = [
+                "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
+                "octubre", "noviembre", "diciembre",
+            ][m];
+            format!("{day} de {month} de {year}, {time}")
+        }
+        Lang::De => {
+            let month = [
+                "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September",
+                "Oktober", "November", "Dezember",
+            ][m];
+            format!("{day}. {month} {year} um {time}")
+        }
+        Lang::Fr => {
+            let month = [
+                "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
+                "octobre", "novembre", "décembre",
+            ][m];
+            format!("{day} {month} {year} à {time}")
+        }
+        Lang::Zh => format!("{year}年{}月{day}日 {time}", m + 1),
+    }
+}
+
+/// "5 заметок", "1 note", "5 Notizen": a count with its noun in the interface language.
+pub fn notes_count(n: usize) -> String {
+    match crate::scale::lang() {
+        Lang::Ru => {
+            let word = match (n % 10, n % 100) {
+                (1, r) if r != 11 => "заметка",
+                (2..=4, r) if !(12..=14).contains(&r) => "заметки",
+                _ => "заметок",
+            };
+            format!("{n} {word}")
+        }
+        Lang::En => format!("{n} {}", if n == 1 { "note" } else { "notes" }),
+        Lang::Es => format!("{n} {}", if n == 1 { "nota" } else { "notas" }),
+        Lang::De => format!("{n} {}", if n == 1 { "Notiz" } else { "Notizen" }),
+        Lang::Fr => format!("{n} {}", if n < 2 { "note" } else { "notes" }),
+        Lang::Zh => format!("{n} 条备忘录"),
+    }
+}
+
 /// Translates a static Russian string literal into the active interface language.
 #[inline]
 pub fn tr_static(ru: &'static str) -> &'static str {
@@ -499,17 +567,37 @@ pub fn tr_static(ru: &'static str) -> &'static str {
 /// Fast path: when `Lang::Ru` is active, returns `Cow::Borrowed(text)` immediately.
 #[inline]
 pub fn tr(text: &str) -> Cow<'_, str> {
-    let l = crate::scale::lang();
+    tr_in(text, crate::scale::lang())
+}
+
+fn tr_in(text: &str, l: Lang) -> Cow<'_, str> {
     if l == Lang::Ru || text.is_empty() {
         return Cow::Borrowed(text);
     }
     if let Some(exact) = lookup_exact(text, l) {
         return Cow::Borrowed(exact);
     }
+    // Every source string is Russian: names of files, apps and networks skip the patterns.
+    if !text.chars().any(|c| matches!(c, '\u{0400}'..='\u{04FF}')) {
+        return Cow::Borrowed(text);
+    }
     if let Some(dyn_str) = translate_dynamic(text, l) {
         return Cow::Owned(dyn_str);
     }
+    report_missing(text);
     Cow::Borrowed(text)
+}
+
+/// `FEATHER_I18N_MISSING=1` prints each Russian string that has no translation, once.
+fn report_missing(text: &str) {
+    static SEEN: std::sync::OnceLock<Option<std::sync::Mutex<std::collections::HashSet<String>>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(|| std::env::var_os("FEATHER_I18N_MISSING").map(|_| Default::default()));
+    if let Some(seen) = seen {
+        if seen.lock().is_ok_and(|mut s| s.insert(text.to_owned())) {
+            eprintln!("[feather-i18n] missing: {text}");
+        }
+    }
 }
 
 /// Entry in the 5-language translation table: `(ru, en, es, de, fr, zh)`
@@ -521,17 +609,6 @@ type Entry = (
     &'static str,
     &'static str,
 );
-
-fn pick(e: &Entry, l: Lang) -> &'static str {
-    match l {
-        Lang::Ru => e.0,
-        Lang::En => e.1,
-        Lang::Es => e.2,
-        Lang::De => e.3,
-        Lang::Fr => e.4,
-        Lang::Zh => e.5,
-    }
-}
 
 static TABLE: &[Entry] = &[
     ("Увеличивать Wine и старые приложения", "Enlarge Wine and legacy apps", "Ampliar Wine y aplicaciones antiguas", "Wine und ältere Apps vergrößern", "Agrandir Wine et les anciennes apps", "放大 Wine 和旧版应用"),
@@ -1293,18 +1370,112 @@ static TABLE: &[Entry] = &[
     ),
 ];
 
-fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {
-    for entry in TABLE {
-        if entry.0 == ru {
-            return Some(pick(entry, l));
+/// Translations kept as data (`translations.tsv`): ru, en, es, de, fr, zh separated by tabs.
+static TSV: &str = include_str!("translations.tsv");
+
+type Targets = [&'static str; 5];
+
+struct Catalog {
+    exact: std::collections::HashMap<&'static str, Targets>,
+    /// Russian templates with `{}` holes, split at the holes.
+    templates: Vec<(Vec<&'static str>, Targets)>,
+}
+
+fn catalog() -> &'static Catalog {
+    static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let mut exact = std::collections::HashMap::with_capacity(TABLE.len() + 512);
+        let mut templates: Vec<(Vec<&'static str>, Targets)> = Vec::new();
+        for e in TABLE {
+            exact.entry(e.0).or_insert([e.1, e.2, e.3, e.4, e.5]);
         }
+        for line in TSV.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let mut f = line.split('\t');
+            let ru = f.next().unwrap_or_default();
+            let t: Vec<&'static str> = f.collect();
+            let [en, es, de, fr, zh] = t[..] else { continue };
+            let targets = [en, es, de, fr, zh];
+            if ru.contains("{}") {
+                templates.push((ru.split("{}").collect(), targets));
+            } else {
+                exact.entry(ru).or_insert(targets);
+            }
+        }
+        // Longest literal text first, so "Выбрано {} из 4" wins over "{} из 4".
+        templates.sort_by_key(|(parts, _)| std::cmp::Reverse(parts.iter().map(|p: &&str| p.len()).sum::<usize>()));
+        Catalog { exact, templates }
+    })
+}
+
+fn target(t: &Targets, l: Lang) -> &'static str {
+    match l {
+        Lang::Ru => unreachable!("Russian is the source language"),
+        Lang::En => t[0],
+        Lang::Es => t[1],
+        Lang::De => t[2],
+        Lang::Fr => t[3],
+        Lang::Zh => t[4],
     }
-    None
+}
+
+fn lookup_exact(ru: &str, l: Lang) -> Option<&'static str> {
+    if l == Lang::Ru {
+        return None;
+    }
+    catalog().exact.get(ru).map(|t| target(t, l))
+}
+
+/// Captures the `{}` holes of a template split into `parts`, or `None` if `text` doesn't fit.
+fn match_template<'t>(parts: &[&str], text: &'t str) -> Option<Vec<&'t str>> {
+    let (first, rest) = parts.split_first()?;
+    let (last, middle) = rest.split_last()?;
+    let mut s = text.strip_prefix(first)?.strip_suffix(last)?;
+    let mut args = Vec::with_capacity(rest.len());
+    for lit in middle {
+        let at = s.find(lit).filter(|_| !lit.is_empty())?;
+        args.push(&s[..at]);
+        s = &s[at + lit.len()..];
+    }
+    args.push(s);
+    args.iter().all(|a| !a.is_empty()).then_some(args)
+}
+
+/// Fills `{}` holes in order, or `{0}`, `{1}` … where a language reorders them.
+fn fill(target: &str, args: &[Cow<'_, str>]) -> String {
+    let mut out = String::with_capacity(target.len() + 16);
+    let mut next = 0;
+    let mut rest = target;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open + 1..];
+        let close = tail.find('}').unwrap_or(tail.len());
+        let index = if close == 0 {
+            next += 1;
+            Some(next - 1)
+        } else {
+            tail[..close].parse().ok()
+        };
+        match index.and_then(|i: usize| args.get(i)) {
+            Some(a) => out.push_str(a),
+            None => out.push_str(&rest[open..(open + close + 2).min(rest.len())]),
+        }
+        rest = tail.get(close + 1..).unwrap_or("");
+    }
+    out.push_str(rest);
+    out
+}
+
+fn translate_template(text: &str, l: Lang) -> Option<String> {
+    catalog().templates.iter().find_map(|(parts, targets)| {
+        let args = match_template(parts, text)?;
+        let args: Vec<_> = args.into_iter().map(|a| tr_in(a, l)).collect();
+        Some(fill(target(targets, l), &args))
+    })
 }
 
 fn translate_dynamic(text: &str, l: Lang) -> Option<String> {
     if let Some(rest) = text.strip_prefix("Скрыть «").and_then(|s| s.strip_suffix('»')) {
-        let name = tr(rest);
+        let name = tr_in(rest, l);
         return Some(match l {
             Lang::Ru => text.to_string(),
             Lang::En => format!("Hide “{name}”"),
@@ -1315,7 +1486,7 @@ fn translate_dynamic(text: &str, l: Lang) -> Option<String> {
         });
     }
     if let Some(rest) = text.strip_prefix("Завершить «").and_then(|s| s.strip_suffix('»')) {
-        let name = tr(rest);
+        let name = tr_in(rest, l);
         return Some(match l {
             Lang::Ru => text.to_string(),
             Lang::En => format!("Quit “{name}”"),
@@ -1362,6 +1533,26 @@ fn translate_dynamic(text: &str, l: Lang) -> Option<String> {
     if let Some(prefix) = text.strip_suffix(" ТБ") {
         return Some(format!("{prefix} TB"));
     }
+    if let Some(s) = translate_template(text, l) {
+        return Some(s);
+    }
+    // Composite details ("Подключено · WPA3 · 92 %"): translate each part.
+    for sep in ["  ·  ", " · ", " — "] {
+        if text.contains(sep) {
+            let mut changed = false;
+            let parts: Vec<Cow<'_, str>> = text
+                .split(sep)
+                .map(|part| {
+                    let t = tr_in(part, l);
+                    changed |= t != part;
+                    t
+                })
+                .collect();
+            if changed {
+                return Some(parts.join(sep));
+            }
+        }
+    }
     None
 }
 
@@ -1389,5 +1580,33 @@ mod tests {
             translate_dynamic("Скрыть «Firefox»", Lang::En).as_deref(),
             Some("Hide “Firefox”")
         );
+    }
+
+    #[test]
+    fn tsv_catalog_is_well_formed() {
+        for line in TSV.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let f: Vec<_> = line.split('\t').collect();
+            assert_eq!(f.len(), 6, "{line}");
+            assert!(f.iter().all(|t| !t.trim().is_empty()), "{line}");
+            let holes = f[0].matches("{}").count();
+            for t in &f[1..] {
+                let numbered = (0..10).filter(|i| t.contains(&format!("{{{i}}}"))).count();
+                assert_eq!(t.matches("{}").count() + numbered, holes, "{line}");
+            }
+        }
+        assert_eq!(lookup_exact("Поиск сетей", Lang::De), Some("Nach Netzwerken suchen"));
+    }
+
+    #[test]
+    fn templates_and_composite_details_translate() {
+        let t = |s, l| translate_dynamic(s, l);
+        assert_eq!(t("Подключено к «Дом»", Lang::En).as_deref(), Some("Connected to “Дом”"));
+        assert_eq!(t("Выбрано 2 из 4", Lang::Fr).as_deref(), Some("2 sur 4 sélectionnés"));
+        assert_eq!(t("2 из 4", Lang::En).as_deref(), Some("2 of 4"));
+        assert_eq!(t("Сохранена · WPA3 · 92 %", Lang::En).as_deref(), Some("Saved · WPA3 · 92 %"));
+        assert_eq!(t("Наушники · Подключено · Заряд 80 %", Lang::De).as_deref(), Some("Kopfhörer · Verbunden · Batterie 80 %"));
+        assert_eq!(t("Команда `ls` запущена на :1", Lang::Zh).as_deref(), Some("已在 :1 上启动命令 `ls`"));
+        assert_eq!(t("WPA3 · 92 %", Lang::En), None);
+        assert_eq!(t("Непереведённая строка", Lang::En), None);
     }
 }

@@ -434,6 +434,12 @@ enum Style {
     /// Grouped-form row: label and detail on the left; `value` right-aligned.
     Row,
     Toggle(bool),
+    /// Row whose value opens a choice: shown on the right like a macOS pop-up button.
+    Choice,
+    /// List row selected with a check mark (audio devices).
+    Check(bool),
+    /// Standalone switch next to a row's buttons.
+    Switch(bool),
     Track,
     Segment(bool),
     /// Value 0…1; the click position decides the new value
@@ -482,6 +488,7 @@ impl Layout {
             && matches!(
                 style,
                 Style::Push(_)
+                    | Style::Switch(_)
                     | Style::Popup
                     | Style::Track
                     | Style::Mini
@@ -523,6 +530,10 @@ impl Layout {
         self.y += 72.0 + 20.0;
     }
     fn header(&mut self, text: &str) {
+        // Sections breathe like macOS forms; the first one sits right under the hero card.
+        if !matches!(self.out.last().map(|c| c.style), Some(Style::Hero(_)) | None) {
+            self.y += 8.0;
+        }
         let r = R::new(self.x + 8.0, self.y, self.cw - 16.0, 18.0);
         self.push(r, text, Style::Header, None);
         self.y += 24.0;
@@ -541,6 +552,12 @@ impl Layout {
         c.detail = detail;
         c.divider = divider;
         self.y += h;
+        r
+    }
+    /// A row that cycles or picks its value: label on the left, value with ⌃⌄ on the right.
+    fn choice(&mut self, h: f32, label: &str, detail: String, value: String, action: Option<Action>) -> R {
+        let r = self.row(h, label, detail, Style::Choice, action);
+        self.out.last_mut().unwrap().value = value;
         r
     }
     fn end(&mut self) {
@@ -816,6 +833,25 @@ fn soft_shadow(pm: &mut PixmapMut, r: R, radius: f32) {
         );
     }
 }
+/// macOS switch, 40 × 24 with its top-left corner at (x, y).
+fn draw_switch(pm: &mut PixmapMut, x: f32, y: f32, on: bool, disabled: bool) {
+    let p = palette();
+    let hc = crate::theme::high_contrast();
+    let (tw, th) = (40.0, 24.0);
+    let off = if appearance() == Appearance::Dark {
+        rgba(255, 255, 255, if hc { 72 } else { 40 })
+    } else {
+        rgba(0, 0, 0, if hc { 56 } else { 30 })
+    };
+    let track = if on { p.accent } else { off };
+    fill_rounded_rect(pm, x, y, tw, th, th / 2.0, if disabled { with_alpha(track, 0.45) } else { track });
+    if hc && !on {
+        stroke_rounded_rect(pm, x + 0.5, y + 0.5, tw - 1.0, th - 1.0, th / 2.0, 1.0, p.separator);
+    }
+    let kx = if on { x + tw - 12.0 } else { x + 12.0 };
+    fill_circle(pm, kx, y + 12.5, 10.0, rgba(0, 0, 0, 22));
+    fill_circle(pm, kx, y + 12.0, 10.0, rgba(255, 255, 255, 255));
+}
 fn draw_chevrons(pm: &mut PixmapMut, cx: f32, cy: f32, color: tiny_skia::Color) {
     stroke_line(pm, cx - 3.0, cy - 2.0, cx, cy - 5.0, 1.2, color);
     stroke_line(pm, cx, cy - 5.0, cx + 3.0, cy - 2.0, 1.2, color);
@@ -1021,12 +1057,8 @@ impl Panel {
                             } else {
                                 Some(Action::OpenConnectionEditor)
                             };
-                            l.row(52.0, &n.label, detail, Style::Row, action);
-                            l.out.last_mut().unwrap().value = if n.active {
-                                "Отключить".into()
-                            } else {
-                                "Подключить".into()
-                            };
+                            let r = l.row(52.0, &n.label, detail, Style::Row, None);
+                            l.push(right(r, 112.0, 26.0), if n.active { "Отключить" } else { "Подключить" }, Style::Push(false), action);
                         }
                     }
                     l.end();
@@ -1050,12 +1082,12 @@ impl Panel {
                         let auto = if s.autoconnect { "Автоподключение" } else { "Вручную" };
                         let detail = format!("{state} · {} · {auto}", s.security.label());
                         let r = l.row(54.0, &s.label, detail, Style::Row, None);
-                        let forget = right(r, 76.0, 26.0);
-                        let auto_btn = R::new(forget.x - 6.0 - 86.0, forget.y, 86.0, 26.0);
+                        let forget = right(r, 100.0, 26.0);
+                        let auto_btn = R::new(forget.x - 14.0 - 40.0, forget.y, 40.0, 26.0);
                         l.push(
                             auto_btn,
-                            if s.autoconnect { "Авто" } else { "Вручную" },
-                            Style::Push(s.autoconnect),
+                            "Автоподключение к этой сети",
+                            Style::Switch(s.autoconnect),
                             Some(Action::Network(Net::SetAutoconnect {
                                 profile: s.profile.clone(),
                                 autoconnect: !s.autoconnect,
@@ -1069,7 +1101,7 @@ impl Panel {
                         );
                     }
                     l.end();
-                    l.footer("«Авто» разрешает подключаться к сети автоматически. «Забыть» удаляет профиль и пароль из NetworkManager.");
+                    l.footer("Переключатель включает автоподключение к сети. «Забыть» удаляет профиль и пароль из NetworkManager.");
                 }
                 l.header("Ethernet");
                 if c.wifi.ethernets.is_empty() {
@@ -1101,14 +1133,13 @@ impl Panel {
                         } else {
                             None
                         };
-                        l.row(52.0, &e.label, detail, Style::Row, action);
-                        l.out.last_mut().unwrap().value = if e.active || e.connecting {
-                            "Отключить".into()
-                        } else if e.carrier {
-                            "Подключить".into()
+                        let on = e.active || e.connecting;
+                        let r = l.row(52.0, &e.label, detail, Style::Row, None);
+                        if action.is_some() {
+                            l.push(right(r, 112.0, 26.0), if on { "Отключить" } else { "Подключить" }, Style::Push(false), action);
                         } else {
-                            "Нет сигнала".into()
-                        };
+                            l.out.last_mut().unwrap().value = "Нет сигнала".into();
+                        }
                     }
                     l.end();
                 }
@@ -1266,7 +1297,7 @@ impl Panel {
                                     detail.push_str(&format!(" · Заряд {b} %"));
                                 }
                                 let r = l.row(56.0, &d.name, detail, Style::Row, None);
-                                let forget = right(r, 76.0, 26.0);
+                                let forget = right(r, 100.0, 26.0);
                                 let toggle = R::new(forget.x - 6.0 - 106.0, forget.y, 106.0, 26.0);
                                 l.push(
                                     toggle,
@@ -1310,18 +1341,13 @@ impl Panel {
                                 } else {
                                     format!("{} · Доступно для подключения", d.kind_label())
                                 };
-                                l.row(
-                                    52.0,
-                                    &d.name,
-                                    detail,
-                                    Style::Row,
-                                    Some(Action::Bluetooth(Bt::ConnectBluetooth(d.path.clone()))),
+                                let r = l.row(52.0, &d.name, detail, Style::Row, None);
+                                l.push(
+                                    right(r, 112.0, 26.0),
+                                    if busy { "Подключение…" } else { "Подключить" },
+                                    Style::Push(false),
+                                    (!busy).then(|| Action::Bluetooth(Bt::ConnectBluetooth(d.path.clone()))),
                                 );
-                                l.out.last_mut().unwrap().value = if busy {
-                                    "Подключение…".into()
-                                } else {
-                                    "Подключить".into()
-                                };
                             }
                             l.end();
                         }
@@ -1350,13 +1376,14 @@ impl Panel {
                 l.header("Сигналы и звуки интерфейса");
                 l.begin();
                 l.row(52.0,"Звуки предупреждений","Системный сигнал и запросы программ".into(),Style::Toggle(c.sounds.alerts),Some(Action::AlertSounds));
-                l.row(52.0,"Сигнал предупреждения",c.sounds.tone.label().into(),Style::Row,Some(Action::AlertTone));
+                l.choice(48.0,"Сигнал предупреждения",String::new(),c.sounds.tone.label().into(),Some(Action::AlertTone));
                 let r=l.row(82.0,"Громкость сигналов",format!("{} % от громкости устройства",c.sounds.volume),Style::Row,None);
                 for (i,volume) in [0,25,50,75,100].into_iter().enumerate() {
                     let width=(r.w-28.0)/5.0;
                     l.push(R::new(r.x+14.0+i as f32*width,r.y+48.0,width,26.0),&format!("{volume} %"),Style::Segment(c.sounds.volume==volume),Some(Action::AlertVolume(volume)));
                 }
-                l.row(44.0,"Прослушать сигнал",String::new(),Style::Row,Some(Action::PreviewAlert));
+                let r=l.row(44.0,"Прослушать сигнал",String::new(),Style::Row,None);
+                l.push(right(r,112.0,26.0),"Прослушать",Style::Push(false),Some(Action::PreviewAlert));
                 l.row(52.0,"Звуки интерфейса","Короткий звук после снимка экрана".into(),Style::Toggle(c.sounds.interface),Some(Action::InterfaceSounds));
                 l.row(52.0,"Звук при изменении громкости","Отклик клавиш громкости, кроме выключенного звука".into(),Style::Toggle(c.sounds.volume_feedback),Some(Action::VolumeFeedback));
                 l.row(52.0,"Звук уведомлений","Короткий сигнал при появлении баннера".into(),Style::Toggle(c.notify_sounds),Some(Action::NotifySounds));
@@ -1375,13 +1402,8 @@ impl Panel {
                         l.begin();
                         for device in devices {
                             let selected = device.name == *default;
-                            let detail = match (selected, device.unplugged) {
-                                (true, true) => "Выбрано · разъём не подключён",
-                                (false, true) => "Разъём не подключён",
-                                (true, false) => "Выбрано",
-                                (false, false) => "Нажмите, чтобы выбрать",
-                            };
-                            l.row(52.0, &device.label, detail.into(), Style::Row,
+                            let detail = if device.unplugged { "Разъём не подключён" } else { "" };
+                            l.row(if device.unplugged { 52.0 } else { 44.0 }, &device.label, detail.into(), Style::Check(selected),
                                 Some(Action::Audio(if input { Audio::Input(device.name.clone()) } else { Audio::Output(device.name.clone()) })));
                         }
                         l.end();
@@ -1412,10 +1434,10 @@ impl Panel {
                 l.header("При отсутствии активности");
                 l.begin();
                 for (index,title,value) in [(0,"Блокировать экран",c.power.lock),(1,"Выключать экран",c.power.blank),(2,"Переводить компьютер в сон",c.power.suspend)] {
-                    l.row(58.0,title,crate::power::Preferences::label(value),Style::Row,Some(Action::IdleTime(index)));
+                    l.choice(48.0,title,String::new(),crate::power::Preferences::label(value),Some(Action::IdleTime(index)));
                 }
                 l.end();
-                l.footer("Нажмите на строку, чтобы выбрать время. Выключение экрана и сон всегда требуют пароль при возвращении.");
+                l.footer("Выключение экрана и сон всегда требуют пароль при возвращении.");
                 l.footer(if c.direct && c.power_ready {"После пробуждения экран блокируется автоматически. Видео в видимом окне может отложить действия по простою."} else if c.direct {"Служба питания недоступна. Блокировка работает; автоматический сон пока недоступен."} else {"В оконном режиме гаснет только окно Пёрышка. Сон компьютера доступен в прямой сессии DRM."});
             }
             Page::Notifications => {
@@ -1424,7 +1446,7 @@ impl Panel {
                 l.row(52.0, "Не беспокоить", "Всё уходит в центр уведомлений, баннер только у срочных".into(), Style::Toggle(c.dnd), Some(Action::DoNotDisturb));
                 l.row(52.0, "По расписанию", "Каждый день в выбранные часы".into(), Style::Toggle(c.dnd_schedule.is_some()), Some(Action::DndSchedule));
                 if let Some(window) = c.dnd_schedule {
-                    l.row(52.0, "Время", crate::shell::dnd_window_label(window), Style::Row, Some(Action::DndWindow));
+                    l.choice(48.0, "Время", String::new(), crate::shell::dnd_window_label(window), Some(Action::DndWindow));
                 }
                 l.row(52.0, "Звук уведомлений", "Короткий сигнал при появлении баннера".into(), Style::Toggle(c.notify_sounds), Some(Action::NotifySounds));
                 l.end();
@@ -1434,10 +1456,10 @@ impl Panel {
                 } else {
                     l.begin();
                     for (i, a) in c.notify_apps.iter().enumerate() {
-                        l.row(52.0, &a.label, a.delivery.label().into(), Style::Row, Some(Action::NotifyDelivery(i)));
+                        l.choice(48.0, &a.label, String::new(), a.delivery.label().into(), Some(Action::NotifyDelivery(i)));
                     }
                     l.end();
-                    l.footer("Нажмите на строку, чтобы сменить способ показа. Выключенные уведомления не сохраняются.");
+                    l.footer("Выключенные уведомления не сохраняются.");
                 }
             }
             Page::Appearance => {
@@ -1732,15 +1754,15 @@ impl Panel {
                         l.push(R::new(track.x + i as f32 * sw, track.y, sw, track.h), &label, Style::Segment(current == v), Some(make(v)));
                     }
                 }
-                l.row(52.0, "Клавиша Caps Lock", c.keyboard.caps.label().into(), Style::Row, kb.then_some(Action::CapsLock));
+                l.choice(48.0, "Клавиша Caps Lock", String::new(), c.keyboard.caps.label().into(), kb.then_some(Action::CapsLock));
                 l.end();
-                l.footer("Автоповтор применяется сразу во всех программах. Нажмите на строку Caps Lock, чтобы выбрать её действие.");
+                l.footer("Автоповтор применяется сразу во всех программах.");
                 l.header("Сочетания действий");
                 l.begin();
                 for action in crate::shortcuts::Action::ALL.iter().copied() {
                     let value = if self.shortcut_capture == Some(action) { "Нажмите сочетание…".into() }
                         else { self.keybindings.chord(action).map_or("Выключено".into(), |c| c.label()) };
-                    l.row(48.0, action.label(), value, Style::Row, Some(Action::EditShortcut(action)));
+                    l.choice(44.0, action.label(), String::new(), value, Some(Action::EditShortcut(action)));
                 }
                 l.row(48.0, "Вернуть стандартные сочетания", String::new(), Style::Row, Some(Action::ResetShortcuts));
                 l.end();
@@ -1828,11 +1850,15 @@ impl Panel {
                     l.begin();
                     for m in &c.monitors {
                         let detail=format!("{} × {} · ({}, {}){}",m.rect.w,m.rect.h,m.rect.x,m.rect.y,if m.primary {" · Основной"}else{""});
-                        let r=l.row(if m.primary{58.0}else{96.0},&m.name,detail,Style::Row,None);
+                        let r=l.row(if m.primary{52.0}else{92.0},&m.name,detail,Style::Row,None);
                         if !m.primary {
-                            l.push(R::new(r.x+r.w-116.0,r.y+10.0,105.0,25.0),"Основной",Style::Push(false),(!self.confirming).then(||Action::PrimaryMonitor(m.name.clone())));
+                            l.push(R::new(r.x+r.w-14.0-150.0,r.y+12.0,150.0,26.0),"Сделать основным",Style::Push(false),(!self.confirming).then(||Action::PrimaryMonitor(m.name.clone())));
+                            // Position relative to the main display: a segmented control under the name.
+                            let track=R::new(r.x+14.0,r.y+52.0,r.w-28.0,28.0);
+                            l.push(track,"",Style::Track,None);
+                            let sw=track.w/4.0;
                             for (i,label) in ["Слева","Справа","Сверху","Снизу"].iter().enumerate(){
-                                l.push(R::new(r.x+14.0+i as f32*76.0,r.y+59.0,70.0,25.0),label,Style::Mini,(!self.confirming).then(||Action::PositionMonitor(m.name.clone(),i as u8)));
+                                l.push(R::new(track.x+i as f32*sw,track.y,sw,track.h),label,Style::Segment(false),(!self.confirming).then(||Action::PositionMonitor(m.name.clone(),i as u8)));
                             }
                         }
                     }
@@ -1900,11 +1926,11 @@ impl Panel {
                 l.row(52.0, "Включить сейчас", "Тёплые цвета вечером легче для глаз".into(), Style::Toggle(c.night_active), Some(Action::NightNow));
                 l.row(52.0, "По расписанию", "Каждый день в выбранные часы".into(), Style::Toggle(c.night.schedule.is_some()), Some(Action::NightSchedule));
                 if let Some(w) = c.night.schedule {
-                    l.row(52.0, "Время", crate::shell::dnd_window_label(w), Style::Row, Some(Action::NightWindow));
+                    l.choice(48.0, "Время", String::new(), crate::shell::dnd_window_label(w), Some(Action::NightWindow));
                 }
-                l.row(52.0, "Цветовая температура", crate::night::warmth_label(c.night.kelvin), Style::Row, Some(Action::NightWarmth));
+                l.choice(48.0, "Цветовая температура", String::new(), crate::night::warmth_label(c.night.kelvin), Some(Action::NightWarmth));
                 l.end();
-                l.footer(if c.direct {"Цвета меняются плавно за несколько секунд. Нажмите на строку, чтобы выбрать время или теплоту."} else {"Ночной режим меняет цвета монитора в прямой сессии Пёрышка; в окне настройки только сохраняются."});
+                l.footer(if c.direct {"Цвета меняются плавно за несколько секунд."} else {"Ночной режим меняет цвета монитора в прямой сессии Пёрышка; в окне настройки только сохраняются."});
             }
             Page::Defaults => {
                 let state = &c.system;
@@ -1957,15 +1983,15 @@ impl Panel {
                             None,
                         );
                         let toggle_rect = R::new(
-                            r.x + r.w - 14.0 - 80.0 - 6.0 - 68.0,
+                            r.x + r.w - 14.0 - 80.0 - 14.0 - 40.0,
                             r.y + (r.h - 26.0) / 2.0,
-                            68.0,
+                            40.0,
                             26.0,
                         );
                         l.push(
                             toggle_rect,
-                            if item.enabled { "Вкл." } else { "Выкл." },
-                            Style::Push(item.enabled),
+                            "Запускается при входе",
+                            Style::Switch(item.enabled),
                             (!state.busy).then_some(Action::ToggleAutostart {
                                 id: item.id.clone(),
                                 enabled: !item.enabled,
@@ -2139,15 +2165,15 @@ impl Panel {
                             None,
                         );
                         let toggle_rect = R::new(
-                            r.x + r.w - 14.0 - 80.0 - 6.0 - 68.0,
+                            r.x + r.w - 14.0 - 80.0 - 14.0 - 40.0,
                             r.y + (r.h - 26.0) / 2.0,
-                            68.0,
+                            40.0,
                             26.0,
                         );
                         l.push(
                             toggle_rect,
-                            if app.allowed { "Вкл." } else { "Выкл." },
-                            Style::Push(app.allowed),
+                            "Разрешено",
+                            Style::Switch(app.allowed),
                             Some(Action::ToggleScreenCaptureApp(app.id.clone())),
                         );
                         l.push(
@@ -2458,10 +2484,10 @@ impl Panel {
                 l.header("Активные углы");
                 l.begin();
                 for (i, name) in crate::hot_corners::CORNER_NAMES.iter().enumerate() {
-                    l.row(52.0, name, c.hot_corners[i].label().into(), Style::Row, Some(Action::HotCorner(i)));
+                    l.choice(48.0, name, String::new(), c.hot_corners[i].label().into(), Some(Action::HotCorner(i)));
                 }
                 l.end();
-                l.footer("Подведите указатель в угол экрана, чтобы выполнить действие. Нажмите на строку, чтобы выбрать его.");
+                l.footer("Подведите указатель в угол экрана, чтобы выполнить действие.");
             }
         }
         if self.page == Page::Keyboard && self.adding {
@@ -2800,6 +2826,16 @@ impl Panel {
                 }
             }
             Style::Row => {
+                let clickable = control.action.is_some();
+                if hover && clickable {
+                    fill_rounded_rect(pm, r.x + 4.0, r.y + 3.0, r.w - 8.0, r.h - 6.0, 9.0, hover_fill);
+                }
+                // Rows that open a window or a sheet carry a disclosure chevron, as in macOS.
+                if clickable && control.value.is_empty() && control.right_reserve == 0.0 && control.label.ends_with('…') {
+                    let (cx, cy) = (r.x + r.w - 18.0, r.y + r.h / 2.0);
+                    stroke_line(pm, cx - 2.5, cy - 4.5, cx + 2.0, cy, 1.5, p.text_tertiary);
+                    stroke_line(pm, cx + 2.0, cy, cx - 2.5, cy + 4.5, 1.5, p.text_tertiary);
+                }
                 let reserve = if control.value.is_empty() {
                     control.right_reserve
                 } else {
@@ -2817,22 +2853,33 @@ impl Panel {
                     fill_rounded_rect(pm, r.x + 4.0, r.y + 3.0, r.w - 8.0, r.h - 6.0, 9.0, hover_fill);
                 }
                 row_text(pm, fonts, 60.0);
-                let (tw, th) = (40.0, 24.0);
-                let tx = r.x + r.w - 14.0 - tw;
-                let ty = r.y + (r.h - th) / 2.0;
-                let off = if dark {
-                    rgba(255, 255, 255, if hc { 72 } else { 40 })
-                } else {
-                    rgba(0, 0, 0, if hc { 56 } else { 30 })
-                };
-                let track = if on { p.accent } else { off };
-                fill_rounded_rect(pm, tx, ty, tw, th, th / 2.0, if disabled { with_alpha(track, 0.45) } else { track });
-                if hc && !on {
-                    stroke_rounded_rect(pm, tx + 0.5, ty + 0.5, tw - 1.0, th - 1.0, th / 2.0, 1.0, p.separator);
+                draw_switch(pm, r.x + r.w - 54.0, r.y + (r.h - 24.0) / 2.0, on, disabled);
+            }
+            Style::Switch(on) => {
+                draw_switch(pm, r.x, r.y + (r.h - 24.0) / 2.0, on, disabled);
+            }
+            Style::Choice => {
+                if hover && !disabled {
+                    fill_rounded_rect(pm, r.x + 4.0, r.y + 3.0, r.w - 8.0, r.h - 6.0, 9.0, hover_fill);
                 }
-                let kx = if on { tx + tw - 12.0 } else { tx + 12.0 };
-                fill_circle(pm, kx, ty + 12.5, 10.0, rgba(0, 0, 0, 22));
-                fill_circle(pm, kx, ty + 12.0, 10.0, rgba(255, 255, 255, 255));
+                let value = fonts.ellipsize(&control.value, r.w * 0.5, 13.0, false);
+                let vw = fonts.measure_text(&value, 13.0, false);
+                row_text(pm, fonts, vw + 34.0);
+                let right = r.x + r.w - 14.0;
+                let cy = r.y + r.h / 2.0;
+                fonts.draw_text_right(pm, &value, right - 18.0, cy - 7.5, 13.0, if disabled { p.text_tertiary } else { p.text_secondary }, false);
+                draw_chevrons(pm, right - 5.0, cy, if disabled { p.text_tertiary } else { p.text_secondary });
+            }
+            Style::Check(selected) => {
+                if hover && !disabled && !selected {
+                    fill_rounded_rect(pm, r.x + 4.0, r.y + 3.0, r.w - 8.0, r.h - 6.0, 9.0, hover_fill);
+                }
+                row_text(pm, fonts, 30.0);
+                if selected {
+                    let cy = r.y + r.h / 2.0;
+                    stroke_line(pm, r.x + r.w - 27.0, cy, r.x + r.w - 22.5, cy + 4.5, 2.0, p.accent);
+                    stroke_line(pm, r.x + r.w - 22.5, cy + 4.5, r.x + r.w - 15.0, cy - 5.0, 2.0, p.accent);
+                }
             }
             Style::Track => {
                 fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, if dark { rgba(255, 255, 255, if hc { 42 } else { 22 }) } else { rgba(0, 0, 0, if hc { 28 } else { 14 }) });
@@ -4568,7 +4615,7 @@ mod tests {
             use crate::controls::Control as Audio;
             let mut panel = Panel { page:Page::Sound, ..Default::default() };
             let controls = panel.controls(800.0, 540.0, &context);
-            assert!(controls.iter().any(|c| c.detail.contains("разъём не подключён")));
+            assert!(controls.iter().any(|c| c.detail == "Разъём не подключён"));
             let volume = controls.iter().find(|c| matches!(c.action, Some(Action::Audio(Audio::InputVolume { .. })))).unwrap();
             panel.scroll=(volume.rect.y-300.0).max(0.0);
             let controls=panel.controls(800.0,540.0,&context);
@@ -4598,13 +4645,23 @@ mod tests {
         let mut fonts = FontSystem::new();
         for scale in [1.0, 1.25, 2.0] {
             for dark in [false, true] {
-                with_render_settings(
+                // FEATHER_SETTINGS_LANG=en|de|… renders the fixtures in another language.
+                let lang = std::env::var("FEATHER_SETTINGS_LANG").ok().and_then(|l| crate::theme::Lang::parse(&l));
+                if let Some(l) = lang {
+                    feather_ui::scale::set_lang(l);
+                }
+                crate::theme::with_full_render_settings(
                     scale,
                     if dark {
                         Appearance::Dark
                     } else {
                         Appearance::Light
                     },
+                    crate::theme::AccentColor::Blue,
+                    None,
+                    crate::theme::TextSize::Default,
+                    false,
+                    false,
                     || {
                         let overlays = [
                             Panel { page: Page::Keyboard, adding: true, ..Default::default() },

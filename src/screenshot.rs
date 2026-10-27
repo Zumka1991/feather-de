@@ -618,13 +618,14 @@ pub fn save_to(bytes: &[u8], custom_dir: Option<&std::path::Path>, fmt: Format) 
     let dir = custom_dir.map(PathBuf::from).or_else(default_dir)?;
     std::fs::create_dir_all(&dir).ok()?;
     let ext = fmt.extension();
-    let stamp = chrono::Local::now().format("%Y-%m-%d в %H.%M.%S");
-    let mut path = dir.join(format!("Снимок экрана {stamp}.{ext}"));
+    let stamp = chrono::Local::now().format(feather_ui::i18n::tr_static("%Y-%m-%d в %H.%M.%S"));
+    let name = feather_ui::i18n::tr_static("Снимок экрана");
+    let mut path = dir.join(format!("{name} {stamp}.{ext}"));
     for n in 2.. {
         if !path.exists() {
             break;
         }
-        path = dir.join(format!("Снимок экрана {stamp} ({n}).{ext}"));
+        path = dir.join(format!("{name} {stamp} ({n}).{ext}"));
     }
     std::fs::write(&path, bytes).ok()?;
     Some(path)

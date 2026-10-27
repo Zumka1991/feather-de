@@ -153,7 +153,7 @@ pub fn same_device(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Copy name for a paste into the same folder: "a.txt" → "a копия.txt"
+/// Copy name for a paste into the same folder: "a.txt" → "a копия.txt" ("a copy.txt" in English)
 fn paste_target(dir: &Path, source: &Path) -> PathBuf {
     let name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let target = dir.join(&name);
@@ -164,11 +164,12 @@ fn paste_target(dir: &Path, source: &Path) -> PathBuf {
         (Some(stem), Some(ext)) if !source.is_dir() => (stem.to_string_lossy().into_owned(), format!(".{}", ext.to_string_lossy())),
         _ => (name.clone(), String::new()),
     };
-    let first = dir.join(format!("{stem} копия{ext}"));
+    let copy = crate::i18n::tr_static("копия");
+    let first = dir.join(format!("{stem} {copy}{ext}"));
     if !first.exists() {
         return first;
     }
-    (2..).map(|n| dir.join(format!("{stem} копия {n}{ext}"))).find(|p| !p.exists()).unwrap()
+    (2..).map(|n| dir.join(format!("{stem} {copy} {n}{ext}"))).find(|p| !p.exists()).unwrap()
 }
 
 /// Copies or moves `sources` into `dir`; returns how many failed

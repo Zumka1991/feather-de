@@ -107,13 +107,10 @@ pub struct App {
     last_click: Option<(Instant, f32, f32)>,
 }
 
-fn russian_date(secs: i64) -> String {
+fn long_date(secs: i64) -> String {
     use chrono::{Datelike, TimeZone, Timelike};
     let Some(t) = chrono::Local.timestamp_opt(secs, 0).single() else { return String::new() };
-    const MONTHS: [&str; 12] = [
-        "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря",
-    ];
-    format!("{} {} {} г. в {}:{:02}", t.day(), MONTHS[t.month0() as usize], t.year(), t.hour(), t.minute())
+    feather_ui::i18n::format_long_datetime(t.day(), t.month0() as usize, t.year(), t.hour(), t.minute())
 }
 
 fn short_date(secs: i64) -> String {
@@ -881,12 +878,7 @@ impl App {
             }
         }
         let count = self.visible().len();
-        let label = match (count % 10, count % 100) {
-            (1, r) if r != 11 => "заметка",
-            (2..=4, r) if !(12..=14).contains(&r) => "заметки",
-            _ => "заметок",
-        };
-        self.fonts.draw_text_right(pm, &format!("{count} {label}"), SIDEBAR_W - 22.0, 19.0, 11.0, colors::tertiary(), false);
+        self.fonts.draw_text_right(pm, &feather_ui::i18n::notes_count(count), SIDEBAR_W - 22.0, 19.0, 11.0, colors::tertiary(), false);
         // Search
         let (sx, sy, sw, sh) = self.search_rect();
         theme::fill_rrect(pm, sx, sy, sw, sh, 15.0, colors::control());
@@ -985,7 +977,7 @@ impl App {
         let modified = note.modified;
         let text = note.text.clone();
         let x0 = self.text_x();
-        let date = russian_date(modified);
+        let date = long_date(modified);
         self.fonts.draw_text_centered(pm, &date, SIDEBAR_W + (self.w - SIDEBAR_W) / 2.0, TOOLBAR_H + 10.0 - self.scroll, 12.0, colors::tertiary(), false);
         let selection = self.selection();
         let lines = self.layout.clone();

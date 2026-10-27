@@ -1,0 +1,536 @@
+# Feather DE interface translations: ru<TAB>en<TAB>es<TAB>de<TAB>fr<TAB>zh.
+# The Russian source string is the key. "{}" marks a value substituted at runtime; a target
+# may use "{0}", "{1}" to reorder values. Lines starting with # are comments.
+# ── System Settings: Network ──
+Адаптер Wi‑Fi или служба NetworkManager недоступны.	Wi‑Fi adapter or NetworkManager service is unavailable.	El adaptador Wi‑Fi o el servicio NetworkManager no está disponible.	WLAN-Adapter oder NetworkManager-Dienst nicht verfügbar.	L’adaptateur Wi‑Fi ou le service NetworkManager est indisponible.	Wi‑Fi 适配器或 NetworkManager 服务不可用。
+Аппаратно заблокирован	Hardware switch is off	Bloqueado por hardware	Per Hardware gesperrt	Bloqué par le matériel	已被硬件开关禁用
+Подключено к «{}»	Connected to “{}”	Conectado a «{}»	Verbunden mit „{}“	Connecté à « {} »	已连接到“{}”
+Включён · не подключено	On · Not connected	Activado · Sin conexión	Ein · Nicht verbunden	Activé · Non connecté	已开启 · 未连接
+Поиск сетей	Scan for Networks	Buscar redes	Nach Netzwerken suchen	Rechercher des réseaux	搜索网络
+Обновить список доступных точек доступа	Refresh the list of nearby access points	Actualizar la lista de puntos de acceso cercanos	Liste der verfügbaren Zugangspunkte aktualisieren	Actualiser la liste des points d’accès à proximité	刷新附近接入点列表
+Сохранена	Saved	Guardada	Gesichert	Enregistré	已存储
+Доступна	Available	Disponible	Verfügbar	Disponible	可用
+Доступные сети Wi‑Fi не найдены.	No Wi‑Fi networks found.	No se han encontrado redes Wi‑Fi.	Keine WLAN-Netzwerke gefunden.	Aucun réseau Wi‑Fi trouvé.	未找到 Wi‑Fi 网络。
+Сохранённые сети Wi‑Fi	Known Networks	Redes conocidas	Bekannte Netzwerke	Réseaux connus	已知网络
+Сохранённых профилей Wi‑Fi пока нет.	No known Wi‑Fi networks yet.	Todavía no hay redes Wi‑Fi conocidas.	Noch keine bekannten WLAN-Netzwerke.	Aucun réseau Wi‑Fi connu pour l’instant.	暂无已知的 Wi‑Fi 网络。
+В зоне действия	In range	Dentro del alcance	In Reichweite	À portée	在范围内
+Вне зоны действия	Out of range	Fuera de alcance	Außer Reichweite	Hors de portée	不在范围内
+Автоподключение	Auto-Join	Conexión automática	Automatisch verbinden	Connexion automatique	自动加入
+Вручную	Manual	Manual	Manuell	Manuel	手动
+Авто	Auto	Auto	Auto	Auto	自动
+«Авто» разрешает подключаться к сети автоматически. «Забыть» удаляет профиль и пароль из NetworkManager.	Auto-Join connects to the network automatically. Forget removes the profile and password from NetworkManager.	La conexión automática se une a la red sola. «Olvidar» elimina el perfil y la contraseña de NetworkManager.	„Automatisch verbinden“ tritt dem Netzwerk selbst bei. „Ignorieren“ entfernt Profil und Passwort aus NetworkManager.	La connexion automatique rejoint le réseau toute seule. « Oublier » supprime le profil et le mot de passe de NetworkManager.	“自动加入”会自动连接到该网络。“忽略”会从 NetworkManager 中删除配置和密码。
+Автоподключение к этой сети	Automatically join this network	Conectarse automáticamente a esta red	Automatisch mit diesem Netzwerk verbinden	Rejoindre automatiquement ce réseau	自动加入此网络
+Забыть удаляет профиль и пароль из NetworkManager.	Forget removes the profile and password from NetworkManager.	Olvidar elimina el perfil y la contraseña de NetworkManager.	Ignorieren entfernt Profil und Passwort aus NetworkManager.	Oublier supprime le profil et le mot de passe de NetworkManager.	“忽略”会从 NetworkManager 中删除配置和密码。
+Проводные сетевые адаптеры не найдены.	No Ethernet adapters found.	No se han encontrado adaptadores Ethernet.	Keine Ethernet-Adapter gefunden.	Aucun adaptateur Ethernet trouvé.	未找到以太网适配器。
+Кабель подключён	Cable connected	Cable conectado	Kabel angeschlossen	Câble branché	已连接网线
+Кабель не подключён	Cable unplugged	Cable desconectado	Kein Kabel angeschlossen	Câble débranché	未连接网线
+{} Мбит/с	{} Mbit/s	{} Mbit/s	{} Mbit/s	{} Mbit/s	{} Mbit/s
+Нет сигнала	No carrier	Sin señal	Kein Signal	Pas de signal	无信号
+Профили VPN и WireGuard не настроены.	No VPN or WireGuard profiles configured.	No hay perfiles VPN ni WireGuard configurados.	Keine VPN- oder WireGuard-Profile konfiguriert.	Aucun profil VPN ou WireGuard configuré.	未配置 VPN 或 WireGuard 配置文件。
+Обновить состояние сети	Refresh Network Status	Actualizar estado de la red	Netzwerkstatus aktualisieren	Actualiser l’état du réseau	刷新网络状态
+Расширенные настройки сети…	Advanced Network Settings…	Ajustes de red avanzados…	Erweiterte Netzwerkeinstellungen …	Réglages réseau avancés…	高级网络设置…
+Сертификаты 802.1X, маршруты и импорт профилей VPN	802.1X certificates, routes and VPN profile import	Certificados 802.1X, rutas e importación de perfiles VPN	802.1X-Zertifikate, Routen und Import von VPN-Profilen	Certificats 802.1X, routes et import de profils VPN	802.1X 证书、路由和 VPN 配置导入
+Пароль для «{}»	Password for “{}”	Contraseña de «{}»	Passwort für „{}“	Mot de passe pour « {} »	“{}”的密码
+Введите пароль сети Wi‑Fi	Enter the Wi‑Fi password	Introduce la contraseña de la red Wi‑Fi	WLAN-Passwort eingeben	Saisissez le mot de passe Wi‑Fi	输入 Wi‑Fi 密码
+Подробнее…	Details…	Detalles…	Details …	Détails…	详细信息…
+# ── Bluetooth ──
+Адаптер Bluetooth или служба BlueZ недоступны.	Bluetooth adapter or BlueZ service is unavailable.	El adaptador Bluetooth o el servicio BlueZ no está disponible.	Bluetooth-Adapter oder BlueZ-Dienst nicht verfügbar.	L’adaptateur Bluetooth ou le service BlueZ est indisponible.	蓝牙适配器或 BlueZ 服务不可用。
+Подключено: «{}»	Connected: “{}”	Conectado: «{}»	Verbunden: „{}“	Connecté : « {} »	已连接：“{}”
+Подключено устройств: {}	{} devices connected	{} dispositivos conectados	{} Geräte verbunden	{} appareils connectés	已连接 {} 台设备
+Включён · идёт поиск устройств…	On · Searching for devices…	Activado · Buscando dispositivos…	Ein · Suche nach Geräten …	Activé · Recherche d’appareils…	已开启 · 正在搜索设备…
+Включён · доступен для подключения	On · Discoverable	Activado · Visible	Ein · Sichtbar	Activé · Visible	已开启 · 可被发现
+Остановить поиск устройств	Stop Searching	Detener la búsqueda	Suche beenden	Arrêter la recherche	停止搜索
+Поиск устройств	Search for Devices	Buscar dispositivos	Nach Geräten suchen	Rechercher des appareils	搜索设备
+Сканирование эфира активно	Scanning nearby devices	Buscando dispositivos cercanos	Geräte in der Nähe werden gesucht	Recherche d’appareils à proximité	正在扫描附近设备
+Найти наушники, мыши, клавиатуры и другие аксессуары	Find headphones, mice, keyboards and other accessories	Encontrar auriculares, ratones, teclados y otros accesorios	Kopfhörer, Mäuse, Tastaturen und anderes Zubehör finden	Trouver écouteurs, souris, claviers et autres accessoires	查找耳机、鼠标、键盘和其他配件
+Мои устройства	My Devices	Mis dispositivos	Meine Geräte	Mes appareils	我的设备
+Сопряжённых устройств Bluetooth пока нет.	No paired Bluetooth devices yet.	Todavía no hay dispositivos Bluetooth enlazados.	Noch keine gekoppelten Bluetooth-Geräte.	Aucun appareil Bluetooth jumelé pour l’instant.	暂无已配对的蓝牙设备。
+Заряд {} %	Battery {} %	Batería {} %	Batterie {} %	Batterie {} %	电量 {}%
+Другие устройства	Nearby Devices	Dispositivos cercanos	Geräte in der Nähe	Appareils à proximité	附近的设备
+Переведите аксессуар в режим сопряжения — он появится здесь.	Put the accessory in pairing mode and it will appear here.	Pon el accesorio en modo de enlace y aparecerá aquí.	Versetzen Sie das Zubehör in den Kopplungsmodus, dann erscheint es hier.	Mettez l’accessoire en mode jumelage pour qu’il apparaisse ici.	将配件置于配对模式，它就会显示在这里。
+Нажмите «Поиск устройств», чтобы обнаружить новые аксессуары рядом.	Click Search for Devices to discover accessories nearby.	Haz clic en «Buscar dispositivos» para descubrir accesorios cercanos.	Klicken Sie auf „Nach Geräten suchen“, um Zubehör in der Nähe zu finden.	Cliquez sur « Rechercher des appareils » pour découvrir les accessoires à proximité.	点按“搜索设备”以发现附近的配件。
+Сопряжение и подключение…	Pairing and connecting…	Enlazando y conectando…	Koppeln und verbinden …	Jumelage et connexion…	正在配对并连接…
+Доступно для подключения	Available	Disponible	Verfügbar	Disponible	可连接
+Обновить состояние Bluetooth	Refresh Bluetooth Status	Actualizar estado de Bluetooth	Bluetooth-Status aktualisieren	Actualiser l’état Bluetooth	刷新蓝牙状态
+Расширенный диспетчер Bluetooth…	Advanced Bluetooth Manager…	Gestor Bluetooth avanzado…	Erweiterter Bluetooth-Manager …	Gestionnaire Bluetooth avancé…	高级蓝牙管理器…
+Профили кодеков A2DP, передача файлов OBEX и диагностика	A2DP codec profiles, OBEX file transfer and diagnostics	Perfiles de códec A2DP, transferencia OBEX y diagnóstico	A2DP-Codec-Profile, OBEX-Dateiübertragung und Diagnose	Profils de codec A2DP, transfert OBEX et diagnostic	A2DP 编解码配置、OBEX 文件传输与诊断
+# ── Sound ──
+Сигналы и звуки интерфейса	Alerts & Sound Effects	Alertas y efectos de sonido	Hinweise & Soundeffekte	Alertes et effets sonores	提醒与音效
+Звуки предупреждений	Alert Sounds	Sonidos de alerta	Warntöne	Sons d’alerte	提醒声音
+Системный сигнал и запросы программ	System beep and app requests	Pitido del sistema y avisos de apps	Systemton und Anfragen von Apps	Bip système et demandes des apps	系统提示音与应用请求
+Сигнал предупреждения	Alert Sound	Sonido de alerta	Warnton	Son d’alerte	提醒声音
+Громкость сигналов	Alert Volume	Volumen de alerta	Lautstärke für Hinweise	Volume des alertes	提醒音量
+{} % от громкости устройства	{} % of device volume	{} % del volumen del dispositivo	{} % der Gerätelautstärke	{} % du volume de l’appareil	设备音量的 {}%
+Прослушать сигнал	Play Alert Sound	Reproducir sonido de alerta	Warnton abspielen	Écouter le son d’alerte	播放提醒声音
+Прослушать	Play	Reproducir	Abspielen	Écouter	播放
+Звуки интерфейса	Interface Sound Effects	Efectos de sonido de la interfaz	Soundeffekte der Benutzeroberfläche	Effets sonores de l’interface	界面音效
+Короткий звук после снимка экрана	Short sound after taking a screenshot	Sonido breve al hacer una captura	Kurzer Ton nach einem Bildschirmfoto	Bref son après une capture d’écran	截屏后播放短促声音
+Звук при изменении громкости	Play Feedback When Volume Is Changed	Sonido al cambiar el volumen	Feedback bei Lautstärkeänderung	Son lors du réglage du volume	更改音量时播放反馈
+Отклик клавиш громкости, кроме выключенного звука	Volume keys click, except when muted	Las teclas de volumen suenan salvo en silencio	Lautstärketasten klicken, außer bei Stummschaltung	Les touches de volume émettent un son, sauf en sourdine	音量键发出提示音（静音时除外）
+Звук уведомлений	Notification Sound	Sonido de notificaciones	Mitteilungston	Son des notifications	通知声音
+Короткий сигнал при появлении баннера	Short chime when a banner appears	Tono breve al aparecer un aviso	Kurzer Ton beim Erscheinen eines Banners	Bref signal à l’apparition d’une bannière	横幅出现时播放短提示音
+«Не беспокоить» отключает автоматические сигналы. Прослушивание доступно при выключенных предупреждениях; уведомления настраиваются отдельно.	Do Not Disturb silences automatic alerts. Preview works even with alerts off; notifications are configured separately.	«No molestar» silencia las alertas automáticas. La previsualización funciona con las alertas desactivadas; las notificaciones se configuran aparte.	„Nicht stören“ unterdrückt automatische Hinweise. Die Vorschau funktioniert auch bei deaktivierten Hinweisen; Mitteilungen werden separat eingestellt.	« Ne pas déranger » coupe les alertes automatiques. L’écoute reste possible alertes désactivées ; les notifications se règlent à part.	“勿扰模式”会静音自动提醒。关闭提醒时仍可试听；通知需单独设置。
+Вывод звука	Output	Salida	Ausgabe	Sortie	输出
+Микрофоны не найдены. Подключите устройство записи.	No microphones found. Connect an input device.	No se han encontrado micrófonos. Conecta un dispositivo de entrada.	Keine Mikrofone gefunden. Schließen Sie ein Eingabegerät an.	Aucun micro trouvé. Branchez un périphérique d’entrée.	未找到麦克风。请连接输入设备。
+Устройства вывода не найдены.	No output devices found.	No se han encontrado dispositivos de salida.	Keine Ausgabegeräte gefunden.	Aucun périphérique de sortie trouvé.	未找到输出设备。
+Разъём не подключён	Unplugged	Desconectado	Nicht angeschlossen	Débranché	未插入
+Выбрано	Selected	Seleccionado	Ausgewählt	Sélectionné	已选择
+Нажмите, чтобы выбрать	Click to select	Haz clic para seleccionar	Zum Auswählen klicken	Cliquez pour sélectionner	点按以选择
+Уровень записи	Input Volume	Volumen de entrada	Eingangslautstärke	Volume d’entrée	输入音量
+Выключить микрофон	Mute Microphone	Silenciar micrófono	Mikrofon stummschalten	Couper le micro	麦克风静音
+Устройство по умолчанию недоступно. Выберите устройство из списка.	The default device is unavailable. Choose a device from the list.	El dispositivo predeterminado no está disponible. Elige uno de la lista.	Das Standardgerät ist nicht verfügbar. Wählen Sie ein Gerät aus der Liste.	Le périphérique par défaut est indisponible. Choisissez-en un dans la liste.	默认设备不可用。请从列表中选择设备。
+Уровень записи задаёт усиление микрофона. Изменение уровня сохраняет баланс каналов.	Input volume sets the microphone gain. Changing it keeps the channel balance.	El volumen de entrada ajusta la ganancia del micrófono y conserva el balance de canales.	Die Eingangslautstärke steuert die Mikrofonverstärkung; die Kanalbalance bleibt erhalten.	Le volume d’entrée règle le gain du micro et conserve l’équilibre des canaux.	输入音量用于设置麦克风增益，调整时保持声道平衡。
+Обновить устройства	Refresh Devices	Actualizar dispositivos	Geräte aktualisieren	Actualiser les appareils	刷新设备
+# ── Lock Screen & Power ──
+Заблокировать сейчас	Lock Now	Bloquear ahora	Jetzt sperren	Verrouiller maintenant	立即锁定
+Super + L · пароль учётной записи	Super + L · account password	Super + L · contraseña de la cuenta	Super + L · Accountpasswort	Super + L · mot de passe du compte	Super + L · 账户密码
+При отсутствии активности	When Inactive	Cuando está inactivo	Bei Inaktivität	En cas d’inactivité	闲置时
+Блокировать экран	Lock screen	Bloquear pantalla	Bildschirm sperren	Verrouiller l’écran	锁定屏幕
+Выключать экран	Turn display off	Apagar la pantalla	Display ausschalten	Éteindre l’écran	关闭显示器
+Переводить компьютер в сон	Put computer to sleep	Poner el ordenador en reposo	Computer in den Ruhezustand versetzen	Suspendre l’ordinateur	使电脑进入睡眠
+Выключение экрана и сон всегда требуют пароль при возвращении.	Waking from display off or sleep always requires your password.	Al volver de la pantalla apagada o del reposo siempre se pide la contraseña.	Nach ausgeschaltetem Display oder Ruhezustand ist immer das Passwort nötig.	Le retour après extinction de l’écran ou suspension demande toujours le mot de passe.	从关闭显示器或睡眠状态返回时始终需要密码。
+Нажмите на строку, чтобы выбрать время. Выключение экрана и сон всегда требуют пароль при возвращении.	Click a row to choose the time. Waking from display off or sleep always requires your password.	Haz clic en una fila para elegir el tiempo. Al volver siempre se pide la contraseña.	Klicken Sie auf eine Zeile, um die Zeit zu wählen. Nach dem Aufwachen ist immer das Passwort nötig.	Cliquez sur une ligne pour choisir la durée. Le retour demande toujours le mot de passe.	点按某一行以选择时间。返回时始终需要密码。
+После пробуждения экран блокируется автоматически. Видео в видимом окне может отложить действия по простою.	The screen locks automatically after waking. A video in a visible window can delay idle actions.	La pantalla se bloquea al salir del reposo. Un vídeo en una ventana visible puede retrasar las acciones por inactividad.	Nach dem Aufwachen wird der Bildschirm gesperrt. Ein Video in einem sichtbaren Fenster kann Ruheaktionen verzögern.	L’écran se verrouille au réveil. Une vidéo dans une fenêtre visible peut retarder les actions d’inactivité.	唤醒后屏幕会自动锁定。可见窗口中的视频可能会推迟闲置操作。
+Служба питания недоступна. Блокировка работает; автоматический сон пока недоступен.	Power service unavailable. Locking works; automatic sleep is not available yet.	El servicio de energía no está disponible. El bloqueo funciona; el reposo automático aún no.	Energiedienst nicht verfügbar. Sperren funktioniert, automatischer Ruhezustand noch nicht.	Service d’alimentation indisponible. Le verrouillage fonctionne ; la suspension automatique pas encore.	电源服务不可用。锁定功能正常，暂不支持自动睡眠。
+В оконном режиме гаснет только окно Пёрышка. Сон компьютера доступен в прямой сессии DRM.	In windowed mode only the Feather window blanks. Computer sleep is available in a direct DRM session.	En modo ventana solo se oscurece la ventana de Feather. El reposo está disponible en una sesión DRM directa.	Im Fenstermodus wird nur das Feather-Fenster dunkel. Der Ruhezustand ist in einer direkten DRM-Sitzung verfügbar.	En mode fenêtré, seule la fenêtre de Feather s’assombrit. La suspension est disponible en session DRM directe.	窗口模式下只会熄灭轻羽窗口。电脑睡眠仅在 DRM 直接会话中可用。
+# ── Notifications ──
+Всё уходит в центр уведомлений, баннер только у срочных	Everything goes to Notification Center; only urgent alerts show banners	Todo va al centro de notificaciones; solo lo urgente muestra avisos	Alles landet in der Mitteilungszentrale, nur Dringendes als Banner	Tout va au centre de notifications ; seules les urgences s’affichent en bannière	所有通知进入通知中心，仅紧急通知显示横幅
+Каждый день в выбранные часы	Every day during the selected hours	Cada día en las horas elegidas	Täglich zu den gewählten Zeiten	Chaque jour aux heures choisies	每天在选定时段
+Время	Time	Hora	Zeit	Heure	时间
+Уведомления программ	Application Notifications	Notificaciones de apps	App-Mitteilungen	Notifications des apps	应用程序通知
+Программы появятся здесь после первого уведомления.	Apps appear here after their first notification.	Las apps aparecerán aquí tras su primera notificación.	Apps erscheinen hier nach ihrer ersten Mitteilung.	Les apps apparaîtront ici après leur première notification.	应用发送首条通知后将显示在这里。
+Нажмите на строку, чтобы сменить способ показа. Выключенные уведомления не сохраняются.	Click an app to change its alert style. Turned-off notifications are not kept.	Haz clic en una app para cambiar su estilo. Las notificaciones desactivadas no se guardan.	Klicken Sie auf eine App, um den Stil zu ändern. Deaktivierte Mitteilungen werden nicht gespeichert.	Cliquez sur une app pour changer son style. Les notifications désactivées ne sont pas conservées.	点按应用以更改提醒样式。已关闭的通知不会保留。
+Выключенные уведомления не сохраняются.	Turned-off notifications are not kept.	Las notificaciones desactivadas no se guardan.	Deaktivierte Mitteilungen werden nicht gespeichert.	Les notifications désactivées ne sont pas conservées.	已关闭的通知不会保留。
+Баннеры и центр уведомлений	Banners and Notification Center	Avisos y centro de notificaciones	Banner und Mitteilungszentrale	Bannières et centre de notifications	横幅和通知中心
+Только центр уведомлений	Notification Center only	Solo centro de notificaciones	Nur Mitteilungszentrale	Centre de notifications uniquement	仅通知中心
+Выключены	Off	Desactivadas	Aus	Désactivées	关闭
+Нет уведомлений	No Notifications	Sin notificaciones	Keine Mitteilungen	Aucune notification	无通知
+разъём не подключён	unplugged	desconectado	nicht angeschlossen	débranché	未插入
+# ── Keyboard ──
+{} из 4	{} of 4	{} de 4	{} von 4	{} sur 4	{}/4
+Выбрано {} из 4	{} of 4 selected	{} de 4 seleccionados	{} von 4 ausgewählt	{} sur 4 sélectionnés	已选择 {}/4
+Выбранный источник становится активным; «−» удаляет выбранный.	The selected source becomes active; “−” removes it.	La fuente seleccionada pasa a estar activa; «−» la elimina.	Die ausgewählte Quelle wird aktiv; „−“ entfernt sie.	La source sélectionnée devient active ; « − » la supprime.	所选输入法会立即启用；“−”可将其移除。
+Переключение раскладки	Switch Input Source	Cambiar fuente de entrada	Eingabequelle wechseln	Changer de source de saisie	切换输入法
+Сменить язык можно также в меню источников ввода в строке меню.	You can also switch input sources from the Input menu in the menu bar.	También puedes cambiar la fuente desde el menú de entrada de la barra de menús.	Eingabequellen lassen sich auch über das Eingabemenü in der Menüleiste wechseln.	Vous pouvez aussi changer de source via le menu de saisie de la barre des menus.	也可以通过菜单栏中的输入法菜单切换。
+Клавиши	Keys	Teclas	Tasten	Touches	按键
+Задержка перед повтором	Delay Until Repeat	Retardo hasta repetición	Verzögerung bis Wiederholung	Délai avant répétition	重复前延迟
+Долго	Long	Largo	Lang	Long	长
+Коротко	Short	Corto	Kurz	Court	短
+Скорость повтора	Key Repeat Rate	Velocidad de repetición	Tastenwiederholrate	Vitesse de répétition	按键重复速率
+Медленно	Slow	Lenta	Langsam	Lente	慢
+Быстро	Fast	Rápida	Schnell	Rapide	快
+{} мс	{} ms	{} ms	{} ms	{} ms	{} 毫秒
+{}/с	{}/s	{}/s	{}/s	{}/s	{}/秒
+Клавиша Caps Lock	Caps Lock Key	Tecla Bloq Mayús	Feststelltaste	Touche Verr. Maj	大写锁定键
+Автоповтор применяется сразу во всех программах.	Key repeat applies immediately in all apps.	La repetición de teclas se aplica al instante en todas las apps.	Die Tastenwiederholung gilt sofort in allen Apps.	La répétition des touches s’applique immédiatement à toutes les apps.	按键重复设置会立即应用于所有应用。
+Автоповтор применяется сразу во всех программах. Нажмите на строку Caps Lock, чтобы выбрать её действие.	Key repeat applies immediately in all apps. Click the Caps Lock row to choose its action.	La repetición se aplica al instante en todas las apps. Haz clic en Bloq Mayús para elegir su acción.	Die Tastenwiederholung gilt sofort in allen Apps. Klicken Sie auf die Feststelltaste, um ihre Aktion zu wählen.	La répétition s’applique immédiatement. Cliquez sur Verr. Maj pour choisir son action.	按键重复会立即应用。点按大写锁定行以选择其功能。
+Сочетания действий	Keyboard Shortcuts	Atajos de teclado	Tastaturkurzbefehle	Raccourcis clavier	键盘快捷键
+Нажмите сочетание…	Press shortcut…	Pulsa el atajo…	Kurzbefehl drücken …	Appuyez sur le raccourci…	请按下快捷键…
+Вернуть стандартные сочетания	Restore Defaults	Restaurar valores predeterminados	Standards wiederherstellen	Rétablir les réglages par défaut	恢复默认设置
+Нажмите на действие, затем сочетание с Ctrl, Alt или Super. Esc — отмена; Backspace — выключить. Super+L, Alt+Tab и системные клавиши сохраняются.	Click an action, then press a shortcut with Ctrl, Alt or Super. Esc cancels; Backspace turns it off. Super+L, Alt+Tab and system keys are reserved.	Haz clic en una acción y pulsa un atajo con Ctrl, Alt o Super. Esc cancela; Retroceso lo desactiva. Super+L, Alt+Tab y las teclas del sistema están reservadas.	Klicken Sie auf eine Aktion und drücken Sie einen Kurzbefehl mit Ctrl, Alt oder Super. Esc bricht ab, Rücktaste deaktiviert. Super+L, Alt+Tab und Systemtasten sind reserviert.	Cliquez sur une action, puis appuyez sur un raccourci avec Ctrl, Alt ou Super. Échap annule ; Retour arrière le désactive. Super+L, Alt+Tab et les touches système sont réservés.	点按某个操作，然后按下包含 Ctrl、Alt 或 Super 的快捷键。Esc 取消，退格键关闭。Super+L、Alt+Tab 和系统按键保留。
+Нажмите новое сочетание	Press a new shortcut	Pulsa un atajo nuevo	Neuen Kurzbefehl drücken	Appuyez sur un nouveau raccourci	请按下新快捷键
+Esc — отмена; Backspace — выключить.	Esc cancels; Backspace turns it off.	Esc cancela; Retroceso lo desactiva.	Esc bricht ab, Rücktaste deaktiviert.	Échap annule ; Retour arrière désactive.	Esc 取消；退格键关闭。
+Добавить источник ввода	Add Input Source	Añadir fuente de entrada	Eingabequelle hinzufügen	Ajouter une source de saisie	添加输入法
+Не удалось применить раскладки: {}	Couldn’t apply keyboard layouts: {}	No se pudieron aplicar las distribuciones: {}	Tastaturbelegungen konnten nicht angewendet werden: {}	Impossible d’appliquer les dispositions : {}	无法应用键盘布局：{}
+Пробел	Space	Espacio	Leertaste	Espace	空格
+Пункт управления	Control Center	Centro de control	Kontrollzentrum	Centre de contrôle	控制中心
+Завершить программу	Quit App	Salir de la app	App beenden	Quitter l’app	退出应用
+Свернуть окно	Minimize Window	Minimizar ventana	Fenster minimieren	Réduire la fenêtre	最小化窗口
+Развернуть окно	Zoom Window	Maximizar ventana	Fenster maximieren	Agrandir la fenêtre	缩放窗口
+Скрыть программу	Hide App	Ocultar app	App ausblenden	Masquer l’app	隐藏应用
+Обзор окон и столов	Mission Control	Mission Control	Mission Control	Mission Control	调度中心
+Предыдущий стол	Previous Desktop	Escritorio anterior	Vorheriger Schreibtisch	Bureau précédent	上一个桌面
+Следующий стол	Next Desktop	Escritorio siguiente	Nächster Schreibtisch	Bureau suivant	下一个桌面
+Окно на предыдущий стол	Move Window to Previous Desktop	Mover ventana al escritorio anterior	Fenster auf vorherigen Schreibtisch	Fenêtre vers le bureau précédent	将窗口移到上一个桌面
+Окно на следующий стол	Move Window to Next Desktop	Mover ventana al escritorio siguiente	Fenster auf nächsten Schreibtisch	Fenêtre vers le bureau suivant	将窗口移到下一个桌面
+Выберите сочетание с Ctrl, Alt или Super; системные сочетания зарезервированы.	Use a shortcut with Ctrl, Alt or Super; system shortcuts are reserved.	Usa un atajo con Ctrl, Alt o Super; los atajos del sistema están reservados.	Verwenden Sie Ctrl, Alt oder Super; Systemkurzbefehle sind reserviert.	Utilisez Ctrl, Alt ou Super ; les raccourcis système sont réservés.	请使用包含 Ctrl、Alt 或 Super 的快捷键；系统快捷键已保留。
+Это сочетание занято: «{}».	This shortcut is already used by “{}”.	Este atajo ya lo usa «{}».	Dieser Kurzbefehl wird bereits von „{}“ verwendet.	Ce raccourci est déjà utilisé par « {} ».	此快捷键已被“{}”使用。
+Источник ввода	Input Source	Fuente de entrada	Eingabequelle	Source de saisie	输入法
+Переключение: {}	Switch: {}	Cambiar: {}	Wechseln: {}	Changer : {}	切换：{}
+Настройки клавиатуры…	Keyboard Settings…	Ajustes de teclado…	Tastatureinstellungen …	Réglages du clavier…	键盘设置…
+ABC — США	ABC — U.S.	ABC — EE. UU.	ABC — USA	ABC — États-Unis	ABC — 美国
+Русская	Russian	Ruso	Russisch	Russe	俄语
+РУ	RU	RU	RU	RU	RU
+Английская — Великобритания	British	Inglés (Reino Unido)	Britisch	Britannique	英国英语
+Немецкая	German	Alemán	Deutsch	Allemand	德语
+Французская	French	Francés	Französisch	Français	法语
+Испанская	Spanish	Español	Spanisch	Espagnol	西班牙语
+Итальянская	Italian	Italiano	Italienisch	Italien	意大利语
+Португальская	Portuguese	Portugués	Portugiesisch	Portugais	葡萄牙语
+Украинская	Ukrainian	Ucraniano	Ukrainisch	Ukrainien	乌克兰语
+УК	UK	UK	UK	UK	UK
+Белорусская	Belarusian	Bielorruso	Belarussisch	Biélorusse	白俄罗斯语
+БЕ	BE	BE	BE	BE	BE
+Польская	Polish	Polaco	Polnisch	Polonais	波兰语
+Турецкая	Turkish	Turco	Türkisch	Turc	土耳其语
+Не удалось подготовить раскладки клавиатуры	Couldn’t prepare keyboard layouts	No se pudieron preparar las distribuciones de teclado	Tastaturbelegungen konnten nicht vorbereitet werden	Impossible de préparer les dispositions du clavier	无法准备键盘布局
+Не удалось сохранить настройки: {}	Couldn’t save settings: {}	No se pudieron guardar los ajustes: {}	Einstellungen konnten nicht gesichert werden: {}	Impossible d’enregistrer les réglages : {}	无法保存设置：{}
+Сочетание клавиш	Keyboard Shortcut	Atajo de teclado	Tastaturkurzbefehl	Raccourci clavier	键盘快捷键
+# ── Pointer ──
+Мышью сейчас управляет внешний композитор	The host compositor controls the mouse right now	El compositor anfitrión controla ahora el ratón	Der Host-Compositor steuert gerade die Maus	Le compositeur hôte contrôle actuellement la souris	当前由宿主合成器控制鼠标
+Пёрышко запущено в окне. Настройки сохранятся и применятся при входе в сессию Пёрышка.	Feather is running in a window. Settings are saved and applied when you log in to a Feather session.	Feather se ejecuta en una ventana. Los ajustes se guardan y se aplicarán al iniciar sesión en Feather.	Feather läuft in einem Fenster. Die Einstellungen werden gesichert und bei der Anmeldung in Feather angewendet.	Feather s’exécute dans une fenêtre. Les réglages seront appliqués à l’ouverture d’une session Feather.	轻羽正在窗口中运行。设置会被保存，并在登录轻羽会话时生效。
+Тема	Theme	Tema	Design	Thème	主题
+Тема и размер применяются к курсору Пёрышка и к программам, открытым после изменения.	Theme and size apply to the Feather pointer and to apps opened afterwards.	El tema y el tamaño se aplican al puntero de Feather y a las apps abiertas después.	Design und Größe gelten für den Feather-Zeiger und danach geöffnete Apps.	Le thème et la taille s’appliquent au pointeur de Feather et aux apps ouvertes ensuite.	主题和大小将应用于轻羽指针及之后打开的应用。
+Скорость перемещения	Tracking Speed	Velocidad del puntero	Zeigerbewegung	Vitesse de déplacement	跟踪速度
+Естественная прокрутка мыши	Natural Scrolling (Mouse)	Desplazamiento natural (ratón)	Natürliches Scrollen (Maus)	Défilement naturel (souris)	自然滚动（鼠标）
+Содержимое следует за колесом, как на трекпаде	Content follows the wheel, like on a trackpad	El contenido sigue a la rueda, como en un trackpad	Inhalt folgt dem Mausrad wie beim Trackpad	Le contenu suit la molette, comme sur un trackpad	内容随滚轮移动，与触控板一致
+Естественная прокрутка трекпада	Natural Scrolling (Trackpad)	Desplazamiento natural (trackpad)	Natürliches Scrollen (Trackpad)	Défilement naturel (trackpad)	自然滚动（触控板）
+Содержимое следует за движением пальцев	Content tracks finger movement	El contenido sigue el movimiento de los dedos	Inhalt folgt der Fingerbewegung	Le contenu suit le mouvement des doigts	内容跟随手指移动
+Касание вместо нажатия	Tap to Click	Tocar para hacer clic	Tippen zum Klicken	Toucher pour cliquer	轻点来点按
+Лёгкое касание трекпада — щелчок	Tap the trackpad lightly to click	Toca ligeramente el trackpad para hacer clic	Leichtes Tippen auf das Trackpad klickt	Touchez légèrement le trackpad pour cliquer	轻点触控板即可点按
+Основная кнопка справа	Primary Button on Right	Botón principal a la derecha	Primäre Taste rechts	Bouton principal à droite	主按钮在右侧
+Для левой руки	For left-handed use	Para zurdos	Für Linkshänder	Pour gauchers	适合左手使用
+Как в системе	System Default	Predeterminado del sistema	Systemstandard	Valeur système	系统默认
+# ── Displays ──
+Основной	Main	Principal	Hauptmonitor	Principal	主显示器
+Сделать основным	Use as Main Display	Usar como pantalla principal	Als Hauptmonitor	Écran principal	用作主显示器
+Расположение	Arrangement	Disposición	Anordnung	Disposition	排列
+Сверху	Above	Arriba	Oben	Au-dessus	上方
+Меню и Dock — на основном экране. Масштаб общий для всех дисплеев.	The menu bar and Dock are on the main display. Scaling is shared by all displays.	La barra de menús y el Dock están en la pantalla principal. La escala es común a todas.	Menüleiste und Dock befinden sich auf dem Hauptmonitor. Die Skalierung gilt für alle Displays.	La barre des menus et le Dock sont sur l’écran principal. L’échelle est commune à tous les écrans.	菜单栏和程序坞位于主显示器。所有显示器共用同一缩放。
+Масштаб интерфейса	Interface Scale	Escala de la interfaz	Skalierung der Oberfläche	Échelle de l’interface	界面缩放
+Крупнее  ·  Больше места	Larger Text  ·  More Space	Texto más grande  ·  Más espacio	Größerer Text  ·  Mehr Platz	Texte plus grand  ·  Plus d’espace	更大字体  ·  更多空间
+Режим основного дисплея	Main Display Mode	Modo de la pantalla principal	Modus des Hauptmonitors	Mode de l’écran principal	主显示器模式
+Применить режим	Apply Mode	Aplicar modo	Modus anwenden	Appliquer le mode	应用模式
+Задаётся окном	Set by window	Definido por la ventana	Vom Fenster vorgegeben	Défini par la fenêtre	由窗口决定
+Режимы экрана доступны при самостоятельном входе в Пёрышко.	Display modes are available when Feather runs as your session.	Los modos de pantalla están disponibles al iniciar sesión directamente en Feather.	Anzeigemodi sind verfügbar, wenn Feather als eigene Sitzung läuft.	Les modes d’affichage sont disponibles quand Feather est votre session.	仅在直接登录轻羽会话时可更改显示模式。
+Включить сейчас	Turn On Now	Activar ahora	Jetzt einschalten	Activer maintenant	立即开启
+Тёплые цвета вечером легче для глаз	Warmer colors are easier on the eyes at night	Los colores cálidos cansan menos la vista por la noche	Wärmere Farben schonen abends die Augen	Des couleurs plus chaudes reposent les yeux le soir	夜间暖色调更护眼
+Цветовая температура	Color Temperature	Temperatura de color	Farbtemperatur	Température des couleurs	色温
+Цвета меняются плавно за несколько секунд.	Colors change smoothly over a few seconds.	Los colores cambian suavemente en unos segundos.	Die Farben ändern sich sanft innerhalb weniger Sekunden.	Les couleurs changent en douceur en quelques secondes.	颜色会在几秒内平滑过渡。
+Цвета меняются плавно за несколько секунд. Нажмите на строку, чтобы выбрать время или теплоту.	Colors change smoothly over a few seconds. Click a row to choose the time or warmth.	Los colores cambian suavemente. Haz clic en una fila para elegir la hora o la calidez.	Die Farben ändern sich sanft. Klicken Sie auf eine Zeile, um Zeit oder Wärme zu wählen.	Les couleurs changent en douceur. Cliquez sur une ligne pour choisir l’heure ou la chaleur.	颜色会平滑过渡。点按某一行以选择时间或色温。
+Ночной режим меняет цвета монитора в прямой сессии Пёрышка; в окне настройки только сохраняются.	Night Shift changes display colors in a direct Feather session; in a window the settings are only saved.	Night Shift cambia los colores en una sesión directa de Feather; en ventana solo se guardan los ajustes.	Night Shift ändert die Farben in einer direkten Feather-Sitzung; im Fenster werden nur Einstellungen gesichert.	Night Shift modifie les couleurs en session Feather directe ; en fenêtre, les réglages sont seulement enregistrés.	夜览仅在轻羽直接会话中更改显示器颜色；窗口模式下仅保存设置。
+Слегка тёплые	Slightly Warm	Ligeramente cálidos	Etwas wärmer	Légèrement chaudes	略暖
+Тёплые	Warm	Cálidos	Warm	Chaudes	暖
+Очень тёплые	Very Warm	Muy cálidos	Sehr warm	Très chaudes	很暖
+Максимально тёплые	Warmest	Lo más cálidos	Am wärmsten	Les plus chaudes	最暖
+{} × {} · {} Гц	{} × {} · {} Hz	{} × {} · {} Hz	{} × {} · {} Hz	{} × {} · {} Hz	{} × {} · {} Hz
+Оконный дисплей	Window Display	Pantalla en ventana	Fensteranzeige	Écran fenêtré	窗口显示器
+Не удалось применить режим: {}	Couldn’t apply the mode: {}	No se pudo aplicar el modo: {}	Modus konnte nicht angewendet werden: {}	Impossible d’appliquer le mode : {}	无法应用模式：{}
+Режим больше недоступен	The mode is no longer available	El modo ya no está disponible	Der Modus ist nicht mehr verfügbar	Ce mode n’est plus disponible	该模式已不可用
+На экране недостаточно места для такого масштаба	Not enough screen space for this scale	No hay espacio suficiente en pantalla para esta escala	Nicht genug Platz auf dem Bildschirm für diese Skalierung	Pas assez d’espace à l’écran pour cette échelle	屏幕空间不足，无法使用此缩放
+Сохранить новый режим?	Keep the new display mode?	¿Conservar el nuevo modo de pantalla?	Neuen Anzeigemodus beibehalten?	Conserver le nouveau mode d’affichage ?	保留新的显示模式？
+Без подтверждения прежний режим вернётся через 15 секунд.	Without confirmation the previous mode returns in 15 seconds.	Sin confirmación se restaurará el modo anterior en 15 segundos.	Ohne Bestätigung wird der vorherige Modus in 15 Sekunden wiederhergestellt.	Sans confirmation, l’ancien mode reviendra dans 15 secondes.	如未确认，将在 15 秒后恢复原模式。
+Вернуть	Revert	Revertir	Zurücksetzen	Rétablir	还原
+Это место занято другим дисплеем	Another display already occupies this position	Otra pantalla ya ocupa esta posición	Diese Position ist bereits von einem anderen Display belegt	Un autre écran occupe déjà cette position	该位置已被其他显示器占用
+Яркость этого дисплея недоступна: нет подсветки и монитор не отвечает по DDC/CI	Brightness is unavailable for this display: no backlight and no DDC/CI response	El brillo no está disponible: sin retroiluminación ni respuesta DDC/CI	Helligkeit nicht verfügbar: keine Hintergrundbeleuchtung und keine DDC/CI-Antwort	Luminosité indisponible : pas de rétroéclairage ni de réponse DDC/CI	此显示器无法调节亮度：没有背光且不响应 DDC/CI
+Яркость недоступна	Brightness unavailable	Brillo no disponible	Helligkeit nicht verfügbar	Luminosité indisponible	亮度不可用
+# ── Applications / Privacy ──
+Приложения по умолчанию	Default Apps	Apps predeterminadas	Standard-Apps	Apps par défaut	默认应用
+Браузер открывает ссылки и HTML-файлы. Терминал запускается по Super+T и Super+Enter.	The browser opens links and HTML files. The terminal opens with Super+T and Super+Enter.	El navegador abre enlaces y archivos HTML. El terminal se abre con Super+T y Super+Intro.	Der Browser öffnet Links und HTML-Dateien. Das Terminal startet mit Super+T und Super+Enter.	Le navigateur ouvre les liens et fichiers HTML. Le terminal s’ouvre avec Super+T et Super+Entrée.	浏览器用于打开链接和 HTML 文件。按 Super+T 或 Super+Enter 打开终端。
+Автозапуск при входе	Open at Login	Abrir al iniciar sesión	Beim Anmelden öffnen	Ouvrir à l’ouverture de session	登录时打开
+Нет программ в автозапуске	No login items	No hay ítems de inicio	Keine Anmeldeobjekte	Aucun élément d’ouverture	没有登录项
+Добавьте приложения, которые должны открываться при входе в систему	Add apps that should open when you log in	Añade las apps que deben abrirse al iniciar sesión	Fügen Sie Apps hinzu, die beim Anmelden geöffnet werden	Ajoutez les apps à ouvrir à la connexion	添加登录时要打开的应用
+Запускается при входе	Opens at login	Se abre al iniciar sesión	Öffnet beim Anmelden	S’ouvre à la connexion	登录时打开
+Добавить в автозапуск	Add Login Item	Añadir ítem de inicio	Anmeldeobjekt hinzufügen	Ajouter un élément	添加登录项
+Установленные программы и записи ~/.config/autostart	Installed apps and ~/.config/autostart entries	Apps instaladas y entradas de ~/.config/autostart	Installierte Apps und Einträge in ~/.config/autostart	Apps installées et entrées de ~/.config/autostart	已安装应用及 ~/.config/autostart 条目
+Записи сохраняются в стандарте XDG Autostart (~/.config/autostart/*.desktop) и запускаются при входе в сессию Пёрышка.	Items are stored as XDG Autostart entries (~/.config/autostart/*.desktop) and open when you log in to Feather.	Los ítems se guardan como XDG Autostart (~/.config/autostart/*.desktop) y se abren al iniciar sesión en Feather.	Einträge werden als XDG-Autostart (~/.config/autostart/*.desktop) gespeichert und beim Anmelden in Feather geöffnet.	Les éléments sont stockés au format XDG Autostart (~/.config/autostart/*.desktop) et s’ouvrent à la connexion à Feather.	登录项以 XDG Autostart 格式保存（~/.config/autostart/*.desktop），在登录轻羽时打开。
+Не найдено	Not found	No encontrado	Nicht gefunden	Introuvable	未找到
+Выберите установленное приложение	Choose an installed app	Elige una app instalada	Installierte App auswählen	Choisissez une app installée	选择已安装的应用
+Приложения не найдены	No apps found	No se han encontrado apps	Keine Apps gefunden	Aucune app trouvée	未找到应用
+Не выбрано	None	Ninguno	Keine	Aucun	无
+Терминал Feather	Feather Terminal	Terminal de Feather	Feather-Terminal	Terminal Feather	轻羽终端
+Недопустимый desktop ID	Invalid desktop ID	ID de escritorio no válido	Ungültige Desktop-ID	ID desktop non valide	无效的 desktop ID
+Не удалось добавить в автозапуск: {}	Couldn’t add login item: {}	No se pudo añadir el ítem de inicio: {}	Anmeldeobjekt konnte nicht hinzugefügt werden: {}	Impossible d’ajouter l’élément : {}	无法添加登录项：{}
+Не удалось прочитать элемент автозапуска: {}	Couldn’t read login item: {}	No se pudo leer el ítem de inicio: {}	Anmeldeobjekt konnte nicht gelesen werden: {}	Impossible de lire l’élément : {}	无法读取登录项：{}
+Не удалось обновить автозапуск: {}	Couldn’t update login item: {}	No se pudo actualizar el ítem de inicio: {}	Anmeldeobjekt konnte nicht aktualisiert werden: {}	Impossible de mettre à jour l’élément : {}	无法更新登录项：{}
+Не удалось удалить из автозапуска: {}	Couldn’t remove login item: {}	No se pudo eliminar el ítem de inicio: {}	Anmeldeobjekt konnte nicht entfernt werden: {}	Impossible de supprimer l’élément : {}	无法移除登录项：{}
+Не удалось сохранить браузер: {}	Couldn’t save the browser: {}	No se pudo guardar el navegador: {}	Browser konnte nicht gesichert werden: {}	Impossible d’enregistrer le navigateur : {}	无法保存浏览器设置：{}
+Приложение больше не установлено	The app is no longer installed	La app ya no está instalada	Die App ist nicht mehr installiert	L’app n’est plus installée	该应用已不再安装
+Приложение не найдено	App not found	App no encontrada	App nicht gefunden	App introuvable	未找到应用
+Добавлять новые программы в список при обращении к порталу	Add new apps to the list when they first request access	Añadir apps nuevas a la lista cuando pidan acceso	Neue Apps bei der ersten Anfrage zur Liste hinzufügen	Ajouter les nouvelles apps à la liste lors de leur première demande	应用首次请求访问时加入列表
+Разрешать запись и снимки экрана всем программам, кроме запрещённых	Allow screen recording and screenshots for all apps except denied ones	Permitir grabación y capturas a todas las apps salvo las denegadas	Bildschirmaufnahme für alle Apps außer abgelehnten erlauben	Autoriser l’enregistrement et les captures pour toutes les apps sauf celles refusées	允许除已拒绝应用外的所有应用录屏和截屏
+Блокировать доступ к экрану для всех программ, кроме явно разрешённых	Block screen access for all apps except explicitly allowed ones	Bloquear el acceso a la pantalla salvo a las apps permitidas	Bildschirmzugriff für alle Apps außer ausdrücklich erlaubten sperren	Bloquer l’accès à l’écran sauf pour les apps autorisées	除明确允许的应用外，禁止访问屏幕
+# ── Date & Time ──
+Устанавливать время автоматически	Set time automatically	Ajustar la hora automáticamente	Zeit automatisch einstellen	Régler l’heure automatiquement	自动设置时间
+Служба времени systemd-timedated недоступна	The systemd-timedated service is unavailable	El servicio systemd-timedated no está disponible	Der Dienst systemd-timedated ist nicht verfügbar	Le service systemd-timedated est indisponible	systemd-timedated 服务不可用
+Часы синхронизированы с сервером времени	Clock is synchronized with a time server	El reloj está sincronizado con un servidor de hora	Uhr ist mit einem Zeitserver synchronisiert	L’horloge est synchronisée avec un serveur de temps	时钟已与时间服务器同步
+Синхронизация с сервером времени	Synchronizing with a time server	Sincronizando con un servidor de hora	Synchronisierung mit einem Zeitserver	Synchronisation avec un serveur de temps	正在与时间服务器同步
+Установить	Set	Ajustar	Einstellen	Régler	设置
+ГГГГ-ММ-ДД ЧЧ:ММ	YYYY-MM-DD HH:MM	AAAA-MM-DD HH:MM	JJJJ-MM-TT HH:MM	AAAA-MM-JJ HH:MM	YYYY-MM-DD HH:MM
+Часовой пояс	Time Zone	Zona horaria	Zeitzone	Fuseau horaire	时区
+Не определён	Unknown	Desconocida	Unbekannt	Inconnu	未知
+Для ручной установки отключите синхронизацию.	Turn off automatic time to set it manually.	Desactiva la hora automática para ajustarla a mano.	Deaktivieren Sie die automatische Zeit, um sie manuell einzustellen.	Désactivez l’heure automatique pour la régler manuellement.	关闭自动设置后才能手动设置时间。
+Изменение может потребовать пароль администратора.	Changes may require an administrator password.	Los cambios pueden requerir una contraseña de administrador.	Änderungen erfordern möglicherweise ein Administratorpasswort.	Les modifications peuvent exiger un mot de passe administrateur.	更改可能需要管理员密码。
+Начните вводить город или регион	Start typing a city or region	Empieza a escribir una ciudad o región	Stadt oder Region eingeben	Saisissez une ville ou une région	输入城市或地区
+Введите дату и время: ГГГГ-ММ-ДД ЧЧ:ММ	Enter the date and time as YYYY-MM-DD HH:MM	Introduce la fecha y hora: AAAA-MM-DD HH:MM	Datum und Uhrzeit eingeben: JJJJ-MM-TT HH:MM	Saisissez la date et l’heure : AAAA-MM-JJ HH:MM	请输入日期和时间：YYYY-MM-DD HH:MM
+Год должен быть между 1970 и 2100	The year must be between 1970 and 2100	El año debe estar entre 1970 y 2100	Das Jahr muss zwischen 1970 und 2100 liegen	L’année doit être comprise entre 1970 et 2100	年份必须在 1970 到 2100 之间
+Это время неоднозначно или отсутствует в данном часовом поясе	This time is ambiguous or doesn’t exist in this time zone	Esta hora es ambigua o no existe en esta zona horaria	Diese Zeit ist mehrdeutig oder existiert in dieser Zeitzone nicht	Cette heure est ambiguë ou n’existe pas dans ce fuseau	该时间在此时区中有歧义或不存在
+Неизвестный часовой пояс	Unknown time zone	Zona horaria desconocida	Unbekannte Zeitzone	Fuseau horaire inconnu	未知时区
+Сначала отключите автоматическую синхронизацию	Turn off automatic time first	Primero desactiva la hora automática	Deaktivieren Sie zuerst die automatische Zeit	Désactivez d’abord l’heure automatique	请先关闭自动设置时间
+Служба даты и времени недоступна	Date & Time service unavailable	El servicio de fecha y hora no está disponible	Datums- und Zeitdienst nicht verfügbar	Service de date et heure indisponible	日期与时间服务不可用
+# ── Desktop & Dock ──
+Расширение .{}	Extension .{}	Extensión .{}	Dateiendung .{}	Extension .{}	扩展名 .{}
+Нет действия	No Action	Ninguna acción	Keine Aktion	Aucune action	无操作
+Центр уведомлений	Notification Center	Centro de notificaciones	Mitteilungszentrale	Centre de notifications	通知中心
+Левый верхний угол	Top-left corner	Esquina superior izquierda	Obere linke Ecke	Coin supérieur gauche	左上角
+Правый верхний угол	Top-right corner	Esquina superior derecha	Obere rechte Ecke	Coin supérieur droit	右上角
+Левый нижний угол	Bottom-left corner	Esquina inferior izquierda	Untere linke Ecke	Coin inférieur gauche	左下角
+Правый нижний угол	Bottom-right corner	Esquina inferior derecha	Untere rechte Ecke	Coin inférieur droit	右下角
+Подведите указатель в угол экрана, чтобы выполнить действие.	Move the pointer into a screen corner to perform its action.	Lleva el puntero a una esquina de la pantalla para ejecutar su acción.	Bewegen Sie den Zeiger in eine Bildschirmecke, um die Aktion auszuführen.	Placez le pointeur dans un coin de l’écran pour exécuter son action.	将指针移到屏幕角落即可执行对应操作。
+Никогда	Never	Nunca	Nie	Jamais	永不
+Через {} мин	After {} min	Tras {} min	Nach {} Min.	Après {} min	{} 分钟后
+Блокировка экрана перед сном	Lock screen before sleep	Bloquear la pantalla antes del reposo	Bildschirm vor dem Ruhezustand sperren	Verrouiller l’écran avant la suspension	睡眠前锁定屏幕
+Стекло	Glass	Cristal	Glas	Verre	玻璃
+Капля	Drop	Gota	Tropfen	Goutte	水滴
+Не найден проигрыватель: установите pw-play или paplay	No audio player found: install pw-play or paplay	No se encontró un reproductor: instala pw-play o paplay	Kein Player gefunden: Installieren Sie pw-play oder paplay	Aucun lecteur trouvé : installez pw-play ou paplay	未找到播放器：请安装 pw-play 或 paplay
+Не удалось воспроизвести звук: {}	Couldn’t play the sound: {}	No se pudo reproducir el sonido: {}	Ton konnte nicht abgespielt werden: {}	Impossible de lire le son : {}	无法播放声音：{}
+проигрыватель завершился с ошибкой	the player exited with an error	el reproductor terminó con un error	der Player wurde mit einem Fehler beendet	le lecteur s’est terminé avec une erreur	播放器异常退出
+проигрыватель не отвечает	the player is not responding	el reproductor no responde	der Player reagiert nicht	le lecteur ne répond pas	播放器无响应
+Тема GTK меняется только в собственной сессии Пёрышка	The GTK theme can only be changed in Feather’s own session	El tema GTK solo se cambia en una sesión propia de Feather	Das GTK-Design lässt sich nur in einer eigenen Feather-Sitzung ändern	Le thème GTK ne se change que dans une session Feather	GTK 主题仅能在轻羽自身会话中更改
+Служба сети недоступна	Network service unavailable	El servicio de red no está disponible	Netzwerkdienst nicht verfügbar	Service réseau indisponible	网络服务不可用
+Настройки сети	Network Settings	Ajustes de red	Netzwerkeinstellungen	Réglages réseau	网络设置
+Применение…	Applying…	Aplicando…	Wird angewendet …	Application…	正在应用…
+# ── About / hardware ──
+Не определено	Unknown	Desconocido	Unbekannt	Inconnu	未知
+{} ТБ	{} TB	{} TB	{} TB	{} To	{} TB
+{} ГБ	{} GB	{} GB	{} GB	{} Go	{} GB
+{} МБ	{} MB	{} MB	{} MB	{} Mo	{} MB
+{} (доступно {})	{} ({} available)	{} ({} disponibles)	{} ({} verfügbar)	{} ({} disponibles)	{}（可用 {}）
+{} (свободно {})	{} ({} free)	{} ({} libres)	{} ({} frei)	{} ({} libres)	{}（空闲 {}）
+{} (+ ещё {})	{} (+ {} more)	{} (+ {} más)	{} (+ {} weitere)	{} (+ {} autres)	{}（另有 {} 个）
+{} ядер	{} cores	{} núcleos	{} Kerne	{} cœurs	{} 核
+{} ядро	{} core	{} núcleo	{} Kern	{} cœur	{} 核
+{} ядра	{} cores	{} núcleos	{} Kerne	{} cœurs	{} 核
+{} ГГц	{} GHz	{} GHz	{} GHz	{} GHz	{} GHz
+{} МГц	{} MHz	{} MHz	{} MHz	{} MHz	{} MHz
+О системе Пёрышко (Feather DE)	About Feather	Acerca de Feather	Über Feather	À propos de Feather	关于轻羽
+Монитор системы — Пёрышко	Activity Monitor — Feather	Monitor de actividad — Feather	Aktivitätsanzeige — Feather	Moniteur d’activité — Feather	活动监视器 — 轻羽
+Заметки (Alt+Shift: RU/EN)	Notes	Notas	Notizen	Notes	备忘录
+Версия 0.2 • Tahoe	Version 0.2 • Tahoe	Versión 0.2 • Tahoe	Version 0.2 • Tahoe	Version 0.2 • Tahoe	版本 0.2 • Tahoe
+событийный цикл	event loop	bucle de eventos	Ereignisschleife	boucle d’événements	事件循环
+по vblank хоста	host vblank	vblank del anfitrión	Host-VBlank	vblank de l’hôte	宿主 vblank
+неблокирующий swap	non-blocking swap	swap sin bloqueo	nicht blockierender Swap	swap non bloquant	非阻塞交换
+Окно Wayland	Wayland Window	Ventana Wayland	Wayland-Fenster	Fenêtre Wayland	Wayland 窗口
+# ── Control Center & services ──
+Пароль SAE: 1–63 байта	SAE password: 1–63 bytes	Contraseña SAE: 1–63 bytes	SAE-Passwort: 1–63 Byte	Mot de passe SAE : 1 à 63 octets	SAE 密码：1–63 字节
+Пароль: 8–63 байта или 64 hex-символа	Password: 8–63 bytes or 64 hex digits	Contraseña: 8–63 bytes o 64 dígitos hex	Passwort: 8–63 Byte oder 64 Hex-Zeichen	Mot de passe : 8 à 63 octets ou 64 chiffres hex	密码：8–63 字节或 64 位十六进制
+Подключение	Connecting	Conectando	Verbinden	Connexion	连接中
+Обновить сети ↻	Refresh Networks ↻	Actualizar redes ↻	Netzwerke aktualisieren ↻	Actualiser les réseaux ↻	刷新网络 ↻
+Подключено · нажмите, чтобы отключить	Connected · Click to disconnect	Conectado · Haz clic para desconectar	Verbunden · Zum Trennen klicken	Connecté · Cliquez pour déconnecter	已连接 · 点按以断开
+нажмите, чтобы отключить	click to disconnect	haz clic para desconectar	zum Trennen klicken	cliquez pour déconnecter	点按以断开
+Сохранённая сеть	Known Network	Red conocida	Bekanntes Netzwerk	Réseau connu	已知网络
+Открытая сеть	Open Network	Red abierta	Offenes Netzwerk	Réseau ouvert	开放网络
+Защищённая сеть	Secured Network	Red protegida	Gesichertes Netzwerk	Réseau sécurisé	安全网络
+Сети пока не найдены	No networks found yet	Todavía no se han encontrado redes	Noch keine Netzwerke gefunden	Aucun réseau trouvé pour l’instant	暂未找到网络
+Поиск устройств… (нажмите, чтобы остановить)	Searching for devices… (click to stop)	Buscando dispositivos… (haz clic para detener)	Suche nach Geräten … (zum Beenden klicken)	Recherche d’appareils… (cliquez pour arrêter)	正在搜索设备…（点按以停止）
+Поиск устройств ↻	Search for Devices ↻	Buscar dispositivos ↻	Nach Geräten suchen ↻	Rechercher des appareils ↻	搜索设备 ↻
+Сопряжено	Paired	Enlazado	Gekoppelt	Jumelé	已配对
+Устройства пока не найдены	No devices found yet	Todavía no se han encontrado dispositivos	Noch keine Geräte gefunden	Aucun appareil trouvé pour l’instant	暂未找到设备
+Включить звук	Unmute	Activar sonido	Ton einschalten	Réactiver le son	取消静音
+Выключить звук	Mute	Silenciar	Ton aus	Couper le son	静音
+Устройство вывода	Output Device	Dispositivo de salida	Ausgabegerät	Périphérique de sortie	输出设备
+Введите пароль сети	Enter the network password	Introduce la contraseña de la red	Netzwerkpasswort eingeben	Saisissez le mot de passe du réseau	输入网络密码
+Enter — подключить · Esc — отмена	Enter — Join · Esc — Cancel	Intro — Conectar · Esc — Cancelar	Enter — Verbinden · Esc — Abbrechen	Entrée — Rejoindre · Échap — Annuler	Enter — 加入 · Esc — 取消
+Нет устройств вывода	No output devices	Sin dispositivos de salida	Keine Ausgabegeräte	Aucun périphérique de sortie	无输出设备
+{}% · Устройства ›	{}% · Devices ›	{}% · Dispositivos ›	{}% · Geräte ›	{}% · Appareils ›	{}% · 设备 ›
+Устройства ›	Devices ›	Dispositivos ›	Geräte ›	Appareils ›	设备 ›
+Нет устройств ›	No Devices ›	Sin dispositivos ›	Keine Geräte ›	Aucun appareil ›	无设备 ›
+Звук недоступен	Sound unavailable	Sonido no disponible	Ton nicht verfügbar	Son indisponible	声音不可用
+Без звука	Muted	Silenciado	Stumm	Muet	已静音
+Служба звука недоступна	Sound service unavailable	El servicio de sonido no está disponible	Audiodienst nicht verfügbar	Service audio indisponible	声音服务不可用
+Звуковая служба недоступна	Sound service unavailable	El servicio de sonido no está disponible	Audiodienst nicht verfügbar	Service audio indisponible	声音服务不可用
+Микрофоны не найдены	No microphones found	No se han encontrado micrófonos	Keine Mikrofone gefunden	Aucun micro trouvé	未找到麦克风
+Служба занята. Повторите действие.	The service is busy. Try again.	El servicio está ocupado. Inténtalo de nuevo.	Der Dienst ist beschäftigt. Versuchen Sie es erneut.	Le service est occupé. Réessayez.	服务繁忙，请重试。
+Сеть занята. Повторите действие.	The network is busy. Try again.	La red está ocupada. Inténtalo de nuevo.	Das Netzwerk ist beschäftigt. Versuchen Sie es erneut.	Le réseau est occupé. Réessayez.	网络繁忙，请重试。
+Bluetooth занят. Повторите действие.	Bluetooth is busy. Try again.	Bluetooth está ocupado. Inténtalo de nuevo.	Bluetooth ist beschäftigt. Versuchen Sie es erneut.	Bluetooth est occupé. Réessayez.	蓝牙繁忙，请重试。
+Звук занят. Повторите действие.	Sound is busy. Try again.	El sonido está ocupado. Inténtalo de nuevo.	Ton ist beschäftigt. Versuchen Sie es erneut.	Le son est occupé. Réessayez.	声音服务繁忙，请重试。
+Служба звука не отвечает	Sound service is not responding	El servicio de sonido no responde	Audiodienst reagiert nicht	Le service audio ne répond pas	声音服务无响应
+Не найден pactl (пакет libpulse)	pactl not found (libpulse package)	No se encontró pactl (paquete libpulse)	pactl nicht gefunden (Paket libpulse)	pactl introuvable (paquet libpulse)	未找到 pactl（libpulse 软件包）
+Не удалось читать ответ звука	Couldn’t read the sound service reply	No se pudo leer la respuesta del sonido	Antwort des Audiodienstes nicht lesbar	Impossible de lire la réponse du service audio	无法读取声音服务响应
+Слишком большой ответ службы звука	Sound service reply is too large	Respuesta del servicio de sonido demasiado grande	Antwort des Audiodienstes zu groß	Réponse du service audio trop volumineuse	声音服务响应过大
+Служба звука отклонила действие	The sound service rejected the action	El servicio de sonido rechazó la acción	Der Audiodienst hat die Aktion abgelehnt	Le service audio a refusé l’action	声音服务拒绝了该操作
+Не удалось дождаться службы звука	Timed out waiting for the sound service	Tiempo de espera agotado con el servicio de sonido	Zeitüberschreitung beim Audiodienst	Délai dépassé pour le service audio	等待声音服务超时
+Некорректный ответ службы звука	Invalid sound service reply	Respuesta del servicio de sonido no válida	Ungültige Antwort des Audiodienstes	Réponse du service audio non valide	声音服务响应无效
+Некорректный список устройств звука	Invalid sound device list	Lista de dispositivos de sonido no válida	Ungültige Liste der Audiogeräte	Liste des périphériques audio non valide	音频设备列表无效
+Устройство без имени	Unnamed device	Dispositivo sin nombre	Unbenanntes Gerät	Appareil sans nom	未命名设备
+Нет громкости устройства	Device has no volume	El dispositivo no tiene volumen	Gerät hat keine Lautstärke	L’appareil n’a pas de volume	设备无音量信息
+Некорректная громкость	Invalid volume	Volumen no válido	Ungültige Lautstärke	Volume non valide	音量无效
+Нет индекса устройства	Device has no index	El dispositivo no tiene índice	Gerät hat keinen Index	L’appareil n’a pas d’index	设备无索引
+Устройство отключено	Device disconnected	Dispositivo desconectado	Gerät getrennt	Appareil déconnecté	设备已断开
+Микрофон отключён	Microphone disconnected	Micrófono desconectado	Mikrofon getrennt	Micro déconnecté	麦克风已断开
+Некорректный список потоков	Invalid stream list	Lista de flujos no válida	Ungültige Stream-Liste	Liste de flux non valide	音频流列表无效
+Устройство выбрано; не все потоки успели перейти	Device selected; not all streams moved yet	Dispositivo seleccionado; no todos los flujos se movieron	Gerät ausgewählt; nicht alle Streams wurden verschoben	Appareil sélectionné ; tous les flux n’ont pas encore basculé	已选择设备；部分音频流尚未切换
+Нет устройства вывода звука	No sound output device	No hay dispositivo de salida de sonido	Kein Audioausgabegerät	Aucun périphérique de sortie audio	无声音输出设备
+Не удалось подписаться на звук	Couldn’t subscribe to sound events	No se pudo suscribir a los eventos de sonido	Audioereignisse konnten nicht abonniert werden	Impossible de s’abonner aux événements audio	无法订阅声音事件
+Не удалось читать события звука	Couldn’t read sound events	No se pudieron leer los eventos de sonido	Audioereignisse konnten nicht gelesen werden	Impossible de lire les événements audio	无法读取声音事件
+Наушники	Headphones	Auriculares	Kopfhörer	Écouteurs	耳机
+Аудиоустройство	Audio Device	Dispositivo de audio	Audiogerät	Appareil audio	音频设备
+Мышь или трекпад	Mouse or Trackpad	Ratón o trackpad	Maus oder Trackpad	Souris ou trackpad	鼠标或触控板
+Геймпад	Game Controller	Mando	Gamecontroller	Manette	游戏手柄
+Телефон	Phone	Teléfono	Telefon	Téléphone	手机
+Устройство Bluetooth	Bluetooth Device	Dispositivo Bluetooth	Bluetooth-Gerät	Appareil Bluetooth	蓝牙设备
+Служба недоступна	Service unavailable	Servicio no disponible	Dienst nicht verfügbar	Service indisponible	服务不可用
+Нет адаптера	No adapter	Sin adaptador	Kein Adapter	Aucun adaptateur	无适配器
+Служба Bluetooth (BlueZ) недоступна	Bluetooth service (BlueZ) unavailable	El servicio Bluetooth (BlueZ) no está disponible	Bluetooth-Dienst (BlueZ) nicht verfügbar	Service Bluetooth (BlueZ) indisponible	蓝牙服务（BlueZ）不可用
+Bluetooth-адаптер не найден	Bluetooth adapter not found	No se encontró el adaptador Bluetooth	Bluetooth-Adapter nicht gefunden	Adaptateur Bluetooth introuvable	未找到蓝牙适配器
+Bluetooth-адаптер недоступен	Bluetooth adapter unavailable	Adaptador Bluetooth no disponible	Bluetooth-Adapter nicht verfügbar	Adaptateur Bluetooth indisponible	蓝牙适配器不可用
+Включите Bluetooth перед подключением	Turn on Bluetooth before connecting	Activa Bluetooth antes de conectar	Schalten Sie Bluetooth vor dem Verbinden ein	Activez Bluetooth avant de vous connecter	连接前请先开启蓝牙
+Список устройств Bluetooth изменился. Выберите устройство снова.	The Bluetooth device list changed. Choose the device again.	La lista de dispositivos Bluetooth cambió. Vuelve a elegir el dispositivo.	Die Bluetooth-Geräteliste hat sich geändert. Wählen Sie das Gerät erneut.	La liste des appareils Bluetooth a changé. Choisissez à nouveau l’appareil.	蓝牙设备列表已更改，请重新选择设备。
+Устройство недоступно	Device unavailable	Dispositivo no disponible	Gerät nicht verfügbar	Appareil indisponible	设备不可用
+Не удалось выполнить сопряжение с устройством Bluetooth.	Couldn’t pair with the Bluetooth device.	No se pudo enlazar con el dispositivo Bluetooth.	Kopplung mit dem Bluetooth-Gerät fehlgeschlagen.	Impossible de jumeler l’appareil Bluetooth.	无法与蓝牙设备配对。
+Устройство уже отключено	Device is already disconnected	El dispositivo ya está desconectado	Gerät ist bereits getrennt	L’appareil est déjà déconnecté	设备已断开连接
+Сохранённое устройство уже удалено	The saved device was already removed	El dispositivo guardado ya se eliminó	Das gespeicherte Gerät wurde bereits entfernt	L’appareil enregistré a déjà été supprimé	已保存的设备已被移除
+Некорректный путь	Invalid path	Ruta no válida	Ungültiger Pfad	Chemin non valide	路径无效
+BlueZ отклонил действие. Проверьте, что устройство включено и находится рядом.	BlueZ rejected the action. Make sure the device is on and nearby.	BlueZ rechazó la acción. Comprueba que el dispositivo esté encendido y cerca.	BlueZ hat die Aktion abgelehnt. Prüfen Sie, ob das Gerät eingeschaltet und in der Nähe ist.	BlueZ a refusé l’action. Vérifiez que l’appareil est allumé et à proximité.	BlueZ 拒绝了该操作。请确认设备已开启并在附近。
+Служба Bluetooth недоступна	Bluetooth service unavailable	El servicio Bluetooth no está disponible	Bluetooth-Dienst nicht verfügbar	Service Bluetooth indisponible	蓝牙服务不可用
+Открытая	Open	Abierta	Offen	Ouvert	开放
+Заблокирован	Blocked	Bloqueado	Gesperrt	Bloqué	已阻止
+Выключен	Off	Desactivado	Aus	Désactivé	已关闭
+Не подключён	Not connected	Sin conexión	Nicht verbunden	Non connecté	未连接
+# ── Desktop, Dock, menus, shell ──
+Ярлык не создан	Shortcut not created	No se creó el acceso directo	Verknüpfung nicht erstellt	Raccourci non créé	未创建快捷方式
+«{}» — встроенное окно Пёрышка	“{}” is a built-in Feather window	«{}» es una ventana integrada de Feather	„{}“ ist ein integriertes Feather-Fenster	« {} » est une fenêtre intégrée de Feather	“{}”是轻羽的内置窗口
+Ярлык не запущен	Shortcut not launched	No se abrió el acceso directo	Verknüpfung nicht gestartet	Raccourci non lancé	未启动快捷方式
+«{}» не помечен как исполняемый. Разрешите запуск в его свойствах.	“{}” is not marked as executable. Allow launching in its properties.	«{}» no está marcado como ejecutable. Permite su ejecución en sus propiedades.	„{}“ ist nicht als ausführbar markiert. Erlauben Sie das Starten in den Eigenschaften.	« {} » n’est pas exécutable. Autorisez son lancement dans ses propriétés.	“{}”未标记为可执行。请在其属性中允许运行。
+Показать в «Файлах»	Show in Files	Mostrar en Archivos	In „Dateien“ zeigen	Afficher dans Fichiers	在“文件”中显示
+Переименовать…	Rename…	Cambiar nombre…	Umbenennen …	Renommer…	重命名…
+Скопировать	Copy	Copiar	Kopieren	Copier	拷贝
+Вставить	Paste	Pegar	Einsetzen	Coller	粘贴
+Открыть «Рабочий стол» в «Файлах»	Open Desktop in Files	Abrir Escritorio en Archivos	Schreibtisch in „Dateien“ öffnen	Ouvrir Bureau dans Fichiers	在“文件”中打开桌面
+Открыть в терминале	Open in Terminal	Abrir en Terminal	Im Terminal öffnen	Ouvrir dans le Terminal	在终端中打开
+Упорядочить значки	Clean Up	Ordenar	Aufräumen	Ranger	整理
+Сменить обои	Change Wallpaper…	Cambiar fondo de pantalla…	Hintergrundbild ändern …	Changer le fond d’écran…	更改墙纸…
+Удалено из Dock	Removed from Dock	Eliminado del Dock	Aus dem Dock entfernt	Supprimé du Dock	已从程序坞移除
+Очистить Корзину…	Empty Trash…	Vaciar Papelera…	Papierkorb entleeren …	Vider la corbeille…	清倒废纸篓…
+Открепить от Dock	Remove from Dock	Eliminar del Dock	Aus dem Dock entfernen	Supprimer du Dock	从程序坞中移除
+Закрепить в Dock	Keep in Dock	Mantener en el Dock	Im Dock behalten	Garder dans le Dock	在程序坞中保留
+Завершить	Quit	Salir	Beenden	Quitter	退出
+✓ Заблокировать Dock	✓ Lock Dock	✓ Bloquear Dock	✓ Dock fixieren	✓ Verrouiller le Dock	✓ 锁定程序坞
+Заблокировать Dock	Lock Dock	Bloquear Dock	Dock fixieren	Verrouiller le Dock	锁定程序坞
+Запуск: {}	Opening {}	Abriendo {}	{} wird geöffnet	Ouverture de {}	正在打开 {}
+Команда `{}` запущена на {}	Command `{}` started on {}	Comando `{}` iniciado en {}	Befehl `{}` auf {} gestartet	Commande `{}` lancée sur {}	已在 {1} 上启动命令 `{0}`
+Не удалось запустить {}	Couldn’t open {}	No se pudo abrir {}	{} konnte nicht geöffnet werden	Impossible d’ouvrir {}	无法打开 {}
+Проверьте наличие пакета `{}` в системе	Check that the `{}` package is installed	Comprueba que el paquete `{}` esté instalado	Prüfen Sie, ob das Paket `{}` installiert ist	Vérifiez que le paquet `{}` est installé	请检查是否已安装 `{}` 软件包
+Масштаб HiDPI Retina: {}%	HiDPI Retina scale: {}%	Escala HiDPI Retina: {}%	HiDPI-Retina-Skalierung: {}%	Échelle HiDPI Retina : {}%	HiDPI Retina 缩放：{}%
+Векторный интерфейс и wp_fractional_scale_v1 обновлены на лету	Vector UI and wp_fractional_scale_v1 updated live	Interfaz vectorial y wp_fractional_scale_v1 actualizadas al momento	Vektor-UI und wp_fractional_scale_v1 live aktualisiert	Interface vectorielle et wp_fractional_scale_v1 mises à jour à la volée	矢量界面和 wp_fractional_scale_v1 已实时更新
+Горячие клавиши	Keyboard Shortcuts	Atajos de teclado	Tastaturkurzbefehle	Raccourcis clavier	键盘快捷键
+Super+Space поиск • Super+A приложения • Alt+Tab • Alt+` окна программы • Ctrl+Alt+←/→ столы • Ctrl+Alt+↑ Mission Control • Super+Q/W/H/M/F	Super+Space Search • Super+A Apps • Alt+Tab • Alt+` App Windows • Ctrl+Alt+←/→ Desktops • Ctrl+Alt+↑ Mission Control • Super+Q/W/H/M/F	Super+Espacio Buscar • Super+A Apps • Alt+Tab • Alt+` Ventanas de la app • Ctrl+Alt+←/→ Escritorios • Ctrl+Alt+↑ Mission Control • Super+Q/W/H/M/F	Super+Leertaste Suche • Super+A Apps • Alt+Tab • Alt+` App-Fenster • Ctrl+Alt+←/→ Schreibtische • Ctrl+Alt+↑ Mission Control • Super+Q/W/H/M/F	Super+Espace Recherche • Super+A Apps • Alt+Tab • Alt+` Fenêtres de l’app • Ctrl+Alt+←/→ Bureaux • Ctrl+Alt+↑ Mission Control • Super+Q/W/H/M/F	Super+Space 搜索 • Super+A 应用 • Alt+Tab • Alt+` 应用窗口 • Ctrl+Alt+←/→ 桌面 • Ctrl+Alt+↑ 调度中心 • Super+Q/W/H/M/F
+Оболочка перезагружена	Shell reloaded	Interfaz recargada	Shell neu geladen	Interface rechargée	外壳已重新载入
+Список приложений, иконки и оформление обновлены без закрытия окон	App list, icons and appearance updated without closing windows	Lista de apps, iconos y aspecto actualizados sin cerrar ventanas	App-Liste, Symbole und Erscheinungsbild aktualisiert, ohne Fenster zu schließen	Liste des apps, icônes et apparence mises à jour sans fermer les fenêtres	已更新应用列表、图标和外观，无需关闭窗口
+Нет пунктов	No Items	Sin elementos	Keine Objekte	Aucun élément	无项目
+Загрузка…	Loading…	Cargando…	Wird geladen …	Chargement…	正在载入…
+{} мин назад	{} min ago	hace {} min	vor {} Min.	il y a {} min	{} 分钟前
+вчера	yesterday	ayer	gestern	hier	昨天
+Поиск Spotlight	Spotlight Search	Búsqueda de Spotlight	Spotlight-Suche	Recherche Spotlight	聚焦搜索
+Рабочий стол {}	Desktop {}	Escritorio {}	Schreibtisch {}	Bureau {}	桌面 {}
+Разработка Пёрышко DE на ходу	Developing Feather DE on the go	Desarrollo de Feather DE sobre la marcha	Feather DE unterwegs entwickeln	Développement de Feather DE en direct	随时开发轻羽桌面
+# ── Authentication & lock ──
+«{}» хочет внести изменения	“{}” wants to make changes	«{}» quiere realizar cambios	„{}“ möchte Änderungen vornehmen	« {} » veut apporter des modifications	“{}”想要进行更改
+Требуется подтверждение	Authentication Required	Se requiere autenticación	Authentifizierung erforderlich	Authentification requise	需要验证
+Действие: {}	Action: {}	Acción: {}	Aktion: {}	Action : {}	操作：{}
+Команда	Command	Comando	Befehl	Commande	命令
+Пароль	Password	Contraseña	Passwort	Mot de passe	密码
+Скрыть подробности	Hide Details	Ocultar detalles	Details ausblenden	Masquer les détails	隐藏详细信息
+Проверка…	Checking…	Comprobando…	Wird geprüft …	Vérification…	正在验证…
+Разрешить	Allow	Permitir	Erlauben	Autoriser	允许
+Неверный пароль. Попробуйте ещё раз.	Incorrect password. Try again.	Contraseña incorrecta. Inténtalo de nuevo.	Falsches Passwort. Versuchen Sie es erneut.	Mot de passe incorrect. Réessayez.	密码不正确，请重试。
+Отменено пользователем	Cancelled by user	Cancelado por el usuario	Vom Benutzer abgebrochen	Annulé par l’utilisateur	已被用户取消
+Установите службу PAM feather-lock	Install the feather-lock PAM service	Instala el servicio PAM feather-lock	Installieren Sie den PAM-Dienst feather-lock	Installez le service PAM feather-lock	请安装 feather-lock PAM 服务
+Не удалось определить учётную запись	Couldn’t determine the user account	No se pudo determinar la cuenta	Benutzeraccount konnte nicht ermittelt werden	Impossible de déterminer le compte	无法确定用户账户
+Не найдена библиотека PAM	PAM library not found	No se encontró la biblioteca PAM	PAM-Bibliothek nicht gefunden	Bibliothèque PAM introuvable	未找到 PAM 库
+PAM недоступен	PAM unavailable	PAM no disponible	PAM nicht verfügbar	PAM indisponible	PAM 不可用
+Не удалось начать проверку PAM	Couldn’t start PAM authentication	No se pudo iniciar la autenticación PAM	PAM-Authentifizierung konnte nicht gestartet werden	Impossible de démarrer l’authentification PAM	无法开始 PAM 验证
+Введите пароль вашей учётной записи	Enter your account password	Introduce la contraseña de tu cuenta	Geben Sie Ihr Accountpasswort ein	Saisissez le mot de passe de votre compte	输入您的账户密码
+Включён Caps Lock	Caps Lock is on	Bloq Mayús activado	Feststelltaste aktiv	Verr. Maj activé	大写锁定已开启
+Неверный пароль или вход недоступен	Incorrect password or login unavailable	Contraseña incorrecta o inicio de sesión no disponible	Falsches Passwort oder Anmeldung nicht verfügbar	Mot de passe incorrect ou connexion indisponible	密码不正确或无法登录
+Не удалось начать проверку	Couldn’t start authentication	No se pudo iniciar la autenticación	Authentifizierung konnte nicht gestartet werden	Impossible de démarrer l’authentification	无法开始验证
+видеокарта не найдена	no graphics card found	no se encontró la tarjeta gráfica	keine Grafikkarte gefunden	aucune carte graphique trouvée	未找到显卡
+нет подключённого монитора	no monitor connected	no hay ningún monitor conectado	kein Monitor angeschlossen	aucun écran branché	未连接显示器
+# ── Screenshots, screen recording, trash ──
+Записи экрана	Screen Recordings	Grabaciones de pantalla	Bildschirmaufnahmen	Enregistrements d’écran	屏幕录制
+Не удалось запустить поток кодирования видео	Couldn’t start the video encoder thread	No se pudo iniciar el codificador de vídeo	Video-Encoder konnte nicht gestartet werden	Impossible de démarrer l’encodeur vidéo	无法启动视频编码线程
+Не удалось сохранить видеофайл	Couldn’t save the video file	No se pudo guardar el vídeo	Videodatei konnte nicht gesichert werden	Impossible d’enregistrer la vidéo	无法保存视频文件
+Сохранено в файл {} ({} с)	Saved to {} ({} s)	Guardado en {} ({} s)	Gesichert unter {} ({} s)	Enregistré dans {} ({} s)	已保存到 {}（{} 秒）
+Снимок экрана	Screenshot	Captura de pantalla	Bildschirmfoto	Capture d’écran	截屏
+Не удалось прочитать изображение	Couldn’t read the image	No se pudo leer la imagen	Bild konnte nicht gelesen werden	Impossible de lire l’image	无法读取图像
+Не удалось запустить сохранение	Couldn’t start saving	No se pudo iniciar el guardado	Sichern konnte nicht gestartet werden	Impossible de lancer l’enregistrement	无法开始保存
+Не удалось закодировать PNG	Couldn’t encode PNG	No se pudo codificar el PNG	PNG konnte nicht kodiert werden	Impossible d’encoder le PNG	无法编码 PNG
+В буфере обмена и в файле {}	Copied to the clipboard and saved to {}	Copiada al portapapeles y guardada en {}	In der Zwischenablage und unter {} gesichert	Copiée dans le presse-papiers et enregistrée dans {}	已拷贝到剪贴板并保存到 {}
+Скопирован в буфер обмена	Copied to the clipboard	Copiada al portapapeles	In die Zwischenablage kopiert	Copiée dans le presse-papiers	已拷贝到剪贴板
+Корзина очищена не полностью	Trash was not fully emptied	La papelera no se vació por completo	Papierkorb wurde nicht vollständig entleert	La corbeille n’a pas été entièrement vidée	废纸篓未完全清倒
+Не удалось удалить объектов: {}	Couldn’t delete {} items	No se pudieron eliminar {} elementos	{} Objekte konnten nicht gelöscht werden	Impossible de supprimer {} éléments	有 {} 个项目无法删除
+Не все объекты перемещены в Корзину	Not all items were moved to the Trash	No todos los elementos se movieron a la papelera	Nicht alle Objekte wurden in den Papierkorb gelegt	Tous les éléments n’ont pas été placés dans la corbeille	并非所有项目都已移到废纸篓
+Ошибок: {}	Errors: {}	Errores: {}	Fehler: {}	Erreurs : {}	错误：{}
+Удалить объекты из Корзины безвозвратно?	Permanently erase the items in the Trash?	¿Eliminar definitivamente los elementos de la papelera?	Objekte im Papierkorb endgültig löschen?	Supprimer définitivement les éléments de la corbeille ?	要永久抹掉废纸篓中的项目吗？
+Это действие нельзя отменить.	You can’t undo this action.	Esta acción no se puede deshacer.	Dieser Vorgang kann nicht widerrufen werden.	Cette action est irréversible.	此操作无法撤销。
+# ── Files & pickers ──
+Слишком большой запрос выбора файла	The file chooser request is too large	La solicitud del selector de archivos es demasiado grande	Die Dateiauswahl-Anfrage ist zu groß	La demande du sélecteur de fichiers est trop volumineuse	文件选择请求过大
+Неверный путь	Invalid path	Ruta no válida	Ungültiger Pfad	Chemin non valide	路径无效
+Сохранить файл	Save File	Guardar archivo	Datei sichern	Enregistrer le fichier	存储文件
+Выберите файл	Choose a File	Elige un archivo	Datei auswählen	Choisissez un fichier	选择文件
+Не удалось открыть Файлы: {}	Couldn’t open Files: {}	No se pudo abrir Archivos: {}	„Dateien“ konnte nicht geöffnet werden: {}	Impossible d’ouvrir Fichiers : {}	无法打开“文件”：{}
+Не удалось передать запрос Файлам	Couldn’t send the request to Files	No se pudo enviar la solicitud a Archivos	Anfrage konnte nicht an „Dateien“ gesendet werden	Impossible d’envoyer la demande à Fichiers	无法将请求发送给“文件”
+Диалог выбора файла завершился с ошибкой	The file chooser failed	El selector de archivos falló	Die Dateiauswahl ist fehlgeschlagen	Le sélecteur de fichiers a échoué	文件选择器出错
+Домой	Home	Inicio	Benutzerordner	Départ	个人
+Компьютер	Computer	Ordenador	Computer	Ordinateur	电脑
+Места	Locations	Ubicaciones	Orte	Emplacements	位置
+байт	bytes	bytes	Byte	octets	字节
+{} байт	{} bytes	{} bytes	{} Byte	{} octets	{} 字节
+{} КБ	{} KB	{} KB	{} KB	{} Ko	{} KB
+Сегодня, {}	Today, {}	Hoy, {}	Heute, {}	Aujourd’hui, {}	今天 {}
+Вчера, {}	Yesterday, {}	Ayer, {}	Gestern, {}	Hier, {}	昨天 {}
+Вчера	Yesterday	Ayer	Gestern	Hier	昨天
+Перемещение	Moving	Moviendo	Bewegen	Déplacement	正在移动
+Копирование	Copying	Copiando	Kopieren	Copie	正在拷贝
+Перемещение в Корзину	Moving to Trash	Moviendo a la papelera	In den Papierkorb legen	Placement dans la corbeille	正在移到废纸篓
+Возврат из Корзины	Putting Back	Recuperando	Zurücklegen	Remise en place	正在放回原处
+Удаление	Deleting	Eliminando	Löschen	Suppression	正在删除
+Очистка Корзины	Emptying Trash	Vaciando la papelera	Papierkorb wird entleert	Vidage de la corbeille	正在清倒废纸篓
+Ссылка	Alias	Alias	Alias	Alias	替身
+{} — Файлы	{} — Files	{} — Archivos	{} — Dateien	{} — Fichiers	{} — 文件
+Введите имя файла без символа /	Enter a file name without “/”	Introduce un nombre sin «/»	Dateiname ohne „/“ eingeben	Saisissez un nom sans « / »	请输入不含“/”的文件名
+Можно выбрать не более 64 папок	You can select up to 64 folders	Puedes seleccionar hasta 64 carpetas	Sie können bis zu 64 Ordner auswählen	Vous pouvez sélectionner jusqu’à 64 dossiers	最多可选择 64 个文件夹
+Можно выбрать не более 64 файлов	You can select up to 64 files	Puedes seleccionar hasta 64 archivos	Sie können bis zu 64 Dateien auswählen	Vous pouvez sélectionner jusqu’à 64 fichiers	最多可选择 64 个文件
+Тип файлов: {}  ▾	File type: {}  ▾	Tipo de archivo: {}  ▾	Dateityp: {}  ▾	Type de fichier : {}  ▾	文件类型：{}  ▾
+Проверка файла…	Checking file…	Comprobando archivo…	Datei wird geprüft …	Vérification du fichier…	正在检查文件…
+Файл существует. Заменить?	The file already exists. Replace it?	El archivo ya existe. ¿Reemplazarlo?	Die Datei existiert bereits. Ersetzen?	Le fichier existe déjà. Le remplacer ?	文件已存在。要替换吗？
+Выбрано: {}	Selected: {}	Seleccionado: {}	Ausgewählt: {}	Sélection : {}	已选择：{}
+Не удалось открыть предпросмотр: {}	Couldn’t open the preview: {}	No se pudo abrir la vista previa: {}	Vorschau konnte nicht geöffnet werden: {}	Impossible d’ouvrir l’aperçu : {}	无法打开预览：{}
+Предпросмотр этого объекта недоступен	No preview available for this item	No hay vista previa para este elemento	Für dieses Objekt ist keine Vorschau verfügbar	Aucun aperçu disponible pour cet élément	此项目无法预览
+Файл изменился во время открытия	The file changed while opening	El archivo cambió mientras se abría	Die Datei wurde beim Öffnen geändert	Le fichier a changé pendant l’ouverture	文件在打开时发生了更改
+Изображение слишком велико для быстрого просмотра	The image is too large for Quick Look	La imagen es demasiado grande para la vista rápida	Das Bild ist zu groß für die Übersicht	L’image est trop volumineuse pour Coup d’œil	图像过大，无法快速查看
+Пустое изображение	Empty image	Imagen vacía	Leeres Bild	Image vide	空图像
+Повреждённый SVG-файл	Damaged SVG file	Archivo SVG dañado	Beschädigte SVG-Datei	Fichier SVG endommagé	SVG 文件已损坏
+{} копия	{} copy	{} copia	{} Kopie	{} copie	{} 副本
+# ── Notes / Preview ──
+Нет дополнительного текста	No additional text	Sin texto adicional	Kein weiterer Text	Aucun texte supplémentaire	无附加文本
+Выберите заметку или создайте новую (Ctrl+N)	Select a note or create a new one (Ctrl+N)	Selecciona una nota o crea una nueva (Ctrl+N)	Wählen Sie eine Notiz aus oder erstellen Sie eine neue (Ctrl+N)	Sélectionnez une note ou créez-en une (Ctrl+N)	选择备忘录或新建一个（Ctrl+N）
+Заголовок	Title	Título	Titel	Titre	标题
+{} × {} пикс.	{} × {} px	{} × {} px	{} × {} px	{} × {} px	{} × {} 像素
+Не удалось открыть документ: {}	Couldn’t open the document: {}	No se pudo abrir el documento: {}	Dokument konnte nicht geöffnet werden: {}	Impossible d’ouvrir le document : {}	无法打开文档：{}
+Выбрана папка, а не файл	A folder was selected, not a file	Se seleccionó una carpeta, no un archivo	Ein Ordner wurde ausgewählt, keine Datei	Un dossier a été sélectionné, pas un fichier	选择的是文件夹而不是文件
+Объект не является обычным файлом	The item is not a regular file	El elemento no es un archivo normal	Das Objekt ist keine normale Datei	L’élément n’est pas un fichier ordinaire	该项目不是普通文件
+PDF-документ превышает лимит 64 МБ	The PDF exceeds the 64 MB limit	El PDF supera el límite de 64 MB	Das PDF überschreitet das Limit von 64 MB	Le PDF dépasse la limite de 64 Mo	PDF 超过 64 MB 限制
+SVG-файл слишком велик	The SVG file is too large	El archivo SVG es demasiado grande	Die SVG-Datei ist zu groß	Le fichier SVG est trop volumineux	SVG 文件过大
+Изображение превышает лимит 48 МБ	The image exceeds the 48 MB limit	La imagen supera el límite de 48 MB	Das Bild überschreitet das Limit von 48 MB	L’image dépasse la limite de 48 Mo	图像超过 48 MB 限制
+Неподдерживаемый формат файла	Unsupported file format	Formato de archivo no compatible	Nicht unterstütztes Dateiformat	Format de fichier non pris en charge	不支持的文件格式
+Недопустимый размер изображения	Invalid image size	Tamaño de imagen no válido	Ungültige Bildgröße	Taille d’image non valide	图像尺寸无效
+Не удалось создать буфер SVG	Couldn’t create the SVG buffer	No se pudo crear el búfer SVG	SVG-Puffer konnte nicht erstellt werden	Impossible de créer le tampon SVG	无法创建 SVG 缓冲区
+Файл не является документом PDF	The file is not a PDF document	El archivo no es un documento PDF	Die Datei ist kein PDF-Dokument	Le fichier n’est pas un document PDF	该文件不是 PDF 文档
+Не удалось создать буфер страницы PDF	Couldn’t create the PDF page buffer	No se pudo crear el búfer de la página PDF	PDF-Seitenpuffer konnte nicht erstellt werden	Impossible de créer le tampon de page PDF	无法创建 PDF 页面缓冲区
+PDF · Страница {}	PDF · Page {}	PDF · Página {}	PDF · Seite {}	PDF · Page {}	PDF · 第 {} 页
+Страница {}	Page {}	Página {}	Seite {}	Page {}	第 {} 页
+{} — Просмотр	{} — Preview	{} — Vista Previa	{} — Vorschau	{} — Aperçu	{} — 预览
+Открыть в Просмотре	Open in Preview	Abrir en Vista Previa	In Vorschau öffnen	Ouvrir dans Aperçu	在“预览”中打开
+Изображения и PDF	Images and PDF	Imágenes y PDF	Bilder und PDF	Images et PDF	图像和 PDF
+Нет совпадений	No matches	Sin coincidencias	Keine Treffer	Aucune correspondance	无匹配项
+# ── Labels ──
+{} ({} %)	{} ({} %)	{} ({} %)	{} ({} %)	{} ({} %)	{}（{}%）
+Вкл.	On	Sí	Ein	Oui	开
+Выкл.	Off	No	Aus	Non	关
+Tahoe День	Tahoe Day	Tahoe Día	Tahoe Tag	Tahoe Jour	Tahoe 白天
+Tahoe Ночь	Tahoe Night	Tahoe Noche	Tahoe Nacht	Tahoe Nuit	Tahoe 夜晚
+Русский	Russian	Ruso	Russisch	Russe	俄语
+Английский	English	Inglés	Englisch	Anglais	英语
+Испанский	Spanish	Español	Spanisch	Espagnol	西班牙语
+Немецкий	German	Alemán	Deutsch	Allemand	德语
+Французский	French	Francés	Französisch	Français	法语
+Китайский	Chinese	Chino	Chinesisch	Chinois	中文
+Встроенные динамики	Built-in Speakers	Altavoces integrados	Integrierte Lautsprecher	Haut-parleurs intégrés	内建扬声器
+Встроенный микрофон	Built-in Microphone	Micrófono integrado	Integriertes Mikrofon	Micro intégré	内建麦克风
+Подключение…	Connecting…	Conectando…	Verbinden …	Connexion…	正在连接…
+копия	copy	copia	Kopie	copie	副本
+%Y-%m-%d в %H.%M.%S	%Y-%m-%d at %H.%M.%S	%Y-%m-%d a las %H.%M.%S	%Y-%m-%d um %H.%M.%S	%Y-%m-%d à %H.%M.%S	%Y-%m-%d %H.%M.%S
+Запись экрана	Screen Recording	Grabación de pantalla	Bildschirmaufnahme	Enregistrement de l’écran	屏幕录制
+{} рад	{} rad	{} rad	{} rad	{} rad	{} 弧度
+Переключатель включает автоподключение к сети. «Забыть» удаляет профиль и пароль из NetworkManager.	The switch turns on Auto-Join for the network. Forget removes the profile and password from NetworkManager.	El interruptor activa la conexión automática. «Olvidar» elimina el perfil y la contraseña de NetworkManager.	Der Schalter aktiviert das automatische Verbinden. „Ignorieren“ entfernt Profil und Passwort aus NetworkManager.	L’interrupteur active la connexion automatique. « Oublier » supprime le profil et le mot de passe de NetworkManager.	开关用于启用自动加入。“忽略”会从 NetworkManager 中删除配置和密码。
