@@ -15,7 +15,7 @@ pub enum HotAction {
 }
 
 impl HotAction {
-    const ALL: [Self; 7] = [Self::None, Self::MissionControl, Self::Launchpad, Self::Desktop, Self::Notifications, Self::Spotlight, Self::Lock];
+    pub const ALL: [Self; 7] = [Self::None, Self::MissionControl, Self::Launchpad, Self::Desktop, Self::Notifications, Self::Spotlight, Self::Lock];
 
     pub fn next(self) -> Self {
         let i = Self::ALL.iter().position(|a| *a == self).unwrap_or(0);

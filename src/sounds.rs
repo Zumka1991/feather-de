@@ -35,8 +35,9 @@ impl Tone {
             Self::Drop => "Капля",
         }
     }
+    pub const ALL: [Self; 3] = [Self::Feather, Self::Glass, Self::Drop];
     pub fn parse(s: &str) -> Option<Self> {
-        [Self::Feather, Self::Glass, Self::Drop]
+        Self::ALL
             .into_iter()
             .find(|v| v.id() == s)
     }

@@ -32,6 +32,7 @@ pub enum Delivery {
 }
 
 impl Delivery {
+    pub const ALL: [Self; 3] = [Self::Banners, Self::CenterOnly, Self::Off];
     pub fn next(self) -> Self {
         match self { Self::Banners => Self::CenterOnly, Self::CenterOnly => Self::Off, Self::Off => Self::Banners }
     }

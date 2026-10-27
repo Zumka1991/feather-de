@@ -294,7 +294,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             s.debug_pointer_motion(gx,gy);s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);
         }
         at(state,1000,|s|s.apply_system_setting(A::Page(Page::Sound)))?;
-        at(state,1600,|s| {click(s,|a|matches!(a,A::AlertTone));assert_eq!(s.sound_preferences.tone,Tone::Glass);})?;
+        at(state,1600,|s| {click(s,|a|matches!(a,A::ChoiceMenu(Some(crate::system_settings::Choice::AlertTone))));click(s,|a|matches!(a,A::SetChoice(crate::system_settings::Choice::AlertTone,1)));assert_eq!(s.sound_preferences.tone,Tone::Glass);})?;
         at(state,2200,|s| {click(s,|a|matches!(a,A::AlertVolume(75)));assert_eq!(s.sound_preferences.volume,75);})?;
         at(state,2800,|s| {
             click(s,|a|matches!(a,A::AlertSounds));assert!(!s.sound_preferences.alerts);
@@ -2042,7 +2042,8 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             }
             assert_eq!(feather_ui::i18n::tr("Системные настройки"), "System Settings");
             assert!(s.app_registry.apps.iter().any(|a| a.id == "builtin.settings" && a.name == "System Settings"));
-            click(s, |a| matches!(a, A::RegionStep(1)));
+            click(s, |a| matches!(a, A::ChoiceMenu(Some(crate::system_settings::Choice::Region))));
+            click(s, |a| matches!(a, A::SetChoice(crate::system_settings::Choice::Region, 1)));
             assert_eq!(crate::theme::region(), Region::Us);
             click(s, |a| matches!(a, A::Use24HourTime));
             assert!(!crate::theme::use_24h_time());

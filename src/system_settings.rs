@@ -83,9 +83,55 @@ impl Page {
         }
     }
 }
+/// A form row whose value is picked from a pop-up menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Choice {
+    /// 0 lock, 1 display off, 2 sleep
+    Idle(u8),
+    DndWindow,
+    NightWindow,
+    NightWarmth,
+    HotCorner(usize),
+    AlertTone,
+    NotifyDelivery(usize),
+    CapsLock,
+    Region,
+    DisplayMode,
+}
+/// Labels of a choice's options and the index of the current one.
+fn choice_options(choice: Choice, c: &Context<'_>) -> (Vec<String>, Option<usize>) {
+    fn pick<T: PartialEq + Copy>(all: &[T], current: T, label: impl Fn(T) -> String) -> (Vec<String>, Option<usize>) {
+        (all.iter().map(|v| label(*v)).collect(), all.iter().position(|v| *v == current))
+    }
+    match choice {
+        Choice::Idle(i) => {
+            let current = match i { 0 => c.power.lock, 1 => c.power.blank, _ => c.power.suspend };
+            pick(&crate::power::Preferences::TIMES, current, crate::power::Preferences::label)
+        }
+        Choice::DndWindow => pick(&crate::shell::DND_WINDOWS, c.dnd_schedule.unwrap_or((0, 0)), crate::shell::dnd_window_label),
+        Choice::NightWindow => pick(&crate::night::WINDOWS, c.night.schedule.unwrap_or((0, 0)), crate::shell::dnd_window_label),
+        Choice::NightWarmth => {
+            let all = crate::night::WARMTH;
+            (all.iter().map(|(_, l)| l.to_string()).collect(), all.iter().position(|(k, _)| *k == c.night.kelvin))
+        }
+        Choice::HotCorner(i) => pick(&crate::hot_corners::HotAction::ALL, c.hot_corners[i.min(3)], |a| a.label().into()),
+        Choice::AlertTone => pick(&crate::sounds::Tone::ALL, c.sounds.tone, |t| t.label().into()),
+        Choice::NotifyDelivery(i) => match c.notify_apps.get(i) {
+            Some(app) => pick(&crate::notifications::Delivery::ALL, app.delivery, |d| d.label().into()),
+            None => (Vec::new(), None),
+        },
+        Choice::CapsLock => pick(&crate::settings::Caps::ALL, c.keyboard.caps, |k| k.label().into()),
+        Choice::Region => pick(&crate::theme::Region::ALL, crate::theme::region(), |r| r.label().into()),
+        Choice::DisplayMode => pick(c.modes, c.current, Mode::label),
+    }
+}
 #[derive(Clone, Debug)]
 pub enum Action {
     Page(Page),
+    /// Open (Some) or close (None) a row's pop-up menu
+    ChoiceMenu(Option<Choice>),
+    /// Option index picked in a pop-up menu
+    SetChoice(Choice, usize),
     LockNow,
     IdleTime(u8),
     DoNotDisturb,
@@ -219,6 +265,7 @@ pub struct Panel {
     /// Pointer over the window (content coordinates), for hover highlights
     pub pointer: Option<(f32, f32)>,
     pub cursor_picker: bool,
+    pub choice_menu: Option<Choice>,
     pub zone_picker: bool,
     pub zone_query: feather_ui::input::TextInput,
     pub time_editing: bool,
@@ -1376,7 +1423,7 @@ impl Panel {
                 l.header("Сигналы и звуки интерфейса");
                 l.begin();
                 l.row(52.0,"Звуки предупреждений","Системный сигнал и запросы программ".into(),Style::Toggle(c.sounds.alerts),Some(Action::AlertSounds));
-                l.choice(48.0,"Сигнал предупреждения",String::new(),c.sounds.tone.label().into(),Some(Action::AlertTone));
+                l.choice(48.0,"Сигнал предупреждения",String::new(),c.sounds.tone.label().into(),Some(Action::ChoiceMenu(Some(Choice::AlertTone))));
                 let r=l.row(82.0,"Громкость сигналов",format!("{} % от громкости устройства",c.sounds.volume),Style::Row,None);
                 for (i,volume) in [0,25,50,75,100].into_iter().enumerate() {
                     let width=(r.w-28.0)/5.0;
@@ -1434,7 +1481,7 @@ impl Panel {
                 l.header("При отсутствии активности");
                 l.begin();
                 for (index,title,value) in [(0,"Блокировать экран",c.power.lock),(1,"Выключать экран",c.power.blank),(2,"Переводить компьютер в сон",c.power.suspend)] {
-                    l.choice(48.0,title,String::new(),crate::power::Preferences::label(value),Some(Action::IdleTime(index)));
+                    l.choice(48.0,title,String::new(),crate::power::Preferences::label(value),Some(Action::ChoiceMenu(Some(Choice::Idle(index)))));
                 }
                 l.end();
                 l.footer("Выключение экрана и сон всегда требуют пароль при возвращении.");
@@ -1446,7 +1493,7 @@ impl Panel {
                 l.row(52.0, "Не беспокоить", "Всё уходит в центр уведомлений, баннер только у срочных".into(), Style::Toggle(c.dnd), Some(Action::DoNotDisturb));
                 l.row(52.0, "По расписанию", "Каждый день в выбранные часы".into(), Style::Toggle(c.dnd_schedule.is_some()), Some(Action::DndSchedule));
                 if let Some(window) = c.dnd_schedule {
-                    l.choice(48.0, "Время", String::new(), crate::shell::dnd_window_label(window), Some(Action::DndWindow));
+                    l.choice(48.0, "Время", String::new(), crate::shell::dnd_window_label(window), Some(Action::ChoiceMenu(Some(Choice::DndWindow))));
                 }
                 l.row(52.0, "Звук уведомлений", "Короткий сигнал при появлении баннера".into(), Style::Toggle(c.notify_sounds), Some(Action::NotifySounds));
                 l.end();
@@ -1456,7 +1503,7 @@ impl Panel {
                 } else {
                     l.begin();
                     for (i, a) in c.notify_apps.iter().enumerate() {
-                        l.choice(48.0, &a.label, String::new(), a.delivery.label().into(), Some(Action::NotifyDelivery(i)));
+                        l.choice(48.0, &a.label, String::new(), a.delivery.label().into(), Some(Action::ChoiceMenu(Some(Choice::NotifyDelivery(i)))));
                     }
                     l.end();
                     l.footer("Выключенные уведомления не сохраняются.");
@@ -1624,17 +1671,7 @@ impl Panel {
                 l.header("Регион и форматы");
                 l.begin();
                 let current_region = crate::theme::region();
-                let r = l.row(48.0, "Регион", String::new(), Style::Row, None);
-                l.push(R::new(r.x, r.y, r.w - 64.0, r.h), "", Style::Row, None).value =
-                    current_region.label().into();
-                for (i, label, dir) in [(0, "‹", -1), (1, "›", 1)] {
-                    l.push(
-                        R::new(r.x + r.w - 70.0 + i as f32 * 28.0, r.y + 12.0, 26.0, 24.0),
-                        label,
-                        Style::Mini,
-                        Some(Action::RegionStep(dir)),
-                    );
-                }
+                l.choice(48.0, "Регион", String::new(), current_region.label().into(), Some(Action::ChoiceMenu(Some(Choice::Region))));
                 let use_24h = crate::theme::use_24h_time();
                 l.row(
                     48.0,
@@ -1754,7 +1791,7 @@ impl Panel {
                         l.push(R::new(track.x + i as f32 * sw, track.y, sw, track.h), &label, Style::Segment(current == v), Some(make(v)));
                     }
                 }
-                l.choice(48.0, "Клавиша Caps Lock", String::new(), c.keyboard.caps.label().into(), kb.then_some(Action::CapsLock));
+                l.choice(48.0, "Клавиша Caps Lock", String::new(), c.keyboard.caps.label().into(), kb.then_some(Action::ChoiceMenu(Some(Choice::CapsLock))));
                 l.end();
                 l.footer("Автоповтор применяется сразу во всех программах.");
                 l.header("Сочетания действий");
@@ -1893,18 +1930,8 @@ impl Panel {
                     .copied()
                     .unwrap_or(c.current);
                 if c.direct {
-                    let r = l.row(48.0, "Режим основного дисплея", String::new(), Style::Row, None);
-                    // Value sits left of the steppers; the row keeps its full-width divider.
-                    l.push(R::new(r.x, r.y, r.w - 64.0, r.h), "", Style::Row, None).value =
-                        selected.label();
-                    for (i, label, dir) in [(0, "‹", -1), (1, "›", 1)] {
-                        l.push(
-                            R::new(r.x + r.w - 70.0 + i as f32 * 28.0, r.y + 12.0, 26.0, 24.0),
-                            label,
-                            Style::Mini,
-                            (!self.confirming && c.modes.len() > 1).then_some(Action::ModeStep(dir)),
-                        );
-                    }
+                    l.choice(48.0, "Режим основного дисплея", String::new(), selected.label(),
+                        (!self.confirming && c.modes.len() > 1).then_some(Action::ChoiceMenu(Some(Choice::DisplayMode))));
                     l.end();
                     let r = R::new(x + cw - 170.0, l.y, 170.0, 28.0);
                     l.push(
@@ -1926,9 +1953,9 @@ impl Panel {
                 l.row(52.0, "Включить сейчас", "Тёплые цвета вечером легче для глаз".into(), Style::Toggle(c.night_active), Some(Action::NightNow));
                 l.row(52.0, "По расписанию", "Каждый день в выбранные часы".into(), Style::Toggle(c.night.schedule.is_some()), Some(Action::NightSchedule));
                 if let Some(w) = c.night.schedule {
-                    l.choice(48.0, "Время", String::new(), crate::shell::dnd_window_label(w), Some(Action::NightWindow));
+                    l.choice(48.0, "Время", String::new(), crate::shell::dnd_window_label(w), Some(Action::ChoiceMenu(Some(Choice::NightWindow))));
                 }
-                l.choice(48.0, "Цветовая температура", String::new(), crate::night::warmth_label(c.night.kelvin), Some(Action::NightWarmth));
+                l.choice(48.0, "Цветовая температура", String::new(), crate::night::warmth_label(c.night.kelvin), Some(Action::ChoiceMenu(Some(Choice::NightWarmth))));
                 l.end();
                 l.footer(if c.direct {"Цвета меняются плавно за несколько секунд."} else {"Ночной режим меняет цвета монитора в прямой сессии Пёрышка; в окне настройки только сохраняются."});
             }
@@ -2484,10 +2511,41 @@ impl Panel {
                 l.header("Активные углы");
                 l.begin();
                 for (i, name) in crate::hot_corners::CORNER_NAMES.iter().enumerate() {
-                    l.choice(48.0, name, String::new(), c.hot_corners[i].label().into(), Some(Action::HotCorner(i)));
+                    l.choice(48.0, name, String::new(), c.hot_corners[i].label().into(), Some(Action::ChoiceMenu(Some(Choice::HotCorner(i)))));
                 }
                 l.end();
                 l.footer("Подведите указатель в угол экрана, чтобы выполнить действие.");
+            }
+        }
+        if let Some(choice) = self.choice_menu {
+            let anchor = l.out.iter().find(|i| matches!(&i.action, Some(Action::ChoiceMenu(Some(k))) if *k == choice)).map(|i| i.rect);
+            let (labels, mut current) = choice_options(choice, c);
+            if choice == Choice::DisplayMode && self.selected_mode.is_some() {
+                current = self.selected_mode;
+            }
+            if let (Some(row), false) = (anchor, labels.is_empty()) {
+                // Like a macOS pop-up button: the menu opens under the value, on the row's right side.
+                // Long lists (display modes) show the part around the current option that fits.
+                let fit = (((h - TOOLBAR_CLIP - 18.0) / 26.0).floor() as usize).max(1);
+                let shown = labels.len().min(fit);
+                let start = current.unwrap_or(0).saturating_sub(fit / 2).min(labels.len() - shown);
+                let mw = 240.0f32.min(row.w - 28.0);
+                let mh = shown as f32 * 26.0 + 10.0;
+                let mut my = row.y + row.h - 6.0 - self.scroll;
+                if my + mh > h - 8.0 {
+                    my = (row.y + 6.0 - self.scroll - mh).max(TOOLBAR_CLIP);
+                }
+                let menu = R::new(row.x + row.w - 8.0 - mw, my, mw, mh);
+                l.fixed(R::new(0.0, -100.0, w, h + 200.0), "", Style::Scrim(false), Some(Action::ChoiceMenu(None)));
+                l.fixed(menu, "", Style::Menu, None);
+                for (n, (i, label)) in labels.iter().enumerate().skip(start).take(shown).enumerate() {
+                    l.fixed(
+                        R::new(menu.x + 4.0, my + 5.0 + n as f32 * 26.0, mw - 8.0, 26.0),
+                        label,
+                        Style::MenuItem(current == Some(i)),
+                        Some(Action::SetChoice(choice, i)),
+                    );
+                }
             }
         }
         if self.page == Page::Keyboard && self.adding {
@@ -3169,6 +3227,76 @@ impl crate::FeatherCompositor {
             input.click(&mut self.fonts, x - rect.x - 9.0, rect.w - 18.0, 13.0, false, extend);
         }
     }
+    fn set_choice(&mut self, choice: Choice, i: usize) {
+        match choice {
+            Choice::Idle(index) => {
+                let Some(&minutes) = crate::power::Preferences::TIMES.get(i) else { return };
+                let p = &mut self.power.preferences;
+                *match index { 0 => &mut p.lock, 1 => &mut p.blank, _ => &mut p.suspend } = minutes;
+                self.activity();
+                self.rearm_idle();
+                self.save_settings();
+            }
+            Choice::DndWindow => {
+                let Some(&window) = crate::shell::DND_WINDOWS.get(i) else { return };
+                self.shell.dnd_schedule = Some(window);
+                use chrono::Timelike;
+                let now = chrono::Local::now();
+                self.shell.update_dnd_schedule((now.hour() * 60 + now.minute()) as u16);
+                self.save_settings();
+            }
+            Choice::NightWindow | Choice::NightWarmth => {
+                if choice == Choice::NightWindow {
+                    let Some(&window) = crate::night::WINDOWS.get(i) else { return };
+                    self.night.prefs.schedule = Some(window);
+                    self.night_tick();
+                } else {
+                    let Some(&(kelvin, _)) = crate::night::WARMTH.get(i) else { return };
+                    self.night.prefs.kelvin = kelvin;
+                }
+                self.night.jump();
+                self.apply_night_shift();
+                self.save_settings();
+            }
+            Choice::HotCorner(corner) => {
+                if let (Some(a), Some(&value)) = (self.hot_corners.actions.get_mut(corner), crate::hot_corners::HotAction::ALL.get(i)) {
+                    *a = value;
+                    self.save_settings();
+                }
+            }
+            Choice::AlertTone => {
+                let Some(&tone) = crate::sounds::Tone::ALL.get(i) else { return };
+                self.sound_preferences.tone = tone;
+                self.save_settings();
+                self.play_effect(crate::sounds::Effect::Alert(tone), true);
+            }
+            Choice::NotifyDelivery(app) => {
+                if let (Some(a), Some(&value)) = (self.shell.notify_apps.get_mut(app), crate::notifications::Delivery::ALL.get(i)) {
+                    a.delivery = value;
+                    self.save_settings();
+                }
+            }
+            Choice::CapsLock => {
+                let Some(&caps) = crate::settings::Caps::ALL.get(i) else { return };
+                let mut config = self.keyboard_config.clone();
+                config.caps = caps;
+                self.request_keyboard(config);
+            }
+            Choice::Region => {
+                let Some(&region) = crate::theme::Region::ALL.get(i) else { return };
+                crate::theme::set_region(region);
+                self.shell.last_clock_str = crate::shell::MacShell::format_ru_clock();
+                self.shell.topbar_dirty = true;
+                self.lock.repaint();
+                self.save_settings();
+            }
+            Choice::DisplayMode => {
+                if i < self.display_modes.len() && !self.system_settings.confirming {
+                    self.system_settings.selected_mode = Some(i);
+                }
+            }
+        }
+    }
     pub fn settings_context(&self) -> Context<'_> {
         Context {
             system: self.system_preferences.clone(),
@@ -3381,6 +3509,11 @@ impl crate::FeatherCompositor {
                 ));
             }
             Action::LockNow=>self.lock_session(),
+            Action::ChoiceMenu(choice) => self.system_settings.choice_menu = choice,
+            Action::SetChoice(choice, i) => {
+                self.system_settings.choice_menu = None;
+                self.set_choice(choice, i);
+            }
             Action::DoNotDisturb => {
                 self.shell.toggle_dnd();
                 self.save_settings();
@@ -3509,6 +3642,7 @@ impl crate::FeatherCompositor {
                 self.system_settings.privacy_picker = false;
                 self.system_settings.privacy_query.clear();
                 self.system_settings.cursor_picker = false;
+                self.system_settings.choice_menu = None;
                 self.system_settings.zone_picker = false;
                 self.system_settings.time_editing = false;
                 self.system_settings.wifi_target = None;
@@ -4523,8 +4657,10 @@ mod tests {
             for l in crate::theme::Lang::ALL {
                 assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::Language(lang)) if lang == l)));
             }
-            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::RegionStep(-1)))));
-            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::RegionStep(1)))));
+            assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::ChoiceMenu(Some(Choice::Region))))));
+            let menu = Panel { page: Page::Language, choice_menu: Some(Choice::Region), ..Default::default() }.controls(800.0, 540.0, &context);
+            let items = menu.iter().filter(|c| matches!(c.action, Some(Action::SetChoice(Choice::Region, _)))).count();
+            assert_eq!(items, crate::theme::Region::ALL.len(), "every region is offered in the pop-up");
             assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::Use24HourTime))));
             assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::FirstWeekdayMonday(true)))));
             assert!(lang_controls.iter().any(|c| matches!(c.action, Some(Action::FirstWeekdayMonday(false)))));
@@ -4672,6 +4808,8 @@ mod tests {
                             // Hover: sidebar «Дисплеи» and, below, nothing else lit
                             Panel { page: Page::Desktop, pointer: Some((100.0, 100.0)), ..Default::default() },
                             Panel { page: Page::Sound, scroll: 440.0, ..Default::default() },
+                            Panel { page: Page::Power, choice_menu: Some(Choice::Idle(1)), ..Default::default() },
+                            Panel { page: Page::Language, choice_menu: Some(Choice::Region), ..Default::default() },
                             Panel {
                                 page: Page::Network,
                                 wifi_target: Some(context.wifi.networks[1].clone()),
