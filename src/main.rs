@@ -408,7 +408,7 @@ impl FeatherCompositor {
         for win in &mut self.windows {
             win.dirty=true;
             if let WindowBackend::Wayland(ref toplevel)=win.backend {
-                with_states(toplevel.wl_surface(),|states|fractional_scale::with_fractional_scale(states,|fs|fs.set_preferred_scale(crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(toplevel.wl_surface()), self.xwayland_hidpi, clamped))));
+                with_states(toplevel.wl_surface(),|states|fractional_scale::with_fractional_scale(states,|fs|fs.set_preferred_scale(crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(toplevel.wl_surface()), self.xwayland_hidpi, win.fullscreen, clamped))));
                 // Static X11 clients may not redraw for a DPI change. A configure
                 // makes satellite commit its pending viewport even without damage.
                 if crate::xwayland::is_xwayland_surface(toplevel.wl_surface()) && toplevel.is_initial_configure_sent() {
@@ -1360,7 +1360,7 @@ impl FeatherCompositor {
                 if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);}
             }
             ShellClickAction::FullscreenFocused => {
-                if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.fullscreen_on(!w.fullscreen,r);}
+                if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);self.windows[i].resize_anchor=None;let on=!self.windows[i].fullscreen;self.set_window_fullscreen(i,on,r);}
             }
             ShellClickAction::CloseFocused => {
                 if let Some(idx) = self.windows.iter().rposition(|w| w.is_visible()) {

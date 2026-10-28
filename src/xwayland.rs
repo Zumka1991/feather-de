@@ -74,8 +74,12 @@ pub fn display() -> Option<String> {
 
 /// Satellite shares one XSETTINGS DPI across all windows. Scale its entire display
 /// consistently: mixing per-window DPI would shrink other X11 applications.
-pub fn preferred_scale(xwayland: bool, hidpi: bool, desktop_scale: f64) -> f64 {
-    if xwayland && hidpi { 1.0 } else { desktop_scale }
+/// A fullscreen X window is the exception: its X size is the whole X monitor (physical
+/// pixels), so it gets the desktop scale and fits the monitor instead of being upscaled to
+/// twice its size. Satellite keeps the smallest scale for XSETTINGS, so other windows keep
+/// their DPI.
+pub fn preferred_scale(xwayland: bool, hidpi: bool, fullscreen: bool, desktop_scale: f64) -> f64 {
+    if xwayland && hidpi && !fullscreen { 1.0 } else { desktop_scale }
 }
 
 pub fn is_xwayland_surface(surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface) -> bool {

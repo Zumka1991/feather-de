@@ -894,6 +894,7 @@ impl ManagedWindow {
             self.width = geo.size.w;
             self.height = geo.size.h;
             self.dirty = true;
+            tracing::debug!(id = self.id, w = self.width, h = self.height, fullscreen = self.fullscreen, "client size");
             if let Some(anchor) = self.resize_anchor {
                 if anchor.edges.left {
                     self.x = anchor.right - self.width;

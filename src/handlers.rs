@@ -107,6 +107,29 @@ impl FeatherCompositor {
         win.x+=r.x;win.y+=r.y;
     }
 
+    /// Preferred scale of a window's surface, which for X windows depends on fullscreen
+    pub fn sync_window_scale(&self, idx: usize) {
+        let win = &self.windows[idx];
+        let Some(surface) = win.wl_surface() else { return };
+        let scale = crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(surface), self.xwayland_hidpi, win.fullscreen, self.scale_factor);
+        with_states(surface, |states| fractional_scale::with_fractional_scale(states, |fs| fs.set_preferred_scale(scale)));
+    }
+
+    /// Fullscreen on/off on monitor `r`; the scale goes first so satellite sizes the X
+    /// window for it when the configure arrives
+    pub fn set_window_fullscreen(&mut self, idx: usize, on: bool, r: crate::monitors::Rect) {
+        let was = self.windows[idx].fullscreen;
+        self.windows[idx].fullscreen = on;
+        self.sync_window_scale(idx);
+        self.windows[idx].fullscreen = was;
+        self.windows[idx].fullscreen_on(on, r);
+        if let Some(t) = self.windows[idx].toplevel() {
+            if t.is_initial_configure_sent() {
+                t.send_pending_configure();
+            }
+        }
+    }
+
     fn handle_toplevel_commit(&mut self, surface: &WlSurface) {
         let Some(idx) = self.window_index_for_toplevel(surface) else {
             return;
@@ -145,9 +168,8 @@ impl FeatherCompositor {
             self.dock_model_dirty = true;
         }
         if changes.title_changed || changes.newly_mapped {
-            if self.windows.iter().any(|w| w.wl_surface() == Some(surface)) {
-                let scale = crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(surface), self.xwayland_hidpi, self.scale_factor);
-                with_states(surface, |states| fractional_scale::with_fractional_scale(states, |fs| fs.set_preferred_scale(scale)));
+            if let Some(i) = self.window_index_for_toplevel(surface) {
+                self.sync_window_scale(i);
             }
         }
     }
@@ -255,7 +277,8 @@ impl BufferHandler for FeatherCompositor {
 
 impl FractionalScaleHandler for FeatherCompositor {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
-        let scale = crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(&surface), self.xwayland_hidpi, self.scale_factor);
+        let fullscreen = self.windows.iter().any(|w| w.fullscreen && w.wl_surface() == Some(&surface));
+        let scale = crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(&surface), self.xwayland_hidpi, fullscreen, self.scale_factor);
         with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -367,12 +390,12 @@ impl XdgShellHandler for FeatherCompositor {
     fn fullscreen_request(&mut self,surface:ToplevelSurface,output:Option<wl_output::WlOutput>){
         if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){
             let r=output.as_ref().and_then(|o|self.monitors.iter().find(|m|m.output.owns(o))).map(|m|m.info.rect).unwrap_or_else(||self.window_monitor(i));
-            self.windows[i].resize_anchor=None;self.windows[i].fullscreen_on(true,r);
+            self.windows[i].resize_anchor=None;self.set_window_fullscreen(i,true,r);
         }
         if surface.is_initial_configure_sent(){surface.send_pending_configure();}self.needs_redraw=true;
     }
     fn unfullscreen_request(&mut self,surface:ToplevelSurface){
-        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.windows[i].fullscreen_on(false,r);}
+        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.set_window_fullscreen(i,false,r);}
         if surface.is_initial_configure_sent(){surface.send_pending_configure();}self.needs_redraw=true;
     }
 
