@@ -241,6 +241,7 @@ impl Xwayland {
                 self.running = true;
                 self.started = Instant::now();
                 tracing::info!("XWayland: xwayland-satellite запущен (pid {})", child.id());
+                crate::x11_wm::start(format!(":{}", self.number), handle);
                 let (tx, rx) = channel::channel::<()>();
                 let _ = handle.insert_source(rx, |event, _, state| {
                     if let channel::Event::Msg(()) = event {

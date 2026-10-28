@@ -2,6 +2,21 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-28 — Свернуть/развернуть из собственного заголовка X11-программ (Steam) (Claude)
+
+- Кнопки свернуть/развернуть в Steam не работали: xwayland-satellite 0.8.3 (последний релиз)
+  поддерживает только `_NET_WM_STATE_FULLSCREEN`, а `WM_CHANGE_STATE` (Iconic) и
+  `_NET_WM_STATE_MAXIMIZED_*`/`_HIDDEN` молча отбрасывает.
+- Новый `src/x11_wm.rs`: после запуска satellite поток `feather-x11-wm` открывает второе
+  X-соединение (x11rb, уже был в Cargo.lock), выбирает SubstructureNotify на корне и получает эти
+  ClientMessage. Запросы идут в цикл событий по каналу и сопоставляются с окном по title и
+  WM_CLASS; maximize/restore/toggle → `maximize_on`, minimize → `minimize_window`. В
+  `_NET_SUPPORTED` дописываются обрабатываемые состояния. Поток спит в `wait_for_event` и
+  завершается вместе с satellite.
+- `bench/x11-wm-buttons.c`, режим `bench/game-check.py --mode wm` (`FEATHER_DEBUG_X11_WM`):
+  800×600 → 1440×802 → 800×600 → свёрнуто; 0 тиков/5 с. Режимы `x11`, `fullscreen`, `pointer`
+  (0 тиков) и все тесты прошли. С настоящим Steam не проверено.
+
 ## 2026-10-28 — Клики в полноэкранной игре Wine после смены масштаба (Claude)
 
 - В Path of Exile мышь двигалась, но клики не попадали. Игра сначала показывает обычное окно и

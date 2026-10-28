@@ -8,6 +8,7 @@ mod tray;
 mod notifications;
 mod sounds;
 mod xwayland;
+mod x11_wm;
 mod gtk_menu;
 mod hot_corners;
 mod spaces;

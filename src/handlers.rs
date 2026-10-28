@@ -425,9 +425,15 @@ impl XdgShellHandler for FeatherCompositor {
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
-        if let Some(win) = self.window_for_toplevel_mut(surface.wl_surface()) {
-            win.minimized = true;
+        if let Some(i) = self.window_index_for_toplevel(surface.wl_surface()) {
+            self.minimize_window(i);
         }
+    }
+}
+
+impl FeatherCompositor {
+    pub fn minimize_window(&mut self, idx: usize) {
+        self.windows[idx].minimized = true;
         self.shell.dock_dirty = true;
         self.shell.topbar_dirty = true;
         self.refresh_focus();

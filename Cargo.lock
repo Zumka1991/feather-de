@@ -737,6 +737,7 @@ dependencies = [
  "wayland-protocols-plasma",
  "wayland-scanner",
  "wayland-server",
+ "x11rb",
  "xcursor",
  "zbus",
  "zeroize",

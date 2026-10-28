@@ -38,6 +38,8 @@ zbus = { version = "5.18", default-features = false, features = ["async-io"] }
 async-channel = "2"
 futures-lite = "2"
 serde_json = "1"
+# Second X connection for the minimize/maximize requests xwayland-satellite ignores
+x11rb = { version = "0.13", default-features = false }
 zeroize = "1"
 libloading = "0.8"
 

@@ -127,6 +127,18 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-game-x11-check] scaled geometry, input coordinates, anonymous helper, separate games, Dock activation, X11 client resize, RMB warp-lock and Alt+Tab keyboard refocus passed");
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_X11_WM").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only { return Err("X11 WM check requires isolated windowed input".into()); }
+        fn steam(st: &FeatherCompositor) -> &crate::window::ManagedWindow {
+            st.windows.iter().find(|w|w.title=="Steam"&&w.mapped).expect("Steam-like fixture did not map")
+        }
+        at(state,2700,|st| assert!(steam(st).maximized,"maximize request was not applied"))?;
+        at(state,4200,|st| assert!(!steam(st).maximized,"restore request was not applied"))?;
+        at(state,6500,|st| {
+            assert!(steam(st).minimized,"minimize request was not applied");
+            eprintln!("[feather-x11-wm-check] maximize, restore and minimize from an X11 titlebar passed");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_GAME_FULLSCREEN").is_some() {
         if state.backend.is_drm() || !state.debug_input_only { return Err("fullscreen game check requires isolated windowed input".into()); }
         // Hover the window before it turns fullscreen: its scale changes under the pointer
