@@ -283,15 +283,16 @@ impl AppRegistry {
             ),
         ];
 
+        let known = apps.len();
         if let Ok(home) = std::env::var("HOME") {
-            Self::scan_desktop_dir(&Path::new(&home).join(".local/share/applications"), &mut apps);
+            Self::scan_desktop_dir(&Path::new(&home).join(".local/share/applications"), &mut apps, known);
         }
-        Self::scan_desktop_dir(Path::new("/usr/share/applications"), &mut apps);
+        Self::scan_desktop_dir(Path::new("/usr/share/applications"), &mut apps, known);
 
         Self { apps }
     }
 
-    fn scan_desktop_dir(dir: &Path, out: &mut Vec<AppEntry>) {
+    fn scan_desktop_dir(dir: &Path, out: &mut Vec<AppEntry>, known: usize) {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
         };
@@ -371,12 +372,15 @@ impl AppRegistry {
             };
 
             // Same program as a pinned/known entry: enrich it (icon, WM class) instead of
-            // adding a duplicate
+            // adding a duplicate. Matching by executable is limited to Feather's own entries:
+            // Steam game shortcuts all run `steam steam://rungameid/…` and would otherwise
+            // swallow steam.desktop (or each other), depending on directory order.
             let exe = candidate.exec_basename();
-            if let Some(existing) = out.iter_mut().find(|a| {
-                a.id.eq_ignore_ascii_case(&stem)
+            if let Some(existing) = out.iter_mut().enumerate().find_map(|(i, a)| {
+                (a.id.eq_ignore_ascii_case(&stem)
                     || a.aliases.iter().any(|x| x.eq_ignore_ascii_case(&stem))
-                    || (exe.is_some() && a.exec_basename() == exe)
+                    || (i < known && exe.is_some() && a.exec_basename() == exe))
+                    .then_some(a)
             }) {
                 if existing.icon_name.is_none() && !existing.own_icon {
                     existing.icon_name = candidate.icon_name.clone();
@@ -1184,5 +1188,26 @@ mod trash_icon_preview {
             }
             pm.save_png(format!("{dir}/icons-{dark}.png")).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod desktop_scan_tests {
+    use super::*;
+
+    #[test]
+    fn steam_game_shortcuts_do_not_swallow_steam() {
+        let dir = std::env::temp_dir().join(format!("feather-apps-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let entry = |name: &str, exec: &str| format!("[Desktop Entry]\nName={name}\nExec={exec}\nType=Application\n");
+        fs::write(dir.join("Path of Exile.desktop"), entry("Path of Exile", "/usr/bin/steam steam://rungameid/238960")).unwrap();
+        fs::write(dir.join("Dota 2.desktop"), entry("Dota 2", "/usr/bin/steam steam://rungameid/570")).unwrap();
+        fs::write(dir.join("steam.desktop"), entry("Steam", "/usr/bin/steam %U")).unwrap();
+        let mut apps = Vec::new();
+        AppRegistry::scan_desktop_dir(&dir, &mut apps, 0);
+        fs::remove_dir_all(&dir).unwrap();
+        let mut names: Vec<_> = apps.iter().map(|a| a.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["Dota 2", "Path of Exile", "Steam"]);
     }
 }
