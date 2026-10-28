@@ -3,7 +3,7 @@
 import argparse, json, os, shlex, signal, subprocess, tempfile, time
 from pathlib import Path
 p=argparse.ArgumentParser(description=__doc__)
-p.add_argument('--mode',choices=['pointer','x11'],default='pointer')
+p.add_argument('--mode',choices=['pointer','x11','fullscreen'],default='pointer')
 p.add_argument('--compositor',default='target/release/feather-de')
 p.add_argument('--output',type=Path)
 a=p.parse_args(); root=(a.output or Path(tempfile.mkdtemp(prefix='feather-game-'))).resolve(); root.mkdir(parents=True,exist_ok=True)
@@ -19,11 +19,17 @@ subprocess.run(['cc','-Wall','-Wextra','-Werror','-I'+str(root),'bench/game-poin
 if a.mode=='x11':
  fixture=root/'game-x11-fixture'
  subprocess.run(['cc','-Wall','-Wextra','-Werror','bench/game-x11.c','-lxcb','-o',str(fixture)],check=True)
+if a.mode=='fullscreen':
+ fixture=root/'game-x11-fullscreen-fixture'
+ subprocess.run(['cc','-Wall','-Wextra','-Werror','bench/game-x11-fullscreen.c','-lxcb','-o',str(fixture)],check=True)
 config=root/'config/feather-de';config.mkdir(parents=True,exist_ok=True);(config/'settings.conf').write_text('show_about=false\nfirst_run_completed=true\n')
 env={k:v for k,v in os.environ.items() if not k.startswith('FEATHER_DEBUG_')}
 env.update(XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'),FEATHER_PROFILE='1',FEATHER_SCALE='2',FEATHER_XWAYLAND='0',FEATHER_DEBUG_INPUT_ONLY='1',FEATHER_DEBUG_GAME_POINTER='1',RUST_LOG='feather_de=debug,smithay=warn')
 if a.mode=='x11':
  env['FEATHER_XWAYLAND']='1';env.pop('FEATHER_DEBUG_GAME_POINTER');env['FEATHER_DEBUG_GAME_X11']='1'
+if a.mode=='fullscreen':
+ # Proton maps the game window first and turns it fullscreen afterwards, under the pointer
+ env['FEATHER_XWAYLAND']='1';env.pop('FEATHER_DEBUG_GAME_POINTER');env['FEATHER_DEBUG_GAME_FULLSCREEN']='1';env['FIXTURE_ENTER_FULLSCREEN']='1'
 command=[str(Path(a.compositor).resolve()),'--windowed','--autostart',f'exec {shlex.quote(str(fixture))} >{shlex.quote(str(root/"client.log"))} 2>&1']
 script=f'echo $$ > {shlex.quote(str(root/"compositor.pid"))}; exec '+shlex.join(command)
 def sample(pid):
@@ -40,6 +46,10 @@ with (root/'session.log').open('w') as log:
   log.flush();text=(root/'session.log').read_text();client=(root/'client.log').read_text()
   if a.mode=='pointer':
    assert '[feather-game-check]' in text,text[-3000:]
+  elif a.mode=='fullscreen':
+   assert '[feather-game-fullscreen] window 1440x900 at 0,0 fullscreen=true' in text,text[-3000:]
+   assert 'size 2880 1800 at 0 0\n' in client,client
+   assert 'button 1 600 400\n' in client,client
   else:
    assert '[feather-game-x11-check]' in text,text[-3000:]
    assert client.count('button 1 1 200 100\n')==2,client

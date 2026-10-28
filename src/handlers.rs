@@ -107,12 +107,37 @@ impl FeatherCompositor {
         win.x+=r.x;win.y+=r.y;
     }
 
-    /// Preferred scale of a window's surface, which for X windows depends on fullscreen
-    pub fn sync_window_scale(&self, idx: usize) {
+    /// Preferred scale of a window's surface, which for X windows depends on fullscreen.
+    /// Satellite converts pointer coordinates with the scale it had at wl_pointer.enter, so a
+    /// hovered surface whose scale changes gets the pointer again: otherwise clicks land at
+    /// half (or double) X coordinates.
+    pub fn sync_window_scale(&mut self, idx: usize) {
         let win = &self.windows[idx];
-        let Some(surface) = win.wl_surface() else { return };
-        let scale = crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(surface), self.xwayland_hidpi, win.fullscreen, self.scale_factor);
-        with_states(surface, |states| fractional_scale::with_fractional_scale(states, |fs| fs.set_preferred_scale(scale)));
+        let Some(surface) = win.wl_surface().cloned() else { return };
+        let scale = crate::xwayland::preferred_scale(crate::xwayland::is_xwayland_surface(&surface), self.xwayland_hidpi, win.fullscreen, self.scale_factor);
+        let changed = with_states(&surface, |states| {
+            fractional_scale::with_fractional_scale(states, |fs| {
+                let changed = fs.preferred_scale() != Some(scale);
+                fs.set_preferred_scale(scale);
+                changed
+            })
+        });
+        if changed {
+            self.reenter_pointer_if_on(&surface);
+        }
+    }
+
+    /// Leave now, enter again with the next focus refresh (after a surface's scale changed)
+    pub fn reenter_pointer_if_on(&mut self, surface: &WlSurface) {
+        let pointer = self.pointer.clone();
+        if pointer.current_focus().as_ref() != Some(surface) || pointer.is_grabbed() || self.pointer_locked() {
+            return;
+        }
+        let location = self.pointer_location;
+        let time = self.start_time.elapsed().as_millis() as u32;
+        pointer.motion(self, None, &smithay::input::pointer::MotionEvent { location, serial: SERIAL_COUNTER.next_serial(), time });
+        pointer.frame(self);
+        self.pointer_focus_dirty = true;
     }
 
     /// Fullscreen on/off on monitor `r`; the scale goes first so satellite sizes the X

@@ -416,6 +416,7 @@ impl FeatherCompositor {
                 }
             }
         }
+        if let Some(surface)=self.pointer.current_focus().filter(crate::xwayland::is_xwayland_surface) {self.reenter_pointer_if_on(&surface);}
         let pending=self.pending_display;let queued=self.system_settings.queued_mode;let confirming=self.system_settings.confirming;
         self.finish_monitor_change(&old);
         self.pending_display=pending;self.system_settings.queued_mode=queued;self.system_settings.confirming=confirming;

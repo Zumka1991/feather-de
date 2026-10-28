@@ -127,6 +127,23 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-game-x11-check] scaled geometry, input coordinates, anonymous helper, separate games, Dock activation, X11 client resize, RMB warp-lock and Alt+Tab keyboard refocus passed");
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_GAME_FULLSCREEN").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only { return Err("fullscreen game check requires isolated windowed input".into()); }
+        // Hover the window before it turns fullscreen: its scale changes under the pointer
+        at(state,700,|st| {
+            let w=st.windows.iter().find(|w|w.title=="Fullscreen game fixture"&&w.mapped).expect("fullscreen fixture did not map");
+            let p=w.surface_origin();st.debug_pointer_motion(p.x as f64+100.0,p.y as f64+100.0);
+        })?;
+        at(state,2500,|st| {
+            let w=st.windows.iter().find(|w|w.title=="Fullscreen game fixture"&&w.mapped).expect("fullscreen fixture did not map");
+            let (id,p)=(w.id,w.surface_origin());
+            eprintln!("[feather-game-fullscreen] window {}x{} at {},{} fullscreen={} focus={:?}",w.width,w.height,p.x,p.y,w.fullscreen,st.keyboard.current_focus().is_some());
+            st.execute_shell_action(ShellClickAction::FocusWindow(id));
+            st.debug_pointer_motion(p.x as f64+300.0,p.y as f64+200.0);
+            eprintln!("[feather-game-fullscreen] under={:?}",st.surface_under_pointer(p.x as f64+300.0,p.y as f64+200.0).map(|(_,l)|l));
+            st.debug_pointer_button(0x110,true);st.debug_pointer_button(0x110,false);
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_GAME_POINTER").is_some() {
         if state.backend.is_drm() || !state.debug_input_only { return Err("game pointer check requires isolated windowed input".into()); }
         fn game(st: &FeatherCompositor) -> (u64, f64, f64) {
