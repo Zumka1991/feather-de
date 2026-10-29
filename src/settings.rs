@@ -299,6 +299,7 @@ pub struct Settings {
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub default_browser: Option<String>,
     pub default_terminal: Option<String>,
+    pub default_file_manager: Option<String>,
     pub scale: Option<f64>,
     pub xwayland_hidpi: bool,
     pub dock_zoom: bool,
@@ -349,6 +350,7 @@ impl Default for Settings {
             wallpaper_image: None,
             default_browser: None,
             default_terminal: None,
+            default_file_manager: None,
             scale: None,
             xwayland_hidpi: true,
             dock_zoom: true,
@@ -527,6 +529,7 @@ impl Settings {
                 }
                 "default_browser" => s.default_browser = Some(v.to_string()),
                 "default_terminal" => s.default_terminal = Some(v.to_string()),
+                "default_file_manager" => s.default_file_manager = Some(v.to_string()),
                 "scale" => {
                     s.scale = v
                         .parse::<f64>()
@@ -768,6 +771,7 @@ impl Settings {
         for (key, value) in [
             ("default_browser", &self.default_browser),
             ("default_terminal", &self.default_terminal),
+            ("default_file_manager", &self.default_file_manager),
         ] {
             if let Some(value) = value {
                 if !value.chars().any(char::is_control) {

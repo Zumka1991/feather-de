@@ -29,7 +29,7 @@ pub enum IconKind {
     TrashFull,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppAction {
     /// Launches an external command inside our Wayland compositor session
     Exec(String),
@@ -52,7 +52,7 @@ pub enum BuiltinWindowKind {
     FirstRun,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppEntry {
     pub id: String,
     pub name: String,
@@ -566,6 +566,7 @@ pub fn spawn_polkit_fallback(wayland_socket: &str) {
 pub fn spawn_session_services(wayland_socket: &str, is_standalone: bool) {
     if is_standalone {
         crate::file_portal::session_start(wayland_socket.to_owned());
+        crate::file_manager1::start(wayland_socket.to_owned());
 
 
     } else {

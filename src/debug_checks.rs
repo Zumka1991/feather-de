@@ -1199,6 +1199,38 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-trash-check] full icon, confirmation, Enter empties, icon empty");
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_APP_WATCH").is_some() {
+        // Writes .desktop files: only ever a throwaway HOME under /tmp.
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert!(home.starts_with("/tmp/"), "FEATHER_DEBUG_APP_WATCH needs HOME under /tmp");
+        let dir = std::path::PathBuf::from(&home).join(".local/share/applications");
+        std::fs::create_dir_all(&dir)?;
+        fn entry(name: &str) -> String {
+            format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/bin/true\nStartupWMClass={name}\n")
+        }
+        let d = dir.clone();
+        at(state, 1000, move |s| {
+            assert!(s.app_registry.app_for_app_id("feather-watch-one").is_none());
+            std::fs::write(d.join("feather-watch-one.desktop"), entry("feather-watch-one")).unwrap();
+        })?;
+        let d = dir.clone();
+        at(state, 2500, move |s| {
+            assert!(s.app_registry.app_for_app_id("feather-watch-one").is_some(), "new .desktop file was not picked up");
+            // Launchpad holds registry indices: the next list must wait for it to close
+            s.shell.launchpad = Some(crate::launchpad::Launchpad::new(&s.app_registry, s.shell.screen_w, s.shell.screen_h));
+            std::fs::write(d.join("feather-watch-two.desktop"), entry("feather-watch-two")).unwrap();
+        })?;
+        at(state, 4000, |s| {
+            assert!(s.app_registry.app_for_app_id("feather-watch-two").is_none(), "registry replaced under an open Launchpad");
+            assert!(s.apps_pending_for_check());
+            s.shell.launchpad = None;
+        })?;
+        at(state, 5500, |s| {
+            assert!(s.app_registry.app_for_app_id("feather-watch-two").is_some(), "waiting list was not applied after Launchpad closed");
+            assert!(!s.apps_pending_for_check());
+            eprintln!("[feather-app-watch-check] new app found, held while Launchpad open, applied after");
+        })?;
+    }
     if let Ok(root) = std::env::var("FEATHER_DEBUG_POLKIT") {
         let socket = std::path::Path::new(&root).join("helper.socket");
         polkit_fake_helper(&socket)?;
@@ -1266,12 +1298,12 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             s.apply_system_setting(A::Page(Page::Defaults))
         })?;
         at(state, 1700, |s| {
-            click(s, |a| matches!(a, A::AppPicker(true)))
+            click(s, |a| matches!(a, A::AppPicker(crate::system_preferences::DefaultKind::Browser)))
         })?;
         at(state, 2300, |s| {
             click(
                 s,
-                |a| matches!(a,A::DefaultApp{browser:true,id} if id=="feather-check-browser.desktop"),
+                |a| matches!(a,A::DefaultApp{kind:crate::system_preferences::DefaultKind::Browser,id} if id=="feather-check-browser.desktop"),
             )
         })?;
         at(state, 3100, |s| {
@@ -1279,12 +1311,12 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
                 s.system_preferences.browser.as_deref(),
                 Some("feather-check-browser.desktop")
             );
-            click(s, |a| matches!(a, A::AppPicker(false)));
+            click(s, |a| matches!(a, A::AppPicker(crate::system_preferences::DefaultKind::Terminal)));
         })?;
         at(state, 4000, |s| {
             click(
                 s,
-                |a| matches!(a,A::DefaultApp{browser:false,id} if id=="feather-check-terminal.desktop"),
+                |a| matches!(a,A::DefaultApp{kind:crate::system_preferences::DefaultKind::Terminal,id} if id=="feather-check-terminal.desktop"),
             )
         })?;
         at(state, 4800, |s| {

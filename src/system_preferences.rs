@@ -14,6 +14,23 @@ pub struct DesktopApp {
     pub exec: String,
     pub browser: bool,
     pub terminal: bool,
+    pub file_manager: bool,
+}
+/// Which default an app is picked for in Settings → Defaults
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultKind {
+    Browser,
+    Terminal,
+    FileManager,
+}
+impl DefaultKind {
+    pub fn accepts(self, app: &DesktopApp) -> bool {
+        match self {
+            Self::Browser => app.browser,
+            Self::Terminal => app.terminal,
+            Self::FileManager => app.file_manager,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AutostartItem {
@@ -56,6 +73,7 @@ pub struct State {
     pub loaded: bool,
     pub browser: Option<String>,
     pub terminal: String,
+    pub file_manager: String,
     pub time: TimeState,
     pub zones: Arc<Vec<String>>,
     /// Installed xcursor themes (directory names), sorted
@@ -73,6 +91,7 @@ impl Default for State {
             loaded: false,
             browser: None,
             terminal: "feather-terminal.desktop".into(),
+            file_manager: "feather-files.desktop".into(),
             time: TimeState::default(),
             zones: Arc::new(Vec::new()),
             cursor_themes: Arc::new(Vec::new()),
@@ -99,11 +118,25 @@ impl State {
             .map(|a| a.exec.clone())
             .unwrap_or_else(crate::apps::terminal_command)
     }
+    pub fn file_manager_command(&self) -> String {
+        self.apps
+            .iter()
+            .find(|a| a.id == self.file_manager && a.file_manager)
+            .map(|a| a.exec.clone())
+            .unwrap_or_else(crate::apps::files_command)
+    }
+    pub fn default_id(&self, kind: DefaultKind) -> Option<&str> {
+        match kind {
+            DefaultKind::Browser => self.browser.as_deref(),
+            DefaultKind::Terminal => Some(&self.terminal),
+            DefaultKind::FileManager => Some(&self.file_manager),
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub enum Command {
     Refresh,
-    DefaultApp { browser: bool, id: String },
+    DefaultApp { kind: DefaultKind, id: String },
     AddAutostart(String),
     ToggleAutostart { id: String, enabled: bool },
     RemoveAutostart(String),
@@ -173,6 +206,7 @@ fn scan_apps() -> Vec<DesktopApp> {
             exec: crate::apps::files_command(),
             browser: false,
             terminal: false,
+            file_manager: true,
         },
         DesktopApp {
             id: "feather-terminal.desktop".into(),
@@ -180,6 +214,7 @@ fn scan_apps() -> Vec<DesktopApp> {
             exec: crate::apps::terminal_command(),
             browser: false,
             terminal: true,
+            file_manager: false,
         },
     ];
     seen.insert("feather-files.desktop".to_string());
@@ -191,6 +226,7 @@ fn scan_apps() -> Vec<DesktopApp> {
             exec,
             browser: false,
             terminal: false,
+            file_manager: false,
         });
         seen.insert("feather-notes.desktop".to_string());
     }
@@ -253,6 +289,8 @@ fn scan_apps() -> Vec<DesktopApp> {
             let browser = categories.split(';').any(|c| c == "WebBrowser")
                 || mime.split(';').any(|m| m == "x-scheme-handler/http");
             let terminal = categories.split(';').any(|c| c == "TerminalEmulator");
+            let file_manager = categories.split(';').any(|c| c == "FileManager")
+                || mime.split(';').any(|m| m == "inode/directory");
             if let Some(exec) = exec.filter(|e| !e.is_empty()) {
                 apps.push(DesktopApp {
                     id: id.into(),
@@ -260,6 +298,7 @@ fn scan_apps() -> Vec<DesktopApp> {
                     exec,
                     browser,
                     terminal,
+                    file_manager,
                 });
             }
         }
@@ -528,6 +567,32 @@ fn write_terminal(config: &Path, data: &Path, id: &str) -> Result<(), String> {
         .collect::<Vec<_>>()
         .join("\n");
     atomic_write(&path, &format!("{id}\n{rest}\n")).map_err(|e| e.to_string())
+}
+/// Folders (xdg-open, gio) open in the chosen file manager only inside Feather: the choice goes
+/// to the desktop-specific featherde-mimeapps.list, so KDE/GNOME keep their own.
+fn write_file_manager(config: &Path, data: &Path, id: &str) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err("Недопустимый desktop ID".into());
+    }
+    if id == "feather-files.desktop" {
+        // Desktop-entry Exec quotes with double quotes only
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|d| d.join("feather-files")))
+            .filter(|p| p.is_file())
+            .ok_or("Файлы Пёрышка не найдены рядом с композитором")?;
+        let exe = exe.to_string_lossy();
+        if exe.contains(['\n', '\r', '"', '`', '$', '\\', '%']) {
+            return Err("Недопустимый путь к Файлам".into());
+        }
+        let text = format!("[Desktop Entry]\nType=Application\nName=Файлы\nExec=\"{exe}\" %f\nIcon=system-file-manager\nTerminal=false\nNoDisplay=true\nCategories=System;FileTools;FileManager;\nMimeType=inode/directory;\n");
+        atomic_write(&data.join("applications/feather-files.desktop"), &text)
+            .map_err(|e| e.to_string())?;
+    }
+    let path = config.join("featherde-mimeapps.list");
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let text = update_ini(&old, "Default Applications", &[("inode/directory", format!("{id};"))]);
+    atomic_write(&path, &text).map_err(|e| format!("Не удалось сохранить файловый менеджер: {e}"))
 }
 fn default_browser() -> Option<String> {
     std::process::Command::new("xdg-mime")
@@ -1045,6 +1110,7 @@ impl Worker {
         handle: &LoopHandle<'static, crate::FeatherCompositor>,
         browser: Option<String>,
         terminal: Option<String>,
+        file_manager: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (tx, rx) = async_channel::bounded(16);
         let (done, events) = channel::sync_channel(2);
@@ -1063,6 +1129,7 @@ impl Worker {
                     }
                 }
                 state.system_preferences = snapshot;
+                crate::file_manager1::set_command(state.system_preferences.file_manager_command());
                 state.system_settings.app_count = state.system_preferences.apps.len();
                 if let Some(error) = &state.system_preferences.error {
                     state.system_settings.error = Some(error.clone());
@@ -1088,6 +1155,11 @@ impl Worker {
                         terminal.filter(|id| state.apps.iter().any(|a| a.id == *id && a.terminal))
                     {
                         state.terminal = id;
+                    }
+                    if let Some(id) = file_manager
+                        .filter(|id| state.apps.iter().any(|a| a.id == *id && a.file_manager))
+                    {
+                        state.file_manager = id;
                     }
                     let connection = match zbus::connection::Builder::system() {
                         Ok(builder) => builder
@@ -1124,17 +1196,22 @@ impl Worker {
                         state.error = None;
                         state.recorded_capture_apps = None;
                         let result = match &command {
-                            Command::DefaultApp { browser, id } => {
-                                if !state.apps.iter().any(|a| {
-                                    a.id == *id && if *browser { a.browser } else { a.terminal }
-                                }) {
+                            Command::DefaultApp { kind, id } => {
+                                if !state.apps.iter().any(|a| a.id == *id && kind.accepts(a)) {
                                     Err("Приложение больше не установлено".into())
-                                } else if *browser {
-                                    write_browser(&config_home(), id)
-                                        .map(|_| state.browser = Some(id.clone()))
                                 } else {
-                                    write_terminal(&config_home(), &data_home(), id)
-                                        .map(|_| state.terminal = id.clone())
+                                    match kind {
+                                        DefaultKind::Browser => write_browser(&config_home(), id)
+                                            .map(|_| state.browser = Some(id.clone())),
+                                        DefaultKind::Terminal => {
+                                            write_terminal(&config_home(), &data_home(), id)
+                                                .map(|_| state.terminal = id.clone())
+                                        }
+                                        DefaultKind::FileManager => {
+                                            write_file_manager(&config_home(), &data_home(), id)
+                                                .map(|_| state.file_manager = id.clone())
+                                        }
+                                    }
                                 }
                             }
                             Command::AddAutostart(id) => {
@@ -1345,6 +1422,11 @@ mod tests {
         let data = root.join("data");
         write_browser(&config, "test-browser.desktop").unwrap();
         write_terminal(&config, &data, "feather-terminal.desktop").unwrap();
+        write_file_manager(&config, &data, "org.kde.dolphin.desktop").unwrap();
+        assert!(std::fs::read_to_string(config.join("featherde-mimeapps.list"))
+            .unwrap()
+            .contains("[Default Applications]\ninode/directory=org.kde.dolphin.desktop;\n"));
+        assert!(write_file_manager(&config, &data, "../evil.desktop").is_err());
         let text = std::fs::read_to_string(config.join("mimeapps.list")).unwrap();
         for mime in ["http", "https", "text/html", "application/xhtml+xml"] {
             assert!(text.contains(mime));
@@ -1361,6 +1443,7 @@ mod tests {
             exec: "feather-notes".into(),
             browser: false,
             terminal: false,
+            file_manager: false,
         };
         write_autostart(&config, &app).unwrap();
         atomic_write(

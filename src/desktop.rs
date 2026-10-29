@@ -574,6 +574,11 @@ impl Desktop {
 
 // The drop-target highlight is computed on motion (needs the pointer and screen)
 impl Desktop {
+    /// A Launchpad app dropped on a program that has not answered yet (keeps its registry index)
+    pub fn launcher_drop_pending(&self) -> bool {
+        self.dropped.as_ref().is_some_and(|d| d.launcher_app.is_some())
+    }
+
     fn update_hover_folder(&mut self, pointer: (f64, f64), screen: (i32, i32), over_desktop: bool) -> bool {
         let dragging = self.drag.as_ref().is_some_and(|d| d.active) || self.client_drag.is_some();
         let folder = if dragging && over_desktop {

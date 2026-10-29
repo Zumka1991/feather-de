@@ -1,6 +1,7 @@
 mod animation;
 mod appmenu;
 mod apps;
+mod app_watch;
 mod backend;
 mod cursor;
 mod desktop;
@@ -39,6 +40,7 @@ mod system_settings;
 mod system_preferences;
 mod wallpaper;
 mod file_portal;
+mod file_manager1;
 mod polkit_agent;
 mod auth_dialog;
 mod first_run;
@@ -192,6 +194,11 @@ pub struct FeatherCompositor {
     pub input_devices: Vec<smithay::reexports::input::Device>,
     trash_watcher: Option<feather_ui::fileops::Watcher>,
     trash_tx: Option<smithay::reexports::calloop::channel::Sender<crate::trash::Msg>>,
+    /// inotify on the .desktop folders and the re-read registry waiting for a safe moment
+    app_watchers: Vec<feather_ui::fileops::Watcher>,
+    apps_tx: Option<smithay::reexports::calloop::channel::Sender<AppRegistry>>,
+    apps_reload_armed: bool,
+    apps_pending: Option<AppRegistry>,
     pub pending_autostart: Option<String>,
     pub appmenu_ready: bool,
     pub autostart_launched: bool,
@@ -762,6 +769,7 @@ impl FeatherCompositor {
             wallpaper_image: self.shell.wallpaper_image.clone(),
             default_browser: self.system_preferences.browser.clone(),
             default_terminal: Some(self.system_preferences.terminal.clone()),
+            default_file_manager: Some(self.system_preferences.file_manager.clone()),
             scale: self.explicit_scale,
             xwayland_hidpi: self.xwayland_hidpi,
             dock_zoom: self.shell.dock_zoom_enabled,
@@ -1921,6 +1929,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         trash_full: false,
         trash_watcher: None,
         trash_tx: None,
+        app_watchers: Vec::new(),
+        apps_tx: None,
+        apps_reload_armed: false,
+        apps_pending: None,
         display_handle: dh,
         loop_handle: handle,
         loop_signal: event_loop.get_signal(),
@@ -2041,7 +2053,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         system_settings: crate::system_settings::Panel {keybindings:saved.keybindings.clone(),..Default::default()},
         first_run: Default::default(),
         first_run_completed: saved.first_run_completed,
-        system_preferences: crate::system_preferences::State{browser:saved.default_browser.clone(),terminal:saved.default_terminal.clone().unwrap_or_else(||"feather-terminal.desktop".into()),..Default::default()},
+        system_preferences: crate::system_preferences::State{browser:saved.default_browser.clone(),terminal:saved.default_terminal.clone().unwrap_or_else(||"feather-terminal.desktop".into()),file_manager:saved.default_file_manager.clone().unwrap_or_else(||"feather-files.desktop".into()),..Default::default()},
         system_worker: None,
         display_modes: Vec::new(),display_name: String::new(),pending_display: None,display_generation: 0,
         display_preference: saved.display.clone(),
@@ -2054,7 +2066,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.preferences=Some(crate::settings::Worker::new(&state.loop_handle)?);
     state.wallpaper_picker=Some(crate::wallpaper::Picker::new(&state.loop_handle,state.wayland_socket_name.clone())?);
     state.shell.wallpaper_image=saved.wallpaper_image.clone();
-    state.system_worker=Some(crate::system_preferences::Worker::new(&state.loop_handle,saved.default_browser.clone(),saved.default_terminal.clone())?);
+    state.system_worker=Some(crate::system_preferences::Worker::new(&state.loop_handle,saved.default_browser.clone(),saved.default_terminal.clone(),saved.default_file_manager.clone())?);
     state.refresh_input_source(0);
     state.animations.set_enabled(saved.animations,&state.windows,&state.shell);
     if let crate::backend::Backend::Drm(d)=&state.backend {
@@ -2073,6 +2085,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     }
     state.start_desktop()?;
     state.start_trash()?;
+    state.start_app_watch()?;
     crate::apps::set_cursor_env(
         crate::cursor::theme_name(state.pointer_config.cursor_theme.as_deref()),
         state.pointer_config.cursor_size,

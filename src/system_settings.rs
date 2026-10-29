@@ -194,8 +194,8 @@ pub enum Action {
     ToggleScreenCaptureApp(String),
     RemoveScreenCaptureApp(String),
     ClearScreenCaptureApps,
-    AppPicker(bool),
-    DefaultApp { browser: bool, id: String },
+    AppPicker(crate::system_preferences::DefaultKind),
+    DefaultApp { kind: crate::system_preferences::DefaultKind, id: String },
     AutostartPicker(bool),
     AutostartSearchFocus,
     AutostartSearchSubmit,
@@ -257,7 +257,7 @@ impl Mode {
 #[derive(Default, Clone)]
 pub struct Panel {
     pub app_count: usize,
-    pub apps_picker: Option<bool>,
+    pub apps_picker: Option<crate::system_preferences::DefaultKind>,
     pub autostart_picker: bool,
     pub autostart_query: feather_ui::input::TextInput,
     pub privacy_picker: bool,
@@ -1964,14 +1964,15 @@ impl Panel {
                 l.hero(Page::Defaults);
                 l.header("Приложения по умолчанию");
                 l.begin();
-                let mut anchors = [R::new(0.0, 0.0, 0.0, 0.0); 2];
-                for (i, (label, value)) in [
-                    ("Веб-браузер", state.app_name(state.browser.as_deref())),
-                    ("Терминал", state.app_name(Some(&state.terminal))),
-                ]
-                .into_iter()
-                .enumerate()
+                use crate::system_preferences::DefaultKind;
+                const KINDS: [DefaultKind; 3] = [DefaultKind::Browser, DefaultKind::Terminal, DefaultKind::FileManager];
+                let mut anchors = [R::new(0.0, 0.0, 0.0, 0.0); 3];
+                for (i, (label, kind)) in ["Веб-браузер", "Терминал", "Файловый менеджер"]
+                    .into_iter()
+                    .zip(KINDS)
+                    .enumerate()
                 {
+                    let value = state.app_name(state.default_id(kind));
                     let r = l.row(48.0, label, String::new(), Style::Row, None);
                     let pw = (cw * 0.5).min(240.0);
                     anchors[i] = right(r, pw, 26.0);
@@ -1979,11 +1980,11 @@ impl Panel {
                         anchors[i],
                         &value,
                         Style::Popup,
-                        (!state.busy).then_some(Action::AppPicker(i == 0)),
+                        (!state.busy).then_some(Action::AppPicker(kind)),
                     );
                 }
                 l.end();
-                l.footer("Браузер открывает ссылки и HTML-файлы. Терминал запускается по Super+T и Super+Enter.");
+                l.footer("Браузер открывает ссылки и HTML-файлы. Терминал запускается по Super+T и Super+Enter. Файловый менеджер открывает папки и «Показать в папке» из программ.");
 
                 l.header("Автозапуск при входе");
                 l.begin();
@@ -2048,36 +2049,28 @@ impl Panel {
                 l.end();
                 l.footer("Записи сохраняются в стандарте XDG Autostart (~/.config/autostart/*.desktop) и запускаются при входе в сессию Пёрышка.");
 
-                if let Some(browser) = self.apps_picker {
-                    let anchor = anchors[usize::from(!browser)];
-                    let apps: Vec<_> = state
-                        .apps
-                        .iter()
-                        .filter(|a| if browser { a.browser } else { a.terminal })
-                        .collect();
+                if let Some(kind) = self.apps_picker {
+                    let anchor = anchors[KINDS.iter().position(|k| *k == kind).unwrap_or(0)];
+                    let apps: Vec<_> = state.apps.iter().filter(|a| kind.accepts(a)).collect();
                     let mh = apps.len().max(1) as f32 * 26.0 + 10.0;
                     let mut my = anchor.y + anchor.h + 4.0 - self.scroll;
                     if my + mh > h - 8.0 {
                         my = (anchor.y - self.scroll - 4.0 - mh).max(TOOLBAR_CLIP);
                     }
-                    l.fixed(R::new(0.0, -100.0, w, h + 200.0), "", Style::Scrim(false), Some(Action::AppPicker(browser)));
+                    l.fixed(R::new(0.0, -100.0, w, h + 200.0), "", Style::Scrim(false), Some(Action::AppPicker(kind)));
                     let menu = R::new(anchor.x, my, anchor.w, mh);
                     l.fixed(menu, "", Style::Menu, None);
                     if apps.is_empty() {
                         l.fixed(R::new(menu.x + 4.0, my + 5.0, menu.w - 8.0, 26.0), "Не найдено", Style::MenuItem(false), None);
                     }
                     for (i, app) in apps.into_iter().enumerate() {
-                        let selected = if browser {
-                            state.browser.as_ref() == Some(&app.id)
-                        } else {
-                            state.terminal == app.id
-                        };
+                        let selected = state.default_id(kind) == Some(app.id.as_str());
                         l.fixed(
                             R::new(menu.x + 4.0, my + 5.0 + i as f32 * 26.0, menu.w - 8.0, 26.0),
                             &app.name,
                             Style::MenuItem(selected),
                             (!state.busy).then_some(Action::DefaultApp {
-                                browser,
+                                kind,
                                 id: app.id.clone(),
                             }),
                         );
@@ -3778,25 +3771,25 @@ impl crate::FeatherCompositor {
                     self.save_settings();
                 }
             }
-            Action::AppPicker(browser) => {
+            Action::AppPicker(kind) => {
                 self.system_settings.autostart_picker = false;
                 self.system_settings.apps_picker =
-                    if self.system_settings.apps_picker == Some(browser) {
+                    if self.system_settings.apps_picker == Some(kind) {
                         None
                     } else {
-                        Some(browser)
+                        Some(kind)
                     };
                 self.system_settings.scroll = 0.0;
                 self.system_settings.app_count = self
                     .system_preferences
                     .apps
                     .iter()
-                    .filter(|a| if browser { a.browser } else { a.terminal })
+                    .filter(|a| kind.accepts(a))
                     .count();
             }
-            Action::DefaultApp { browser, id } => {
+            Action::DefaultApp { kind, id } => {
                 self.request_system_preference(crate::system_preferences::Command::DefaultApp {
-                    browser,
+                    kind,
                     id,
                 });
                 self.system_settings.apps_picker = None;
@@ -4674,6 +4667,7 @@ mod tests {
                 exec: "firefox".into(),
                 browser: true,
                 terminal: false,
+                file_manager: false,
             },
             crate::system_preferences::DesktopApp {
                 id: "feather-notes.desktop".into(),
@@ -4681,6 +4675,7 @@ mod tests {
                 exec: "feather-notes".into(),
                 browser: false,
                 terminal: false,
+                file_manager: false,
             },
         ]);
         context.system.autostart = std::sync::Arc::new(vec![
@@ -4801,7 +4796,7 @@ mod tests {
                     || {
                         let overlays = [
                             Panel { page: Page::Keyboard, adding: true, ..Default::default() },
-                            Panel { page: Page::Defaults, apps_picker: Some(true), ..Default::default() },
+                            Panel { page: Page::Defaults, apps_picker: Some(crate::system_preferences::DefaultKind::Browser), ..Default::default() },
                             Panel { page: Page::Defaults, autostart_picker: true, ..Default::default() },
                             Panel { page: Page::Privacy, privacy_picker: true, ..Default::default() },
                             Panel { page: Page::DateTime, zone_picker: true, ..Default::default() },
