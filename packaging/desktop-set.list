@@ -1,0 +1,62 @@
+# Набор программ и служб пакета feather-desktop — как в Ubuntu Desktop 26.04, но без GNOME:
+# то, что Пёрышко умеет само (Файлы, Терминал, TextEdit, Просмотр, Калькулятор, Заметки,
+# архиватор, установка .deb), не дублируется. Всё идёт в Recommends: любую программу можно
+# удалить, не снося метапакет. «a | b» — альтернативы. Собирает build-deb.sh.
+
+# Службы рабочего стола
+snapd                        # Telegram, Spotify и прочее из Snap; магазин ниже
+gnome-keyring                # хранилище паролей (Chrome, VS Code, Codex, Telegram)
+libpam-gnome-keyring
+gvfs-backends                # телефоны (MTP), сетевые папки, корзина в GTK-программах
+gvfs-fuse
+udisks2                      # флешки и диски без root
+upower                       # батарея
+power-profiles-daemon        # режимы питания
+fwupd                        # обновления прошивок
+ubuntu-drivers-common        # драйверы NVIDIA и Wi-Fi
+unattended-upgrades          # обновления безопасности сами
+avahi-daemon                 # принтеры и устройства в сети
+libnss-mdns
+cups                         # печать
+system-config-printer
+simple-scan                  # сканер
+
+# Мультимедиа, оформление и шрифты для чужих программ
+gstreamer1.0-libav           # H.264, AAC и прочие кодеки
+gstreamer1.0-plugins-good
+gstreamer1.0-plugins-bad
+gstreamer1.0-pipewire
+qt6-wayland                  # Qt-программы (Telegram) в родном Wayland, без «кубиков»
+qtwayland5
+yaru-theme-gtk               # GTK-программы выглядят как в Ubuntu
+yaru-theme-icon
+fonts-liberation             # метрики Times/Arial/Courier для документов и сайтов
+hunspell-ru                  # проверка орфографии
+hunspell-en-us
+
+# Утилиты
+zip
+unzip
+7zip
+exfatprogs                   # флешки exFAT
+ntfs-3g
+libfuse2t64 | libfuse2       # AppImage
+
+# Программы
+gnome-software               # магазин приложений и обновления
+gnome-software-plugin-snap
+software-properties-gtk      # источники программ и драйверы
+showtime | totem             # видео
+rhythmbox                    # музыка
+gnome-snapshot               # камера
+gnome-disk-utility           # диски и образы
+resources | gnome-system-monitor   # мониторинг системы
+baobab                       # что занимает место
+gnome-characters             # символы и эмодзи
+transmission-gtk             # торренты
+libreoffice-writer           # офис
+libreoffice-calc
+libreoffice-impress
+libreoffice-gtk3
+libreoffice-style-yaru
+libreoffice-l10n-ru

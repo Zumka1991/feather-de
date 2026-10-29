@@ -29,25 +29,33 @@ command -v dpkg-scanpackages >/dev/null || { echo "Нужен dpkg-dev" >&2; exi
 mkdir -p "$REPO"
 cd "$REPO"
 
-POOL=pool/main/f/feather-de
-mkdir -p "$POOL"
 for deb in "${DEBS[@]}"; do
-    [[ "$(dpkg-deb -f "$deb" Package)" == feather-de ]] || { echo "Не пакет feather-de: $deb" >&2; exit 1; }
-    cp -f "$deb" "$POOL/"
+    pkg="$(dpkg-deb -f "$deb" Package)"
+    case "$pkg" in
+        feather-de|feather-desktop) ;;
+        *) echo "Не пакет Пёрышка: $deb" >&2; exit 1 ;;
+    esac
+    mkdir -p "pool/main/f/$pkg"
+    cp -f "$deb" "pool/main/f/$pkg/"
 done
 
-# Последние KEEP версий для каждой архитектуры, старые — прочь (пользователи могут откатиться
-# на предыдущую, а репозиторий не растёт)
-for arch in $(ls "$POOL" | sed -n 's/.*_\([^_]*\)\.deb$/\1/p' | sort -u); do
-    mapfile -t versions < <(for f in "$POOL"/*_"$arch".deb; do dpkg-deb -f "$f" Version; done \
-        | sort -u | sort -V -r)
-    for old in "${versions[@]:$KEEP}"; do
-        rm -f "$POOL"/feather-de_"${old//:/%3a}"_"$arch".deb "$POOL"/feather-de_"$old"_"$arch".deb
-        echo "Убрана старая версия $old ($arch)"
+# Последние KEEP версий каждого пакета для каждой архитектуры, старые — прочь (пользователи
+# могут откатиться на предыдущую, а репозиторий не растёт)
+for pool in pool/main/f/*/; do
+    pool="${pool%/}"
+    pkg="$(basename "$pool")"
+    for arch in $(ls "$pool" | sed -n 's/.*_\([^_]*\)\.deb$/\1/p' | sort -u); do
+        mapfile -t versions < <(for f in "$pool"/*_"$arch".deb; do dpkg-deb -f "$f" Version; done \
+            | sort -u | sort -V -r)
+        for old in "${versions[@]:$KEEP}"; do
+            rm -f "$pool/${pkg}_${old//:/%3a}_$arch.deb" "$pool/${pkg}_${old}_$arch.deb"
+            echo "Убрана старая версия $pkg $old ($arch)"
+        done
     done
 done
 
-ARCHES="$(ls "$POOL" | sed -n 's/.*_\([^_]*\)\.deb$/\1/p' | grep -v '^all$' | sort -u | xargs)"
+# Пакеты «all» (feather-desktop) попадают в индекс каждой архитектуры
+ARCHES="$(find pool -name '*.deb' | sed -n 's/.*_\([^_]*\)\.deb$/\1/p' | grep -v '^all$' | sort -u | xargs)"
 DIST=dists/stable
 rm -rf "$DIST"
 for arch in $ARCHES; do

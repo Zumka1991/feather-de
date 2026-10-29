@@ -9,9 +9,11 @@ description: Выпуск новой версии Пёрышка (feather-de) в
 ~6–8 минут): собирает `.deb` на ubuntu-24.04 (вместе с xwayland-satellite), подписывает
 репозиторий секретом `APT_SIGNING_KEY`, публикует ветку `gh-pages`
 (https://zumka1991.github.io/feather-de: репозиторий, `install.sh`, страница установки)
-и создаёт GitHub Release с `feather-de_X.Y.Z_amd64.deb` и `feather-de_amd64.deb`.
+и создаёт GitHub Release с `feather-de_X.Y.Z_amd64.deb`, `feather-de_amd64.deb` и метапакетом
+`feather-desktop_X.Y.Z_all.deb` (набор программ из `packaging/desktop-set.list`).
 Установленные системы получают версию через `sudo apt upgrade`. ISO Пёрышко OS (~/feather-os)
-пересобирать не нужно.
+пересобирать не нужно; его собирают отдельно (`./build-iso.sh`, Пёрышко берётся из
+репозитория, поэтому — после выпуска) и проверяют `tools/test-install.sh`.
 
 ## Правила
 
@@ -37,7 +39,8 @@ description: Выпуск новой версии Пёрышка (feather-de) в
    Если менялась упаковка (`packaging/`), проверить пакет в чистой Ubuntu (без root, ~5 мин):
    ```bash
    ./packaging/build-deb.sh --out /tmp/feather-dist
-   ./packaging/test-install-chroot.sh /tmp/feather-dist/feather-de_*_amd64.deb
+   ./packaging/test-install-chroot.sh /tmp/feather-dist/feather-de_*_amd64.deb \
+       /tmp/feather-dist/feather-desktop_*_all.deb   # с метапакетом — весь набор программ
    ```
 
 3. **Версия.** Исправления — `Z+1`, новые возможности — `Y+1`. Меняется только корневой
@@ -72,7 +75,8 @@ description: Выпуск новой версии Пёрышка (feather-de) в
    curl -fsS https://zumka1991.github.io/feather-de/install.sh | cmp - packaging/get.sh
    gh release view vX.Y.Z --json assets -q '.assets[].name'
    ```
-   В Packages должна быть новая версия (и до двух прошлых), подпись — «Действительная».
+   В Packages должна быть новая версия feather-de и feather-desktop (и до двух прошлых),
+   подпись — «Действительная».
 
 8. **Отчёт пользователю** (по-русски): версия, что вошло, что обновиться можно
    `sudo apt update && sudo apt upgrade`, затем выйти из сеанса и войти снова. Новым

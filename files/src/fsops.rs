@@ -355,6 +355,29 @@ mod tests {
     }
 
     #[test]
+    fn downloaded_appimage_gets_execute_bit_and_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("feather-appimage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = dir.join("Тест.AppImage");
+        std::fs::write(&app, "#!/bin/sh\necho \"$APPIMAGE_EXTRACT_AND_RUN\" > ran\n").unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o644)).unwrap();
+        open_external(&app);
+        let ran = dir.join("ran");
+        for _ in 0..100 {
+            if std::fs::read_to_string(&ran).is_ok_and(|s| s.ends_with('\n')) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let mode = std::fs::metadata(&app).unwrap().permissions().mode() & 0o777;
+        let env = std::fs::read_to_string(&ran);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(mode, 0o755);
+        assert_eq!(env.unwrap().trim(), if has_fuse2() { "" } else { "1" });
+    }
+
+    #[test]
     fn natural_order_and_folders_first() {
         let mut names = vec!["file10.txt", "File2.txt", "file1.txt", "a", "Б", "б2"];
         names.sort_by(|a, b| natural_cmp(a, b));

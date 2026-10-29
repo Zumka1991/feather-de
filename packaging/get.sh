@@ -3,11 +3,12 @@
 #
 #   curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
 #
-# Параметры (через «| bash -s -- ПАРАМЕТРЫ»): --tuigreet, --greetd, --no-greetd — как у
-# setup-desktop. Запускать обычным пользователем: sudo скрипт попросит сам (через «| sudo bash»
+# Параметры (через «| bash -s -- ПАРАМЕТРЫ»): --minimal — только Пёрышко, без набора программ
+# feather-desktop; --tuigreet, --greetd, --no-greetd — как у setup-desktop. Запускать обычным пользователем: sudo скрипт попросит сам (через «| sudo bash»
 # экран входа настраивается на того, кто вызвал sudo).
 # Подключает репозиторий (ключ D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4), ставит
-# пакет feather-de с рекомендуемыми (звук, сеть, порталы, X11, шрифты), затем setup-desktop:
+# метапакет feather-desktop (Пёрышко и программы, как в Ubuntu Desktop: офис, видео, музыка,
+# магазин, печать, кодеки, драйверы), затем setup-desktop:
 # локали и, если экрана входа нет (Ubuntu Server), экран входа Пёрышка. Дальше обновления —
 # обычным «sudo apt upgrade». Сборка из исходников: packaging/install-ubuntu.sh.
 set -euo pipefail
@@ -23,11 +24,12 @@ die() { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 # Всё в функции: bash дочитывает скрипт из curl до конца, прежде чем что-то выполнить, и
 # apt не съест остаток скрипта со стандартного ввода
 main() {
-    local setup_args=()
+    local setup_args=() package=feather-desktop
     for arg in "$@"; do
         case "$arg" in
+            --minimal) package=feather-de ;;
             --tuigreet|--greetd|--no-greetd) setup_args+=("$arg") ;;
-            *) die "Неизвестный параметр: $arg (есть --tuigreet, --greetd, --no-greetd)" ;;
+            *) die "Неизвестный параметр: $arg (есть --minimal, --tuigreet, --greetd, --no-greetd)" ;;
         esac
     done
 
@@ -90,11 +92,13 @@ EOF
     fi
 
     step "Установка Пёрышка"
-    # FEATHER_PACKAGE=путь/к/пакету.deb — проверка неопубликованной сборки
-    sudo apt-get install -y "${FEATHER_PACKAGE:-feather-de}" </dev/null
+    # FEATHER_PACKAGE="пути/к/пакетам.deb" — проверка неопубликованной сборки
+    local packages
+    read -ra packages <<<"${FEATHER_PACKAGE:-$package}"
+    sudo apt-get install -y "${packages[@]}" </dev/null
 
     sudo /usr/libexec/feather-de/setup-desktop --user "$login_user" "${setup_args[@]}" </dev/null
-    echo "  Удаление:                    sudo apt purge feather-de"
+    echo "  Удаление:                    sudo apt purge feather-de feather-desktop"
 }
 
 main "$@"

@@ -12,6 +12,7 @@
 # В пакет входят своя сборка xwayland-satellite (в Ubuntu 26.04 его нет), setup-desktop
 # (экран входа и локали для get.sh) и ключ APT-репозитория: пакет, поставленный файлом,
 # сам подключает репозиторий, как Chrome, и дальше Пёрышко обновляется через apt.
+# Рядом — метапакет feather-desktop_<версия>_all.deb (Пёрышко + программы из desktop-set.list).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -180,3 +181,31 @@ DEB="$OUT_DIR/feather-de_${VERSION}_${ARCH}.deb"
 chmod -R u+rwX,go+rX,go-w "$PKG"
 dpkg-deb --root-owner-group -Zxz --build "$PKG" "$DEB" >/dev/null
 echo "==> Готово: $DEB ($(du -h "$DEB" | cut -f1))"
+
+# Метапакет feather-desktop: Пёрышко и набор программ как в Ubuntu Desktop (desktop-set.list).
+# Его ставят get.sh и образ Пёрышко OS; новые программы в наборе приходят с apt upgrade.
+META="$WORK/meta"
+mkdir -p "$META/DEBIAN" "$META/usr/share/doc/feather-desktop"
+cp "$DOC/copyright" "$META/usr/share/doc/feather-desktop/copyright"
+DESKTOP_SET="$(sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' "$ROOT_DIR/packaging/desktop-set.list" \
+    | sed 's/[[:space:]]*|[[:space:]]*/ | /g' | paste -sd, - | sed 's/,/, /g')"
+cat > "$META/DEBIAN/control" <<CTRL
+Package: feather-desktop
+Version: $VERSION
+Architecture: all
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 8
+Depends: feather-de (>= $BASE_VERSION)
+Recommends: $DESKTOP_SET
+Section: metapackages
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Пёрышко с набором программ, как в Ubuntu Desktop
+ Метапакет: рабочий стол Пёрышко, офис LibreOffice, видео, музыка, камера,
+ магазин приложений с Snap, печать и сканер, диски, хранилище паролей,
+ кодеки и драйверы. Любую программу из набора можно удалить отдельно.
+CTRL
+chmod -R u+rwX,go+rX,go-w "$META"
+META_DEB="$OUT_DIR/feather-desktop_${VERSION}_all.deb"
+dpkg-deb --root-owner-group -Zxz --build "$META" "$META_DEB" >/dev/null
+echo "==> Готово: $META_DEB"

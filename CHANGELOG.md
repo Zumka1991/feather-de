@@ -2,6 +2,31 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-30 — Выпуск 0.3.1 (Claude)
+
+- Установка одной командой (`curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash`),
+  .deb сам подключает репозиторий, метапакет `feather-desktop` с программами как в Ubuntu
+  Desktop, xwayland-satellite внутри пакета (X11-программы), запуск AppImage из Файлов.
+  Уже установленному Пёрышку: `sudo apt update && sudo apt upgrade`, набор программ —
+  `sudo apt install feather-desktop`.
+
+## 2026-10-30 — Метапакет feather-desktop: программы как в Ubuntu Desktop (Claude)
+
+- Система на Пёрышке выглядела «кастрированной»: кроме своих программ и Firefox — ничего.
+  Новый метапакет `feather-desktop` (Architecture: all, собирает `build-deb.sh`) зависит от
+  `feather-de` и рекомендует набор из `packaging/desktop-set.list`, как в Ubuntu Desktop 26.04
+  без GNOME-оболочки: LibreOffice (Writer, Calc, Impress, русский), Showtime, Rhythmbox,
+  Snapshot, магазин GNOME Software с Snap, «Программы и обновления», Диски, Resources,
+  Baobab, Символы, Transmission, печать (CUPS) и сканер, gnome-keyring, gvfs, udisks2,
+  upower, power-profiles-daemon, fwupd, ubuntu-drivers, unattended-upgrades, avahi, кодеки
+  GStreamer, Qt Wayland, тема Yaru для GTK-программ, Liberation, орфография, 7zip, exFAT,
+  libfuse2. То, что Пёрышко умеет само, не дублируется. Всё в Recommends: программу можно
+  удалить, не снося метапакет; новые программы набора приходят с `apt upgrade`.
+- `get.sh` ставит `feather-desktop` (`--minimal` — только Пёрышко); `publish-apt.sh` публикует
+  оба пакета (свой пул и «последние N» у каждого); образ Пёрышко OS ставит метапакет и его
+  Recommends (feather-os `tools/install-desktop.sh`).
+- Файлы: проверка «скачанный AppImage без бита исполнения запускается» на настоящем процессе.
+
 ## 2026-10-30 — Установка одной командой, .deb подключает репозиторий, X11 и AppImage из пакета (Claude)
 
 - **`curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash`** (`packaging/get.sh`,

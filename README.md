@@ -360,9 +360,13 @@ curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
 ```
 
 Скрипт ([packaging/get.sh](packaging/get.sh)) подключает репозиторий APT (см. ниже), ставит
-пакет `feather-de` и запускает `setup-desktop`: экран входа, локали и сеть, как описано ниже
-для сборки из исходников. Параметры: `| bash -s -- --tuigreet` (или `--greetd`, `--no-greetd`).
-Удаление: `sudo apt purge feather-de`. Другой путь — скачать
+метапакет `feather-desktop` — Пёрышко и набор программ, как в Ubuntu Desktop
+([packaging/desktop-set.list](packaging/desktop-set.list): LibreOffice, видео, музыка, камера,
+магазин приложений со Snap, печать и сканер, диски, хранилище паролей, кодеки, драйверы) — и
+запускает `setup-desktop`: экран входа, локали и сеть, как описано ниже для сборки из
+исходников. Параметры: `| bash -s -- --minimal` (только Пёрышко), `--tuigreet`, `--greetd`,
+`--no-greetd`. Уже установленному Пёрышку набор добавляет `sudo apt install feather-desktop`.
+Удаление: `sudo apt purge feather-de feather-desktop`. Другой путь — скачать
 [feather-de_amd64.deb](https://github.com/Zumka1991/feather-de/releases/latest/download/feather-de_amd64.deb)
 и открыть: пакет сам подключит репозиторий (как Chrome), отключить — `Enabled: no` в
 `/etc/apt/sources.list.d/feather-de.sources`.
