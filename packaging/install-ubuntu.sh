@@ -6,6 +6,7 @@
 #   ./packaging/install-ubuntu.sh --no-optional # без Wi-Fi/звука/порталов и прочих дополнений
 #   ./packaging/install-ubuntu.sh --greetd      # поставить экран входа greetd даже при наличии GDM
 #   ./packaging/install-ubuntu.sh --no-greetd   # не ставить экран входа (запуск: feather-session с TTY)
+#   ./packaging/install-ubuntu.sh --tuigreet    # текстовый экран входа tuigreet (для нескольких пользователей)
 #
 # Подходит и для Ubuntu Server / минимальной системы без рабочего стола.
 # Что делает:
@@ -14,8 +15,9 @@
 #   3. собирает весь workspace в release;
 #   4. ставит программы в /usr, сеанс «Пёрышко (прямой вывод DRM/KMS)» и PAM-правило
 #      экрана блокировки в формате Debian/Ubuntu (common-auth вместо system-auth из Arch);
-#   5. если экрана входа нет (сервер), ставит greetd + tuigreet, запускающий Пёрышко, включает
-#      графическую загрузку и передаёт сеть NetworkManager (для Wi-Fi в Центре управления).
+#   5. если экрана входа нет (сервер), ставит greetd с экраном входа самого Пёрышка (как в macOS:
+#      заставка, аватар, пароль; выход из сеанса возвращает на него), включает графическую загрузку
+#      и передаёт сеть NetworkManager (для Wi-Fi в Центре управления).
 # Если стоит GNOME/GDM, он не трогается: Пёрышко появляется в его списке сеансов.
 # Удаление: sudo ./packaging/uninstall.sh
 set -euo pipefail
@@ -23,14 +25,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 OPTIONAL=1
 GREETD=auto
+TUIGREET=0
 
 for arg in "$@"; do
     case "$arg" in
         --no-optional) OPTIONAL=0 ;;
         --greetd) GREETD=yes ;;
         --no-greetd) GREETD=no ;;
+        --tuigreet) TUIGREET=1 ;;
         -h|--help)
-            sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -65,8 +69,13 @@ case "$(uname -m)" in
 esac
 
 # Экран входа уже есть (GDM, SDDM, LightDM…), если systemd знает display-manager.service.
+# greetd, уже настроенный на Пёрышко прошлым запуском, — свой: его конфиг обновляем.
 HAS_DM=0
 [[ -e /etc/systemd/system/display-manager.service ]] && HAS_DM=1
+if [[ "$(basename "$(readlink -f /etc/systemd/system/display-manager.service 2>/dev/null)")" == greetd.service ]] \
+    && grep -qs feather-session /etc/greetd/config.toml; then
+    HAS_DM=0
+fi
 if [[ "$GREETD" == auto ]]; then
     if (( HAS_DM )); then GREETD=no; else GREETD=yes; fi
 fi
@@ -84,14 +93,23 @@ BUILD_PKGS=(
     libdrm-dev libgbm-dev libinput-dev libseat-dev libudev-dev libxkbcommon-dev
     libwayland-dev libegl-dev libgles-dev libpam0g-dev
 )
-# Запуск: Mesa (EGL/GLES и DRI-драйверы), шрифты, D-Bus, PAM, курсоры.
+# Запуск: Mesa (EGL/GLES и DRI-драйверы), D-Bus, PAM, курсоры, домашние папки и шрифты.
+# Свои шрифты (Inter, JetBrains Mono) и иконки Пёрышко носит с собой; системные Noto нужны
+# Firefox и другим программам, а также для иероглифов и эмодзи. На Ubuntu Server нет ничего из
+# того, что обычно приносит рабочий стол: без xdg-user-dirs нет «Документов» и «Загрузок».
 RUNTIME_PKGS=(
     libegl1 libgles2 libgl1-mesa-dri libgbm1 libinput10 libseat1 libxkbcommon0
-    libpam0g fontconfig fonts-noto-core dbus dbus-user-session xdg-utils
+    libpam0g fontconfig dbus dbus-user-session xdg-utils xdg-user-dirs locales
+    fonts-noto-core fonts-noto-mono fonts-noto-color-emoji fonts-noto-cjk fonts-dejavu-core
     breeze-cursor-theme polkitd
+    # Ubuntu вырезает переводы из пакетов в языковые пакеты: без них «Документы» и
+    # «Загрузки» называются Documents/Downloads даже в русском сеансе (как и меню GTK-программ)
+    language-pack-ru-base language-pack-de-base language-pack-es-base language-pack-fr-base
+    language-pack-zh-hans-base
 )
-# Экран входа для системы без рабочего стола.
-GREETER_PKGS=(greetd tuigreet)
+# Экран входа для системы без рабочего стола: greetd запускает Пёрышко с его экраном входа.
+GREETER_PKGS=(greetd)
+(( TUIGREET )) && GREETER_PKGS+=(tuigreet)
 # Необязательные: каждая строка включает свою часть Центра управления или программы.
 OPTIONAL_PKGS=(
     xwayland-satellite                        # X11-программы (Steam, Wine, старые приложения)
@@ -120,6 +138,12 @@ available() {
 
 step "Обновление списков пакетов"
 sudo apt-get update
+# Сторонний .deb с устаревшей зависимостью (например policykit-1, которого нет в 26.04) ломает
+# любой apt install. Сами ничего не удаляем: `apt --fix-broken install` снёс бы ту программу.
+if ! sudo apt-get check >/dev/null 2>&1; then
+    sudo apt-get check || true
+    die "apt сообщает о неудовлетворённых зависимостях уже установленных пакетов (см. выше). Почините их и запустите скрипт снова; осторожно: «apt --fix-broken install» может удалить программу с устаревшей зависимостью."
+fi
 
 step "Установка зависимостей сборки и запуска"
 mapfile -t REQUIRED < <(available "${BUILD_PKGS[@]}" "${RUNTIME_PKGS[@]}")
@@ -136,7 +160,7 @@ fi
 if [[ "$GREETD" == yes ]]; then
     step "Установка экрана входа greetd + tuigreet"
     mapfile -t GREETER < <(available "${GREETER_PKGS[@]}")
-    (( ${#GREETER[@]} == ${#GREETER_PKGS[@]} )) || die "В репозиториях нет greetd/tuigreet; запустите с --no-greetd."
+    (( ${#GREETER[@]} == ${#GREETER_PKGS[@]} )) || die "В репозиториях нет ${GREETER_PKGS[*]}; запустите с --no-greetd."
     # Не даём пакету запустить greetd прямо сейчас: он переключил бы консоль посреди установки,
     # а конфигурация Пёрышка ещё не записана. Запустится после перезагрузки.
     # Чужой policy-rc.d (бывает в контейнерах) сохраняем и возвращаем.
@@ -153,6 +177,22 @@ if [[ "$GREETD" == yes ]]; then
     restore_policy_rc
     trap - EXIT
 fi
+
+# Ubuntu Server знает только C.UTF-8: генерируем локали языков Пёрышка, чтобы сеанс
+# (feather-session) говорил на выбранном языке, а домашние папки назывались по-русски.
+# Системную локаль (LANG в /etc/default/locale) не меняем.
+step "Локали языков интерфейса"
+for loc in ru_RU en_US es_ES de_DE fr_FR zh_CN; do
+    if ! locale -a 2>/dev/null | grep -qix "$loc.utf8"; then
+        sudo sed -i "s/^# *\($loc.UTF-8 UTF-8\)/\1/" /etc/locale.gen
+        grep -qx "$loc.UTF-8 UTF-8" /etc/locale.gen || echo "$loc.UTF-8 UTF-8" | sudo tee -a /etc/locale.gen >/dev/null
+        NEED_LOCALE_GEN=1
+    fi
+done
+if [[ -n "${NEED_LOCALE_GEN:-}" ]]; then
+    sudo locale-gen
+fi
+fc-cache -f >/dev/null 2>&1 || true
 
 # --- Rust -----------------------------------------------------------------------------------
 
@@ -218,14 +258,23 @@ if [[ "$GREETD" == yes ]]; then
     if [[ -f /etc/greetd/config.toml ]] && ! grep -q feather-session /etc/greetd/config.toml; then
         sudo cp /etc/greetd/config.toml /etc/greetd/config.toml.before-feather
     fi
-    # tuigreet: имя и пароль; F2 — другая команда, F3 — другой сеанс из wayland-sessions.
+    if (( TUIGREET )); then
+        # tuigreet: имя и пароль; F2 — другая команда, F3 — другой сеанс из wayland-sessions.
+        GREETER_CMD="tuigreet --time --remember --asterisks --greeting 'Пёрышко' --cmd feather-session"
+    else
+        # Экран входа самого Пёрышка: greetd сразу запускает его от имени этого пользователя,
+        # рабочий стол открывается только после проверки пароля через PAM (feather-lock), без
+        # перезапуска видеокарты. После выхода из сеанса greetd снова показывает этот экран.
+        GREETER_CMD="feather-session --login"
+        GREETER_USER="$USER"
+    fi
     sudo tee /etc/greetd/config.toml >/dev/null <<EOF
 # Установлено packaging/install-ubuntu.sh (Пёрышко). Прежний файл: config.toml.before-feather
 [terminal]
 vt = 7
 
 [default_session]
-command = "tuigreet --time --remember --asterisks --greeting 'Пёрышко' --cmd feather-session"
+command = "$GREETER_CMD"
 user = "$GREETER_USER"
 EOF
     sudo chmod 644 /etc/greetd/config.toml
@@ -267,9 +316,10 @@ step "Готово"
 if [[ "$GREETD" == yes ]]; then
     cat <<EOF
 Перезагрузитесь: sudo reboot
-После загрузки появится экран входа; введите имя и пароль, и запустится Пёрышко.
-Если пользователей несколько, tuigreet запомнит последнего.
+После загрузки появится экран входа Пёрышка; введите пароль. Выход из сеанса
+(меню Пёрышка → «Выйти из Пёрышка…») возвращает на этот экран.
 EOF
+    (( TUIGREET )) || echo "Экран входа открывается для $USER; для нескольких пользователей: --tuigreet."
     (( HAS_DM )) && warn "greetd поставлен рядом с прежним экраном входа; включён будет только один (systemctl status display-manager)."
 elif (( HAS_DM )); then
     cat <<EOF

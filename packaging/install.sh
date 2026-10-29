@@ -69,8 +69,9 @@ APP_DEST="${DESTDIR}${PREFIX}/share/applications"
 PORTAL_DEST="${DESTDIR}${PREFIX}/share/xdg-desktop-portal/portals"
 PORTAL_CONF_DEST="${DESTDIR}${PREFIX}/share/xdg-desktop-portal"
 DOC_DEST="${DESTDIR}${PREFIX}/share/doc/feather-de"
+FONT_DEST="${DESTDIR}${PREFIX}/share/feather-de/fonts"
 
-install -d "$BIN_DEST" "$APP_DEST" "$PORTAL_DEST" "$PORTAL_CONF_DEST" "$DOC_DEST"
+install -d "$BIN_DEST" "$APP_DEST" "$PORTAL_DEST" "$PORTAL_CONF_DEST" "$DOC_DEST" "$FONT_DEST"
 
 echo "==> Установка бинарных файлов в $BIN_DEST…"
 for bin in "${BINS[@]}"; do
@@ -97,10 +98,33 @@ export PATH="$(cd "$(dirname "$0")" && pwd):$PATH"
 if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]]; then
     export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus"
 fi
+# Ubuntu Server задаёт LANG=C.UTF-8: тогда программы и папки («Документы»…) говорят на языке,
+# выбранном в Пёрышке, если такая локаль сгенерирована. Явно настроенную локаль не трогаем.
+if [[ -z "${LC_ALL:-}" && "${LANG:-C}" =~ ^(C|C\..*|POSIX)$ ]]; then
+    lang="$(sed -n 's/^language=//p' "${XDG_CONFIG_HOME:-$HOME/.config}/feather-de/settings.conf" 2>/dev/null | tail -n 1)"
+    case "${lang:-ru}" in
+        ru) loc=ru_RU ;; en) loc=en_US ;; es) loc=es_ES ;; de) loc=de_DE ;; fr) loc=fr_FR ;; zh) loc=zh_CN ;; *) loc= ;;
+    esac
+    if [[ -n "$loc" ]] && locale -a 2>/dev/null | grep -qix "$loc.utf8"; then
+        export LANG="$loc.UTF-8"
+        unset LANGUAGE
+    fi
+fi
+# Домашние папки (Документы, Загрузки, Изображения…): на сервере их никто не создаёт
+command -v xdg-user-dirs-update >/dev/null && xdg-user-dirs-update >/dev/null 2>&1
 unset WAYLAND_DISPLAY DISPLAY
 exec feather-de --drm --standalone "$@" >> "$LOG_DIR/drm.log" 2>&1
 EOF
 chmod 755 "$BIN_DEST/feather-session"
+
+# Свои шрифты (Inter, JetBrains Mono, символы): программы читают их отсюда напрямую,
+# интерфейс не зависит от шрифтов системы
+echo "==> Установка шрифтов Пёрышка в $FONT_DEST…"
+FONT_SOURCE="$ROOT_DIR/assets/fonts"
+(( BUNDLE )) && FONT_SOURCE="$ROOT_DIR/usr/share/feather-de/fonts"
+for font in "$FONT_SOURCE"/*; do
+    install -Dm644 "$font" "$FONT_DEST/$(basename "$font")"
+done
 
 echo "==> Установка ярлыков приложений (.desktop) и конфигурации портала…"
 DESKTOP_SOURCE="$ROOT_DIR/packaging/desktop"

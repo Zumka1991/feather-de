@@ -366,16 +366,20 @@ cd feather-de
 
 Run it as a regular user; it asks for sudo itself.
 
-- **No desktop** (no login screen): installs greetd with the tuigreet text login that
-  starts Feather, and enables graphical boot. Networking is handed to NetworkManager so
-  Wi-Fi works from Control Center; this takes effect after a reboot. A previous greetd
-  config is kept as `config.toml.before-feather`. After `sudo reboot`, enter your name and
-  password.
+- **No desktop** (no login screen): installs greetd, which opens Feather's own login
+  screen right away (splash, password; logging out returns to it), and enables graphical
+  boot. Networking is handed to NetworkManager so Wi-Fi works from Control Center; this
+  takes effect after a reboot. A previous greetd config is kept as
+  `config.toml.before-feather`. After `sudo reboot`, enter your password. For several users
+  there is the tuigreet text login: `--tuigreet`.
+- Feather ships its own fonts (Inter, JetBrains Mono) and app icons; the script adds the
+  system Noto fonts for other apps, home folders (Documents, Downloads…) and the locales of
+  the interface languages. Snap and Flatpak apps show up in Launchpad.
 - **With GNOME/GDM**: GDM is left alone. Log out and pick “Пёрышко (прямой вывод DRM/KMS)”
   under the gear; GNOME stays available as a fallback.
 
 Flags: `--no-optional` skips sound, Wi-Fi, Bluetooth, portals and X11; `--greetd` /
-`--no-greetd` force or skip the login screen. When xwayland-satellite (X11 apps) is
+`--no-greetd` force or skip the login screen. Running it again updates an installed Feather. When xwayland-satellite (X11 apps) is
 missing from the repositories (Ubuntu 26.04), it is built from source.
 Uninstall with `sudo ./packaging/uninstall.sh`.
 

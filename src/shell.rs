@@ -2467,6 +2467,12 @@ impl MacShell {
             }
         }
 
+        // Like macOS, an open Dock menu freezes the magnification: otherwise moving to the menu
+        // leaves the Dock, it deflates, and the menu slides away from under the pointer
+        if self.dock_menu.as_ref().is_some_and(|m| m.follow_dock) {
+            return;
+        }
+
         let (local_x, local_y) = self.dock_local(px, py);
         let bar = self.dock_bar;
         let in_dock = !self.dock_dragging
@@ -3590,7 +3596,7 @@ mod dock_tests {
     }
 
     #[test]
-    fn dock_menu_follows_the_icon_when_magnification_disappears() {
+    fn dock_menu_freezes_magnification_and_follows_the_icon_after() {
         let mut fonts = FontSystem::new();
         let mut shell = MacShell::new(1440,900);
         shell.set_dock_items((0..9).map(|i|item(DockTarget::App(i))).collect());
@@ -3602,7 +3608,14 @@ mod dock_tests {
         let (x,y,size)=shell.dock_slot_global(DockTarget::App(3)).unwrap();
         shell.open_dock_menu(DockTarget::App(3),R::new(x,y,size,size),vec![("Open".into(),DockMenuAction::Open)],&mut fonts);
         let before=shell.dock_menu.as_ref().unwrap().rect;
+        // Moving to the menu (or anywhere) keeps the Dock magnified and the menu in place
+        shell.update_pointer_hover((before.x+before.w*0.5) as f64,(before.y+5.0) as f64);
         shell.update_pointer_hover(20.0,60.0);
+        shell.ensure_dock_rendered(&mut fonts);
+        assert_eq!(before,shell.dock_menu.as_ref().unwrap().rect);
+        // The Dock still changes under an open menu (here: magnification gone), the menu follows
+        shell.dock_cursor_x=None;
+        shell.dock_dirty=true;
         shell.ensure_dock_rendered(&mut fonts);
         let (x,y,size)=shell.dock_slot_global(DockTarget::App(3)).unwrap();
         let rect=shell.dock_menu.as_ref().unwrap().rect;

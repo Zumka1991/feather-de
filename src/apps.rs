@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tiny_skia::{Color, PixmapMut};
 
@@ -107,11 +107,6 @@ impl AppEntry {
         self
     }
 
-    fn with_icon(mut self, icon: &str) -> Self {
-        self.icon_name = Some(icon.to_string());
-        self
-    }
-
     pub fn is_builtin(&self) -> bool {
         !matches!(self.action, AppAction::Exec(_))
     }
@@ -121,11 +116,50 @@ impl AppEntry {
         match &self.action {
             AppAction::Exec(cmd) => cmd
                 .split_whitespace()
-                .find(|t| !t.contains('='))
+                // Snap launchers read `env BAMF_DESKTOP_FILE_HINT=… /snap/bin/app`
+                .find(|t| !t.contains('=') && *t != "env")
                 .map(|t| t.trim_matches(|c| c == '"' || c == '\'').rsplit('/').next().unwrap_or(t).to_lowercase()),
             _ => None,
         }
     }
+}
+
+/// Folders with .desktop files, most important first: the user's, then $XDG_DATA_DIRS. Snap and
+/// Flatpak export folders are added even when the session's environment lacks them (a greeter
+/// that starts us without /etc/profile.d), otherwise their apps would be missing from Launchpad.
+pub fn application_dirs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let mut data = vec![std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"))];
+    let system = std::env::var("XDG_DATA_DIRS").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    data.extend(system.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
+    data.extend([home.join(".local/share/flatpak/exports/share"), PathBuf::from("/var/lib/flatpak/exports/share"), PathBuf::from("/var/lib/snapd/desktop")]);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for d in data {
+        let d = d.join("applications");
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    dirs
+}
+
+/// "firefox" for a snap's "firefox_firefox.desktop": its windows then join a pinned "firefox"
+fn snap_app_name(stem: &str) -> Option<&str> {
+    stem.split_once('_').filter(|(snap, app)| snap == app).map(|(snap, _)| snap)
+}
+
+/// An installed program by name: in $PATH or ~/.local/bin (a greeter's session may lack the
+/// latter in $PATH), quoted for `sh -c`
+fn find_program(name: &str) -> Option<String> {
+    let home = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin"));
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(home)
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+        .map(|path| format!("'{}'", path.display().to_string().replace('\'', "'\\''")))
 }
 
 /// One of Feather's own programs next to our executable, quoted for `sh -c`
@@ -188,25 +222,31 @@ impl AppRegistry {
             AppEntry::new("dolphin", "Файлы", "Файловый менеджер", IconKind::Finder, Exec(files_command()), true)
                 .with_aliases(&["org.kde.dolphin", "feather-files"])
                 .with_own_icon(),
+            // The icon comes from whichever firefox .desktop is installed (apt, snap, flatpak)
             AppEntry::new("firefox", "Firefox", "Веб-браузер", IconKind::Browser, Exec("firefox".into()), true)
-                .with_aliases(&["org.mozilla.firefox", "firefox-esr"])
-                .with_icon("firefox"),
-            // Id stays "konsole" for saved Dock pins; Feather's own Terminal when installed
-            AppEntry::new("konsole", "Терминал", "Терминал", IconKind::Terminal, Exec(terminal_command()), true)
-                .with_aliases(&["org.kde.konsole", "feather-terminal"]),
+                .with_aliases(&["org.mozilla.firefox", "firefox-esr"]),
+            // Id stays "konsole" for saved Dock pins; Feather's own Terminal (with its own icon,
+            // not the icon theme's utilities-terminal from its .desktop) when installed
+            {
+                let terminal = AppEntry::new("konsole", "Терминал", "Терминал", IconKind::Terminal, Exec(terminal_command()), true)
+                    .with_aliases(&["org.kde.konsole", "feather-terminal"]);
+                if own_program("feather-terminal").is_some() { terminal.with_own_icon() } else { terminal }
+            },
+            // Pinned only where installed: elsewhere they are removed below
             AppEntry::new(
                 "antigravity",
                 "Antigravity",
                 "Разработка Пёрышко DE на ходу",
                 IconKind::Antigravity,
-                Exec("/home/zumka/.local/bin/antigravity".into()),
+                Exec(find_program("antigravity").unwrap_or_default()),
                 true,
             ),
-            AppEntry::new("mousevpn", "MouseVPN", "VPN-клиент", IconKind::Vpn, Exec("mousevpn-linux-gui".into()), true),
+            AppEntry::new("mousevpn", "MouseVPN", "VPN-клиент", IconKind::Vpn, Exec(find_program("mousevpn-linux-gui").unwrap_or_default()), true),
             // Id stays "builtin.notes" for saved Dock pins; Feather's Notes app when installed
             match own_program("feather-notes") {
                 Some(cmd) => AppEntry::new("builtin.notes", "Заметки", "Заметки в стиле macOS", IconKind::Notes, Exec(cmd), true)
-                    .with_aliases(&["feather-notes"]),
+                    .with_aliases(&["feather-notes"])
+                    .with_own_icon(),
                 None => AppEntry::new("builtin.notes", "Заметки", "Быстрые заметки (RU / EN)", IconKind::Notes, BuiltinWindow(BuiltinWindowKind::QuickNotes), true),
             },
             AppEntry::new(
@@ -283,11 +323,11 @@ impl AppRegistry {
             ),
         ];
 
+        apps.retain(|a| !matches!(&a.action, Exec(cmd) if cmd.is_empty()));
         let known = apps.len();
-        if let Ok(home) = std::env::var("HOME") {
-            Self::scan_desktop_dir(&Path::new(&home).join(".local/share/applications"), &mut apps, known);
+        for dir in application_dirs() {
+            Self::scan_desktop_dir(&dir, &mut apps, known);
         }
-        Self::scan_desktop_dir(Path::new("/usr/share/applications"), &mut apps, known);
 
         Self { apps }
     }
@@ -376,9 +416,11 @@ impl AppRegistry {
             // Steam game shortcuts all run `steam steam://rungameid/…` and would otherwise
             // swallow steam.desktop (or each other), depending on directory order.
             let exe = candidate.exec_basename();
+            let snap = snap_app_name(&stem);
             if let Some(existing) = out.iter_mut().enumerate().find_map(|(i, a)| {
                 (a.id.eq_ignore_ascii_case(&stem)
                     || a.aliases.iter().any(|x| x.eq_ignore_ascii_case(&stem))
+                    || snap.is_some_and(|n| a.id.eq_ignore_ascii_case(n) || a.aliases.iter().any(|x| x.eq_ignore_ascii_case(n)))
                     || (i < known && exe.is_some() && a.exec_basename() == exe))
                     .then_some(a)
             }) {
@@ -927,25 +969,18 @@ pub fn draw_app_icon(
             stroke_line(pixmap, fx + size * 0.05, y + size * 0.383, fx + fw - size * 0.05, y + size * 0.383, size * 0.012, rgba(255, 255, 255, 230));
         }
         IconKind::Terminal => {
-            tile(pixmap, rgba(70, 72, 78, 255), rgba(28, 28, 32, 255));
-            fill_rounded_rect(
-                pixmap,
-                x + size * 0.12,
-                y + size * 0.14,
-                size * 0.76,
-                size * 0.70,
-                size * 0.08,
-                rgba(12, 12, 14, 255),
-            );
-            fonts.draw_text(
-                pixmap,
-                ">_",
-                x + size * 0.20,
-                y + size * 0.24,
-                size * 0.30,
-                Color::from_rgba8(235, 235, 235, 255),
-                true,
-            );
+            // One graphite tile (no bezel), a soft sheen on top, a vector prompt and a mint
+            // cursor: crisp at any Dock size, no font or icon theme needed
+            tile(pixmap, rgba(66, 70, 84, 255), rgba(14, 15, 20, 255));
+            if let Some(sheen) = crate::theme::squircle_path(x, y, size) {
+                crate::theme::fill_path_gradient(pixmap, &sheen, y, y + size * 0.55, rgba(255, 255, 255, 30), rgba(255, 255, 255, 0));
+            }
+            let white = rgba(246, 247, 250, 255);
+            let w = size * 0.075;
+            stroke_line(pixmap, x + size * 0.25, y + size * 0.35, x + size * 0.41, y + size * 0.50, w, white);
+            stroke_line(pixmap, x + size * 0.41, y + size * 0.50, x + size * 0.25, y + size * 0.65, w, white);
+            fill_rounded_rect(pixmap, x + size * 0.455, y + size * 0.575, size * 0.29, size * 0.105, size * 0.05, rgba(90, 230, 170, 45));
+            fill_rounded_rect(pixmap, x + size * 0.47, y + size * 0.59, size * 0.26, size * 0.075, size * 0.035, rgba(96, 228, 168, 255));
         }
         IconKind::Browser => {
             tile(pixmap, rgba(255, 255, 255, 255), rgba(232, 232, 236, 255));
@@ -1210,5 +1245,30 @@ mod desktop_scan_tests {
         let mut names: Vec<_> = apps.iter().map(|a| a.name.as_str()).collect();
         names.sort();
         assert_eq!(names, ["Dota 2", "Path of Exile", "Steam"]);
+    }
+
+    #[test]
+    fn snap_entries_join_pinned_apps_and_match_windows() {
+        let dir = std::env::temp_dir().join(format!("feather-apps-snap-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("firefox_firefox.desktop"), "[Desktop Entry]\nName=Firefox\nExec=/snap/bin/firefox %u\nIcon=/snap/firefox/current/default256.png\nStartupWMClass=firefox_firefox\n").unwrap();
+        fs::write(dir.join("telegram-desktop_telegram-desktop.desktop"), "[Desktop Entry]\nName=Telegram\nExec=env BAMF_DESKTOP_FILE_HINT=/var/lib/snapd/desktop/applications/telegram-desktop_telegram-desktop.desktop /snap/bin/telegram-desktop -- %u\n").unwrap();
+        let mut apps = vec![AppEntry::new("firefox", "Firefox", "", IconKind::Browser, AppAction::Exec("firefox".into()), true)];
+        AppRegistry::scan_desktop_dir(&dir, &mut apps, 1);
+        fs::remove_dir_all(&dir).unwrap();
+        // One Firefox (the snap's icon), not a second unpinned copy; its window finds it
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].icon_name.as_deref(), Some("/snap/firefox/current/default256.png"));
+        let registry = AppRegistry { apps };
+        assert_eq!(registry.app_for_app_id("firefox_firefox"), Some(0));
+        assert_eq!(registry.app_for_app_id("telegram-desktop"), Some(1));
+    }
+
+    #[test]
+    fn snap_and_flatpak_folders_are_scanned() {
+        let dirs = application_dirs();
+        assert!(dirs.contains(&PathBuf::from("/usr/share/applications")) || std::env::var_os("XDG_DATA_DIRS").is_some());
+        assert!(dirs.contains(&PathBuf::from("/var/lib/snapd/desktop/applications")));
+        assert!(dirs.contains(&PathBuf::from("/var/lib/flatpak/exports/share/applications")));
     }
 }

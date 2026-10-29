@@ -29,7 +29,7 @@ done
 
 rm -f "$PORTAL_DEST/feather.portal" "$PORTAL_CONF_DEST/featherde-portals.conf"
 rm -f "$WSESSIONS_DEST/feather-de-drm.desktop"
-rm -rf "$DOC_DEST"
+rm -rf "$DOC_DEST" "${DESTDIR}${PREFIX}/share/feather-de"
 if (( ! USER_MODE )); then
     rm -f "${DESTDIR}${SYSCONFDIR}/pam.d/feather-lock"
     rm -f "${DESTDIR}${SYSCONFDIR}/greetd/feather-greeter.toml"

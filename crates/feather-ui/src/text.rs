@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
-use std::process::Command;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use std::sync::Arc;
 
@@ -56,10 +58,37 @@ const MONO_FAMILIES: &[&str] = &[
     "Liberation Mono",
 ];
 
+/// Fonts shipped with Feather (assets/fonts): family, Regular and the bold weight. They are
+/// tried right after Apple's SF fonts, so the interface never depends on the system's fonts
+const BUNDLED: &[(&str, &str, &str)] = &[
+    ("Inter", "Inter-Regular.otf", "Inter-SemiBold.otf"),
+    ("JetBrains Mono", "JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"),
+];
+/// Shipped symbols fallback (⏻ and others Inter lacks)
+const BUNDLED_SYMBOLS: &str = "NotoSansSymbols2-Regular.ttf";
+
+/// A shipped font file: $FEATHER_FONTS_DIR, then <prefix>/share/feather-de/fonts beside our
+/// bin/, then the source tree's assets/fonts (cargo runs and tests)
+fn bundled_font(file: &str) -> Option<String> {
+    let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf));
+    std::env::var_os("FEATHER_FONTS_DIR")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(exe_dir.map(|d| d.join("../share/feather-de/fonts")))
+        .chain([PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/fonts"))])
+        .map(|d| d.join(file))
+        .find(|p| p.is_file())
+        .map(|p| p.display().to_string())
+}
+
 const LEGACY_REGULAR: &[&str] = &[
     "/usr/share/fonts/noto/NotoSans-Regular.ttf",
     "/usr/share/fonts/TTF/DejaVuSans.ttf",
     "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+    // Debian/Ubuntu layout
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 ];
 
 /// Font lookups are cached on disk: every `fc-match` is a process start (~10–30 ms), and
@@ -87,10 +116,12 @@ mod font_cache {
         Some(base.join("feather-de").join("fonts.cache"))
     }
 
-    /// Modification times of the system and user font directories
+    /// Modification times of the system and user font directories, and of fontconfig's caches:
+    /// a package adding a font to an existing subfolder (truetype/…) leaves /usr/share/fonts
+    /// untouched, but its fc-cache trigger rewrites the cache folder
     fn stamp() -> String {
         let home = std::env::var("HOME").unwrap_or_default();
-        let dirs = ["/usr/share/fonts".to_string(), "/usr/local/share/fonts".into(), format!("{home}/.local/share/fonts"), format!("{home}/.fonts"), "/etc/fonts/conf.d".into()];
+        let dirs = ["/usr/share/fonts".to_string(), "/usr/local/share/fonts".into(), format!("{home}/.local/share/fonts"), format!("{home}/.fonts"), "/etc/fonts/conf.d".into(), "/var/cache/fontconfig".into(), format!("{home}/.cache/fontconfig")];
         dirs.iter()
             .map(|d| std::fs::metadata(d).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))
             .map(|t| t.to_string())
@@ -158,13 +189,19 @@ fn fc_match(family: &str, style: &str) -> Option<(String, u32)> {
 }
 
 fn fc_match_uncached(family: &str, style: &str) -> Option<(String, u32)> {
-    let out = Command::new("fc-match")
+    let mut child = Command::new("fc-match")
         .arg("-f")
         .arg("%{family[0]}|%{file}|%{index}")
         .arg(format!("{family}:style={style}"))
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut text = String::new();
+    child.stdout.take()?.read_to_string(&mut text).ok()?;
+    // Not `output()`: programs that set SIGCHLD to SIG_IGN (Terminal, Files) have the child
+    // reaped by the kernel, so its wait fails with ECHILD although the answer is complete
+    let _ = child.wait();
     let mut parts = text.split('|');
     let got_family = parts.next()?;
     let file = parts.next()?.to_string();
@@ -341,6 +378,13 @@ impl FontSystem {
         let mut files = FontFiles::default();
         let mut chosen = None;
         for family in families {
+            if let Some(&(_, reg_file, bold_file)) = BUNDLED.iter().find(|b| b.0 == *family) {
+                if let Some(regular) = bundled_font(reg_file).and_then(|p| files.load(&p, 0)) {
+                    let bold = bundled_font(bold_file).and_then(|p| files.load(&p, 0)).unwrap_or_else(|| regular.clone());
+                    chosen = Some((regular, bold, family));
+                    break;
+                }
+            }
             let Some((reg_path, reg_idx)) = fc_match(family, "Regular") else {
                 continue;
             };
@@ -374,13 +418,16 @@ impl FontSystem {
         // Symbols like ⌘ ⇧ ⌥ ↵ are missing from many UI fonts; Chinese, Japanese and
         // Korean need a CJK font. Files are mapped, so unused fallbacks cost no memory.
         let groups: [&[&str]; 3] = [
-            &["Noto Sans Symbols 2", "Noto Sans Symbols"],
+            // Debian/Ubuntu spell it "Noto Sans Symbols2"
+            &["Noto Sans Symbols 2", "Noto Sans Symbols2", "Noto Sans Symbols"],
             &["Noto Sans CJK SC", "Noto Sans CJK TC", "Noto Sans CJK JP", "Noto Sans CJK KR", "Source Han Sans", "WenQuanYi Zen Hei", "Droid Sans Fallback"],
             &["DejaVu Sans"],
         ];
-        let fallback = groups
-            .iter()
-            .filter_map(|group| group.iter().find_map(|f| fc_match(f, "Regular")).and_then(|(p, i)| files.load(&p, i)))
+        let symbols = bundled_font(BUNDLED_SYMBOLS).and_then(|p| files.load(&p, 0));
+        let system = &groups[usize::from(symbols.is_some())..];
+        let fallback = symbols
+            .into_iter()
+            .chain(system.iter().filter_map(|group| group.iter().find_map(|f| fc_match(f, "Regular")).and_then(|(p, i)| files.load(&p, i))))
             .collect();
 
         font_cache::save();
@@ -850,10 +897,10 @@ mod tests {
         assert_eq!(fonts.cache.len(), 1);
         assert_eq!(worker.cache.len(), 1);
         // Opening two collection faces must reuse the same mapped file.
-        let path = fc_match("Inter", "Regular").unwrap();
+        let path = bundled_font("Inter-Regular.otf").unwrap();
         let mut files = FontFiles::default();
-        let first = files.load(&path.0, path.1).unwrap();
-        let second = files.load(&path.0, path.1).unwrap();
+        let first = files.load(&path, 0).unwrap();
+        let second = files.load(&path, 0).unwrap();
         assert!(Arc::ptr_eq(&first.data, &second.data));
     }
 

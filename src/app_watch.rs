@@ -1,6 +1,7 @@
-//! Installed apps follow the .desktop folders: ~/.local/share/applications and
-//! /usr/share/applications are watched with inotify (no polling), a burst of changes causes one
-//! re-read on a short thread, and the new list replaces the registry only when it differs.
+//! Installed apps follow the .desktop folders: ~/.local/share/applications, $XDG_DATA_DIRS
+//! (/usr/share/applications…) and the Snap/Flatpak exports are watched with inotify (no
+//! polling), a burst of changes causes one re-read on a short thread, and the new list replaces
+//! the registry only when it differs.
 //! Launchpad, the Dock menu, the switcher, a launch bounce and drags keep registry indices, so
 //! while one of them is open the new list waits and is retried once a second.
 use crate::{apps::AppRegistry, FeatherCompositor};
@@ -13,13 +14,11 @@ use smithay::reexports::calloop::{
 };
 use std::{path::PathBuf, time::Duration};
 
+/// The user's folder first (created below), then the existing system ones; snapd creates its
+/// folder with the first snap, which then shows up after the next login
 fn app_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join(".local/share/applications"));
-    }
-    dirs.push(PathBuf::from("/usr/share/applications"));
-    dirs
+    let mut dirs = crate::apps::application_dirs().into_iter();
+    dirs.next().into_iter().chain(dirs.filter(|d| d.is_dir())).collect()
 }
 
 impl FeatherCompositor {
@@ -31,10 +30,10 @@ impl FeatherCompositor {
             }
         })?;
         self.apps_tx = Some(tx);
-        for dir in app_dirs() {
+        for (i, dir) in app_dirs().into_iter().enumerate() {
             // A fresh account has no ~/.local/share/applications yet, and a missing folder
-            // cannot be watched: create it once at startup (the system one is left alone).
-            if dir.starts_with(std::env::var_os("HOME").unwrap_or_default()) {
+            // cannot be watched: create it once at startup (the system ones are left alone).
+            if i == 0 {
                 let _ = std::fs::create_dir_all(&dir);
             }
             let Some(mut watcher) = fileops::Watcher::new() else { continue };
