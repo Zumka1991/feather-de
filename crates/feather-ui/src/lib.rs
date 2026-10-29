@@ -10,5 +10,6 @@ pub mod fileops;
 pub mod i18n;
 pub mod input;
 pub mod picker;
+pub mod process;
 pub mod scale;
 pub mod text;

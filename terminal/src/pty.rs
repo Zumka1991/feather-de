@@ -54,7 +54,7 @@ impl Pty {
                 if let Some(dir) = &cwd {
                     libc::chdir(dir.as_ptr());
                 }
-                // Default signal handling for the shell (we ignore SIGCHLD in the parent)
+                // Default signal handling for the shell (the parent reaps with a SIGCHLD handler)
                 libc::signal(libc::SIGCHLD, libc::SIG_DFL);
                 libc::signal(libc::SIGPIPE, libc::SIG_DFL);
                 libc::execvpe(argv_ptrs[0], argv_ptrs.as_ptr(), env_ptrs.as_ptr());

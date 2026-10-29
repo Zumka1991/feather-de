@@ -82,6 +82,8 @@ struct InstallerWin {
 }
 
 fn main() {
+    // Started from an older Files or a script with SIGCHLD ignored: our own waits need it back
+    feather_ui::process::default_child_signal();
     feather_ui::appearance::init();
     let started = Instant::now();
     let path = std::env::args().skip(1).find(|a| !a.starts_with("--")).map(|a| package::path_from_arg(&a));

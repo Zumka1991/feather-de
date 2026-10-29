@@ -103,7 +103,7 @@ pub fn volumes() -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Opens a file with its default application; children are reaped by SIGCHLD=SIG_IGN
+/// Opens a file with its default application; children are reaped by our SIGCHLD handler
 pub fn open_external(path: &Path) {
     let ext = path
         .extension()

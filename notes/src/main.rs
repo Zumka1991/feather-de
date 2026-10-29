@@ -104,6 +104,8 @@ struct Notes {
 }
 
 fn main() {
+    // Started from an older Files or a script with SIGCHLD ignored: our own waits need it back
+    feather_ui::process::default_child_signal();
     feather_ui::appearance::init();
     let started = Instant::now();
     let conn = Connection::connect_to_env().expect("Нет Wayland-композитора (WAYLAND_DISPLAY)");

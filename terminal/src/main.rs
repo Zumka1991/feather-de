@@ -235,7 +235,8 @@ fn system_dark() -> bool {
 
 fn main() {
     let started = Instant::now();
-    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+    // Programs we open must not inherit an ignored SIGCHLD (see feather_ui::process)
+    feather_ui::process::reap_children();
     let mut args = std::env::args().skip(1);
     let mut cwd: Option<PathBuf> = None;
     let mut command: Option<Vec<String>> = None;

@@ -554,3 +554,4 @@ Tahoe Ночь	Tahoe Night	Tahoe Noche	Tahoe Nacht	Tahoe Nuit	Tahoe 夜晚
 Нет прав администратора, или пароль не принят	No administrator rights, or the password was not accepted	Sin permisos de administrador o contraseña no aceptada	Keine Administratorrechte oder Passwort nicht akzeptiert	Pas de droits administrateur, ou mot de passe refusé	没有管理员权限，或密码未被接受
 Установка не удалась	Installation failed	La instalación falló	Installation fehlgeschlagen	L’installation a échoué	安装失败
 Не найдена программа pkexec (пакет pkexec)	pkexec was not found (package pkexec)	No se encontró pkexec (paquete pkexec)	pkexec wurde nicht gefunden (Paket pkexec)	pkexec est introuvable (paquet pkexec)	未找到 pkexec（pkexec 软件包）
+Не удалось прочитать пакет: {}	Could not read the package: {}	No se pudo leer el paquete: {}	Paket konnte nicht gelesen werden: {}	Impossible de lire le paquet : {}	无法读取软件包：{}

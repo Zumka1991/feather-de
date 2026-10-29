@@ -128,6 +128,8 @@ fn parse_initial_path() -> Option<PathBuf> {
 }
 
 fn main() {
+    // Started from an older Files or a script with SIGCHLD ignored: our own waits need it back
+    feather_ui::process::default_child_signal();
     feather_ui::appearance::init();
     let started = Instant::now();
     let initial_path = parse_initial_path();

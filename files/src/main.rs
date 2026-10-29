@@ -137,7 +137,8 @@ struct Files {
 fn main() {
     feather_ui::appearance::init();
     // Children (xdg-open, terminals) are reaped by the kernel; we never wait for them
-    unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+    // Programs we open must not inherit an ignored SIGCHLD (see feather_ui::process)
+    feather_ui::process::reap_children();
     let started = Instant::now();
     // feather-files [--rename] [path]: a file path opens its folder with the file selected
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();

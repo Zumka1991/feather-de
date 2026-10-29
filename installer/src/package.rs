@@ -81,7 +81,10 @@ pub fn read(path: &Path) -> Result<Package, String> {
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .map_err(|_| "Не найдена программа dpkg-deb".to_string())?;
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => "Не найдена программа dpkg-deb".to_string(),
+            _ => format!("Не удалось прочитать пакет: {e}"),
+        })?;
     let package = parse_control(&String::from_utf8_lossy(&out.stdout));
     if !out.status.success() || package.name.is_empty() {
         return Err("Это не пакет .deb, или файл повреждён".into());

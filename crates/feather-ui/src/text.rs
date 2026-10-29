@@ -199,8 +199,9 @@ fn fc_match_uncached(family: &str, style: &str) -> Option<(String, u32)> {
         .ok()?;
     let mut text = String::new();
     child.stdout.take()?.read_to_string(&mut text).ok()?;
-    // Not `output()`: programs that set SIGCHLD to SIG_IGN (Terminal, Files) have the child
-    // reaped by the kernel, so its wait fails with ECHILD although the answer is complete
+    // Not `output()`: in a program that reaps children itself (Terminal, Files) or inherited
+    // an ignored SIGCHLD the child may already be gone, so its wait fails with ECHILD
+    // although the answer is complete
     let _ = child.wait();
     let mut parts = text.split('|');
     let got_family = parts.next()?;
