@@ -71,6 +71,8 @@ enum Msg {
     SaveChecked(PathBuf,Result<Option<bool>,String>),
     Listed(u64, Result<Vec<fsops::Entry>, String>),
     Done(usize, &'static str),
+    /// Compress (true) or extract finished: the new archive or folder, or bsdtar's error
+    Archived(Result<PathBuf, String>, bool),
     /// A paste copied more (throttled), stopped on a taken name, or finished (failures)
     JobTick,
     Conflict(u64, PathBuf, bool),
@@ -212,6 +214,7 @@ fn main() {
                         } else { Vec::new() }
                     }
                     Msg::Done(failed, what) => files.app.operation_done(failed, what),
+                    Msg::Archived(result, compressed) => files.app.archive_done(result, compressed),
                     Msg::JobTick => {
                         files.app.job_tick();
                         Vec::new()
@@ -487,6 +490,18 @@ impl Files {
                 Effect::Inspect(path) => {
                     let tx = self.tx.clone();
                     std::thread::spawn(move || inspect(path, &tx));
+                }
+                Effect::Compress(paths) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Msg::Archived(fsops::compress(&paths), true));
+                    });
+                }
+                Effect::Extract(archive) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Msg::Archived(fsops::extract(&archive), false));
+                    });
                 }
                 Effect::Clipboard(paths) => self.offer_files(paths),
                 Effect::StartDrag(paths) => self.start_drag(paths),

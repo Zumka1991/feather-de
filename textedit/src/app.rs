@@ -1335,15 +1335,19 @@ impl App {
         effects
     }
 
+    /// Tests type Latin keysyms without key codes
+    #[cfg(test)]
     pub fn key(&mut self, sym: u32, utf8: Option<&str>, mods: Mods) -> Vec<Effect> {
+        self.key_code(sym, 0, utf8, mods)
+    }
+
+    /// `code` is the evdev key code: shortcuts work in any layout (Ctrl+С is Ctrl+C)
+    pub fn key_code(&mut self, sym: u32, code: u32, utf8: Option<&str>, mods: Mods) -> Vec<Effect> {
         use smithay_client_toolkit::seat::keyboard::Keysym as K;
+        let letter = feather_ui::input::shortcut_letter(sym, code);
         let sym = K::new(sym);
         self.dirty = true;
-        let latin = |c: char| {
-            sym == K::new(c as u32)
-                || sym == K::new(c.to_ascii_uppercase() as u32)
-                || utf8.is_some_and(|u| u.eq_ignore_ascii_case(&c.to_string()))
-        };
+        let latin = |c: char| letter == Some(c) || utf8.is_some_and(|u| u.eq_ignore_ascii_case(&c.to_string()));
 
         // Global shortcuts
         if mods.ctrl {
@@ -2334,6 +2338,20 @@ fn selection_color() -> tiny_skia::Color {
 mod tests {
     use super::*;
     use tiny_skia::Pixmap;
+
+    #[test]
+    fn clipboard_shortcuts_work_in_the_russian_layout() {
+        let mut app = App::new(FontSystem::new());
+        app.paste_text("Привет, мир");
+        let ctrl = Mods { ctrl: true, shift: false, alt: false };
+        // Ctrl+Ф / Ctrl+С: a Cyrillic keysym, the physical A/C keys and a control character
+        app.key_code(0x6c6, 30, Some("\u{1}"), ctrl);
+        assert_eq!(app.selection().map(|(a, b)| &app.doc().text[a..b]), Some("Привет, мир"));
+        assert!(app.key_code(0x6d3, 46, Some("\u{3}"), ctrl).contains(&Effect::Copy("Привет, мир".into())));
+        // Ctrl+М (V) pastes, in the Latin layout too
+        assert!(app.key_code(0x6cd, 47, Some("\u{16}"), ctrl).contains(&Effect::Paste));
+        assert!(app.key_code(b'v' as u32, 47, Some("\u{16}"), ctrl).contains(&Effect::Paste));
+    }
 
     #[test]
     fn textedit_tabs_editing_undo_find_replace_and_paint() {

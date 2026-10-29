@@ -4,6 +4,10 @@
 //! rounded rectangle (the window geometry), so square-cornered apps get macOS corners and the
 //! bottom of server-decorated windows matches our rounded titlebar. No offscreen pass, no
 //! extra memory: the shader only replaces the default one while these elements are drawn.
+//!
+//! A window drawn larger than its buffer (an old X program upscaled on a HiDPI screen) is
+//! sampled with a Catmull-Rom bicubic filter instead of bilinear: text and edges stay sharp
+//! instead of turning blurry and jagged. Windows at their native scale keep one plain sample.
 
 use smithay::{
     backend::renderer::{
@@ -49,9 +53,33 @@ uniform vec2 geo_size;
 uniform float radius;
 // 1.0: round all four corners, 0.0: only the bottom ones (titlebar is above)
 uniform float all_corners;
+// 1.0: the buffer is magnified, sample it bicubically
+uniform float smooth_upscale;
 
 void main() {
-    vec4 color = texture2D(tex, v_coords);
+    vec4 color;
+    if (smooth_upscale > 0.5) {
+        // Catmull-Rom in 9 bilinear taps (the hardware filter blends the two middle texels)
+        vec2 sp = v_coords * tex_size;
+        vec2 tc = floor(sp - 0.5) + 0.5;
+        vec2 f = sp - tc;
+        vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+        vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+        vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+        vec2 w3 = f * f * (-0.5 + 0.5 * f);
+        vec2 w12 = w1 + w2;
+        vec2 t0 = (tc - 1.0) / tex_size;
+        vec2 t12 = (tc + w2 / w12) / tex_size;
+        vec2 t3 = (tc + 2.0) / tex_size;
+        color = (texture2D(tex, vec2(t0.x, t0.y)) * w0.x + texture2D(tex, vec2(t12.x, t0.y)) * w12.x + texture2D(tex, vec2(t3.x, t0.y)) * w3.x) * w0.y
+              + (texture2D(tex, vec2(t0.x, t12.y)) * w0.x + texture2D(tex, vec2(t12.x, t12.y)) * w12.x + texture2D(tex, vec2(t3.x, t12.y)) * w3.x) * w12.y
+              + (texture2D(tex, vec2(t0.x, t3.y)) * w0.x + texture2D(tex, vec2(t12.x, t3.y)) * w12.x + texture2D(tex, vec2(t3.x, t3.y)) * w3.x) * w3.y;
+        // The filter overshoots at sharp edges: no halos, premultiplied colour within alpha
+        color = clamp(color, 0.0, 1.0);
+        color.rgb = min(color.rgb, vec3(color.a));
+    } else {
+        color = texture2D(tex, v_coords);
+    }
 
 #if defined(NO_ALPHA)
     color = vec4(color.rgb, 1.0) * alpha;
@@ -87,6 +115,7 @@ pub fn compile(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
         UniformName::new("geo_size", UniformType::_2f),
         UniformName::new("radius", UniformType::_1f),
         UniformName::new("all_corners", UniformType::_1f),
+        UniformName::new("smooth_upscale", UniformType::_1f),
     ];
     match renderer.compile_custom_texture_shader(SHADER, &uniforms) {
         Ok(p) => Some(p),
@@ -207,6 +236,8 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceElement {
         let rel = original.loc - self.clip.geo.loc;
         let sx = dst.size.w as f32 / original.size.w.max(1) as f32;
         let sy = dst.size.h as f32 / original.size.h.max(1) as f32;
+        // Physical pixels per buffer pixel: above ~1.2 the buffer is visibly magnified
+        let magnified = dst.size.w as f64 > src.size.w * 1.2 && dst.size.h as f64 > src.size.h * 1.2;
         frame.override_default_tex_program(
             self.program.clone(),
             vec![
@@ -225,6 +256,7 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceElement {
                 ),
                 Uniform::new("radius", self.clip.radius * sx.min(sy)),
                 Uniform::new("all_corners", if self.clip.all_corners { 1.0f32 } else { 0.0 }),
+                Uniform::new("smooth_upscale", if magnified { 1.0f32 } else { 0.0 }),
             ],
         );
         let res = self.inner.draw(frame, src, dst, damage, opaque_regions);

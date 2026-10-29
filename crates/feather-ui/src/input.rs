@@ -381,3 +381,17 @@ mod tests {
         assert_eq!(limited.text(), "abc");
     }
 }
+
+/// The Latin letter or digit of a shortcut: from a Latin keysym, else from the physical key
+/// (evdev code), so Ctrl+С in the Russian layout is Ctrl+C. With Ctrl held xkb produces a
+/// control character instead of the letter, and the keysym follows the layout, so neither
+/// tells the shortcut in a non-Latin layout.
+pub fn shortcut_letter(keysym: u32, code: u32) -> Option<char> {
+    match keysym {
+        raw @ (0x30..=0x39 | 0x61..=0x7a) => return char::from_u32(raw),
+        raw @ 0x41..=0x5a => return char::from_u32(raw + 0x20),
+        _ => {}
+    }
+    const ROWS: [(u32, &str); 4] = [(2, "1234567890"), (16, "qwertyuiop"), (30, "asdfghjkl"), (44, "zxcvbnm")];
+    ROWS.iter().find_map(|&(first, keys)| keys.chars().nth(code.checked_sub(first)? as usize))
+}

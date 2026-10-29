@@ -393,7 +393,7 @@ impl Notes {
     }
 
     fn key(&mut self, event: KeyEvent) {
-        let effects = self.app.key(event.keysym.raw(), event.utf8.as_deref(), self.mods);
+        let effects = self.app.key_code(event.keysym.raw(), event.raw_code, event.utf8.as_deref(), self.mods);
         self.apply(effects);
     }
 }

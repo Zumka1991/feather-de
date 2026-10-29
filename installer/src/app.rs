@@ -1,6 +1,6 @@
 //! The installer window: what the package is, then installing it with progress, then the result.
 
-use crate::package::{self, Installed, Package, Progress};
+use crate::package::{self, Check, Installed, Package, Progress};
 use feather_ui::appearance::colors;
 use feather_ui::draw::*;
 use feather_ui::i18n::tr;
@@ -52,6 +52,8 @@ pub struct App {
     pub path: PathBuf,
     pub package: Package,
     pub state: State,
+    /// apt's dry run: can this package be installed here at all
+    pub check: Check,
     hover: (f32, f32),
     pressed: Option<Button>,
 }
@@ -65,12 +67,17 @@ impl App {
             }
             Err(e) => (Package::default(), State::Invalid(e)),
         };
-        Self { fonts: FontSystem::new(), dirty: true, focused: true, path, package, state, hover: (-1.0, -1.0), pressed: None }
+        Self { fonts: FontSystem::new(), dirty: true, focused: true, path, package, state, check: Check::Checking, hover: (-1.0, -1.0), pressed: None }
+    }
+
+    pub fn checked(&mut self, check: Check) {
+        self.check = check;
+        self.dirty = true;
     }
 
     /// A ready-made window for previews and tests, without reading a file
     pub fn with(package: Package, state: State) -> Self {
-        Self { fonts: FontSystem::new(), dirty: true, focused: true, path: PathBuf::new(), package, state, hover: (-1.0, -1.0), pressed: None }
+        Self { fonts: FontSystem::new(), dirty: true, focused: true, path: PathBuf::new(), package, state, check: Check::Ok(0), hover: (-1.0, -1.0), pressed: None }
     }
 
     pub fn installing(&self) -> bool {
@@ -113,6 +120,8 @@ impl App {
         let t = |s: &str| tr(s).into_owned();
         match &self.state {
             State::Invalid(_) => vec![(Button::Close, t("Закрыть"), true)],
+            // Missing dependencies: installing could only fail after the password
+            State::Ready { .. } if matches!(self.check, Check::Missing(_)) => vec![(Button::Close, t("Закрыть"), true)],
             State::Ready { installed, .. } => vec![(Button::Install, t(primary(installed)), true), (Button::Close, t("Отмена"), false)],
             State::Installing { .. } => Vec::new(),
             State::Done { launcher: Some(_) } => vec![(Button::Open, t("Открыть"), true), (Button::Close, t("Готово"), false)],
@@ -322,12 +331,23 @@ impl App {
         let (green, red) = (rgba(48, 186, 92, 255), rgba(236, 72, 64, 255));
         match &self.state {
             State::Ready { installed, note } => {
-                let (text, color) = match (note, installed) {
-                    (Some(note), _) => (note.clone(), colors::secondary()),
-                    (None, Installed::No) => (String::new(), colors::secondary()),
-                    (None, Installed::Same) => (tr("Эта версия уже установлена").into_owned(), colors::secondary()),
-                    (None, Installed::Older(v)) => (format!("{} {v}", tr("Будет обновлена версия")), colors::secondary()),
-                    (None, Installed::Newer(v)) => (format!("{} {v}", tr("Установлена более новая версия")), rgba(214, 140, 20, 255)),
+                let more = |n: usize| format!("{} {n}", tr("Вместе с ним будет установлено пакетов:"));
+                let (text, color) = match (note, installed, &self.check) {
+                    (Some(note), ..) => (note.clone(), colors::secondary()),
+                    (None, _, Check::Missing(deps)) => {
+                        let shown: Vec<&str> = deps.iter().take(2).map(String::as_str).collect();
+                        let rest = if deps.len() > 2 { format!(" {} {}", tr("и ещё"), deps.len() - 2) } else { String::new() };
+                        (format!("{} {}{rest}", tr("Пакет не подходит для этой системы, нет:"), shown.join(", ")), red)
+                    }
+                    (None, _, Check::Failed(e)) => (tr(e).into_owned(), red),
+                    (None, Installed::No, Check::Checking) => (tr("Проверка совместимости…").into_owned(), colors::secondary()),
+                    (None, Installed::No, Check::Ok(n)) if *n > 0 => (more(*n), colors::secondary()),
+                    (None, installed, _) => match installed {
+                        Installed::No => (String::new(), colors::secondary()),
+                        Installed::Same => (tr("Эта версия уже установлена").into_owned(), colors::secondary()),
+                        Installed::Older(v) => (format!("{} {v}", tr("Будет обновлена версия")), colors::secondary()),
+                        Installed::Newer(v) => (format!("{} {v}", tr("Установлена более новая версия")), rgba(214, 140, 20, 255)),
+                    },
                 };
                 self.draw_note(pm, &text, note_w, base_y, color);
             }
@@ -505,6 +525,11 @@ mod tests {
         assert!(matches!(app.state, State::Installing { fraction, .. } if (fraction - 0.6).abs() < 1e-6));
         app.progress(Progress::Failed("E: boom".into()));
         assert_eq!(app.buttons()[0].0, Button::Retry);
+        // A package for another release: no install button, nothing asks for the password
+        let mut app = App::with(sample(), State::Ready { installed: Installed::No, note: None });
+        app.checked(Check::Missing(vec!["qt6-websockets-abi (= 6.4.2)".into()]));
+        assert_eq!(app.buttons().iter().map(|b| b.0).collect::<Vec<_>>(), [Button::Close]);
+        assert!(matches!(app.handle_key(true, false), Action::Close));
     }
 
     #[test]
@@ -529,8 +554,12 @@ mod tests {
         ];
         for dark in [false, true] {
             feather_ui::scale::set_appearance(if dark { feather_ui::scale::Appearance::Dark } else { feather_ui::scale::Appearance::Light });
-            for (name, state) in states.iter().map(|(n, s)| (*n, clone_state(s))) {
+            let missing = ("missing", State::Ready { installed: Installed::No, note: None });
+            for (name, state) in states.iter().chain([&missing]).map(|(n, s)| (*n, clone_state(s))) {
                 let mut app = App::with(sample(), state);
+                if name == "missing" {
+                    app.checked(Check::Missing(vec!["libqt6dbus6t64 (>= 6.4.0)".into(), "libqt6gui6t64 (>= 6.1.2)".into(), "qt6-websockets-abi (= 6.4.2)".into()]));
+                }
                 let mut pixmap = tiny_skia::Pixmap::new(WIDTH as u32, HEIGHT as u32).unwrap();
                 app.draw(&mut pixmap.as_mut());
                 pixmap.save_png(format!("{dir}/installer-{name}-{}.png", if dark { "dark" } else { "light" })).unwrap();

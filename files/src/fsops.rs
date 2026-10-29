@@ -198,6 +198,105 @@ pub fn open_terminal(dir: &Path) {
     }
 }
 
+/// Archives Files extracts on double-click: everything bsdtar (libarchive) reads
+const ARCHIVES: [&str; 13] = [".tar.gz", ".tar.xz", ".tar.zst", ".tar.bz2", ".tgz", ".txz", ".tzst", ".tbz2", ".tbz", ".tar", ".zip", ".7z", ".rar"];
+
+pub fn is_archive(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    ARCHIVES.iter().any(|ext| lower.ends_with(ext) && lower.len() > ext.len())
+}
+
+/// "Фото.tar.gz" → "Фото"
+pub fn archive_stem(name: &str) -> &str {
+    let lower = name.to_lowercase();
+    ARCHIVES.iter().find(|ext| lower.ends_with(*ext)).map_or(name, |ext| &name[..name.len() - ext.len()])
+}
+
+/// bsdtar from libarchive-tools; FEATHER_BSDTAR points tests at another copy
+fn bsdtar() -> std::process::Command {
+    std::process::Command::new(std::env::var_os("FEATHER_BSDTAR").unwrap_or_else(|| "bsdtar".into()))
+}
+
+/// bsdtar's own words about a failure
+fn tar_error(out: &std::process::Output) -> String {
+    let text = String::from_utf8_lossy(&out.stderr);
+    text.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("bsdtar завершился с ошибкой").trim_start_matches("bsdtar: ").to_string()
+}
+
+/// "name.ext", or "name 2.ext"… if taken
+fn unique_file(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+    std::iter::once(dir.join(format!("{stem}{ext}")))
+        .chain((2..).map(|n| dir.join(format!("{stem} {n}{ext}"))))
+        .find(|p| !p.exists())
+        .unwrap()
+}
+
+/// «Сжать»: items of one folder into a zip next to them («имя.zip», several — «Архив.zip»).
+/// The zip is written under a hidden name and appears only when complete.
+pub fn compress(paths: &[PathBuf]) -> Result<PathBuf, String> {
+    let dir = paths.first().and_then(|p| p.parent()).ok_or("Нечего сжимать")?;
+    let names: Vec<&std::ffi::OsStr> = paths.iter().filter_map(|p| p.file_name()).collect();
+    let stem = match names.as_slice() {
+        [one] => one.to_string_lossy().into_owned(),
+        _ => "Архив".to_string(),
+    };
+    let target = unique_file(dir, &stem, ".zip");
+    let part = dir.join(format!(".{}.feather-part", target.file_name().unwrap().to_string_lossy()));
+    let out = bsdtar().args(["--format", "zip", "-cf"]).arg(&part).arg("-C").arg(dir).arg("--").args(&names).output();
+    match out {
+        Ok(out) if out.status.success() => std::fs::rename(&part, &target).map(|_| target).map_err(|e| e.to_string()),
+        Ok(out) => {
+            let _ = std::fs::remove_file(&part);
+            Err(tar_error(&out))
+        }
+        Err(_) => Err("Нет программы bsdtar (пакет libarchive-tools)".into()),
+    }
+}
+
+/// Double-click on an archive: unpacked next to it, like macOS. One folder (or file) inside
+/// appears as is; several items go into a folder named after the archive. Everything is
+/// unpacked into a hidden folder first, so a failure leaves nothing half-extracted. bsdtar
+/// refuses ".." and strips leading "/" from member names.
+pub fn extract(archive: &Path) -> Result<PathBuf, String> {
+    let dir = archive.parent().ok_or("Нет папки архива")?;
+    let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = archive_stem(&name).to_string();
+    let tmp = dir.join(format!(".{stem}.feather-extract-{}", std::process::id()));
+    std::fs::create_dir(&tmp).map_err(|e| e.to_string())?;
+    let out = bsdtar().arg("-xf").arg(archive).arg("-C").arg(&tmp).output();
+    let fail = |e: String| {
+        let _ = std::fs::remove_dir_all(&tmp);
+        Err(e)
+    };
+    match out {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => return fail(tar_error(&out)),
+        Err(_) => return fail("Нет программы bsdtar (пакет libarchive-tools)".into()),
+    }
+    let items: Vec<PathBuf> = match std::fs::read_dir(&tmp) {
+        Ok(d) => d.flatten().map(|e| e.path()).collect(),
+        Err(e) => return fail(e.to_string()),
+    };
+    let result = match items.as_slice() {
+        [] => return fail("Архив пуст".into()),
+        [only] => {
+            let item = only.file_name().unwrap().to_string_lossy().into_owned();
+            let target = if only.is_dir() {
+                unique_name(dir, &item)
+            } else {
+                let (stem, ext) = item.rfind('.').filter(|&i| i > 0).map_or((item.as_str(), ""), |i| item.split_at(i));
+                unique_file(dir, stem, ext)
+            };
+            std::fs::rename(only, &target).and_then(|_| std::fs::remove_dir(&tmp)).map(|_| target)
+        }
+        _ => {
+            let target = unique_name(dir, &stem);
+            std::fs::rename(&tmp, &target).map(|_| target)
+        }
+    };
+    result.or_else(|e| fail(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,6 +337,41 @@ mod tests {
         assert_eq!(paste(&[a.clone()], &a.join("sub"), false), 1);
         let listed: Vec<_> = list(&a).unwrap().into_iter().map(|e| e.name).collect();
         assert_eq!(listed, ["sub", "sub копия", "x копия.txt"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// FEATHER_BSDTAR=/path/to/bsdtar when libarchive-tools is not installed
+    #[test]
+    fn compress_and_extract_like_macos() {
+        if std::process::Command::new(std::env::var_os("FEATHER_BSDTAR").unwrap_or_else(|| "bsdtar".into())).arg("--version").output().is_err() {
+            eprintln!("нет bsdtar — тест пропущен");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("feather-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Фото")).unwrap();
+        std::fs::write(root.join("Фото/кот.txt"), "мяу").unwrap();
+        std::fs::write(root.join("заметка.txt"), "x").unwrap();
+        assert!(is_archive("Фото.tar.gz") && is_archive("a.ZIP") && !is_archive(".zip") && !is_archive("a.deb"));
+        assert_eq!(archive_stem("Фото.Tar.Gz"), "Фото");
+        // One folder → «Фото.zip»; several items → «Архив.zip», then «Архив 2.zip»
+        let one = compress(&[root.join("Фото")]).unwrap();
+        assert_eq!(one, root.join("Фото.zip"));
+        let many = compress(&[root.join("Фото"), root.join("заметка.txt")]).unwrap();
+        assert_eq!(many, root.join("Архив.zip"));
+        assert_eq!(compress(&[root.join("заметка.txt")]).unwrap(), root.join("заметка.txt.zip"));
+        assert_eq!(compress(&[root.join("Фото"), root.join("заметка.txt")]).unwrap(), root.join("Архив 2.zip"));
+        // The single folder comes out as itself (taken name → «Фото 2»), several items in a folder
+        assert_eq!(extract(&one).unwrap(), root.join("Фото 2"));
+        assert_eq!(std::fs::read_to_string(root.join("Фото 2/кот.txt")).unwrap(), "мяу");
+        let folder = extract(&many).unwrap();
+        assert_eq!(folder, root.join("Архив"));
+        assert!(folder.join("Фото/кот.txt").is_file() && folder.join("заметка.txt").is_file());
+        // A broken archive leaves nothing behind
+        std::fs::write(root.join("битый.zip"), "not a zip").unwrap();
+        assert!(extract(&root.join("битый.zip")).is_err());
+        let leftovers = std::fs::read_dir(&root).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with('.')).count();
+        assert_eq!(leftovers, 0);
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

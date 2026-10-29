@@ -492,12 +492,16 @@ fn push_window(
                 visual,
             );
         }
-        // macOS corners: bottom ones under our titlebar, all four for square CSD apps
+        // macOS corners: bottom ones under our titlebar, all four for square CSD apps. A
+        // maximized X window goes through the shader too (no corners): it is the one most
+        // often upscaled, and the shader samples a magnified buffer bicubically. Fullscreen
+        // windows keep direct scan-out (X ones get the full scale there anyway).
         let clip = rounded.and_then(|program| {
             let round = !win.maximized
                 && !win.fullscreen
                 && (win.has_titlebar() || !win.client_shadow);
-            round.then(|| {
+            let upscaled_x11 = win.maximized && !win.fullscreen && crate::xwayland::is_xwayland_surface(surface);
+            (round || upscaled_x11).then(|| {
                 let (cx, cy) = win.client_origin();
                 let geo = smithay::utils::Rectangle::new(
                     to_phys_point(cx, cy, scale),
@@ -509,7 +513,7 @@ fn push_window(
                 );
                 let clip = crate::rounded::Clip {
                     geo,
-                    radius: crate::theme::WINDOW_CORNER_RADIUS * scale as f32,
+                    radius: if round { crate::theme::WINDOW_CORNER_RADIUS * scale as f32 } else { 0.0 },
                     all_corners: !win.has_titlebar(),
                 };
                 (clip, program)

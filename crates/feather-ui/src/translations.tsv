@@ -557,3 +557,17 @@ Tahoe Ночь	Tahoe Night	Tahoe Noche	Tahoe Nacht	Tahoe Nuit	Tahoe 夜晚
 Не удалось прочитать пакет: {}	Could not read the package: {}	No se pudo leer el paquete: {}	Paket konnte nicht gelesen werden: {}	Impossible de lire le paquet : {}	无法读取软件包：{}
 Ошибка в сценарии установки пакета {}	The package installation script of {} failed	Falló el script de instalación del paquete {}	Das Installationsskript des Pakets {} ist fehlgeschlagen	Le script d’installation du paquet {} a échoué	软件包 {} 的安装脚本失败
 Ошибка в сценарии установки пакета	The package installation script failed	Falló el script de instalación del paquete	Das Installationsskript des Pakets ist fehlgeschlagen	Le script d’installation du paquet a échoué	软件包安装脚本失败
+Вместе с ним будет установлено пакетов: {}	Packages installed along with it: {}	Paquetes que se instalarán con él: {}	Mitinstallierte Pakete: {}	Paquets installés avec lui : {}	将一同安装的软件包：{}
+Пакет не подходит для этой системы, нет: {}	This package does not fit this system, missing: {}	Este paquete no es compatible con este sistema, falta: {}	Dieses Paket passt nicht zu diesem System, es fehlt: {}	Ce paquet ne convient pas à ce système, il manque : {}	此软件包不适用于本系统，缺少：{}
+Проверка совместимости…	Checking compatibility…	Comprobando la compatibilidad…	Kompatibilität wird geprüft …	Vérification de la compatibilité…	正在检查兼容性…
+и ещё	and	y	und	et	以及
+apt не может установить этот пакет	apt cannot install this package	apt no puede instalar este paquete	apt kann dieses Paket nicht installieren	apt ne peut pas installer ce paquet	apt 无法安装此软件包
+Не найдена программа apt-get	apt-get was not found	No se encontró apt-get	apt-get wurde nicht gefunden	apt-get est introuvable	未找到 apt-get
+Сжать «{}»	Compress “{}”	Comprimir «{}»	„{}“ komprimieren	Compresser « {} »	压缩“{}”
+Сжать объекты ({})	Compress {} Items	Comprimir {} elementos	{} Objekte komprimieren	Compresser {} éléments	压缩 {} 个项目
+Распаковать	Extract	Extraer	Entpacken	Extraire	解压
+Сжатие…	Compressing…	Comprimiendo…	Komprimieren …	Compression…	正在压缩…
+Распаковка…	Extracting…	Extrayendo…	Entpacken …	Extraction…	正在解压…
+Распаковка «{}»…	Extracting “{}”…	Extrayendo «{}»…	„{}“ wird entpackt …	Extraction de « {} »…	正在解压“{}”…
+Создан архив «{}»	Created archive “{}”	Archivo «{}» creado	Archiv „{}“ erstellt	Archive « {} » créée	已创建归档“{}”
+Распаковано: «{}»	Extracted: “{}”	Extraído: «{}»	Entpackt: „{}“	Extrait : « {} »	已解压：“{}”

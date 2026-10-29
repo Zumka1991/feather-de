@@ -91,7 +91,7 @@ SHLIBS="$(cd "$WORK/src" && dpkg-shlibdeps -O "${ELF_ARGS[@]}" 2>/dev/null | sed
 [[ -n "$SHLIBS" ]] || { echo "dpkg-shlibdeps не смог посчитать зависимости" >&2; exit 1; }
 
 # Программы, которые окружение вызывает само; Recommends — то, без чего работает, но беднее
-DEPENDS="$SHLIBS, dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales"
+DEPENDS="$SHLIBS, dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools"
 RECOMMENDS="breeze-cursor-theme, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core"
 INSTALLED_KB="$(du -sk --exclude=DEBIAN "$PKG" | cut -f1)"
 

@@ -51,6 +51,7 @@ use wayland_client::{
 enum Msg {
     Appearance(feather_ui::scale::Appearance),
     Progress(package::Progress),
+    Check(package::Check),
 }
 
 struct InstallerWin {
@@ -128,10 +129,19 @@ fn main() {
                         }
                     }
                     Msg::Progress(progress) => win.app.progress(progress),
+                    Msg::Check(check) => win.app.checked(check),
                 }
             }
         })
         .expect("канал сообщений");
+
+    // apt's dry run in the background: the window shows right away, the verdict follows
+    if matches!(app.state, app::State::Ready { .. }) {
+        let (tx, deb) = (tx.clone(), app.path.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Check(package::check(&deb)));
+        });
+    }
 
     let rgba = shm.formats().contains(&wl_shm::Format::Abgr8888);
     let mut win = InstallerWin {

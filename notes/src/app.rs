@@ -674,11 +674,19 @@ impl App {
         self.reveal_caret();
     }
 
+    /// Tests type Latin keysyms without key codes
+    #[cfg(test)]
     pub fn key(&mut self, sym: u32, utf8: Option<&str>, mods: Mods) -> Vec<Effect> {
+        self.key_code(sym, 0, utf8, mods)
+    }
+
+    /// `code` is the evdev key code: shortcuts work in any layout (Ctrl+С is Ctrl+C)
+    pub fn key_code(&mut self, sym: u32, code: u32, utf8: Option<&str>, mods: Mods) -> Vec<Effect> {
         use smithay_client_toolkit::seat::keyboard::Keysym as K;
+        let letter = feather_ui::input::shortcut_letter(sym, code);
         let sym = K::new(sym);
         self.dirty = true;
-        let latin = |c: char| sym == K::new(c as u32) || sym == K::new(c.to_ascii_uppercase() as u32);
+        let latin = |c: char| letter == Some(c);
         if mods.ctrl {
             if latin('n') {
                 return self.new_note();

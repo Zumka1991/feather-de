@@ -100,6 +100,11 @@ BUILD_PKGS=(
 RUNTIME_PKGS=(
     libegl1 libgles2 libgl1-mesa-dri libgbm1 libinput10 libseat1 libxkbcommon0
     libpam0g fontconfig dbus dbus-user-session xdg-utils xdg-user-dirs locales
+    # update-desktop-database: без индекса типов файлов порталы (браузер из snap) не находят,
+    # чем открыть .deb и другие файлы
+    desktop-file-utils shared-mime-info
+    # bsdtar: «Сжать» и распаковка архивов в Файлах (zip, tar.*, 7z, rar)
+    libarchive-tools
     fonts-noto-core fonts-noto-mono fonts-noto-color-emoji fonts-noto-cjk fonts-dejavu-core
     breeze-cursor-theme polkitd
     # Ubuntu вырезает переводы из пакетов в языковые пакеты: без них «Документы» и

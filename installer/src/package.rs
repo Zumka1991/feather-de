@@ -120,6 +120,55 @@ pub fn installed(package: &Package) -> Installed {
     }
 }
 
+/// Whether apt can install the package here, found out before asking for the password
+#[derive(Debug, Clone, PartialEq)]
+pub enum Check {
+    Checking,
+    /// Installable; this many other packages come with it
+    Ok(usize),
+    /// Dependencies this system cannot provide (a package built for another release)
+    Missing(Vec<String>),
+    /// apt refused for another reason
+    Failed(String),
+}
+
+/// `apt-get --simulate install`: runs as the user, changes nothing
+pub fn check(deb: &Path) -> Check {
+    let Ok(out) = Command::new("apt-get")
+        .args(["--simulate", "-q", "install"])
+        .arg(deb)
+        .stdin(Stdio::null())
+        .output()
+    else {
+        return Check::Failed("Не найдена программа apt-get".into());
+    };
+    let text = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    parse_check(&text, out.status.success())
+}
+
+/// Simulation output: "Inst" lines are the packages to install (the package itself is one);
+/// "Depends: X (>= 1) but it is not installable" (translated tail) names what is missing
+pub fn parse_check(text: &str, success: bool) -> Check {
+    if success {
+        let inst = text.lines().filter(|l| l.starts_with("Inst ")).count();
+        return Check::Ok(inst.saturating_sub(1));
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.split_once("Depends: ").map(|(_, r)| r) else { continue };
+        // The reason after the dependency is translated: cut at the last " but " / " но "
+        let dep = [" but ", " но "].iter().filter_map(|m| rest.rfind(m)).max().map_or(rest, |i| &rest[..i]).trim();
+        if !dep.is_empty() && !missing.iter().any(|m| m == dep) {
+            missing.push(dep.to_string());
+        }
+    }
+    if !missing.is_empty() {
+        return Check::Missing(missing);
+    }
+    let errors: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("E: ")).collect();
+    Check::Failed(if errors.is_empty() { "apt не может установить этот пакет".into() } else { errors.join("\n") })
+}
+
 /// The file a launcher argument names: a path or a file:// URI (from a browser or the portal)
 pub fn path_from_arg(arg: &str) -> PathBuf {
     let path = match arg.strip_prefix("file://") {
@@ -392,6 +441,15 @@ mod tests {
         let entry = "[Desktop Entry]\nName=MouseVPN\nExec=/usr/bin/mousevpn %u\nType=Application\n[Desktop Action New]\nName=Other\n";
         assert_eq!(desktop_entry(entry), Some(("MouseVPN".into(), "/usr/bin/mousevpn".into())));
         assert_eq!(desktop_entry("[Desktop Entry]\nName=X\nExec=x\nNoDisplay=true\n"), None);
+    }
+
+    #[test]
+    fn simulation_finds_missing_dependencies() {
+        let broken = "NOTE: This is only a simulation!\n libekra : Depends: libqt6dbus6t64 (>= 6.4.0) но он не может быть установлен\n           Depends: qt6-websockets-abi (= 6.4.2) but it is not installable\n           Depends: qt6-websockets-abi (= 6.4.2) but it is not installable\nE: Unable to satisfy dependencies.";
+        assert_eq!(parse_check(broken, false), Check::Missing(vec!["libqt6dbus6t64 (>= 6.4.0)".into(), "qt6-websockets-abi (= 6.4.2)".into()]));
+        let fine = "Inst libfoo (1.0 Ubuntu:26.04)\nInst app (2.0 local-deb)\nConf libfoo (1.0)\nConf app (2.0)";
+        assert_eq!(parse_check(fine, true), Check::Ok(1));
+        assert_eq!(parse_check("E: Unsupported file given", false), Check::Failed("Unsupported file given".into()));
     }
 
     /// A real .deb, if one is around: FEATHER_TEST_DEB=/path/to.deb

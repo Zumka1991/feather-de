@@ -159,8 +159,13 @@ if [[ "$USER_MODE" -eq 0 ]]; then
         "$POLICY_SOURCE" > "$POLKIT_DEST/org.featherde.install-deb.policy"
     chmod 644 "$POLKIT_DEST/org.featherde.install-deb.policy"
 fi
-if [[ -z "$DESTDIR" ]] && command -v update-desktop-database >/dev/null; then
-    update-desktop-database -q "$APP_DEST" || true
+# Индекс типов файлов (mimeinfo.cache): по нему порталы и GLib ищут, чем открыть .deb
+if [[ -z "$DESTDIR" ]]; then
+    if command -v update-desktop-database >/dev/null; then
+        update-desktop-database -q "$APP_DEST" || true
+    else
+        echo "[!] Нет update-desktop-database (пакет desktop-file-utils): браузер не найдёт, чем открыть .deb" >&2
+    fi
 fi
 if (( BUNDLE )); then
     install -Dm644 "$PORTAL_SOURCE/portals/feather.portal" "$PORTAL_DEST/feather.portal"

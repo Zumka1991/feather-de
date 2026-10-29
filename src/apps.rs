@@ -551,6 +551,33 @@ pub fn set_cursor_env(theme: String, size: u32) {
 }
 
 /// Spawns an external command connected to our compositor's Wayland socket
+/// Chromium and Electron programs (Codex, Chrome, VS Code, Discord…) no longer read
+/// ELECTRON_OZONE_PLATFORM_HINT and run through XWayland, upscaled and blurry on HiDPI. Their
+/// install folder holds Chromium's resource packs: such a program gets the Wayland flags and
+/// runs natively, crisp and with fractional scaling. Shell constructs are left alone.
+fn chromium_wayland_flags(cmd: &str, search_path: &str) -> Option<&'static str> {
+    if cmd.contains("--ozone-platform") || cmd.contains(|c| ";&|<>`$(){}\n".contains(c)) {
+        return None;
+    }
+    let program = cmd
+        .split_whitespace()
+        .find(|t| !t.contains('=') && *t != "env")?
+        .trim_matches(|c| c == '\'' || c == '"');
+    let path = if program.contains('/') {
+        PathBuf::from(program)
+    } else {
+        std::env::split_paths(search_path).map(|d| d.join(program)).find(|p| p.is_file())?
+    };
+    let real = std::fs::canonicalize(path).ok()?;
+    let dir = real.parent()?;
+    // The launcher sits next to the packs (Chrome, Codex) or one level below (VS Code's bin/)
+    let chromium = [Some(dir), dir.parent()]
+        .into_iter()
+        .flatten()
+        .any(|d| d.join("chrome_100_percent.pak").is_file() && d.join("resources.pak").is_file());
+    chromium.then_some(" --ozone-platform=wayland --enable-wayland-ime")
+}
+
 pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
     let trimmed = cmd_line.trim();
     if trimmed.is_empty() {
@@ -560,6 +587,10 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
     let current_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin".into());
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/zumka".into());
     let enriched_path = format!("{home}/.cargo/bin:{home}/.local/bin:/usr/local/bin:{current_path}");
+    let line = match chromium_wayland_flags(trimmed, &enriched_path) {
+        Some(flags) => format!("{trimmed}{flags}"),
+        None => trimmed.to_string(),
+    };
 
     let mut command = Command::new("sh");
     if let Some((theme, size)) = CURSOR_ENV.lock().unwrap().clone() {
@@ -574,7 +605,7 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
     let region_locale = feather_ui::scale::region().locale_code();
     command
         .arg("-c")
-        .arg(trimmed)
+        .arg(&line)
         .env("PATH", enriched_path)
         .env("WAYLAND_DISPLAY", wayland_socket)
         .env("XDG_SESSION_TYPE", "wayland")
@@ -1285,6 +1316,36 @@ mod desktop_scan_tests {
         assert!(dirs.contains(&PathBuf::from("/usr/share/applications")) || std::env::var_os("XDG_DATA_DIRS").is_some());
         assert!(dirs.contains(&PathBuf::from("/var/lib/snapd/desktop/applications")));
         assert!(dirs.contains(&PathBuf::from("/var/lib/flatpak/exports/share/applications")));
+    }
+}
+
+#[cfg(test)]
+mod chromium_tests {
+    use super::chromium_wayland_flags;
+
+    #[test]
+    fn chromium_programs_get_wayland_flags() {
+        let root = std::env::temp_dir().join(format!("feather-chromium-{}", std::process::id()));
+        let app = root.join("lib/codex");
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        for f in ["chrome_100_percent.pak", "resources.pak", "launcher"] {
+            std::fs::write(app.join(f), "").unwrap();
+        }
+        std::fs::write(bin.join("plain"), "").unwrap();
+        std::os::unix::fs::symlink(app.join("launcher"), bin.join("codex")).unwrap();
+        let path = bin.display().to_string();
+        let flags = Some(" --ozone-platform=wayland --enable-wayland-ime");
+        // Through a symlink in PATH, by absolute path, quoted
+        assert_eq!(chromium_wayland_flags("codex", &path), flags);
+        assert_eq!(chromium_wayland_flags(&format!("'{}' --new-window", app.join("launcher").display()), ""), flags);
+        assert_eq!(chromium_wayland_flags("env FOO=1 codex", &path), flags);
+        // Not Chromium, a flag already given, or a shell construct
+        assert_eq!(chromium_wayland_flags("plain", &path), None);
+        assert_eq!(chromium_wayland_flags("codex --ozone-platform=x11", &path), None);
+        assert_eq!(chromium_wayland_flags("codex && echo", &path), None);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
 

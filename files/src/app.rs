@@ -65,6 +65,10 @@ pub enum Effect {
     StartDrag(Vec<PathBuf>),
     Picked(feather_ui::picker::Selection),
     CheckSave(PathBuf),
+    /// «Сжать»: these items (one folder) into a zip next to them, on a worker
+    Compress(Vec<PathBuf>),
+    /// Unpack an archive next to it, on a worker
+    Extract(PathBuf),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -127,6 +131,8 @@ enum MenuAction {
     ToggleHidden,
     ShowIcons,
     ShowList,
+    Compress,
+    Extract,
 }
 
 /// «Свойства»: filled on a worker; the size of a folder arrives later.
@@ -452,11 +458,30 @@ impl App {
             self.select_only(visible);
             if let Some(picker)=self.picker.as_mut(){if picker.config.mode==feather_ui::picker::Mode::Save{picker.name=entry.name;}}
             self.picker_accept()
+        } else if fsops::is_archive(&entry.name) && !self.dir.starts_with(fsops::trash_files_dir()) {
+            // Like macOS: an archive opens by unpacking it next to itself
+            self.flash(format!("Распаковка «{}»…", entry.name));
+            vec![Effect::Extract(entry.path)]
         } else {
             fsops::open_external(&entry.path);
             self.flash(format!("Открывается «{}»", entry.name));
             Vec::new()
         }
+    }
+
+    /// A worker finished compressing or extracting: show the result selected
+    pub fn archive_done(&mut self, result: Result<PathBuf, String>, compressed: bool) -> Vec<Effect> {
+        match result {
+            Ok(path) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.flash(if compressed { format!("Создан архив «{name}»") } else { format!("Распаковано: «{name}»") });
+                if path.parent() == Some(self.dir.as_path()) {
+                    self.reveal = Some(path);
+                }
+            }
+            Err(e) => self.flash(format!("{}: {e}", if compressed { "Не удалось сжать" } else { "Не удалось распаковать" })),
+        }
+        self.reload()
     }
 
     fn open_selection(&mut self) -> Vec<Effect> {
@@ -1405,6 +1430,19 @@ impl App {
                 }
                 items.extend([sep(), item("Переименовать", MenuAction::Rename), item("Скопировать", MenuAction::Copy), item("Вырезать", MenuAction::Cut), item("Свойства", MenuAction::Properties)]);
                 if !self.dir.starts_with(fsops::trash_files_dir()) {
+                    let chosen = self.selected_paths();
+                    let compress = match chosen.as_slice() {
+                        [one] => format!("Сжать «{}»", one.file_name().unwrap_or_default().to_string_lossy()),
+                        many => format!("Сжать объекты ({})", many.len()),
+                    };
+                    items.extend([sep(), item(&compress, MenuAction::Compress)]);
+                    if let [one] = chosen.as_slice() {
+                        if fsops::is_archive(&one.file_name().unwrap_or_default().to_string_lossy()) {
+                            items.push(item("Распаковать", MenuAction::Extract));
+                        }
+                    }
+                }
+                if !self.dir.starts_with(fsops::trash_files_dir()) {
                     items.extend([sep(), item("Переместить в Корзину", MenuAction::Trash)]);
                 }
                 items
@@ -1459,6 +1497,21 @@ impl App {
             MenuAction::Cut => self.copy_selection(true),
             MenuAction::Paste => self.paste(),
             MenuAction::Trash => self.trash_selection(),
+            MenuAction::Compress => {
+                let paths = self.selected_paths();
+                if paths.is_empty() {
+                    return Vec::new();
+                }
+                self.flash("Сжатие…".into());
+                vec![Effect::Compress(paths)]
+            }
+            MenuAction::Extract => match self.selected_paths().as_slice() {
+                [one] => {
+                    self.flash("Распаковка…".into());
+                    vec![Effect::Extract(one.clone())]
+                }
+                _ => Vec::new(),
+            },
             MenuAction::Restore => {
                 let paths = self.selected_paths();
                 if paths.is_empty() {
@@ -2228,13 +2281,7 @@ impl App {
 /// so Ctrl+С in the Russian layout is Ctrl+C. With Ctrl held xkb reports control characters
 /// ("\x03") as text, so the text is never used here.
 pub(crate) fn shortcut_letter(sym: smithay_client_toolkit::seat::keyboard::Keysym, code: u32) -> Option<char> {
-    match sym.raw() {
-        raw @ (0x30..=0x39 | 0x61..=0x7a) => return char::from_u32(raw),
-        raw @ 0x41..=0x5a => return char::from_u32(raw + 0x20),
-        _ => {}
-    }
-    const ROWS: [(u32, &str); 4] = [(2, "1234567890"), (16, "qwertyuiop"), (30, "asdfghjkl"), (44, "zxcvbnm")];
-    ROWS.iter().find_map(|&(first, keys)| keys.chars().nth(code.checked_sub(first)? as usize))
+    feather_ui::input::shortcut_letter(sym.raw(), code)
 }
 
 /// 1536 → "1,5 КБ"
@@ -2274,6 +2321,30 @@ mod tests {
     }
 
     const CTRL: Mods = Mods { ctrl: true, shift: false, alt: false };
+
+    #[test]
+    fn archives_compress_from_the_menu_and_unpack_on_open() {
+        let root = fixture("archive");
+        std::fs::write(root.join("снимки.tar.gz"), "x").unwrap();
+        let mut app = app_in(&root);
+        let at = |app: &App, name: &str| (0..app.visible.len()).find(|&i| app.entry(i).name == name).unwrap();
+        // A file: «Сжать «…»» in its menu, no «Распаковать»
+        let photo = at(&app, "photo.png");
+        app.open_menu(Hit::Item(photo), 10.0, 10.0);
+        let labels: Vec<String> = app.menu.take().unwrap().items.iter().map(|(l, _)| l.clone()).collect();
+        assert!(labels.iter().any(|l| l == "Сжать «photo.png»") && !labels.iter().any(|l| l == "Распаковать"));
+        assert_eq!(app.menu_action(MenuAction::Compress), vec![Effect::Compress(vec![root.join("photo.png")])]);
+        // An archive: «Распаковать» in the menu, and opening it unpacks instead of xdg-open
+        let archive = at(&app, "снимки.tar.gz");
+        app.open_menu(Hit::Item(archive), 10.0, 10.0);
+        assert!(app.menu.take().unwrap().items.iter().any(|(l, _)| l == "Распаковать"));
+        assert_eq!(app.open(archive), vec![Effect::Extract(root.join("снимки.tar.gz"))]);
+        // The worker's result is selected once the folder is read again
+        let effects = app.archive_done(Ok(root.join("снимки")), false);
+        assert!(effects.iter().any(|e| matches!(e, Effect::List(..))));
+        assert_eq!(app.reveal.as_deref(), Some(root.join("снимки").as_path()));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn ctrl_shortcuts_ignore_control_text_and_layout() {

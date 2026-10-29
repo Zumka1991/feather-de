@@ -648,7 +648,7 @@ impl TextEdit {
     fn key(&mut self, event: KeyEvent) {
         let effects = self
             .app
-            .key(event.keysym.raw(), event.utf8.as_deref(), self.mods);
+            .key_code(event.keysym.raw(), event.raw_code, event.utf8.as_deref(), self.mods);
         self.run_effects(effects);
     }
 }
