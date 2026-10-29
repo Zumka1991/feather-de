@@ -6,6 +6,16 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Bumped when the installed programs change. A new app may bring the first
+/// ~/.local/share/icons/hicolor/…/apps, and the theme folders are listed only once: the loader
+/// lists them again, and keys of an older number are rasterized anew.
+static ICON_DIRS: AtomicU64 = AtomicU64::new(0);
+
+pub fn rescan_icon_dirs() {
+    ICON_DIRS.fetch_add(1, Ordering::Relaxed);
+}
 
 use tiny_skia::{FilterQuality, Pixmap, PixmapMut, PixmapPaint, Transform};
 
@@ -17,6 +27,8 @@ pub struct IconKey {
     pub initial: String,
     pub px: u32,
     pub dark: bool,
+    /// `ICON_DIRS` when the key was made
+    dirs: u64,
 }
 impl IconKey {
     pub fn new(icon: &crate::shell::AppIcon, label: &str, px: u32) -> Self {
@@ -30,6 +42,7 @@ impl IconKey {
                 .to_string(),
             px,
             dark: appearance() == Appearance::Dark,
+            dirs: ICON_DIRS.load(Ordering::Relaxed),
         }
     }
 }
@@ -198,6 +211,8 @@ impl IconCache {
 pub struct IconLoader {
     search_dirs: Option<Vec<PathBuf>>,
     paths: HashMap<String, Option<PathBuf>>,
+    /// `ICON_DIRS` the folders and found paths were read under
+    dirs: u64,
 }
 
 fn user_icon_theme() -> Option<String> {
@@ -270,6 +285,7 @@ impl IconLoader {
         Self {
             search_dirs: None,
             paths: HashMap::new(),
+            dirs: ICON_DIRS.load(Ordering::Relaxed),
         }
     }
 
@@ -306,6 +322,12 @@ impl IconLoader {
     }
 
     fn find(&mut self, name: &str) -> Option<PathBuf> {
+        let dirs = ICON_DIRS.load(Ordering::Relaxed);
+        if dirs != self.dirs {
+            self.dirs = dirs;
+            self.search_dirs = None;
+            self.paths.clear();
+        }
         if let Some(cached) = self.paths.get(name) {
             return cached.clone();
         }
@@ -529,4 +551,25 @@ pub fn draw_icon(target: &mut PixmapMut, icon: &Pixmap, x: f32, y: f32, size: f3
         Transform::from_row(scale, 0.0, 0.0, scale, x * s, y * s),
         None,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_programs_list_icon_folders_again() {
+        let icon = crate::shell::AppIcon { kind: crate::apps::IconKind::GenericApp, name: Some("feather-no-such-icon".into()) };
+        let mut loader = IconLoader::new();
+        assert!(loader.find("feather-no-such-icon").is_none());
+        loader.search_dirs = Some(Vec::new());
+        // As if `rescan_icon_dirs` ran (the counter itself is shared with parallel tests)
+        loader.dirs = loader.dirs.wrapping_sub(1);
+        // The missing icon is not remembered and the folders are read again
+        assert!(loader.find("feather-no-such-icon").is_none());
+        assert!(loader.search_dirs.as_ref().is_some_and(|d| !d.is_empty()));
+        // The cached fallback picture does not answer for a key made after the change
+        let key = IconKey::new(&icon, "X", 64);
+        assert!(IconKey { dirs: key.dirs.wrapping_add(1), ..key.clone() } != key);
+    }
 }

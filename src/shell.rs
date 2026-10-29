@@ -2817,7 +2817,7 @@ impl MacShell {
                     // A client pixmap is authoritative; an unresolved theme name
                     // must not replace it with the generic application fallback.
                     let icon=if item.pixels.is_none()&&!item.icon_name.is_empty(){
-                        icons.get(&crate::icons::IconKey{icon:AppIcon{kind:crate::apps::IconKind::GenericApp,name:Some(item.icon_name.clone())},initial:String::new(),px:to_phys(18) as u32,dark:appearance()==Appearance::Dark})
+                        icons.get(&{let mut key=crate::icons::IconKey::new(&AppIcon{kind:crate::apps::IconKind::GenericApp,name:Some(item.icon_name.clone())},"",to_phys(18) as u32);key.initial.clear();key})
                     }else{None};
                     let source=icon.or(item.pixels.as_deref());
                     if let Some(image)=source {

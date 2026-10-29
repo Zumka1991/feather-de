@@ -123,6 +123,8 @@ impl FeatherCompositor {
         }
         let Some(registry) = self.apps_pending.take() else { return true };
         self.app_registry = registry;
+        // The new program may have put its icon into a theme folder that did not exist yet
+        crate::icons::rescan_icon_dirs();
         self.dock_model_dirty = true;
         self.shell.dock_dirty = true;
         self.shell.topbar_dirty = true;

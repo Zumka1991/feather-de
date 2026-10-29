@@ -175,8 +175,15 @@ enum Confirm {
 struct Menu {
     x: f32,
     y: f32,
+    /// Fits the longest item, within `MENU_MIN_W`…`MENU_MAX_W`
+    w: f32,
     items: Vec<(String, Option<MenuAction>)>,
 }
+
+const MENU_MIN_W: f32 = 220.0;
+const MENU_MAX_W: f32 = 340.0;
+/// Text inset on both sides of a menu item
+const MENU_PAD: f32 = 32.0;
 
 struct Place {
     name: String,
@@ -1494,8 +1501,7 @@ impl App {
                 let mut items = vec![item("Открыть", MenuAction::Open)];
                 if self.in_trash() {
                     items.extend([sep(), item("Вернуть", MenuAction::Restore), item("Скопировать", MenuAction::Copy), item("Свойства", MenuAction::Properties), sep(), item("Удалить навсегда…", MenuAction::DeleteForever)]);
-                    self.menu = Some(Menu { x, y, items });
-                    self.menu_hover = None;
+                    self.set_menu(x, y, items);
                     return;
                 }
                 if self.entry(i).is_dir {
@@ -1507,7 +1513,11 @@ impl App {
                 if !self.dir.starts_with(fsops::trash_files_dir()) {
                     let chosen = self.selected_paths();
                     let compress = match chosen.as_slice() {
-                        [one] => format!("Сжать «{}»", one.file_name().unwrap_or_default().to_string_lossy()),
+                        [one] => {
+                            // A long name is shortened inside the quotes, so they stay closed
+                            let room = MENU_MAX_W - MENU_PAD - self.fonts.measure_text("Сжать «»", 13.0, false);
+                            format!("Сжать «{}»", self.fonts.ellipsize(&one.file_name().unwrap_or_default().to_string_lossy(), room, 13.0, false))
+                        }
                         many => format!("Сжать объекты ({})", many.len()),
                     };
                     items.extend([sep(), item(&compress, MenuAction::Compress)]);
@@ -1543,12 +1553,18 @@ impl App {
             }
             _ => return,
         };
-        self.menu = Some(Menu { x, y, items });
+        self.set_menu(x, y, items);
+    }
+
+    fn set_menu(&mut self, x: f32, y: f32, items: Vec<(String, Option<MenuAction>)>) {
+        let widest = items.iter().map(|(l, _)| self.fonts.measure_text(l, 13.0, false)).fold(0.0, f32::max);
+        let w = (widest + MENU_PAD).clamp(MENU_MIN_W, MENU_MAX_W);
+        self.menu = Some(Menu { x, y, w, items });
         self.menu_hover = None;
     }
 
     fn menu_rect(&self, menu: &Menu) -> (f32, f32, f32, f32) {
-        let w = 220.0;
+        let w = menu.w;
         let h = 12.0 + menu.items.iter().map(|(_, a)| if a.is_some() { 24.0 } else { 9.0 }).sum::<f32>();
         let x = menu.x.min(self.w - w - 6.0).max(6.0);
         let y = if menu.y + h > self.h - 6.0 { (menu.y - h).max(6.0) } else { menu.y };
@@ -1662,10 +1678,8 @@ impl App {
         // A long list would leave the window: the most fitting programs are first anyway
         let room = ((self.h - 24.0) / 24.0).max(1.0) as usize;
         self.open_with.truncate(room);
-        let fonts = &mut self.fonts;
-        let items = self.open_with.iter().enumerate().map(|(i, (_, h))| (fonts.ellipsize(&h.name, 220.0 - 32.0, 13.0, false), Some(MenuAction::OpenWithApp(i))));
-        self.menu = Some(Menu { x, y, items: items.collect() });
-        self.menu_hover = None;
+        let items = self.open_with.iter().enumerate().map(|(i, (_, h))| (h.name.clone(), Some(MenuAction::OpenWithApp(i)))).collect();
+        self.set_menu(x, y, items);
     }
 
     /// `sym` is an XKB keysym, `code` the evdev key code, `text` the produced characters
@@ -2401,7 +2415,8 @@ impl App {
                 theme::fill_rrect(pm, x + 5.0, iy, w - 10.0, 24.0, 6.0, colors::accent());
             }
             let ink = if hovered { rgba(255, 255, 255, 255) } else { colors::text() };
-            self.fonts.draw_text(pm, label, x + 16.0, iy + 4.5, 13.0, ink, false);
+            let label = self.fonts.ellipsize(label, w - MENU_PAD, 13.0, false);
+            self.fonts.draw_text(pm, &label, x + 16.0, iy + 4.5, 13.0, ink, false);
             iy += 24.0;
         }
     }
@@ -2452,6 +2467,25 @@ mod tests {
     }
 
     const CTRL: Mods = Mods { ctrl: true, shift: false, alt: false };
+
+    #[test]
+    fn long_names_fit_the_menu() {
+        let root = fixture("longmenu");
+        let long = "feather-de-apt-signing-key-very-long-name-backup.asc";
+        std::fs::write(root.join(long), "x").unwrap();
+        let mut app = app_in(&root);
+        let i = (0..app.visible.len()).find(|&i| app.entry(i).name == long).unwrap();
+        app.open_menu(Hit::Item(i), 10.0, 10.0);
+        let menu = app.menu.take().unwrap();
+        let label = menu.items.iter().map(|(l, _)| l.clone()).find(|l| l.starts_with("Сжать")).unwrap();
+        // Shortened inside the quotes, and the menu grew up to its limit to show more
+        assert!(label.ends_with("…»"), "{label}");
+        assert!(menu.w > MENU_MIN_W && menu.w <= MENU_MAX_W);
+        assert!(app.fonts.measure_text(&label, 13.0, false) + MENU_PAD <= menu.w + 0.5);
+        // Short items keep the usual width
+        app.open_menu(Hit::Content, 10.0, 10.0);
+        assert_eq!(app.menu.take().unwrap().w, MENU_MIN_W);
+    }
 
     #[test]
     fn open_with_lists_programs_for_the_file_in_place_of_the_menu() {
