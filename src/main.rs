@@ -815,9 +815,11 @@ impl FeatherCompositor {
         id == crate::apps::AppRegistry::PERMANENT || self.dock_pins.iter().any(|p| p == id)
     }
 
+    /// `at` is a place among the pinned icons the Dock shows (without this app), as dropped
     pub fn pin_app(&mut self, id: &str, at: Option<usize>) {
+        let shown: Vec<String> = self.pinned_indices().into_iter().map(|i| self.app_registry.apps[i].id.clone()).collect();
+        let at = crate::apps::pin_position(&self.dock_pins, &shown, id, at);
         self.dock_pins.retain(|p| p != id);
-        let at = at.unwrap_or(self.dock_pins.len()).min(self.dock_pins.len());
         self.dock_pins.insert(at, id.to_string());
         self.dock_model_dirty = true;
         self.save_settings();

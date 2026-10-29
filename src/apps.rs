@@ -143,6 +143,19 @@ pub fn application_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Where `id` goes in the saved Dock pins when dropped at `at` among the `shown` pinned icons.
+/// Saved pins may name apps that are not installed here (hidden from the Dock), so the same
+/// number would land too early in the saved list: the app goes right before the icon that is
+/// now at that place instead, or last. The result indexes `pins` without `id`.
+pub fn pin_position(pins: &[String], shown: &[String], id: &str, at: Option<usize>) -> usize {
+    let rest: Vec<&String> = pins.iter().filter(|p| *p != id).collect();
+    match at.and_then(|at| shown.iter().filter(|s| *s != id).nth(at)) {
+        // Files may be shown without being saved (old configs): it always comes first
+        Some(next) => rest.iter().position(|p| *p == next).unwrap_or(0),
+        None => rest.len(),
+    }
+}
+
 /// "firefox" for a snap's "firefox_firefox.desktop": its windows then join a pinned "firefox"
 fn snap_app_name(stem: &str) -> Option<&str> {
     stem.split_once('_').filter(|(snap, app)| snap == app).map(|(snap, _)| snap)
@@ -1270,5 +1283,32 @@ mod desktop_scan_tests {
         assert!(dirs.contains(&PathBuf::from("/usr/share/applications")) || std::env::var_os("XDG_DATA_DIRS").is_some());
         assert!(dirs.contains(&PathBuf::from("/var/lib/snapd/desktop/applications")));
         assert!(dirs.contains(&PathBuf::from("/var/lib/flatpak/exports/share/applications")));
+    }
+}
+
+#[cfg(test)]
+mod dock_pin_tests {
+    use super::pin_position;
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn drops_land_where_shown_despite_hidden_pins() {
+        // "vpn" is pinned in the settings but not installed on this machine
+        let pins = ids(&["files", "web", "term", "vpn", "notes", "monitor", "settings"]);
+        let shown = ids(&["files", "web", "term", "notes", "monitor", "settings"]);
+        // Monitor dragged to the end: after Settings, not back before it
+        let at = pin_position(&pins, &shown, "monitor", Some(5));
+        assert_eq!(at, 6);
+        // Terminal dropped between Notes and Monitor (4th place without Terminal)
+        let at = pin_position(&pins, &shown, "term", Some(3));
+        let mut rest: Vec<_> = pins.iter().filter(|p| *p != "term").cloned().collect();
+        rest.insert(at, "term".into());
+        assert_eq!(rest, ids(&["files", "web", "vpn", "notes", "term", "monitor", "settings"]));
+        // A new app (Launchpad) dropped first, and with no place given
+        assert_eq!(pin_position(&pins, &shown, "calc", Some(0)), 0);
+        assert_eq!(pin_position(&pins, &shown, "calc", None), pins.len());
     }
 }
