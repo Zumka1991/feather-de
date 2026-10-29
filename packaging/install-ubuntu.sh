@@ -15,10 +15,9 @@
 #   3. собирает весь workspace в release;
 #   4. ставит программы в /usr, сеанс «Пёрышко (прямой вывод DRM/KMS)» и PAM-правило
 #      экрана блокировки в формате Debian/Ubuntu (common-auth вместо system-auth из Arch);
-#   5. если экрана входа нет (сервер), ставит greetd с экраном входа самого Пёрышка (как в macOS:
-#      заставка, аватар, пароль; выход из сеанса возвращает на него), включает графическую загрузку
-#      и передаёт сеть NetworkManager (для Wi-Fi в Центре управления).
-# Если стоит GNOME/GDM, он не трогается: Пёрышко появляется в его списке сеансов.
+#   5. packaging/setup-desktop.sh: локали; если экрана входа нет (сервер) — greetd с экраном
+#      входа самого Пёрышка, графическая загрузка и сеть под NetworkManager.
+# Без сборки, готовым пакетом: curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
 # Удаление: sudo ./packaging/uninstall.sh
 set -euo pipefail
 
@@ -34,7 +33,7 @@ for arg in "$@"; do
         --no-greetd) GREETD=no ;;
         --tuigreet) TUIGREET=1 ;;
         -h|--help)
-            sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -68,23 +67,6 @@ case "$(uname -m)" in
     *) warn "Архитектура $(uname -m) не проверялась." ;;
 esac
 
-# Экран входа уже есть (GDM, SDDM, LightDM…), если systemd знает display-manager.service.
-# greetd, уже настроенный на Пёрышко прошлым запуском, — свой: его конфиг обновляем.
-HAS_DM=0
-[[ -e /etc/systemd/system/display-manager.service ]] && HAS_DM=1
-if [[ "$(basename "$(readlink -f /etc/systemd/system/display-manager.service 2>/dev/null)")" == greetd.service ]] \
-    && grep -qs feather-session /etc/greetd/config.toml; then
-    HAS_DM=0
-fi
-if [[ "$GREETD" == auto ]]; then
-    if (( HAS_DM )); then GREETD=no; else GREETD=yes; fi
-fi
-if (( HAS_DM )); then
-    echo "Экран входа: $(basename "$(readlink -f /etc/systemd/system/display-manager.service)" .service)"
-else
-    echo "Экран входа не найден (система без рабочего стола)."
-fi
-
 # --- Пакеты ---------------------------------------------------------------------------------
 
 # Сборка: компилятор, pkg-config и заголовки для drm/gbm/libinput/libseat/udev/xkbcommon.
@@ -107,14 +89,7 @@ RUNTIME_PKGS=(
     libarchive-tools
     fonts-noto-core fonts-noto-mono fonts-noto-color-emoji fonts-noto-cjk fonts-dejavu-core
     breeze-cursor-theme polkitd
-    # Ubuntu вырезает переводы из пакетов в языковые пакеты: без них «Документы» и
-    # «Загрузки» называются Documents/Downloads даже в русском сеансе (как и меню GTK-программ)
-    language-pack-ru-base language-pack-de-base language-pack-es-base language-pack-fr-base
-    language-pack-zh-hans-base
 )
-# Экран входа для системы без рабочего стола: greetd запускает Пёрышко с его экраном входа.
-GREETER_PKGS=(greetd)
-(( TUIGREET )) && GREETER_PKGS+=(tuigreet)
 # Необязательные: каждая строка включает свою часть Центра управления или программы.
 OPTIONAL_PKGS=(
     xwayland-satellite                        # X11-программы (Steam, Wine, старые приложения)
@@ -126,6 +101,7 @@ OPTIONAL_PKGS=(
     poppler-utils                             # pdftoppm для PDF в Просмотре
     ffmpeg                                    # запись экрана
     ddcutil                                   # яркость внешних мониторов
+    libfuse2t64                               # AppImage монтируются сами (без него — распаковкой)
 )
 
 # Ставим только то, что есть в репозиториях этой версии Ubuntu: имя пакета может отсутствовать
@@ -162,43 +138,6 @@ if (( OPTIONAL )); then
     fi
 fi
 
-if [[ "$GREETD" == yes ]]; then
-    step "Установка экрана входа greetd + tuigreet"
-    mapfile -t GREETER < <(available "${GREETER_PKGS[@]}")
-    (( ${#GREETER[@]} == ${#GREETER_PKGS[@]} )) || die "В репозиториях нет ${GREETER_PKGS[*]}; запустите с --no-greetd."
-    # Не даём пакету запустить greetd прямо сейчас: он переключил бы консоль посреди установки,
-    # а конфигурация Пёрышка ещё не записана. Запустится после перезагрузки.
-    # Чужой policy-rc.d (бывает в контейнерах) сохраняем и возвращаем.
-    POLICY_RC=/usr/sbin/policy-rc.d
-    restore_policy_rc() {
-        sudo rm -f "$POLICY_RC"
-        if [[ -e "$POLICY_RC.feather-bak" ]]; then sudo mv -f "$POLICY_RC.feather-bak" "$POLICY_RC"; fi
-    }
-    if [[ -e "$POLICY_RC" ]]; then sudo mv -f "$POLICY_RC" "$POLICY_RC.feather-bak"; fi
-    trap restore_policy_rc EXIT
-    printf '#!/bin/sh\nexit 101\n' | sudo tee "$POLICY_RC" >/dev/null
-    sudo chmod 755 "$POLICY_RC"
-    sudo apt-get install -y --no-install-recommends "${GREETER[@]}"
-    restore_policy_rc
-    trap - EXIT
-fi
-
-# Ubuntu Server знает только C.UTF-8: генерируем локали языков Пёрышка, чтобы сеанс
-# (feather-session) говорил на выбранном языке, а домашние папки назывались по-русски.
-# Системную локаль (LANG в /etc/default/locale) не меняем.
-step "Локали языков интерфейса"
-for loc in ru_RU en_US es_ES de_DE fr_FR zh_CN; do
-    if ! locale -a 2>/dev/null | grep -qix "$loc.utf8"; then
-        sudo sed -i "s/^# *\($loc.UTF-8 UTF-8\)/\1/" /etc/locale.gen
-        grep -qx "$loc.UTF-8 UTF-8" /etc/locale.gen || echo "$loc.UTF-8 UTF-8" | sudo tee -a /etc/locale.gen >/dev/null
-        NEED_LOCALE_GEN=1
-    fi
-done
-if [[ -n "${NEED_LOCALE_GEN:-}" ]]; then
-    sudo locale-gen
-fi
-fc-cache -f >/dev/null 2>&1 || true
-
 # --- Rust -----------------------------------------------------------------------------------
 
 step "Rust toolchain"
@@ -219,7 +158,8 @@ echo "$(rustc --version), $(cargo --version)"
 
 # xwayland-satellite (X11-программы) есть не во всех выпусках Ubuntu, например его нет в 26.04:
 # тогда собираем из исходников проекта.
-XWLS_TAG=v0.8.3
+# shellcheck source=versions.sh
+. "$ROOT_DIR/packaging/versions.sh"
 if (( OPTIONAL )) && ! command -v xwayland-satellite >/dev/null; then
     step "Сборка xwayland-satellite $XWLS_TAG (для X11-программ)"
     mapfile -t XWLS_DEPS < <(available xwayland libxcb1-dev libxcb-cursor-dev libclang-dev clang)
@@ -253,94 +193,11 @@ sudo tee /etc/pam.d/feather-lock >/dev/null <<'EOF'
 EOF
 sudo chmod 644 /etc/pam.d/feather-lock
 
-# --- Экран входа и сеть для системы без рабочего стола ---------------------------------------
+# --- Экран входа, локали и сеть ---------------------------------------------------------------
 
-if [[ "$GREETD" == yes ]]; then
-    step "Настройка greetd: вход в Пёрышко"
-    GREETER_USER=_greetd
-    id -u "$GREETER_USER" >/dev/null 2>&1 || GREETER_USER=greeter
-    id -u "$GREETER_USER" >/dev/null 2>&1 || die "Не найден пользователь экрана входа (_greetd/greeter)."
-    if [[ -f /etc/greetd/config.toml ]] && ! grep -q feather-session /etc/greetd/config.toml; then
-        sudo cp /etc/greetd/config.toml /etc/greetd/config.toml.before-feather
-    fi
-    if (( TUIGREET )); then
-        # tuigreet: имя и пароль; F2 — другая команда, F3 — другой сеанс из wayland-sessions.
-        GREETER_CMD="tuigreet --time --remember --asterisks --greeting 'Пёрышко' --cmd feather-session"
-    else
-        # Экран входа самого Пёрышка: greetd сразу запускает его от имени этого пользователя,
-        # рабочий стол открывается только после проверки пароля через PAM (feather-lock), без
-        # перезапуска видеокарты. После выхода из сеанса greetd снова показывает этот экран.
-        GREETER_CMD="feather-session --login"
-        GREETER_USER="$USER"
-    fi
-    sudo tee /etc/greetd/config.toml >/dev/null <<EOF
-# Установлено packaging/install-ubuntu.sh (Пёрышко). Прежний файл: config.toml.before-feather
-[terminal]
-vt = 7
-
-[default_session]
-command = "$GREETER_CMD"
-user = "$GREETER_USER"
-EOF
-    sudo chmod 644 /etc/greetd/config.toml
-    sudo systemctl enable greetd.service
-    sudo systemctl set-default graphical.target
-fi
-
-# На Ubuntu Server сетью управляет systemd-networkd через netplan, и NetworkManager не видит
-# ни Wi-Fi, ни проводную сеть. Как в Ubuntu Desktop, отдаём netplan-рендеринг NetworkManager.
-# Применится после перезагрузки: netplan apply сейчас мог бы оборвать SSH.
-NETPLAN_NM=/etc/netplan/99-feather-network-manager.yaml
-if [[ "$GREETD" == yes ]] && (( ! HAS_DM )) && command -v NetworkManager >/dev/null \
-    && command -v netplan >/dev/null && ! sudo grep -rqs 'renderer: *NetworkManager' /etc/netplan; then
-    step "Передача сети NetworkManager (после перезагрузки)"
-    printf 'network:\n  version: 2\n  renderer: NetworkManager\n' | sudo tee "$NETPLAN_NM" >/dev/null
-    sudo chmod 600 "$NETPLAN_NM"
-    if sudo netplan get >/dev/null; then
-        sudo systemctl enable NetworkManager.service
-        # networkd больше ничего не ведёт: его ожидание сети задерживало бы загрузку на 2 минуты.
-        sudo systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
-    else
-        warn "netplan не принял настройку; сеть оставлена как была."
-        sudo rm -f "$NETPLAN_NM"
-    fi
-fi
-
-# --- Подсказки ------------------------------------------------------------------------------
-
-if [[ -d /sys/module/nvidia ]]; then
-    modeset="$(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null || echo N)"
-    if [[ "$modeset" != Y ]]; then
-        warn "Проприетарный драйвер NVIDIA без modeset: Пёрышко не получит экран."
-        warn "Включите: echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf"
-        warn "затем sudo update-initramfs -u и перезагрузка."
-    fi
-fi
-
-step "Готово"
-if [[ "$GREETD" == yes ]]; then
-    cat <<EOF
-Перезагрузитесь: sudo reboot
-После загрузки появится экран входа Пёрышка; введите пароль. Выход из сеанса
-(меню Пёрышка → «Выйти из Пёрышка…») возвращает на этот экран.
-EOF
-    (( TUIGREET )) || echo "Экран входа открывается для $USER; для нескольких пользователей: --tuigreet."
-    (( HAS_DM )) && warn "greetd поставлен рядом с прежним экраном входа; включён будет только один (systemctl status display-manager)."
-elif (( HAS_DM )); then
-    cat <<EOF
-Выйдите из сеанса. На экране входа выберите пользователя, нажмите шестерёнку
-в правом нижнем углу и выберите «Пёрышко (прямой вывод DRM/KMS)».
-Прежний рабочий стол остался на экране входа как запасной сеанс.
-EOF
-else
-    cat <<EOF
-Экран входа не ставился. Войдите в текстовую консоль и выполните: feather-session
-EOF
-fi
-cat <<EOF
-
-  Аварийный выход из Пёрышка:  Ctrl+Alt+Backspace
-  Консоль:                     Ctrl+Alt+F3
-  Лог сеанса:                  ~/.local/state/feather-de/drm.log
-  Удаление:                    sudo $ROOT_DIR/packaging/uninstall.sh
-EOF
+SETUP_ARGS=(--user "$USER")
+[[ "$GREETD" == yes ]] && SETUP_ARGS+=(--greetd)
+[[ "$GREETD" == no ]] && SETUP_ARGS+=(--no-greetd)
+(( TUIGREET )) && SETUP_ARGS+=(--tuigreet)
+sudo "$ROOT_DIR/packaging/setup-desktop.sh" "${SETUP_ARGS[@]}"
+echo "  Удаление:                    sudo $ROOT_DIR/packaging/uninstall.sh"

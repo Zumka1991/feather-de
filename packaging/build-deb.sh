@@ -9,6 +9,9 @@
 # +git<дата UTC>.<коммит>: так каждая сборка новее предыдущей и apt её обновляет.
 # Файлы раскладывает packaging/install.sh (как при установке из исходников), затем
 # PAM-правило заменяется на стек Debian, а зависимости от библиотек считает dpkg-shlibdeps.
+# В пакет входят своя сборка xwayland-satellite (в Ubuntu 26.04 его нет), setup-desktop
+# (экран входа и локали для get.sh) и ключ APT-репозитория: пакет, поставленный файлом,
+# сам подключает репозиторий, как Chrome, и дальше Пёрышко обновляется через apt.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -35,11 +38,19 @@ else
 fi
 ARCH="$(dpkg --print-architecture)"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/release"
+# shellcheck source=versions.sh
+. "$ROOT_DIR/packaging/versions.sh"
+XWLS_BIN="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/xwayland-satellite/bin/xwayland-satellite"
 
 if (( ! NO_BUILD )); then
     echo "==> Сборка release (все программы окружения)…"
     (cd "$ROOT_DIR" && cargo build --release --locked --workspace)
+    # Нужны libxcb1-dev, libxcb-cursor-dev и clang; повторный запуск с той же версией мгновенный
+    echo "==> Сборка xwayland-satellite $XWLS_TAG…"
+    cargo install --locked --git https://github.com/Supreeeme/xwayland-satellite --tag "$XWLS_TAG" \
+        --root "$(dirname "$(dirname "$XWLS_BIN")")" xwayland-satellite
 fi
+[[ -x "$XWLS_BIN" ]] || { echo "Нет $XWLS_BIN: соберите без --no-build" >&2; exit 1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -52,6 +63,10 @@ DESTDIR="$PKG" PREFIX=/usr SYSCONFDIR=/etc "$ROOT_DIR/packaging/install.sh" --no
 # дистрибутив или install-ubuntu.sh
 rm -f "$PKG/etc/greetd/feather-greeter.toml"
 rmdir --ignore-fail-on-non-empty "$PKG/etc/greetd"
+LIBEXEC="$PKG/usr/libexec/feather-de"
+install -Dm755 "$XWLS_BIN" "$LIBEXEC/xwayland-satellite"
+install -Dm755 "$ROOT_DIR/packaging/setup-desktop.sh" "$LIBEXEC/setup-desktop"
+install -Dm644 "$ROOT_DIR/packaging/apt/feather-de.asc" "$PKG/usr/share/keyrings/feather-de.asc"
 # Экран блокировки: стек PAM Debian/Ubuntu вместо system-auth из Arch
 cat > "$PKG/etc/pam.d/feather-lock" <<'EOF'
 #%PAM-1.0
@@ -71,6 +86,12 @@ Copyright: $(date -u +%Y) Zumka1991
 License: none
  The project has not chosen a license for its own code yet (see README.md).
 
+Files: usr/libexec/feather-de/xwayland-satellite
+Copyright: xwayland-satellite contributors
+License: MPL-2.0
+ Source: https://github.com/Supreeeme/xwayland-satellite ($XWLS_TAG).
+ On Debian systems the full text is in /usr/share/common-licenses/MPL-2.0.
+
 Files: usr/share/feather-de/fonts/*
 Copyright: The Inter Project Authors; JetBrains s.r.o.; Google LLC
 License: OFL-1.1 or Apache-2.0
@@ -83,7 +104,7 @@ echo "==> Зависимости от библиотек…"
 mkdir -p "$WORK/src/debian"
 printf 'Source: feather-de\n\nPackage: feather-de\nArchitecture: any\n' > "$WORK/src/debian/control"
 ELF_ARGS=()
-for bin in "$PKG"/usr/bin/feather-*; do
+for bin in "$PKG"/usr/bin/feather-* "$LIBEXEC/xwayland-satellite"; do
     # feather-session is a shell script
     [[ "$(head -c 4 "$bin")" == $'\x7fELF' ]] && ELF_ARGS+=("-e$bin")
 done
@@ -92,7 +113,7 @@ SHLIBS="$(cd "$WORK/src" && dpkg-shlibdeps -O "${ELF_ARGS[@]}" 2>/dev/null | sed
 
 # Программы, которые окружение вызывает само; Recommends — то, без чего работает, но беднее
 DEPENDS="$SHLIBS, dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools"
-RECOMMENDS="breeze-cursor-theme, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core"
+RECOMMENDS="breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core"
 INSTALLED_KB="$(du -sk --exclude=DEBIAN "$PKG" | cut -f1)"
 
 mkdir -p "$PKG/DEBIAN"
@@ -114,17 +135,44 @@ Description: Пёрышко (Feather DE) — рабочий стол Wayland в 
  Запускается сеансом «Пёрышко» из экрана входа или командой feather-session.
 EOF
 echo "/etc/pam.d/feather-lock" > "$PKG/DEBIAN/conffiles"
-for script in postinst postrm; do
-    cat > "$PKG/DEBIAN/$script" <<'EOF'
+cat > "$PKG/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
 # Новые ярлыки и тип .deb → «Установка программ»
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications || true
 fi
+# Как Chrome: пакет, поставленный файлом, сам подключает свой репозиторий, и дальше Пёрышко
+# обновляется через apt. Уже подключённый (образ Пёрышко OS, инструкция с сайта, get.sh) не
+# трогаем. Отключить обновления: строка «Enabled: no» в этом файле (он не перезаписывается).
+SOURCES=/etc/apt/sources.list.d/feather-de.sources
+if [ "$1" = configure ] && [ ! -e "$SOURCES" ] \
+    && ! grep -qs 'zumka1991\.github\.io/feather-de' /etc/apt/sources.list \
+        /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; then
+    cat > "$SOURCES" <<'SRC'
+# Подключено пакетом feather-de: новые версии Пёрышка приходят с «sudo apt upgrade».
+# Отключить: Enabled: no
+Types: deb
+URIs: https://zumka1991.github.io/feather-de
+Suites: stable
+Components: main
+Signed-By: /usr/share/keyrings/feather-de.asc
+SRC
+fi
 EOF
-    chmod 755 "$PKG/DEBIAN/$script"
-done
+cat > "$PKG/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+# Репозиторий, который подключил postinst, убираем вместе с настройками (purge)
+SOURCES=/etc/apt/sources.list.d/feather-de.sources
+if [ "$1" = purge ] && grep -qs '^# Подключено пакетом feather-de' "$SOURCES"; then
+    rm -f "$SOURCES"
+fi
+EOF
+chmod 755 "$PKG/DEBIAN/postinst" "$PKG/DEBIAN/postrm"
 
 mkdir -p "$OUT_DIR"
 DEB="$OUT_DIR/feather-de_${VERSION}_${ARCH}.deb"

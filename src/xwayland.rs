@@ -153,6 +153,14 @@ fn find_satellite() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("FEATHER_XWAYLAND_SATELLITE").map(PathBuf::from) {
         return p.is_file().then_some(p);
     }
+    // The .deb carries its own build: Ubuntu 26.04 has no xwayland-satellite package
+    let bundled = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("../libexec/feather-de/xwayland-satellite")))
+        .filter(|p| p.is_file());
+    if bundled.is_some() {
+        return bundled;
+    }
     std::env::var_os("PATH")?
         .to_str()?
         .split(':')

@@ -5,7 +5,8 @@
 #
 # Кладёт пакеты в pool/, оставляет N последних версий (по умолчанию 3), строит
 # dists/stable/main/binary-<арх>/Packages(.gz) и Release, подписывает их (InRelease и
-# Release.gpg) ключом GPG и кладёт рядом публичный ключ feather-de.asc и страницу с инструкцией.
+# Release.gpg) ключом GPG и кладёт рядом публичный ключ feather-de.asc, установку одной
+# командой install.sh (packaging/get.sh) и страницу с инструкцией.
 # Нужны только dpkg-dev и gpg. Подключение у пользователя:
 #   deb [signed-by=/etc/apt/keyrings/feather-de.asc] https://zumka1991.github.io/feather-de stable main
 set -euo pipefail
@@ -23,6 +24,7 @@ while (( $# )); do
     esac
 done
 [[ -n "$REPO" ]] || { echo "Укажите каталог репозитория (см. --help)" >&2; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 command -v dpkg-scanpackages >/dev/null || { echo "Нужен dpkg-dev" >&2; exit 1; }
 mkdir -p "$REPO"
 cd "$REPO"
@@ -81,21 +83,34 @@ else
     echo "[!] Без --key репозиторий не подписан: apt откажется его использовать" >&2
 fi
 
+# curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
+install -m644 "$SCRIPT_DIR/get.sh" install.sh
+
 # GitHub Pages отдаёт файлы как есть, без Jekyll
 touch .nojekyll
 cat > index.html <<'EOF'
 <!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Пёрышко — репозиторий APT</title>
+<title>Пёрышко — установка</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;color:#1d1d1f}
-pre{background:#f5f5f7;padding:12px 14px;border-radius:10px;overflow-x:auto}</style></head>
-<body><h1>Пёрышко (Feather DE) — репозиторий APT</h1>
-<p>Подключение на Ubuntu 24.04 и новее:</p>
+pre{background:#f5f5f7;padding:12px 14px;border-radius:10px;overflow-x:auto}h2{margin-top:32px}</style></head>
+<body><h1>Пёрышко (Feather DE)</h1>
+<p>Рабочий стол Wayland в стиле macOS для Ubuntu 24.04 и новее (amd64).</p>
+<h2>Одной командой</h2>
+<p>Подходит и для Ubuntu Server без рабочего стола: ставит Пёрышко, его экран входа и всё нужное.
+Запускайте обычным пользователем, пароль sudo скрипт спросит сам.</p>
+<pre>curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash</pre>
+<h2>Файлом .deb</h2>
+<p><a href="https://github.com/Zumka1991/feather-de/releases/latest/download/feather-de_amd64.deb">Скачать feather-de_amd64.deb</a>
+и открыть двойным щелчком (или <code>sudo apt install ./feather-de_amd64.deb</code>).
+Пакет сам подключит этот репозиторий, как Chrome.</p>
+<h2>Репозиторий вручную</h2>
 <pre>sudo install -d -m 755 /etc/apt/keyrings
 curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo tee /etc/apt/keyrings/feather-de.asc &gt;/dev/null
 echo 'deb [signed-by=/etc/apt/keyrings/feather-de.asc] https://zumka1991.github.io/feather-de stable main' | sudo tee /etc/apt/sources.list.d/feather-de.list
 sudo apt-get update &amp;&amp; sudo apt-get install feather-de</pre>
-<p>Обновления приходят вместе с системой: <code>sudo apt upgrade</code>.
+<p>Отпечаток ключа: <code>D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4</code>.
+Обновления приходят вместе с системой: <code>sudo apt upgrade</code>.
 Исходный код: <a href="https://github.com/Zumka1991/feather-de">github.com/Zumka1991/feather-de</a>.</p>
 </body></html>
 EOF

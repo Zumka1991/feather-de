@@ -2,6 +2,32 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-30 — Установка одной командой, .deb подключает репозиторий, X11 и AppImage из пакета (Claude)
+
+- **`curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash`** (`packaging/get.sh`,
+  CI кладёт его на Pages): подключает репозиторий (ключ сверяется с отпечатком), ставит пакет
+  с Recommends и запускает `setup-desktop`. Работает и через `| sudo bash` (экран входа — для
+  `SUDO_USER`). Сборка из исходников (`install-ubuntu.sh`) осталась для разработки.
+- **`setup-desktop`** (`packaging/setup-desktop.sh` → `/usr/libexec/feather-de/setup-desktop`):
+  языковые пакеты, локали, greetd с экраном входа Пёрышка, графическая загрузка и сеть под
+  NetworkManager — вынесено из `install-ubuntu.sh`, теперь общее для пакета и исходников.
+- **.deb сам подключает репозиторий, как Chrome:** ключ в `/usr/share/keyrings/feather-de.asc`,
+  postinst пишет `/etc/apt/sources.list.d/feather-de.sources`, если репозиторий ещё не подключён
+  (ISO, инструкция с сайта, get.sh); purge убирает. Постоянная ссылка на пакет:
+  `releases/latest/download/feather-de_amd64.deb`; страница на Pages переписана.
+- **X11-программы в установке из пакета:** xwayland-satellite (в Ubuntu 26.04 его нет) входит
+  в .deb как `/usr/libexec/feather-de/xwayland-satellite`, композитор ищет его там первым.
+  До этого пакет и ISO оставались без Wine/Steam/старых программ.
+- **AppImage из Файлов не запускался:** уходил в xdg-open, а тот не знает, чем открыть
+  `application/x-executable`. Теперь Файлы запускают `.AppImage` сами (свежескачанному ставят
+  бит исполнения), без libfuse2 — через `APPIMAGE_EXTRACT_AND_RUN=1`; `libfuse2t64` добавлен в
+  Recommends и в `install-ubuntu.sh`.
+- Скилл выпуска `.claude/skills/release/SKILL.md` (`/release`) и проверка пакета в чистой
+  Ubuntu без root: `packaging/test-install-chroot.sh пакет.deb` (mmdebstrap).
+- Проверено: test-install-chroot.sh в чистой Ubuntu 26.04 с Recommends — .deb подключил
+  репозиторий и purge его убрал; get.sh поставил пакет, greetd на пользователя, graphical.target,
+  ru_RU.UTF-8, сеть под NetworkManager. Тесты Пёрышка 141, Файлов 20 (новый — AppImage без FUSE).
+
 ## 2026-10-30 — Выпуск 0.3.0 (Claude)
 
 - В APT-репозитории: Electron/Chromium в родном Wayland, бикубическое растягивание старых

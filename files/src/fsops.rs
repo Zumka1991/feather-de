@@ -147,6 +147,9 @@ pub fn open_external(path: &Path) {
             }
         }
     }
+    if ext == "appimage" && run_appimage(path).is_ok() {
+        return;
+    }
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
     let (kind, _) = kind_of(name, false, false);
     if matches!(kind, Kind::Text | Kind::Code) {
@@ -173,6 +176,41 @@ pub fn open_external(path: &Path) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// An AppImage is a program: double-click runs it, as on other desktops. A fresh download has
+/// no execute bit, so it gets one (for whoever may read it).
+fn run_appimage(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    let mode = perms.mode();
+    if mode & 0o100 == 0 {
+        perms.set_mode(mode | (mode & 0o444) >> 2);
+        std::fs::set_permissions(path, perms)?;
+    }
+    appimage_command(path, has_fuse2()).spawn().map(drop)
+}
+
+fn appimage_command(path: &Path, fuse2: bool) -> std::process::Command {
+    let mut cmd = std::process::Command::new(path);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(dir) = path.parent() {
+        cmd.current_dir(dir);
+    }
+    // Type 2 AppImages mount themselves with libfuse 2, which Ubuntu 24.04+ no longer ships
+    // by default; without it the runtime unpacks to /tmp and runs from there (slower start)
+    if !fuse2 {
+        cmd.env("APPIMAGE_EXTRACT_AND_RUN", "1");
+    }
+    cmd
+}
+
+fn has_fuse2() -> bool {
+    ["/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]
+        .iter()
+        .any(|dir| Path::new(dir).join("libfuse.so.2").exists())
 }
 
 pub fn open_terminal(dir: &Path) {
@@ -301,6 +339,20 @@ pub fn extract(archive: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use std::cmp::Ordering;
+
+    #[test]
+    fn appimages_run_without_fuse2() {
+        let path = Path::new("/home/u/Загрузки/App.AppImage");
+        let env = |fuse2| {
+            appimage_command(path, fuse2)
+                .get_envs()
+                .find(|(k, _)| *k == "APPIMAGE_EXTRACT_AND_RUN")
+                .and_then(|(_, v)| v.map(|v| v.to_owned()))
+        };
+        assert_eq!(env(false).as_deref(), Some(std::ffi::OsStr::new("1")));
+        assert_eq!(env(true), None);
+        assert_eq!(appimage_command(path, true).get_current_dir(), Some(Path::new("/home/u/Загрузки")));
+    }
 
     #[test]
     fn natural_order_and_folders_first() {

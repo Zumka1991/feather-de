@@ -352,9 +352,23 @@ Mesa/EGL, PAM, systemd-libs, Wayland, fontconfig, Noto и D-Bus.
 
 ### Ubuntu
 
-Скрипт ставит зависимости через apt и Rust через rustup, а потом собирает Пёрышко из
-исходников (готовый пакет — в репозитории APT, см. ниже). Подходит и обычная Ubuntu, и Ubuntu Server / минимальная
-установка без рабочего стола:
+Готовым пакетом, одной командой (Ubuntu 24.04 и новее, amd64; и обычная Ubuntu, и Ubuntu
+Server без рабочего стола):
+
+```bash
+curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
+```
+
+Скрипт ([packaging/get.sh](packaging/get.sh)) подключает репозиторий APT (см. ниже), ставит
+пакет `feather-de` и запускает `setup-desktop`: экран входа, локали и сеть, как описано ниже
+для сборки из исходников. Параметры: `| bash -s -- --tuigreet` (или `--greetd`, `--no-greetd`).
+Удаление: `sudo apt purge feather-de`. Другой путь — скачать
+[feather-de_amd64.deb](https://github.com/Zumka1991/feather-de/releases/latest/download/feather-de_amd64.deb)
+и открыть: пакет сам подключит репозиторий (как Chrome), отключить — `Enabled: no` в
+`/etc/apt/sources.list.d/feather-de.sources`.
+
+Из исходников: скрипт ставит зависимости через apt и Rust через rustup, а потом собирает
+Пёрышко:
 
 ```bash
 git clone https://github.com/Zumka1991/feather-de.git
@@ -379,15 +393,16 @@ cd feather-de
 Флаги: `--no-optional` пропускает звук, Wi-Fi, Bluetooth, порталы и X11, `--greetd` /
 `--no-greetd` принудительно ставят экран входа или отказываются от него. Повторный запуск
 обновляет уже установленное Пёрышко. xwayland-satellite
-(X11-программы), если его нет в репозиториях (Ubuntu 26.04), собирается из исходников.
+(X11-программы), если его нет в репозиториях (Ubuntu 26.04), собирается из исходников
+(в пакет `.deb` он входит готовым). Экран входа, локали и сеть настраивает общий с пакетом
+[packaging/setup-desktop.sh](packaging/setup-desktop.sh).
 Удаление: `sudo ./packaging/uninstall.sh`.
 
 ### Репозиторий APT и выпуск версий
 
 Пакет `feather-de` публикуется в собственный APT-репозиторий на GitHub Pages
 (`https://zumka1991.github.io/feather-de`, подпись GPG), и установленное Пёрышко обновляется
-вместе с системой (`sudo apt upgrade`). Подключение на Ubuntu 24.04 и новее (после первого
-выпуска):
+вместе с системой (`sudo apt upgrade`). Подключение вручную на Ubuntu 24.04 и новее:
 
 ```bash
 sudo install -d -m 755 /etc/apt/keyrings
@@ -398,15 +413,18 @@ sudo apt-get update && sudo apt-get install feather-de
 
 Выпуск новой версии: поднять `version` в `Cargo.toml`, закоммитить и отправить тег
 `v<версия>` — GitHub Actions (`.github/workflows/release.yml`) соберёт пакет, проверит, что
-тег совпадает с `Cargo.toml`, опубликует его в репозиторий (хранятся три последние версии) и в
-GitHub Release:
+тег совпадает с `Cargo.toml`, опубликует его в репозиторий (хранятся три последние версии),
+вместе с `install.sh` и страницей установки, и в GitHub Release. Пошагово (для агентов —
+скилл `/release`): [.claude/skills/release/SKILL.md](.claude/skills/release/SKILL.md).
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag -a v0.3.1 -m "Пёрышко 0.3.1" && git push origin master v0.3.1
 ```
 
 Локально: `packaging/build-deb.sh` собирает `dist/feather-de_<версия>_amd64.deb` (вне тега —
-`+git<дата>.<коммит>`), `packaging/publish-apt.sh` раскладывает и подписывает репозиторий.
+`+git<дата>.<коммит>`), `packaging/publish-apt.sh` раскладывает и подписывает репозиторий,
+`packaging/test-install-chroot.sh пакет.deb` проверяет пакет и `get.sh` в чистой Ubuntu
+(без root, через mmdebstrap).
 
 ### Сборка из исходников
 
