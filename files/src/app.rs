@@ -140,6 +140,10 @@ enum MenuAction {
     ShowList,
     Compress,
     Extract,
+    /// «Открыть с помощью»: the menu turns into the list of programs for the file
+    OpenWith,
+    /// The program at this place in `App::open_with`
+    OpenWithApp(usize),
 }
 
 /// «Свойства»: filled on a worker; the size of a folder arrives later.
@@ -227,6 +231,12 @@ pub struct App {
     rubber: Option<((f32, f32), (f32, f32))>,
     rubber_base: HashSet<PathBuf>,
     menu: Option<Menu>,
+    /// Programs that can open the file in the «Открыть с помощью» menu
+    open_with: Vec<(PathBuf, crate::openwith::Handler)>,
+    /// Read on the first «Открыть с помощью», refreshed when programs change
+    open_with_db: Option<crate::openwith::Db>,
+    /// Where the last context menu was opened: «Открыть с помощью» shows its list there
+    menu_at: (f32, f32),
     confirm: Option<Confirm>,
     /// Running pastes (progress cards) and the names they wait on
     jobs: Vec<jobs::Job>,
@@ -293,6 +303,9 @@ impl App {
             rubber: None,
             rubber_base: HashSet::new(),
             menu: None,
+            open_with: Vec::new(),
+            open_with_db: None,
+            menu_at: (0.0, 0.0),
             confirm: None,
             jobs: Vec::new(),
             next_job: 0,
@@ -1467,6 +1480,7 @@ impl App {
     }
 
     fn open_menu(&mut self, hit: Hit, x: f32, y: f32) {
+        self.menu_at = (x, y);
         let item = |s: &str, a: MenuAction| (s.to_string(), Some(a));
         let sep = || (String::new(), None);
         let items = match hit {
@@ -1486,6 +1500,8 @@ impl App {
                 }
                 if self.entry(i).is_dir {
                     items.push(item("Открыть в терминале", MenuAction::Terminal));
+                } else if self.selected.len() == 1 {
+                    items.push(item("Открыть с помощью…", MenuAction::OpenWith));
                 }
                 items.extend([sep(), item("Переименовать", MenuAction::Rename), item("Скопировать", MenuAction::Copy), item("Вырезать", MenuAction::Cut), item("Свойства", MenuAction::Properties)]);
                 if !self.dir.starts_with(fsops::trash_files_dir()) {
@@ -1609,7 +1625,47 @@ impl App {
                 self.set_view(View::List);
                 Vec::new()
             }
+            MenuAction::OpenWith => {
+                self.show_open_with();
+                Vec::new()
+            }
+            MenuAction::OpenWithApp(i) => {
+                if let Some((path, app)) = self.open_with.get(i) {
+                    if let Err(e) = app.launch(path) {
+                        let msg = format!("Не удалось запустить «{}»: {e}", app.name);
+                        self.flash(msg);
+                    }
+                }
+                self.open_with.clear();
+                Vec::new()
+            }
         }
+    }
+
+    /// Replaces the closed context menu with the programs for the selected file, in its place
+    fn show_open_with(&mut self) {
+        let Some(path) = self.cursor.filter(|_| self.selected.len() == 1).map(|c| self.entry(c)).filter(|e| !e.is_dir).map(|e| e.path.clone()) else { return };
+        if !self.open_with_db.as_ref().is_some_and(|db| db.fresh()) {
+            self.open_with_db = Some(crate::openwith::Db::system());
+        }
+        let Some(db) = self.open_with_db.as_ref() else { return };
+        let handlers = db.handlers(&path);
+        self.open_with = handlers.into_iter().map(|h| (path.clone(), h)).collect();
+        self.open_with_menu(self.menu_at.0, self.menu_at.1);
+    }
+
+    fn open_with_menu(&mut self, x: f32, y: f32) {
+        if self.open_with.is_empty() {
+            self.flash("Нет программ для файлов этого типа".into());
+            return;
+        }
+        // A long list would leave the window: the most fitting programs are first anyway
+        let room = ((self.h - 24.0) / 24.0).max(1.0) as usize;
+        self.open_with.truncate(room);
+        let fonts = &mut self.fonts;
+        let items = self.open_with.iter().enumerate().map(|(i, (_, h))| (fonts.ellipsize(&h.name, 220.0 - 32.0, 13.0, false), Some(MenuAction::OpenWithApp(i))));
+        self.menu = Some(Menu { x, y, items: items.collect() });
+        self.menu_hover = None;
     }
 
     /// `sym` is an XKB keysym, `code` the evdev key code, `text` the produced characters
@@ -2396,6 +2452,39 @@ mod tests {
     }
 
     const CTRL: Mods = Mods { ctrl: true, shift: false, alt: false };
+
+    #[test]
+    fn open_with_lists_programs_for_the_file_in_place_of_the_menu() {
+        let root = fixture("openwith");
+        let sys = root.join("Альфа/sys");
+        std::fs::create_dir_all(sys.join("mime")).unwrap();
+        std::fs::create_dir_all(sys.join("applications")).unwrap();
+        std::fs::write(sys.join("mime/globs2"), "50:image/png:*.png\n").unwrap();
+        for (id, name) in [("eog.desktop", "Просмотр изображений"), ("gimp.desktop", "GIMP")] {
+            std::fs::write(sys.join("applications").join(id), format!("[Desktop Entry]\nType=Application\nName={name}\nExec=true %U\nMimeType=image/png;\n")).unwrap();
+        }
+        let mut app = app_in(&root);
+        app.open_with_db = Some(crate::openwith::Db::load(&[sys.clone()], &[]));
+        let at = |app: &App, name: &str| (0..app.visible.len()).find(|&i| app.entry(i).name == name).unwrap();
+        let labels = |app: &App| app.menu.as_ref().unwrap().items.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>();
+        // A folder has no such item, a file does
+        app.open_menu(Hit::Item(at(&app, "beta")), 10.0, 10.0);
+        assert!(!labels(&app).iter().any(|l| l == "Открыть с помощью…"));
+        app.open_menu(Hit::Item(at(&app, "photo.png")), 40.0, 30.0);
+        assert!(labels(&app).iter().any(|l| l == "Открыть с помощью…"));
+        app.menu = None;
+        assert!(app.menu_action(MenuAction::OpenWith).is_empty());
+        let menu = app.menu.as_ref().unwrap();
+        assert_eq!((menu.x, menu.y), (40.0, 30.0));
+        assert_eq!(labels(&app), ["GIMP", "Просмотр изображений"]);
+        assert_eq!(app.open_with[0].1.command(&root.join("photo.png")), ["true", root.join("photo.png").to_string_lossy().as_ref()]);
+        // A type no program declares: a message instead of an empty menu
+        app.menu = None;
+        app.open_menu(Hit::Item(at(&app, "file2.txt")), 10.0, 10.0);
+        app.menu = None;
+        app.menu_action(MenuAction::OpenWith);
+        assert!(app.menu.is_none());
+    }
 
     #[test]
     fn archives_compress_from_the_menu_and_unpack_on_open() {

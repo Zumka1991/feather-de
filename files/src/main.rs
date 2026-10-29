@@ -4,6 +4,7 @@
 
 mod app;
 mod fsops;
+mod openwith;
 mod theme;
 mod preview;
 
