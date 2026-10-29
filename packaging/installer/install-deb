@@ -14,4 +14,5 @@ esac
 [ -f "$1" ] || { echo "Нет файла: $1" >&2; exit 2; }
 export DEBIAN_FRONTEND=noninteractive
 # Lock::Timeout: подождать, если apt уже занят (например, автоматическими обновлениями)
-exec apt-get install --yes -o APT::Status-Fd=1 -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 "$1"
+# Вывод сценариев пакетов попадает и в /var/log/apt/term.log (без Dpkg::Use-Pty=0)
+exec apt-get install --yes -o APT::Status-Fd=1 -o DPkg::Lock::Timeout=120 "$1"

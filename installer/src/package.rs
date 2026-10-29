@@ -198,8 +198,27 @@ pub fn parse_status(line: &str) -> Option<(f32, String)> {
     }
 }
 
-/// apt's own explanation of a failure: its "E:" lines, else the last lines it printed
+/// The reason of a failure. A package's own script failing ends in apt's useless "dpkg
+/// returned an error code": then the script's last words (just before dpkg's "error
+/// processing package") are what tells the user something. Else apt's "E:" lines, else the
+/// last lines printed.
 pub fn failure_text(lines: &[String]) -> String {
+    let noise = |l: &str| {
+        let l = l.trim_start_matches(['(', ' ']);
+        ["Setting up", "Настраивается", "Unpacking", "Распаковывается", "Preparing", "Подготовка", "Selecting", "Выбор", "Reading database", "Чтение базы", "Processing triggers", "Обрабатываются"]
+            .iter()
+            .any(|p| l.starts_with(p))
+    };
+    if let Some(at) = lines.iter().position(|l| l.contains("error processing") || l.contains("ошибка при обработке")) {
+        let mut said: Vec<&str> = lines[..at].iter().rev().map(|l| l.trim()).filter(|l| !l.is_empty() && !noise(l)).take(2).collect();
+        said.reverse();
+        let package = lines[at].split_whitespace().find(|w| !w.starts_with('(') && !w.ends_with(':') && w.contains(|c: char| c.is_ascii_alphanumeric()) && w.chars().all(|c| c.is_ascii_alphanumeric() || "+-.:".contains(c)) && !["dpkg:", "error", "processing", "package"].contains(w));
+        let head = match package {
+            Some(p) => format!("Ошибка в сценарии установки пакета {}", p.trim_end_matches(':')),
+            None => "Ошибка в сценарии установки пакета".to_string(),
+        };
+        return std::iter::once(head).chain(said.into_iter().map(str::to_string)).collect::<Vec<_>>().join("\n");
+    }
     let errors: Vec<&str> = lines
         .iter()
         .filter_map(|l| l.strip_prefix("E: ").or_else(|| l.strip_prefix("dpkg: error")))
@@ -255,6 +274,7 @@ pub fn install(deb: PathBuf, send: impl Fn(Progress) + Send + 'static) {
         if let Some(errors) = errors.and_then(|t| t.join().ok()) {
             lines.extend(errors.lines().filter(|l| !l.trim().is_empty()).map(str::to_string));
         }
+        save_log(&deb, &lines);
         send(match status.ok().and_then(|s| s.code()) {
             Some(0) => Progress::Done,
             Some(126) => Progress::Cancelled,
@@ -262,6 +282,19 @@ pub fn install(deb: PathBuf, send: impl Fn(Progress) + Send + 'static) {
             _ => Progress::Failed(failure_text(&lines)),
         });
     });
+}
+
+/// apt's whole output of the last installation: ~/.cache/feather-installer/last.log
+fn save_log(deb: &Path, lines: &[String]) {
+    let dir = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .map(|d| d.join("feather-installer"));
+    if let Some(dir) = dir {
+        let _ = std::fs::create_dir_all(&dir);
+        let text = format!("{}\n\n{}\n", deb.display(), lines.join("\n"));
+        let _ = std::fs::write(dir.join("last.log"), text);
+    }
 }
 
 /// The program the package installed, to offer "Открыть": its first visible .desktop entry
@@ -337,6 +370,20 @@ mod tests {
         assert_eq!(parse_status("Reading package lists..."), None);
         let lines = vec!["Reading".to_string(), "E: Unable to locate package x".to_string()];
         assert_eq!(failure_text(&lines), "Unable to locate package x");
+        // A failing post-installation script: its own message, not apt's "error code (1)"
+        let lines: Vec<String> = [
+            "Настраивается пакет google-chrome-stable (156.0.8078.73-1) …",
+            "xdg-icon-resource: No writable system icon directory found.",
+            "dpkg: error processing package google-chrome-stable (--configure):",
+            " installed google-chrome-stable package post-installation script subprocess returned error exit status 3",
+            "E: Sub-process /usr/bin/dpkg returned an error code (1)",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            failure_text(&lines),
+            "Ошибка в сценарии установки пакета google-chrome-stable\nxdg-icon-resource: No writable system icon directory found."
+        );
     }
 
     #[test]

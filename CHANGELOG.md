@@ -2,6 +2,21 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-29 — Ошибки скриптов пакетов в установщике; Firefox только если установлен (Claude)
+
+- Chrome из .deb не ставился: установщик показал лишь «Sub-process /usr/bin/dpkg returned an
+  error code (1)», а причина — вывод сценария postinst пакета — терялась (помощник отключал
+  журнал `Dpkg::Use-Pty=0`, а `failure_text` брал только строки `E:`). Теперь показывается
+  «Ошибка в сценарии установки пакета X» и последние слова сценария перед «error processing»
+  (в том числе русские сообщения dpkg), весь вывод apt сохраняется в
+  `~/.cache/feather-installer/last.log`, а сценарии снова пишут в `/var/log/apt/term.log`.
+  Сам пакет Chrome при этом исправен: `sudo dpkg --configure google-chrome-stable` его
+  доустановил. Причину отказа внутри установщика покажет следующая попытка.
+- Встроенный значок Firefox в Доке и Launchpad появляется, только если `firefox` есть в PATH,
+  `~/.local/bin` или `/snap/bin` (в чистой системе Пёрышко OS браузера нет — значок вёл в никуда).
+- Проверено: тест разбора ошибки сценария (строки Chrome), `cargo test -p feather-installer`
+  5, `-p feather-de` 140.
+
 ## 2026-10-29 — Пакет feather-de.deb (Claude)
 
 - `packaging/build-deb.sh` собирает `dist/feather-de_<версия>_<арх>.deb` без root и fakeroot

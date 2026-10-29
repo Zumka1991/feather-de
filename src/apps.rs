@@ -161,8 +161,8 @@ fn snap_app_name(stem: &str) -> Option<&str> {
     stem.split_once('_').filter(|(snap, app)| snap == app).map(|(snap, _)| snap)
 }
 
-/// An installed program by name: in $PATH or ~/.local/bin (a greeter's session may lack the
-/// latter in $PATH), quoted for `sh -c`
+/// An installed program by name: in $PATH, ~/.local/bin or /snap/bin (a greeter's session may
+/// lack the last two in $PATH), quoted for `sh -c`
 fn find_program(name: &str) -> Option<String> {
     let home = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin"));
     std::env::var_os("PATH")
@@ -170,6 +170,7 @@ fn find_program(name: &str) -> Option<String> {
         .unwrap_or_default()
         .into_iter()
         .chain(home)
+        .chain([PathBuf::from("/snap/bin")])
         .map(|dir| dir.join(name))
         .find(|path| path.is_file())
         .map(|path| format!("'{}'", path.display().to_string().replace('\'', "'\\''")))
@@ -235,8 +236,9 @@ impl AppRegistry {
             AppEntry::new("dolphin", "Файлы", "Файловый менеджер", IconKind::Finder, Exec(files_command()), true)
                 .with_aliases(&["org.kde.dolphin", "feather-files"])
                 .with_own_icon(),
-            // The icon comes from whichever firefox .desktop is installed (apt, snap, flatpak)
-            AppEntry::new("firefox", "Firefox", "Веб-браузер", IconKind::Browser, Exec("firefox".into()), true)
+            // The icon comes from whichever firefox .desktop is installed (apt, snap, flatpak);
+            // without Firefox (a fresh Feather OS) the pin is hidden like the ones below
+            AppEntry::new("firefox", "Firefox", "Веб-браузер", IconKind::Browser, Exec(find_program("firefox").unwrap_or_default()), true)
                 .with_aliases(&["org.mozilla.firefox", "firefox-esr"]),
             // Id stays "konsole" for saved Dock pins; Feather's own Terminal (with its own icon,
             // not the icon theme's utilities-terminal from its .desktop) when installed
@@ -245,7 +247,7 @@ impl AppRegistry {
                     .with_aliases(&["org.kde.konsole", "feather-terminal"]);
                 if own_program("feather-terminal").is_some() { terminal.with_own_icon() } else { terminal }
             },
-            // Pinned only where installed: elsewhere they are removed below
+            // Pinned only where installed: elsewhere they are removed below (as Firefox above)
             AppEntry::new(
                 "antigravity",
                 "Antigravity",

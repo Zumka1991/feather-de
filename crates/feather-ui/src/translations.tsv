@@ -555,3 +555,5 @@ Tahoe Ночь	Tahoe Night	Tahoe Noche	Tahoe Nacht	Tahoe Nuit	Tahoe 夜晚
 Установка не удалась	Installation failed	La instalación falló	Installation fehlgeschlagen	L’installation a échoué	安装失败
 Не найдена программа pkexec (пакет pkexec)	pkexec was not found (package pkexec)	No se encontró pkexec (paquete pkexec)	pkexec wurde nicht gefunden (Paket pkexec)	pkexec est introuvable (paquet pkexec)	未找到 pkexec（pkexec 软件包）
 Не удалось прочитать пакет: {}	Could not read the package: {}	No se pudo leer el paquete: {}	Paket konnte nicht gelesen werden: {}	Impossible de lire le paquet : {}	无法读取软件包：{}
+Ошибка в сценарии установки пакета {}	The package installation script of {} failed	Falló el script de instalación del paquete {}	Das Installationsskript des Pakets {} ist fehlgeschlagen	Le script d’installation du paquet {} a échoué	软件包 {} 的安装脚本失败
+Ошибка в сценарии установки пакета	The package installation script failed	Falló el script de instalación del paquete	Das Installationsskript des Pakets ist fehlgeschlagen	Le script d’installation du paquet a échoué	软件包安装脚本失败
