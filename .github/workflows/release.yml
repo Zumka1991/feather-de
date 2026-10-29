@@ -1,0 +1,91 @@
+# Выпуск Пёрышка: тег v<версия из Cargo.toml> → пакет .deb в APT-репозитории на GitHub Pages
+# (ветка gh-pages) и в GitHub Release. Вручную (workflow_dispatch) — сборка +git<дата>.
+# Секрет APT_SIGNING_KEY: закрытый ключ GPG репозитория (gpg --armor --export-secret-keys).
+name: Выпуск
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apt-repository
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Тег совпадает с версией в Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Тег $GITHUB_REF_NAME, а в Cargo.toml версия $version"
+            exit 1
+          fi
+
+      - name: Зависимости сборки
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config dpkg-dev \
+            libdrm-dev libgbm-dev libinput-dev libseat-dev libudev-dev libxkbcommon-dev \
+            libwayland-dev libegl-dev libgles-dev libpam0g-dev
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Пакет .deb
+        run: ./packaging/build-deb.sh --out dist
+
+      - name: Ключ подписи
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::error::Нет секрета APT_SIGNING_KEY"
+            exit 1
+          fi
+          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+
+      - name: APT-репозиторий (ветка gh-pages)
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin gh-pages:gh-pages 2>/dev/null; then
+            git worktree add apt gh-pages
+          else
+            git worktree add --orphan -b gh-pages apt
+          fi
+          key="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')"
+          ./packaging/publish-apt.sh apt dist/*.deb --key "$key" --keep 3
+          # Один коммит без истории: старые пакеты не копятся в репозитории
+          cd apt
+          git checkout --orphan publish
+          git add -A
+          git commit -qm "APT: $GITHUB_REF_NAME"
+          git push -f origin publish:gh-pages
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --title "Пёрышко $GITHUB_REF_NAME" --generate-notes

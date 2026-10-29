@@ -354,8 +354,8 @@ Current packaging specifies **glibc ≥ 2.44**.
 
 ### Ubuntu
 
-There is no `.deb` yet. The script installs dependencies with apt and Rust with rustup,
-then builds Feather from source. It works on regular Ubuntu and on Ubuntu Server / a
+The script installs dependencies with apt and Rust with rustup, then builds Feather from
+source (a ready package is in the APT repository, see below). It works on regular Ubuntu and on Ubuntu Server / a
 minimal install without a desktop:
 
 ```bash
@@ -382,6 +382,31 @@ Flags: `--no-optional` skips sound, Wi-Fi, Bluetooth, portals and X11; `--greetd
 `--no-greetd` force or skip the login screen. Running it again updates an installed Feather. When xwayland-satellite (X11 apps) is
 missing from the repositories (Ubuntu 26.04), it is built from source.
 Uninstall with `sudo ./packaging/uninstall.sh`.
+
+### APT repository and releases
+
+The `feather-de` package is published to its own APT repository on GitHub Pages
+(`https://zumka1991.github.io/feather-de`, GPG-signed), so an installed Feather updates with
+the system (`sudo apt upgrade`). On Ubuntu 24.04 or newer (after the first release):
+
+```bash
+sudo install -d -m 755 /etc/apt/keyrings
+curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo tee /etc/apt/keyrings/feather-de.asc >/dev/null
+echo 'deb [signed-by=/etc/apt/keyrings/feather-de.asc] https://zumka1991.github.io/feather-de stable main' | sudo tee /etc/apt/sources.list.d/feather-de.list
+sudo apt-get update && sudo apt-get install feather-de
+```
+
+To release: bump `version` in `Cargo.toml`, commit and push the tag `v<version>`. GitHub
+Actions (`.github/workflows/release.yml`) builds the package, checks the tag against
+`Cargo.toml`, publishes it to the repository (the last three versions are kept) and to a
+GitHub Release:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Locally, `packaging/build-deb.sh` builds `dist/feather-de_<version>_amd64.deb` (untagged:
+`+git<date>.<commit>`) and `packaging/publish-apt.sh` lays out and signs the repository.
 
 ### Source build
 

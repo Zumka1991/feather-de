@@ -352,8 +352,8 @@ Mesa/EGL, PAM, systemd-libs, Wayland, fontconfig, Noto и D-Bus.
 
 ### Ubuntu
 
-Готового `.deb` пока нет. Скрипт ставит зависимости через apt и Rust через rustup, а потом
-собирает Пёрышко из исходников. Подходит и обычная Ubuntu, и Ubuntu Server / минимальная
+Скрипт ставит зависимости через apt и Rust через rustup, а потом собирает Пёрышко из
+исходников (готовый пакет — в репозитории APT, см. ниже). Подходит и обычная Ubuntu, и Ubuntu Server / минимальная
 установка без рабочего стола:
 
 ```bash
@@ -381,6 +381,32 @@ cd feather-de
 обновляет уже установленное Пёрышко. xwayland-satellite
 (X11-программы), если его нет в репозиториях (Ubuntu 26.04), собирается из исходников.
 Удаление: `sudo ./packaging/uninstall.sh`.
+
+### Репозиторий APT и выпуск версий
+
+Пакет `feather-de` публикуется в собственный APT-репозиторий на GitHub Pages
+(`https://zumka1991.github.io/feather-de`, подпись GPG), и установленное Пёрышко обновляется
+вместе с системой (`sudo apt upgrade`). Подключение на Ubuntu 24.04 и новее (после первого
+выпуска):
+
+```bash
+sudo install -d -m 755 /etc/apt/keyrings
+curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo tee /etc/apt/keyrings/feather-de.asc >/dev/null
+echo 'deb [signed-by=/etc/apt/keyrings/feather-de.asc] https://zumka1991.github.io/feather-de stable main' | sudo tee /etc/apt/sources.list.d/feather-de.list
+sudo apt-get update && sudo apt-get install feather-de
+```
+
+Выпуск новой версии: поднять `version` в `Cargo.toml`, закоммитить и отправить тег
+`v<версия>` — GitHub Actions (`.github/workflows/release.yml`) соберёт пакет, проверит, что
+тег совпадает с `Cargo.toml`, опубликует его в репозиторий (хранятся три последние версии) и в
+GitHub Release:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Локально: `packaging/build-deb.sh` собирает `dist/feather-de_<версия>_amd64.deb` (вне тега —
+`+git<дата>.<коммит>`), `packaging/publish-apt.sh` раскладывает и подписывает репозиторий.
 
 ### Сборка из исходников
 

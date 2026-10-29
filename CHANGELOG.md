@@ -2,6 +2,21 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-10-29 — APT-репозиторий и выпуск по тегу (Claude)
+
+- `packaging/publish-apt.sh КАТАЛОГ пакет.deb… --key ID [--keep N]`: пул `pool/main/f/feather-de`,
+  последние N версий на архитектуру (по умолчанию 3), `dists/stable/main/binary-<арх>/
+  Packages(.gz)` из `dpkg-scanpackages`, `Release` с MD5/SHA256, подписи `InRelease` и
+  `Release.gpg`, публичный ключ `feather-de.asc`, `.nojekyll` и страница с инструкцией. Нужны
+  только dpkg-dev и gpg (apt-ftparchive не требуется).
+- `.github/workflows/release.yml`: тег `v*` (проверяется совпадение с версией в Cargo.toml) →
+  сборка на ubuntu-24.04 → публикация в ветку `gh-pages` одним коммитом без истории (старые
+  пакеты не копятся) → GitHub Release с .deb. Ключ подписи — секрет `APT_SIGNING_KEY`.
+- README (ru/en): подключение репозитория и порядок выпуска.
+- Проверено: репозиторий из двух версий пакета с временным ключом; `apt-get update` без root
+  против него принимает подпись и выбирает новую версию; подделанный `InRelease` отвергается
+  (`BADSIG`, «is not signed»). Workflow на GitHub ещё не запускался.
+
 ## 2026-10-29 — Ошибки скриптов пакетов в установщике; Firefox только если установлен (Claude)
 
 - Chrome из .deb не ставился: установщик показал лишь «Sub-process /usr/bin/dpkg returned an
