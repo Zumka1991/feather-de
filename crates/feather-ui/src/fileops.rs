@@ -6,6 +6,10 @@ use std::{
     ffi::CString,
     os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+        Mutex,
+    },
 };
 
 /// Finder order: names compared case-insensitively with digit runs as numbers
@@ -172,27 +176,202 @@ fn paste_target(dir: &Path, source: &Path) -> PathBuf {
     (2..).map(|n| dir.join(format!("{stem} {copy} {n}{ext}"))).find(|p| !p.exists()).unwrap()
 }
 
-/// Copies or moves `sources` into `dir`; returns how many failed
+/// What to do when an item's name is already taken in the target folder
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Conflict {
+    Replace,
+    KeepBoth,
+    Skip,
+}
+
+/// Progress of one paste, shared by the worker thread and the window showing it
+#[derive(Debug, Default)]
+pub struct Progress {
+    /// Bytes to copy (known after the first scan) and bytes copied so far
+    pub total: AtomicU64,
+    pub done: AtomicU64,
+    pub cancel: AtomicBool,
+    current: Mutex<String>,
+}
+
+impl Progress {
+    pub fn cancelled(&self) -> bool {
+        self.cancel.load(AtomicOrdering::Relaxed)
+    }
+
+    /// Name of the item being copied right now
+    pub fn current(&self) -> String {
+        self.current.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    /// For preview renders of a running job
+    pub fn debug_set_current(&self, path: &Path) {
+        self.set_current(path);
+    }
+
+    fn set_current(&self, path: &Path) {
+        if let Ok(mut current) = self.current.lock() {
+            *current = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        }
+    }
+
+    fn advance(&self, bytes: u64) {
+        self.done.fetch_add(bytes, AtomicOrdering::Relaxed);
+    }
+}
+
+/// Bytes under `path` (symlinks are not followed); `tick` runs per folder, stops on cancel
+fn tree_size(path: &Path, progress: &Progress, tick: &mut dyn FnMut()) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else { return 0 };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    tick();
+    let Ok(items) = std::fs::read_dir(path) else { return 0 };
+    let mut size = 0;
+    for item in items.flatten() {
+        if progress.cancelled() {
+            break;
+        }
+        size += tree_size(&item.path(), progress, tick);
+    }
+    size
+}
+
+/// Copies or moves `sources` into `dir`; returns how many failed. Pasting into the item's own
+/// folder makes a «копия»; any other taken name goes to `ask`.
 pub fn paste(sources: &[PathBuf], dir: &Path, cut: bool) -> usize {
-    let mut failed = 0;
+    paste_with(sources, dir, cut, &Progress::default(), &mut |_, _| Conflict::KeepBoth, &mut || {})
+}
+
+/// [`paste`] with progress, cancellation and a choice for taken names. `ask` gets the existing
+/// target and whether it is a folder; `tick` runs after every copied chunk (the caller throttles).
+/// A cancelled or failed copy leaves no partial file behind; a replaced item is swapped in only
+/// once its copy is complete.
+pub fn paste_with(
+    sources: &[PathBuf],
+    dir: &Path,
+    cut: bool,
+    progress: &Progress,
+    ask: &mut dyn FnMut(&Path, bool) -> Conflict,
+    tick: &mut dyn FnMut(),
+) -> usize {
+    let mut sizes = Vec::with_capacity(sources.len());
     for source in sources {
+        sizes.push(tree_size(source, progress, tick));
+        progress.total.fetch_add(sizes[sizes.len() - 1], AtomicOrdering::Relaxed);
+    }
+    let mut failed = 0;
+    for (source, &size) in sources.iter().zip(&sizes) {
+        if progress.cancelled() {
+            break;
+        }
+        progress.set_current(source);
         if dir.starts_with(source) {
             failed += 1; // a folder into itself
             continue;
         }
         if cut && source.parent() == Some(dir) {
+            progress.advance(size);
             continue;
         }
-        let target = paste_target(dir, source);
-        let ok = if cut {
-            std::fs::rename(source, &target).is_ok()
-                || (copy_recursive(source, &target).is_ok() && remove_recursive(source).is_ok())
+        let name = source.file_name().map(PathBuf::from).unwrap_or_default();
+        let mut target = dir.join(&name);
+        let mut replace = false;
+        if source.parent() == Some(dir) {
+            target = paste_target(dir, source);
+        } else if let Ok(meta) = std::fs::symlink_metadata(&target) {
+            match ask(&target, meta.is_dir()) {
+                Conflict::Skip => {
+                    progress.advance(size);
+                    continue;
+                }
+                Conflict::KeepBoth => target = paste_target(dir, source),
+                // Replacing an item that contains the source would delete the source
+                Conflict::Replace if source.starts_with(&target) => {
+                    failed += 1;
+                    continue;
+                }
+                Conflict::Replace => replace = true,
+            }
+            if progress.cancelled() {
+                break;
+            }
+        }
+        // A replacement is built next to the old item and swapped in at the end
+        let dest = if replace { unique_name(dir, &format!(".{}.feather-part", name.to_string_lossy())) } else { target.clone() };
+        let moved = cut && std::fs::rename(source, &dest).is_ok();
+        let ok = if moved {
+            progress.advance(size);
+            true
         } else {
-            copy_recursive(source, &target).is_ok()
+            match copy_tree(source, &dest, progress, tick) {
+                Ok(()) => !cut || remove_recursive(source).is_ok(),
+                Err(_) => {
+                    let _ = remove_recursive(&dest);
+                    if progress.cancelled() {
+                        break;
+                    }
+                    false
+                }
+            }
         };
+        let ok = ok && (!replace || remove_recursive(&target).is_ok() && std::fs::rename(&dest, &target).is_ok());
+        tick();
+        if !ok && replace && dest.exists() {
+            // The old item stays; a moved source goes back where it was
+            if moved {
+                let _ = std::fs::rename(&dest, source);
+            } else {
+                let _ = remove_recursive(&dest);
+            }
+        }
         failed += usize::from(!ok);
     }
     failed
+}
+
+/// [`copy_recursive`] in 1 MiB chunks that report progress and stop on cancel
+fn copy_tree(from: &Path, to: &Path, progress: &Progress, tick: &mut dyn FnMut()) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    let cancelled = || std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled");
+    if progress.cancelled() {
+        return Err(cancelled());
+    }
+    let meta = std::fs::symlink_metadata(from)?;
+    if meta.file_type().is_symlink() {
+        return std::os::unix::fs::symlink(std::fs::read_link(from)?, to);
+    }
+    if meta.is_dir() {
+        std::fs::create_dir(to)?;
+        for item in std::fs::read_dir(from)? {
+            let item = item?;
+            copy_tree(&item.path(), &to.join(item.file_name()), progress, tick)?;
+        }
+        return std::fs::set_permissions(to, meta.permissions());
+    }
+    let mut input = std::fs::File::open(from)?;
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(to)?;
+    let mut buffer = vec![0; 1 << 20];
+    loop {
+        let n = match input.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        output.write_all(&buffer[..n])?;
+        progress.advance(n as u64);
+        tick();
+        if progress.cancelled() {
+            return Err(cancelled());
+        }
+    }
+    output.set_permissions(meta.permissions())?;
+    if let Ok(modified) = meta.modified() {
+        let _ = output.set_modified(modified);
+    }
+    Ok(())
 }
 
 /// `text/uri-list` for file paths (percent-encoded, CRLF lines)
@@ -410,6 +589,87 @@ mod trash_tests {
         assert_eq!(empty_trash(), 0);
         assert!(trash_is_empty());
         assert_eq!(std::fs::read_dir(files.with_file_name("info")).unwrap().count(), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+
+    fn root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("feather-paste-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a/sub")).unwrap();
+        std::fs::create_dir_all(root.join("b/sub")).unwrap();
+        std::fs::write(root.join("a/x.txt"), "new").unwrap();
+        std::fs::write(root.join("a/sub/y"), "new").unwrap();
+        std::fs::write(root.join("b/x.txt"), "old").unwrap();
+        std::fs::write(root.join("b/sub/old"), "old").unwrap();
+        root
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|i| i.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn taken_names_replace_skip_or_keep_both() {
+        let root = root("conflict");
+        let (a, b) = (root.join("a"), root.join("b"));
+        let sources = [a.join("x.txt"), a.join("sub")];
+        let mut asked = Vec::new();
+        let progress = Progress::default();
+        let failed = paste_with(&sources, &b, false, &progress, &mut |t, dir| { asked.push((t.to_path_buf(), dir)); Conflict::Replace }, &mut || {});
+        assert_eq!(failed, 0);
+        assert_eq!(asked, [(b.join("x.txt"), false), (b.join("sub"), true)]);
+        assert_eq!(std::fs::read_to_string(b.join("x.txt")).unwrap(), "new");
+        assert_eq!(names(&b.join("sub")), ["y"]);
+        assert_eq!(names(&b), ["sub", "x.txt"]);
+        assert_eq!(progress.done.load(AtomicOrdering::Relaxed), progress.total.load(AtomicOrdering::Relaxed));
+
+        std::fs::write(a.join("x.txt"), "newer").unwrap();
+        assert_eq!(paste_with(&sources[..1], &b, false, &Progress::default(), &mut |_, _| Conflict::Skip, &mut || {}), 0);
+        assert_eq!(std::fs::read_to_string(b.join("x.txt")).unwrap(), "new");
+        assert_eq!(paste_with(&sources[..1], &b, true, &Progress::default(), &mut |_, _| Conflict::KeepBoth, &mut || {}), 0);
+        assert_eq!(names(&b), ["sub", "x копия.txt", "x.txt"]);
+        assert!(!a.join("x.txt").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn moving_replaces_and_folder_cannot_replace_its_own_parent() {
+        let root = root("move");
+        let (a, b) = (root.join("a"), root.join("b"));
+        assert_eq!(paste_with(&[a.join("sub")], &b, true, &Progress::default(), &mut |_, _| Conflict::Replace, &mut || {}), 0);
+        assert_eq!(names(&b.join("sub")), ["y"]);
+        assert!(!a.join("sub").exists());
+        // Moving c/c up into root would replace c, the folder that holds it
+        std::fs::create_dir_all(root.join("c/c")).unwrap();
+        assert_eq!(paste_with(&[root.join("c/c")], &root, true, &Progress::default(), &mut |_, _| Conflict::Replace, &mut || {}), 1);
+        assert!(root.join("c/c").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancel_leaves_no_partial_copy() {
+        let root = root("cancel");
+        let (a, b) = (root.join("a"), root.join("b"));
+        std::fs::write(a.join("big"), vec![7u8; 3 << 20]).unwrap();
+        let progress = Progress::default();
+        // Stop after the first 1 MiB chunk of the 3 MiB file
+        let failed = paste_with(&[a.join("big"), a.join("sub")], &b, false, &progress, &mut |_, _| Conflict::Replace, &mut || {
+            if progress.done.load(AtomicOrdering::Relaxed) > 0 {
+                progress.cancel.store(true, AtomicOrdering::Relaxed);
+            }
+        });
+        assert_eq!(failed, 0);
+        assert_eq!(progress.done.load(AtomicOrdering::Relaxed), 1 << 20);
+        assert!(!b.join("big").exists());
+        assert_eq!(names(&b.join("sub")), ["old"]);
+        assert!(a.join("big").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 }

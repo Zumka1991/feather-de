@@ -239,6 +239,7 @@ impl App {
     pub(super) fn picker_key(
         &mut self,
         sym: smithay_client_toolkit::seat::keyboard::Keysym,
+        letter: Option<char>,
         text: Option<&str>,
         mods: Mods,
     ) -> Option<Vec<Effect>> {
@@ -258,10 +259,7 @@ impl App {
                 return Some(self.picker_accept());
             }
             if mods.ctrl
-                && matches!(
-                    text.map(str::to_lowercase).as_deref().or(latin(sym)),
-                    Some("a" | "ф")
-                )
+                && letter == Some('a')
             {
                 p.name.clear();
                 p.overwrite = None;
@@ -286,18 +284,12 @@ impl App {
         }
         if matches!(sym, K::F2 | K::Delete)
             || mods.ctrl
-                && matches!(
-                    text.map(str::to_lowercase).as_deref().or(latin(sym)),
-                    Some("x" | "ч" | "v" | "м" | "n" | "т")
-                )
+                && matches!(letter, Some('x' | 'v' | 'n'))
         {
             return Some(Vec::new());
         }
         if mods.ctrl
-            && matches!(
-                text.map(str::to_lowercase).as_deref().or(latin(sym)),
-                Some("a" | "ф")
-            )
+            && letter == Some('a')
             && !p.config.multiple
         {
             if !self.visible.is_empty() {

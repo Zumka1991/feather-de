@@ -71,6 +71,10 @@ enum Msg {
     SaveChecked(PathBuf,Result<Option<bool>,String>),
     Listed(u64, Result<Vec<fsops::Entry>, String>),
     Done(usize, &'static str),
+    /// A paste copied more (throttled), stopped on a taken name, or finished (failures)
+    JobTick,
+    Conflict(u64, PathBuf, bool),
+    PasteDone(u64, usize),
     Props(app::Props),
     ExternalFiles(Vec<PathBuf>),
     /// Files of a drop, read from the offer; the offer is finished after the paste starts
@@ -118,6 +122,8 @@ struct Files {
     serial: u32,
     mods: Mods,
     tx: channel::Sender<Msg>,
+    /// Answers for paste workers waiting on «уже существует», by job id
+    answers: std::collections::HashMap<u64, std::sync::mpsc::Sender<(fsops::Conflict, bool)>>,
     handle: LoopHandle<'static, Files>,
     watcher: Option<fsops::Watcher>,
     watched: Option<PathBuf>,
@@ -205,6 +211,18 @@ fn main() {
                         } else { Vec::new() }
                     }
                     Msg::Done(failed, what) => files.app.operation_done(failed, what),
+                    Msg::JobTick => {
+                        files.app.job_tick();
+                        Vec::new()
+                    }
+                    Msg::Conflict(id, target, is_dir) => {
+                        files.app.job_conflict(id, target, is_dir);
+                        Vec::new()
+                    }
+                    Msg::PasteDone(id, failed) => {
+                        files.answers.remove(&id);
+                        files.app.paste_done(id, failed)
+                    }
                     Msg::Props(props) => {
                         files.app.props_ready(props);
                         Vec::new()
@@ -298,6 +316,7 @@ fn main() {
         serial: 0,
         mods: Mods::default(),
         tx,
+        answers: Default::default(),
         handle: handle.clone(),
         watcher,
         watched: None,
@@ -360,6 +379,10 @@ impl Files {
                         let _ = tx.send(Msg::Listed(generation, fsops::list(&dir).map_err(|e| e.to_string())));
                     });
                 }
+                Effect::Close if self.app.has_jobs() => {
+                    let effects = self.app.request_close();
+                    self.apply(effects);
+                }
                 Effect::Close => self.exit = true,
                 Effect::Minimize => self.window.set_minimized(),
                 Effect::ToggleMaximize => {
@@ -387,12 +410,50 @@ impl Files {
                         self.window.resize(seat, self.serial, edge);
                     }
                 }
-                Effect::Paste(paths, dir, cut) => {
+                Effect::Paste(id, paths, dir, cut) => {
+                    let Some(progress) = self.app.job_progress(id) else { continue };
+                    let (answer_tx, answers) = std::sync::mpsc::channel();
+                    self.answers.insert(id, answer_tx);
                     let tx = self.tx.clone();
-                    std::thread::spawn(move || {
-                        let failed = fsops::paste(&paths, &dir, cut);
-                        let _ = tx.send(Msg::Done(failed, if cut { "Перемещение" } else { "Копирование" }));
-                    });
+                    std::thread::Builder::new()
+                        .name("feather-paste".into())
+                        .spawn(move || {
+                            let mut for_all = None;
+                            let mut last_tick = Instant::now();
+                            let ticks = tx.clone();
+                            let failed = fsops::paste_with(
+                                &paths,
+                                &dir,
+                                cut,
+                                &progress,
+                                &mut |target, is_dir| {
+                                    if let Some(choice) = for_all {
+                                        return choice;
+                                    }
+                                    if tx.send(Msg::Conflict(id, target.to_path_buf(), is_dir)).is_err() {
+                                        return fsops::Conflict::Skip;
+                                    }
+                                    let (choice, all) = answers.recv().unwrap_or((fsops::Conflict::Skip, true));
+                                    if all {
+                                        for_all = Some(choice);
+                                    }
+                                    choice
+                                },
+                                &mut || {
+                                    if last_tick.elapsed() >= std::time::Duration::from_millis(100) {
+                                        last_tick = Instant::now();
+                                        let _ = ticks.send(Msg::JobTick);
+                                    }
+                                },
+                            );
+                            let _ = tx.send(Msg::PasteDone(id, failed));
+                        })
+                        .expect("поток копирования");
+                }
+                Effect::Resolve(id, choice, all) => {
+                    if let Some(answer) = self.answers.get(&id) {
+                        let _ = answer.send((choice, all));
+                    }
                 }
                 Effect::Trash(paths) => {
                     let tx = self.tx.clone();
@@ -639,7 +700,8 @@ impl OutputHandler for Files {
 
 impl WindowHandler for Files {
     fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {
-        self.exit = true;
+        let effects = self.app.request_close();
+        self.apply(effects);
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window, configure: WindowConfigure, _: u32) {
@@ -707,7 +769,7 @@ impl SeatHandler for Files {
 impl Files {
     fn key(&mut self, event: KeyEvent) {
         self.serial = self.serial.max(1);
-        let effects = self.app.key(event.keysym.raw(), event.utf8.as_deref(), self.mods);
+        let effects = self.app.key(event.keysym.raw(), event.raw_code, event.utf8.as_deref(), self.mods);
         self.apply(effects);
     }
 }

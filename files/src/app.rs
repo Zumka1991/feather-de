@@ -3,7 +3,7 @@
 //! so the whole UI also runs headless in tests.
 
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -16,6 +16,9 @@ use crate::text::FontSystem;
 use crate::theme::{self, colors, rgba};
 #[path="picker.rs"] mod picker;
 use picker::PickerState;
+#[path = "jobs.rs"]
+mod jobs;
+use feather_ui::fileops::Conflict;
 
 pub const SIDEBAR_W: f32 = 220.0;
 pub const TOOLBAR_H: f32 = 52.0;
@@ -45,8 +48,10 @@ pub enum Effect {
     Move,
     /// xdg_toplevel resize edge bits: top 1, bottom 2, left 4, right 8
     Resize(u32),
-    /// Copies/moves/trashes on a worker thread; the folder is re-read afterwards
-    Paste(Vec<PathBuf>, PathBuf, bool),
+    /// Job id, sources, target folder, move: copies on a worker that reports progress
+    Paste(u64, Vec<PathBuf>, PathBuf, bool),
+    /// Answer for a job waiting on «уже существует» (the flag applies it to the rest)
+    Resolve(u64, Conflict, bool),
     Trash(Vec<PathBuf>),
     /// Trash folder: put back (from .trashinfo), delete for good, empty it all
     Restore(Vec<PathBuf>),
@@ -96,6 +101,11 @@ enum Hit {
     PropsClose,
     ConfirmOk,
     ConfirmCancel,
+    JobCancel(u64),
+    ConflictReplace,
+    ConflictKeep,
+    ConflictSkip,
+    ConflictAll,
     Nothing,
     PickerAccept,PickerCancel,PickerName,PickerFilter,PickerChoice(usize),
 }
@@ -141,6 +151,8 @@ pub struct Props {
 enum Confirm {
     Delete(Vec<PathBuf>),
     Empty,
+    /// Closing the window while a copy runs
+    Close,
 }
 
 struct Menu {
@@ -201,6 +213,12 @@ pub struct App {
     rubber_base: HashSet<PathBuf>,
     menu: Option<Menu>,
     confirm: Option<Confirm>,
+    /// Running pastes (progress cards) and the names they wait on
+    jobs: Vec<jobs::Job>,
+    next_job: u64,
+    conflicts: VecDeque<jobs::ConflictPrompt>,
+    conflict_all: bool,
+    close_after_jobs: bool,
     /// «Перейти к папке»: the path field over the title (Ctrl+L, ⇧⌘G, click on the title)
     path_edit: Option<feather_ui::input::TextInput>,
     props: Option<Props>,
@@ -260,6 +278,11 @@ impl App {
             rubber_base: HashSet::new(),
             menu: None,
             confirm: None,
+            jobs: Vec::new(),
+            next_job: 0,
+            conflicts: VecDeque::new(),
+            conflict_all: false,
+            close_after_jobs: false,
             path_edit: None,
             props: None,
             menu_hover: None,
@@ -531,7 +554,7 @@ impl App {
     pub fn debug_preview(&mut self, path: &Path) -> Vec<Effect> {
         let Some(index) = (0..self.visible.len()).find(|&i| self.entry(i).path == path) else { return Vec::new(); };
         self.select_only(index);
-        self.key(0x20, Some(" "), Mods::default())
+        self.key(0x20, 57, Some(" "), Mods::default())
     }
 
     fn preview_rect(&self) -> (f32, f32, f32, f32) {
@@ -626,8 +649,8 @@ impl App {
         if cut {
             self.clipboard = None;
         }
-        self.flash(format!("{} {}…", if cut { "Перемещение" } else { "Копирование" }, objects(paths.len())));
-        vec![Effect::Paste(paths, self.dir.clone(), cut)]
+        let dir = self.dir.clone();
+        self.start_paste(paths, dir, cut)
     }
 
     /// The home trash folder itself (restore/delete act on its direct items).
@@ -647,6 +670,7 @@ impl App {
                 self.selected.clear();
                 vec![Effect::EmptyTrash]
             }
+            Some(Confirm::Close) => self.cancel_all_and_close(),
             None => Vec::new(),
         }
     }
@@ -821,6 +845,9 @@ impl App {
 
     fn hit(&self, x: f32, y: f32) -> Hit {
         let inside = |(rx, ry, rw, rh): (f32, f32, f32, f32)| x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+        if let Some(hit) = self.jobs_hit(x, y) {
+            return hit;
+        }
         if self.props.is_some() {
             let (px, py, pw, ph) = self.props_rect();
             return if inside((px + pw - 116.0, py + ph - 46.0, 96.0, 30.0)) { Hit::PropsClose } else { Hit::Nothing };
@@ -1062,6 +1089,9 @@ impl App {
             _ => {}
         }
         let hit = self.hit(x, y);
+        if let Some(effects) = self.jobs_press(&hit, button) {
+            return effects;
+        }
         if self.confirm.is_some() && button != BTN_LEFT {
             return Vec::new();
         }
@@ -1192,6 +1222,7 @@ impl App {
                 }
             }
             Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::Title | Hit::PropsClose | Hit::Nothing => {}
+            Hit::JobCancel(_) | Hit::ConflictReplace | Hit::ConflictKeep | Hit::ConflictSkip | Hit::ConflictAll => {}
         }
         effects
     }
@@ -1324,8 +1355,7 @@ impl App {
             return Vec::new();
         }
         let cut = move_allowed && paths.iter().all(|p| p.parent().is_some_and(|parent| fsops::same_device(parent, &dir)));
-        self.flash(format!("{} {}…", if cut { "Перемещение" } else { "Копирование" }, objects(paths.len())));
-        vec![Effect::Paste(paths, dir, cut)]
+        self.start_paste(paths, dir, cut)
     }
 
     /// Image shown under the pointer while dragging: the first icon, plus a count badge
@@ -1470,12 +1500,16 @@ impl App {
         }
     }
 
-    /// `sym` is an XKB keysym, `text` the produced characters
-    pub fn key(&mut self, sym: u32, text: Option<&str>, mods: Mods) -> Vec<Effect> {
+    /// `sym` is an XKB keysym, `code` the evdev key code, `text` the produced characters
+    pub fn key(&mut self, sym: u32, code: u32, text: Option<&str>, mods: Mods) -> Vec<Effect> {
         use smithay_client_toolkit::seat::keyboard::Keysym as K;
         self.dirty = true;
         let raw = sym;
         let sym = K::new(sym);
+        let letter = shortcut_letter(sym, code);
+        if let Some(effects) = self.conflict_key(sym) {
+            return effects;
+        }
         if self.props.is_some() {
             if matches!(sym, K::Escape | K::Return | K::KP_Enter | K::space) {
                 self.props = None;
@@ -1507,7 +1541,7 @@ impl App {
             }
             return Vec::new();
         }
-        if self.picker.is_none() && mods.ctrl && (matches!(sym, K::l | K::L) || (mods.shift && matches!(sym, K::g | K::G))) {
+        if self.picker.is_none() && mods.ctrl && (letter == Some('l') || (mods.shift && letter == Some('g'))) {
             self.open_path_edit();
             return Vec::new();
         }
@@ -1521,7 +1555,7 @@ impl App {
                 _ => Vec::new(),
             };
         }
-        if let Some(effects)=self.picker_key(sym,text,mods){return effects;}
+        if let Some(effects)=self.picker_key(sym,letter,text,mods){return effects;}
         // Editing a name or the search field
         if let Some((_, name)) = self.rename.as_mut() {
             match sym {
@@ -1581,24 +1615,24 @@ impl App {
                 self.refilter();
             }
             K::Left | K::Right | K::Up | K::Down | K::Home | K::End | K::Page_Up | K::Page_Down => self.move_cursor(sym, mods.shift&&self.picker.as_ref().is_none_or(|p|p.config.multiple)),
-            _ if ctrl => match text.map(str::to_lowercase).as_deref().or(latin(sym)) {
-                Some("a" | "ф") => {
+            _ if ctrl => match letter {
+                Some('a') => {
                     self.selected = self.visible.iter().map(|&i| self.entries[i].path.clone()).collect();
                 }
-                Some("c" | "с") => return self.copy_selection(false),
-                Some("x" | "ч") => return self.copy_selection(true),
-                Some("v" | "м") => return self.paste(),
-                Some("h" | "р") => {
+                Some('c') => return self.copy_selection(false),
+                Some('x') => return self.copy_selection(true),
+                Some('v') => return self.paste(),
+                Some('h') => {
                     self.show_hidden = !self.show_hidden;
                     self.refilter();
                 }
-                Some("f" | "а") => self.search_focus = true,
-                Some("l" | "д") => self.search_focus = true,
-                Some("1") => self.set_view(View::Icons),
-                Some("2") => self.set_view(View::List),
-                Some("n" | "т") if mods.shift => return self.new_folder(),
-                Some("w" | "ц" | "q" | "й") => return vec![Effect::Close],
-                Some("r" | "к") => return self.reload(),
+                Some('f') => self.search_focus = true,
+                Some('i') => return self.menu_action(MenuAction::Properties),
+                Some('1') => self.set_view(View::Icons),
+                Some('2') => self.set_view(View::List),
+                Some('n') if mods.shift => return self.new_folder(),
+                Some('w' | 'q') => return vec![Effect::Close],
+                Some('r') => return self.reload(),
                 _ => {}
             },
             _ => {
@@ -1680,8 +1714,10 @@ impl App {
         self.paint_toolbar(pm);
         self.paint_pathbar(pm);
         self.paint_sidebar(pm);
+        self.paint_jobs(pm);
         self.paint_menu(pm);
         self.paint_confirm(pm);
+        self.paint_conflict(pm);
         self.paint_props(pm);
         self.paint_picker(pm);
         self.paint_preview(pm);
@@ -2122,21 +2158,30 @@ impl App {
         }
         theme::fill_rrect(pm, x, y, w, h, 14.0, colors::glass());
         theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, colors::separator());
-        let (title, body, action) = match &confirm {
+        let (title, body, action, cancel_label) = match &confirm {
             Confirm::Delete(paths) if paths.len() == 1 => (
                 format!("Удалить «{}» безвозвратно?", paths[0].file_name().unwrap_or_default().to_string_lossy()),
                 "Объект будет удалён сразу. Это действие нельзя отменить.".to_string(),
                 "Удалить",
+                "Отменить",
             ),
             Confirm::Delete(paths) => (
                 format!("Удалить безвозвратно {}?", objects(paths.len())),
                 "Объекты будут удалены сразу. Это действие нельзя отменить.".to_string(),
                 "Удалить",
+                "Отменить",
             ),
             Confirm::Empty => (
                 "Удалить объекты из Корзины безвозвратно?".to_string(),
                 format!("{} будут удалены. Это действие нельзя отменить.", objects(self.entries.len())),
                 "Очистить Корзину",
+                "Отменить",
+            ),
+            Confirm::Close => (
+                "Копирование ещё не закончено".to_string(),
+                "Если закрыть окно, копирование прервётся. Недокопированный файл будет удалён.".to_string(),
+                "Прервать",
+                "Не закрывать",
             ),
         };
         self.fonts.draw_text_clipped(pm, &title, x + 20.0, y + 20.0, w - 40.0, 14.0, colors::text(), true);
@@ -2145,7 +2190,7 @@ impl App {
         }
         let (cx, cy, cw, ch) = cancel;
         theme::fill_rrect(pm, cx, cy, cw, ch, ch / 2.0, colors::control());
-        self.fonts.draw_text_centered(pm, "Отменить", cx + cw / 2.0, cy + 7.5, 13.0, colors::text(), false);
+        self.fonts.draw_text_centered(pm, cancel_label, cx + cw / 2.0, cy + 7.5, 13.0, colors::text(), false);
         let (ax, ay, aw, ah) = ok;
         theme::fill_rrect(pm, ax, ay, aw, ah, ah / 2.0, colors::accent());
         self.fonts.draw_text_centered(pm, action, ax + aw / 2.0, ay + 7.5, 13.0, rgba(255, 255, 255, 255), false);
@@ -2176,24 +2221,18 @@ impl App {
     }
 }
 
-fn latin(sym: smithay_client_toolkit::seat::keyboard::Keysym) -> Option<&'static str> {
-    use smithay_client_toolkit::seat::keyboard::Keysym as K;
-    Some(match sym {
-        K::a | K::A => "a",
-        K::c | K::C => "c",
-        K::x | K::X => "x",
-        K::v | K::V => "v",
-        K::h | K::H => "h",
-        K::f | K::F => "f",
-        K::l | K::L => "l",
-        K::n | K::N => "n",
-        K::w | K::W => "w",
-        K::q | K::Q => "q",
-        K::r | K::R => "r",
-        K::_1 => "1",
-        K::_2 => "2",
-        _ => return None,
-    })
+/// Letter or digit of a Ctrl shortcut, independent of the layout: the Latin keysym when the
+/// layout has one (Dvorak and the like keep their letters), else the US key at that position,
+/// so Ctrl+С in the Russian layout is Ctrl+C. With Ctrl held xkb reports control characters
+/// ("\x03") as text, so the text is never used here.
+pub(crate) fn shortcut_letter(sym: smithay_client_toolkit::seat::keyboard::Keysym, code: u32) -> Option<char> {
+    match sym.raw() {
+        raw @ (0x30..=0x39 | 0x61..=0x7a) => return char::from_u32(raw),
+        raw @ 0x41..=0x5a => return char::from_u32(raw + 0x20),
+        _ => {}
+    }
+    const ROWS: [(u32, &str); 4] = [(2, "1234567890"), (16, "qwertyuiop"), (30, "asdfghjkl"), (44, "zxcvbnm")];
+    ROWS.iter().find_map(|&(first, keys)| keys.chars().nth(code.checked_sub(first)? as usize))
 }
 
 /// 1536 → "1,5 КБ"
@@ -2230,6 +2269,70 @@ mod tests {
             }
         }
         app
+    }
+
+    const CTRL: Mods = Mods { ctrl: true, shift: false, alt: false };
+
+    #[test]
+    fn ctrl_shortcuts_ignore_control_text_and_layout() {
+        use smithay_client_toolkit::seat::keyboard::Keysym as K;
+        // xkb reports Ctrl+C as "\x03"; in the Russian layout the keysym is Cyrillic_es
+        assert_eq!(shortcut_letter(K::c, 46), Some('c'));
+        assert_eq!(shortcut_letter(K::C, 46), Some('c'));
+        assert_eq!(shortcut_letter(K::Cyrillic_es, 46), Some('c'));
+        assert_eq!(shortcut_letter(K::Cyrillic_ef, 30), Some('a'));
+        assert_eq!(shortcut_letter(K::_2, 3), Some('2'));
+        assert_eq!(shortcut_letter(K::F5, 63), None);
+
+        let root = std::env::temp_dir().join(format!("feather-files-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("dst")).unwrap();
+        std::fs::write(root.join("a.txt"), "1").unwrap();
+        let mut app = app_in(&root);
+        app.key(K::Cyrillic_ef.raw(), 30, Some("\x06"), CTRL);
+        assert_eq!(app.selected.len(), 2);
+        let effects = app.key(K::Cyrillic_es.raw(), 46, Some("\x03"), CTRL);
+        assert!(matches!(effects.as_slice(), [Effect::Clipboard(paths)] if paths.len() == 2));
+        app.key(K::_2.raw(), 3, Some("2"), CTRL);
+        assert_eq!(app.view, View::List);
+        app.dir = root.join("dst");
+        let effects = app.key(K::v.raw(), 47, Some("\x16"), CTRL);
+        assert!(matches!(effects.as_slice(), [Effect::Paste(1, paths, dir, false)] if paths.len() == 2 && *dir == root.join("dst")));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn paste_job_card_conflict_cancel_and_close() {
+        use feather_ui::fileops::Conflict;
+        use smithay_client_toolkit::seat::keyboard::Keysym as K;
+        let root = std::env::temp_dir().join(format!("feather-files-jobs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = app_in(&root);
+        let effects = app.start_paste(vec![root.join("x")], root.clone(), false);
+        assert_eq!(effects, [Effect::Paste(1, vec![root.join("x")], root.clone(), false)]);
+        assert!(app.has_jobs() && app.job_progress(1).is_some());
+
+        // A taken name blocks the worker until the sheet is answered; Return keeps both
+        app.job_conflict(1, root.join("x"), false);
+        app.conflict_all = true;
+        assert_eq!(app.key(K::Return.raw(), 28, Some("\r"), Mods::default()), [Effect::Resolve(1, Conflict::KeepBoth, true)]);
+        assert!(app.conflicts.is_empty());
+
+        // Cancelling a job that waits on the sheet wakes its worker
+        app.job_conflict(1, root.join("x"), false);
+        assert_eq!(app.cancel_job(1), [Effect::Resolve(1, Conflict::Skip, true)]);
+        assert!(app.job_progress(1).unwrap().cancelled());
+
+        // Closing waits for the worker to clean up, then closes
+        assert!(app.request_close().is_empty());
+        assert!(matches!(app.confirm, Some(Confirm::Close)));
+        app.confirm_ok();
+        assert!(app.close_after_jobs);
+        assert_eq!(app.paste_done(1, 0), [Effect::Close]);
+        assert!(!app.has_jobs());
+        assert_eq!(app.request_close(), [Effect::Close]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn run(app: &mut App, effects: Vec<Effect>) {
@@ -2273,7 +2376,7 @@ mod tests {
         assert!(app.save_checked(root.join("stale"),Ok(None)).is_empty());
         assert!(matches!(app.save_checked(root.join("  spaces.txt  "),Ok(None)).as_slice(),[Effect::Picked(_)]));
         app.set_picker(Config::default());
-        assert!(matches!(app.picker_key(smithay_client_toolkit::seat::keyboard::Keysym::Escape,None,Mods::default()).unwrap().as_slice(),[Effect::Close]));
+        assert!(matches!(app.picker_key(smithay_client_toolkit::seat::keyboard::Keysym::Escape,None,None,Mods::default()).unwrap().as_slice(),[Effect::Close]));
         assert_eq!(std::fs::read_to_string(root.join("file2.txt")).unwrap(),"file2.txt");
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2300,6 +2403,20 @@ mod tests {
         app.paint(&mut pm.as_mut());
         pm.save_png(out.join("menu.png")).unwrap();
         app.menu = None;
+        let home = fsops::home();
+        app.debug_job(vec![home.join("Видео/Отпуск.mkv")], home.join("Документы"), false, 1_300_000_000, 4_600_000_000, &home.join("Видео/Отпуск.mkv"));
+        app.debug_job(vec![home.join("a"), home.join("b"), home.join("c")], home.join("Загрузки"), true, 42_000_000, 0, &home.join("b"));
+        app.paint(&mut pm.as_mut());
+        pm.save_png(out.join("jobs.png")).unwrap();
+        app.job_conflict(1, home.join("Документы/Отчёт за октябрь.pdf"), false);
+        app.paint(&mut pm.as_mut());
+        pm.save_png(out.join("conflict.png")).unwrap();
+        app.conflicts.clear();
+        app.request_close();
+        app.paint(&mut pm.as_mut());
+        pm.save_png(out.join("close.png")).unwrap();
+        app.confirm = None;
+        app.jobs.clear();
         for view in [View::Icons, View::List] {
             app.set_view(view);
             app.paint(&mut pm.as_mut());
@@ -2325,7 +2442,7 @@ mod tests {
             app.resize(1000.0, 640.0);
             let index = (0..app.visible.len()).find(|&i| app.entry(i).name == "file2.txt").unwrap();
             app.select_only(index);
-            let effects = app.key(0x20, Some(" "), Mods::default());
+            let effects = app.key(0x20, 57, Some(" "), Mods::default());
             let [Effect::Preview(path, generation)] = effects.as_slice() else { panic!("Space did not request preview") };
             assert_eq!(path, &root.join("file2.txt"));
             let first_generation = *generation;
@@ -2335,25 +2452,25 @@ mod tests {
             app.paint(&mut image.as_mut());
             std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
             image.save_png("/tmp/feather-inputs/quick-look-text.png").unwrap();
-            let effects = app.key(0xff53, None, Mods::default());
+            let effects = app.key(0xff53, 106, None, Mods::default());
             assert!(matches!(effects.as_slice(), [Effect::Preview(path, _)] if path == &root.join("file10.txt")));
             app.preview_ready(first_generation, Ok(crate::preview::Content::Info("stale".into())));
             assert!(app.preview.as_ref().unwrap().result.is_none());
-            app.key(0x20, Some(" "), Mods::default());
+            app.key(0x20, 57, Some(" "), Mods::default());
             assert!(app.preview.is_none());
             app.preview_ready(first_generation, Ok(crate::preview::Content::Info("closed".into())));
             assert!(app.preview.is_none());
             app.search_focus = true;
-            assert!(app.key(0x20, Some(" "), Mods::default()).is_empty());
+            assert!(app.key(0x20, 57, Some(" "), Mods::default()).is_empty());
             assert_eq!(app.search.text(), " ");
             assert!(app.preview.is_none());
-            app.key(0xff1b, None, Mods::default());
+            app.key(0xff1b, 0, None, Mods::default());
             app.select_only(index);
             app.start_rename();
-            app.key(0x20, Some(" "), Mods::default());
+            app.key(0x20, 57, Some(" "), Mods::default());
             assert_eq!(app.rename.as_ref().unwrap().1.text(), " ");
             assert!(app.preview.is_none());
-            app.key(0xff1b, None, Mods::default());
+            app.key(0xff1b, 0, None, Mods::default());
             let image_path = root.join("photo.png");
             image::RgbImage::from_fn(180, 120, |x, y| image::Rgb([x as u8, y as u8, 160])).save(&image_path).unwrap();
             let index = (0..app.visible.len()).find(|&i| app.entry(i).name == "photo.png").unwrap();
@@ -2363,7 +2480,7 @@ mod tests {
             app.preview_ready(generation, crate::preview::load(&image_path));
             app.paint(&mut image.as_mut());
             image.save_png("/tmp/feather-inputs/quick-look-image.png").unwrap();
-            app.key(0xff1b, None, Mods::default());
+            app.key(0xff1b, 0, None, Mods::default());
             assert!(app.preview.is_none());
             std::fs::remove_dir_all(root).unwrap();
         });
@@ -2401,46 +2518,46 @@ mod tests {
         let mut app = app_in(&root);
         app.resize(1000.0, 640.0);
         let ctrl = Mods { ctrl: true, ..Default::default() };
-        app.key(0x66, Some("f"), ctrl);
-        app.key(0, Some("file"), Mods::default());
+        app.key(0x66, 0, Some("f"), ctrl);
+        app.key(0, 0, Some("file"), Mods::default());
         assert_eq!(app.visible.len(), 2);
-        app.key(0x61, Some("a"), ctrl);
+        app.key(0x61, 0, Some("a"), ctrl);
         assert_eq!(app.search.selected_text(), Some("file"));
         assert_eq!(app.visible.len(), 2, "select-all changed the filter");
-        app.key(0, Some("photo"), Mods::default());
+        app.key(0, 0, Some("photo"), Mods::default());
         assert_eq!(app.visible.len(), 1);
         let (x, y, _, _) = app.search_rect();
         app.press(BTN_LEFT, x + 28.0, y + 12.0, Mods::default());
         assert_eq!(app.search.caret(), 0);
-        app.key(0xffff, None, Mods::default());
+        app.key(0xffff, 0, None, Mods::default());
         assert_eq!(app.search.text(), "hoto");
-        app.key(0xff1b, None, Mods::default());
+        app.key(0xff1b, 0, None, Mods::default());
         for view in [View::Icons, View::List] {
             app.set_view(view);
             let index = (0..app.visible.len()).find(|&i| app.entry(i).name == "file2.txt").unwrap();
             app.select_only(index);
-            app.key(0xffbf, None, Mods::default()); // F2
+            app.key(0xffbf, 0, None, Mods::default()); // F2
             assert_eq!(app.rename.as_ref().unwrap().1.selected_text(), Some("file2.txt"));
-            app.key(0, Some("имя.txt"), Mods::default());
+            app.key(0, 0, Some("имя.txt"), Mods::default());
             let (rx, ry, _, _) = app.item_rect(index);
             let (x, y) = if view == View::Icons { (rx + 9.0, ry + 10.0 + GRID_ICON) } else { (SIDEBAR_W + 45.0, ry + 5.5) };
             app.press(BTN_LEFT, x, y + 2.0, Mods::default());
             assert_eq!(app.rename.as_ref().unwrap().1.caret(), 0);
-            app.key(0xff53, None, Mods { shift: true, ..Default::default() });
+            app.key(0xff53, 0, None, Mods { shift: true, ..Default::default() });
             assert_eq!(app.rename.as_ref().unwrap().1.selected_text(), Some("и"));
-            app.key(0, Some("И"), Mods::default());
+            app.key(0, 0, Some("И"), Mods::default());
             assert_eq!(app.rename.as_ref().unwrap().1.text(), "Имя.txt");
             assert!(root.join("file2.txt").exists(), "editing already renamed the file");
             let mut image = tiny_skia::Pixmap::new(1000, 640).unwrap();
             app.paint(&mut image.as_mut());
             std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
             image.save_png(format!("/tmp/feather-inputs/files-{view:?}.png")).unwrap();
-            app.key(0xff1b, None, Mods::default());
+            app.key(0xff1b, 0, None, Mods::default());
             assert!(root.join("file2.txt").exists());
         }
         app.start_rename();
-        app.key(0, Some("Переименовано.txt"), Mods::default());
-        let effects = app.key(0xff0d, None, Mods::default());
+        app.key(0, 0, Some("Переименовано.txt"), Mods::default());
+        let effects = app.key(0xff0d, 0, None, Mods::default());
         run(&mut app, effects);
         assert!(root.join("Переименовано.txt").exists());
         std::fs::remove_dir_all(root).unwrap();
@@ -2454,17 +2571,17 @@ mod tests {
         let names: Vec<_> = (0..app.visible.len()).map(|i| app.entry(i).name.clone()).collect();
         assert_eq!(names, ["beta", "Альфа", "file2.txt", "file10.txt", "photo.png"]);
         // Hidden files toggle and type-ahead
-        let e = app.key(0x0068, Some("h"), Mods { ctrl: true, ..Default::default() });
+        let e = app.key(0x0068, 0, Some("h"), Mods { ctrl: true, ..Default::default() });
         run(&mut app, e);
         assert_eq!(app.visible.len(), 6);
-        let e = app.key(0x0062, Some("b"), Mods::default());
+        let e = app.key(0x0062, 0, Some("b"), Mods::default());
         run(&mut app, e);
         assert_eq!(app.selected_paths(), [root.join("beta")]);
         // Enter opens the folder, Backspace returns and reselects it
-        let e = app.key(0xff0d, None, Mods::default());
+        let e = app.key(0xff0d, 0, None, Mods::default());
         run(&mut app, e);
         assert_eq!(app.dir(), root.join("beta"));
-        let e = app.key(0xff08, None, Mods::default());
+        let e = app.key(0xff08, 0, None, Mods::default());
         run(&mut app, e);
         assert_eq!(app.dir(), root);
         assert_eq!(app.selected_paths(), [root.join("beta")]);
@@ -2485,7 +2602,7 @@ mod tests {
         // Search filters
         app.search_focus = true;
         for ch in ["f", "i", "l", "e"] {
-            app.key(0, Some(ch), Mods::default());
+            app.key(0, 0, Some(ch), Mods::default());
         }
         assert_eq!(app.visible.len(), 2);
         // Paints at 2× without panicking, list view too
@@ -2503,19 +2620,19 @@ mod tests {
         let root = fixture("edit");
         let mut app = app_in(&root);
         let mods = Mods { ctrl: true, shift: true, ..Default::default() };
-        assert!(app.key(0x004e, Some("N"), mods).is_empty());
+        assert!(app.key(0x004e, 0, Some("N"), mods).is_empty());
         assert!(root.join("Новая папка").is_dir());
         for _ in 0.."Новая папка".chars().count() {
-            app.key(0xff08, None, Mods::default());
+            app.key(0xff08, 0, None, Mods::default());
         }
         for ch in ["Г", "а", "м", "м", "а"] {
-            app.key(0, Some(ch), Mods::default());
+            app.key(0, 0, Some(ch), Mods::default());
         }
-        let e = app.key(0xff0d, None, Mods::default());
+        let e = app.key(0xff0d, 0, None, Mods::default());
         run(&mut app, e);
         assert!(root.join("Гамма").is_dir() && !root.join("Новая папка").exists());
         assert_eq!(app.selected_paths(), [root.join("Гамма")]);
-        assert_eq!(app.key(0xffff, None, Mods::default()), vec![Effect::Trash(vec![root.join("Гамма")])]);
+        assert_eq!(app.key(0xffff, 0, None, Mods::default()), vec![Effect::Trash(vec![root.join("Гамма")])]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2531,16 +2648,16 @@ mod tests {
         assert!(app.in_trash());
         assert!(app.empty_button().is_some());
         let ctrl = Mods { ctrl: true, ..Default::default() };
-        app.key(0x0061, Some("a"), ctrl);
+        app.key(0x0061, 0, Some("a"), ctrl);
         assert_eq!(app.selected_paths(), [trash.join("старое.txt")]);
         // Delete asks; Escape keeps everything.
-        assert!(app.key(0xffff, None, Mods::default()).is_empty());
+        assert!(app.key(0xffff, 0, None, Mods::default()).is_empty());
         assert!(app.confirm.is_some());
-        assert!(app.key(0xff1b, None, Mods::default()).is_empty());
+        assert!(app.key(0xff1b, 0, None, Mods::default()).is_empty());
         assert!(app.confirm.is_none());
         // Delete + Return deletes for good; the menu offers "Вернуть".
-        app.key(0xffff, None, Mods::default());
-        assert_eq!(app.key(0xff0d, None, Mods::default()), vec![Effect::DeleteForever(vec![trash.join("старое.txt")])]);
+        app.key(0xffff, 0, None, Mods::default());
+        assert_eq!(app.key(0xff0d, 0, None, Mods::default()), vec![Effect::DeleteForever(vec![trash.join("старое.txt")])]);
         app.open_menu(Hit::Item(0), 10.0, 10.0);
         let labels: Vec<_> = app.menu.as_ref().unwrap().items.iter().map(|(l, _)| l.clone()).collect();
         assert!(labels.iter().any(|l| l == "Вернуть") && !labels.iter().any(|l| l == "Переместить в Корзину"));
@@ -2554,22 +2671,22 @@ mod tests {
         let root = fixture("path");
         let mut app = app_in(&root);
         let ctrl = Mods { ctrl: true, ..Default::default() };
-        assert!(app.key(0x6c, Some("l"), ctrl).is_empty());
+        assert!(app.key(0x6c, 0, Some("l"), ctrl).is_empty());
         assert_eq!(app.path_edit.as_ref().unwrap().selected_text(), Some(root.to_str().unwrap()));
         // Typing replaces the selected path; a relative name opens inside the current folder
         for ch in ["А", "л", "ь", "ф", "а"] {
-            app.key(0, Some(ch), Mods::default());
+            app.key(0, 0, Some(ch), Mods::default());
         }
-        let effects = app.key(0xff0d, None, Mods::default());
+        let effects = app.key(0xff0d, 0, None, Mods::default());
         assert!(effects.iter().any(|e| matches!(e, Effect::List(p, _) if *p == root.join("Альфа"))));
         assert!(app.path_edit.is_none());
-        app.key(0x6c, Some("l"), ctrl);
-        app.key(0, Some("/нет/такой"), Mods::default());
-        assert!(app.key(0xff0d, None, Mods::default()).is_empty());
+        app.key(0x6c, 0, Some("l"), ctrl);
+        app.key(0, 0, Some("/нет/такой"), Mods::default());
+        assert!(app.key(0xff0d, 0, None, Mods::default()).is_empty());
         assert_eq!(app.dir, root.join("Альфа"));
         assert_eq!(app.menu_action(MenuAction::Properties), vec![Effect::Inspect(root.join("Альфа"))]);
         assert!(app.props.is_some());
-        app.key(0xff1b, None, Mods::default());
+        app.key(0xff1b, 0, None, Mods::default());
         assert!(app.props.is_none());
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -2589,7 +2706,7 @@ mod tests {
         app.release(BTN_LEFT, x, y);
         assert!(app.path_edit.is_some(), "a click opens it on release");
         // A crumb: a drag moves the window, a click navigates on release
-        app.key(0xff1b, None, Mods::default());
+        app.key(0xff1b, 0, None, Mods::default());
         app.layout_crumbs();
         let (path, _, cx, cw) = app.crumb_layout.first().cloned().unwrap();
         let cy = app.h - PATHBAR_H * 0.5 - app.picker_height();
