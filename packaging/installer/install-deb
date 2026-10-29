@@ -1,0 +1,17 @@
+#!/bin/sh
+# Установка пакета .deb для feather-installer. Запускается от root через pkexec
+# (действие polkit org.featherde.install-deb): apt ставит пакет вместе с зависимостями
+# и пишет ход установки в stdout (APT::Status-Fd), который показывает окно установщика.
+set -eu
+if [ "$#" -ne 1 ]; then
+    echo "Использование: install-deb /полный/путь/к/пакету.deb" >&2
+    exit 2
+fi
+case "$1" in
+    /*.deb) ;;
+    *) echo "Нужен полный путь к файлу .deb" >&2; exit 2 ;;
+esac
+[ -f "$1" ] || { echo "Нет файла: $1" >&2; exit 2; }
+export DEBIAN_FRONTEND=noninteractive
+# Lock::Timeout: подождать, если apt уже занят (например, автоматическими обновлениями)
+exec apt-get install --yes -o APT::Status-Fd=1 -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=120 "$1"

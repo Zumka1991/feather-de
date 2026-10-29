@@ -1,0 +1,17 @@
+[Desktop Entry]
+Name=Установка программ
+Name[en]=Package Installer
+Name[es]=Instalador de paquetes
+Name[de]=Paketinstallation
+Name[fr]=Installateur de paquets
+Name[zh_CN]=软件包安装器
+Comment=Установка программ из пакетов .deb
+Comment[en]=Install apps from .deb packages
+Exec=feather-installer %f
+Icon=system-software-install
+Terminal=false
+Type=Application
+NoDisplay=true
+MimeType=application/vnd.debian.binary-package;application/x-deb;
+Categories=System;PackageManager;
+StartupWMClass=feather-installer

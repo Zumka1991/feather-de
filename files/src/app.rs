@@ -1606,7 +1606,9 @@ impl App {
             K::Right if mods.alt => return self.go_forward(),
             K::bracketleft if ctrl => return self.go_back(),
             K::bracketright if ctrl => return self.go_forward(),
-            K::Delete if self.in_trash() => return self.menu_action(MenuAction::DeleteForever),
+            // Delete moves to the Trash; Shift+Delete (and Delete inside the Trash) asks, then
+            // deletes for good
+            K::Delete if self.in_trash() || (mods.shift && self.picker.is_none()) => return self.menu_action(MenuAction::DeleteForever),
             K::Delete => return self.trash_selection(),
             K::F5 => return self.reload(),
             K::Escape => {
@@ -2633,6 +2635,14 @@ mod tests {
         assert!(root.join("Гамма").is_dir() && !root.join("Новая папка").exists());
         assert_eq!(app.selected_paths(), [root.join("Гамма")]);
         assert_eq!(app.key(0xffff, 0, None, Mods::default()), vec![Effect::Trash(vec![root.join("Гамма")])]);
+        // Shift+Delete asks first (Escape keeps it), then deletes for good, past the Trash
+        let shift = Mods { shift: true, ..Default::default() };
+        assert!(app.key(0xffff, 0, None, shift).is_empty());
+        assert!(app.key(0xff1b, 0, None, Mods::default()).is_empty());
+        assert!(app.key(0xffff, 0, None, shift).is_empty());
+        assert_eq!(app.key(0xff0d, 0, None, Mods::default()), vec![Effect::DeleteForever(vec![root.join("Гамма")])]);
+        assert_eq!(fsops::delete_forever(&[root.join("Гамма")]), 0);
+        assert!(!root.join("Гамма").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

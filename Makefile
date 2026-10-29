@@ -5,7 +5,7 @@ DATADIR ?= $(PREFIX)/share
 SYSCONFDIR ?= /etc
 CARGO ?= cargo
 
-BINARIES := feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc
+BINARIES := feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-installer
 
 .PHONY: all build test install uninstall release clean
 

@@ -534,3 +534,23 @@ Tahoe Ночь	Tahoe Night	Tahoe Noche	Tahoe Nacht	Tahoe Nuit	Tahoe 夜晚
 Запись экрана	Screen Recording	Grabación de pantalla	Bildschirmaufnahme	Enregistrement de l’écran	屏幕录制
 {} рад	{} rad	{} rad	{} rad	{} rad	{} 弧度
 Переключатель включает автоподключение к сети. «Забыть» удаляет профиль и пароль из NetworkManager.	The switch turns on Auto-Join for the network. Forget removes the profile and password from NetworkManager.	El interruptor activa la conexión automática. «Olvidar» elimina el perfil y la contraseña de NetworkManager.	Der Schalter aktiviert das automatische Verbinden. „Ignorieren“ entfernt Profil und Passwort aus NetworkManager.	L’interrupteur active la connexion automatique. « Oublier » supprime le profil et le mot de passe de NetworkManager.	开关用于启用自动加入。“忽略”会从 NetworkManager 中删除配置和密码。
+# ── Package installer (feather-installer) ──
+Установка программы	Install Software	Instalar software	Software installieren	Installer un logiciel	安装软件
+Ожидание пароля администратора…	Waiting for the administrator password…	Esperando la contraseña de administrador…	Warten auf das Administratorpasswort …	En attente du mot de passe administrateur…	正在等待管理员密码…
+Установка отменена	Installation cancelled	Instalación cancelada	Installation abgebrochen	Installation annulée	安装已取消
+Переустановить	Reinstall	Reinstalar	Neu installieren	Réinstaller	重新安装
+Установить старую версию	Install Older Version	Instalar versión anterior	Ältere Version installieren	Installer l’ancienne version	安装旧版本
+Повторить	Try Again	Reintentar	Erneut versuchen	Réessayer	重试
+Версия	Version	Versión	Version	Version	版本
+Разработчик:	Developer:	Desarrollador:	Entwickler:	Développeur :	开发者：
+Эта версия уже установлена	This version is already installed	Esta versión ya está instalada	Diese Version ist bereits installiert	Cette version est déjà installée	此版本已安装
+Будет обновлена версия	Updates the installed version	Se actualizará la versión	Aktualisiert die installierte Version	Met à jour la version	将更新已安装的版本
+Установлена более новая версия	A newer version is installed:	Hay una versión más reciente instalada:	Eine neuere Version ist installiert:	Une version plus récente est installée :	已安装较新版本：
+Установка…	Installing…	Instalando…	Installieren …	Installation…	正在安装…
+установлена	is installed	está instalado	ist installiert	est installé	已安装
+Откройте пакет .deb из браузера или Файлов	Open a .deb package from the browser or Files	Abre un paquete .deb desde el navegador o Archivos	Öffne ein .deb-Paket aus dem Browser oder Dateien	Ouvrez un paquet .deb depuis le navigateur ou Fichiers	从浏览器或“文件”打开 .deb 软件包
+Это не пакет .deb, или файл повреждён	This is not a .deb package, or the file is damaged	No es un paquete .deb o el archivo está dañado	Dies ist kein .deb-Paket oder die Datei ist beschädigt	Ce n’est pas un paquet .deb, ou le fichier est endommagé	这不是 .deb 软件包，或文件已损坏
+Не найдена программа dpkg-deb	dpkg-deb was not found	No se encontró dpkg-deb	dpkg-deb wurde nicht gefunden	dpkg-deb est introuvable	未找到 dpkg-deb
+Нет прав администратора, или пароль не принят	No administrator rights, or the password was not accepted	Sin permisos de administrador o contraseña no aceptada	Keine Administratorrechte oder Passwort nicht akzeptiert	Pas de droits administrateur, ou mot de passe refusé	没有管理员权限，或密码未被接受
+Установка не удалась	Installation failed	La instalación falló	Installation fehlgeschlagen	L’installation a échoué	安装失败
+Не найдена программа pkexec (пакет pkexec)	pkexec was not found (package pkexec)	No se encontró pkexec (paquete pkexec)	pkexec wurde nicht gefunden (Paket pkexec)	pkexec est introuvable (paquet pkexec)	未找到 pkexec（pkexec 软件包）

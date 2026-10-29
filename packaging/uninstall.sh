@@ -19,13 +19,15 @@ PORTAL_CONF_DEST="${DESTDIR}${PREFIX}/share/xdg-desktop-portal"
 WSESSIONS_DEST="${DESTDIR}${PREFIX}/share/wayland-sessions"
 DOC_DEST="${DESTDIR}${PREFIX}/share/doc/feather-de"
 
-for bin in feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-session; do
+for bin in feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-installer feather-session; do
     rm -f "$BIN_DEST/$bin"
 done
 
-for app in feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc; do
+for app in feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-installer; do
     rm -f "$APP_DEST/$app.desktop"
 done
+rm -f "$APP_DEST/featherde-mimeapps.list" "${DESTDIR}${PREFIX}/share/polkit-1/actions/org.featherde.install-deb.policy"
+rm -rf "${DESTDIR}${PREFIX}/libexec/feather-de"
 
 rm -f "$PORTAL_DEST/feather.portal" "$PORTAL_CONF_DEST/featherde-portals.conf"
 rm -f "$WSESSIONS_DEST/feather-de-drm.desktop"

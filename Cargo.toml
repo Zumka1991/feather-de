@@ -44,8 +44,8 @@ zeroize = "1"
 libloading = "0.8"
 
 [workspace]
-members = [".", "files", "terminal", "notes", "preview", "textedit", "calc", "crates/feather-ui"]
-default-members = [".", "files", "terminal", "notes", "preview", "textedit", "calc"]
+members = [".", "files", "terminal", "notes", "preview", "textedit", "calc", "installer", "crates/feather-ui"]
+default-members = [".", "files", "terminal", "notes", "preview", "textedit", "calc", "installer"]
 
 [profile.dev]
 opt-level = 2

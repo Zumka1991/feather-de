@@ -758,6 +758,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "feather-installer"
+version = "0.1.0"
+dependencies = [
+ "feather-ui",
+ "smithay-client-toolkit",
+ "tiny-skia",
+ "wayland-client",
+]
+
+[[package]]
 name = "feather-notes"
 version = "0.1.0"
 dependencies = [

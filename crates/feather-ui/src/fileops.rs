@@ -486,6 +486,24 @@ pub fn delete_from_trash(trashed: &[PathBuf]) -> usize {
         .count()
 }
 
+/// Deletes for good, bypassing the trash (Shift+Delete in Files); an item of the trash also
+/// loses its .trashinfo record. The filesystem root and the home folder itself are refused.
+/// Returns the failures.
+pub fn delete_forever(paths: &[PathBuf]) -> usize {
+    let files = trash_files_dir();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    paths
+        .iter()
+        .filter(|path| {
+            if path.parent() == Some(files.as_path()) {
+                return delete_from_trash(std::slice::from_ref(path)) > 0;
+            }
+            let protected = path.parent().is_none() || Some(path.as_path()) == home.as_deref() || !path.is_absolute();
+            protected || remove_recursive(path).is_err()
+        })
+        .count()
+}
+
 /// Empties the home trash: files/, info/ and the size cache. Returns the failures.
 pub fn empty_trash() -> usize {
     let files = trash_files_dir();

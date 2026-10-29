@@ -472,7 +472,7 @@ impl Files {
                 Effect::DeleteForever(paths) => {
                     let tx = self.tx.clone();
                     std::thread::spawn(move || {
-                        let failed = fsops::delete_from_trash(&paths);
+                        let failed = fsops::delete_forever(&paths);
                         let _ = tx.send(Msg::Done(failed, "Удаление"));
                     });
                 }

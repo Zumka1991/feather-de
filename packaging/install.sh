@@ -59,7 +59,7 @@ if [[ "$NO_BUILD" -eq 0 ]]; then
 fi
 
 # Validate all sources before writing anything to the destination.
-BINS=(feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc)
+BINS=(feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-installer)
 for bin in "${BINS[@]}"; do
     [[ -x "$TARGET_DIR/$bin" ]] || { echo "Нет бинарника: $TARGET_DIR/$bin" >&2; exit 1; }
 done
@@ -70,6 +70,8 @@ PORTAL_DEST="${DESTDIR}${PREFIX}/share/xdg-desktop-portal/portals"
 PORTAL_CONF_DEST="${DESTDIR}${PREFIX}/share/xdg-desktop-portal"
 DOC_DEST="${DESTDIR}${PREFIX}/share/doc/feather-de"
 FONT_DEST="${DESTDIR}${PREFIX}/share/feather-de/fonts"
+LIBEXEC_DEST="${DESTDIR}${PREFIX}/libexec/feather-de"
+POLKIT_DEST="${DESTDIR}${PREFIX}/share/polkit-1/actions"
 
 install -d "$BIN_DEST" "$APP_DEST" "$PORTAL_DEST" "$PORTAL_CONF_DEST" "$DOC_DEST" "$FONT_DEST"
 
@@ -138,6 +140,28 @@ fi
 for desktop in "$DESKTOP_SOURCE"/*.desktop; do
     install -Dm644 "$desktop" "$APP_DEST/$(basename "$desktop")"
 done
+# Программы по умолчанию в сеансе Пёрышка: .deb открывает «Установка программ»
+install -Dm644 "$DESKTOP_SOURCE/featherde-mimeapps.list" "$APP_DEST/featherde-mimeapps.list"
+
+# Установщик пакетов: root-помощник для pkexec и действие polkit с понятным текстом запроса
+echo "==> Установка помощника установщика пакетов…"
+if (( BUNDLE )); then
+    install -Dm755 "$ROOT_DIR/usr/libexec/feather-de/install-deb" "$LIBEXEC_DEST/install-deb"
+    POLICY_SOURCE="$ROOT_DIR/usr/share/polkit-1/actions/org.featherde.install-deb.policy"
+else
+    install -Dm755 "$ROOT_DIR/packaging/installer/install-deb" "$LIBEXEC_DEST/install-deb"
+    POLICY_SOURCE="$ROOT_DIR/packaging/installer/org.featherde.install-deb.policy.in"
+fi
+if [[ "$USER_MODE" -eq 0 ]]; then
+    install -d "$POLKIT_DEST"
+    # Путь помощника без DESTDIR: так он будет лежать в установленной системе
+    sed "s|@LIBEXECDIR@|${PREFIX}/libexec|; s|/usr/libexec/feather-de/install-deb|${PREFIX}/libexec/feather-de/install-deb|" \
+        "$POLICY_SOURCE" > "$POLKIT_DEST/org.featherde.install-deb.policy"
+    chmod 644 "$POLKIT_DEST/org.featherde.install-deb.policy"
+fi
+if [[ -z "$DESTDIR" ]] && command -v update-desktop-database >/dev/null; then
+    update-desktop-database -q "$APP_DEST" || true
+fi
 if (( BUNDLE )); then
     install -Dm644 "$PORTAL_SOURCE/portals/feather.portal" "$PORTAL_DEST/feather.portal"
     install -Dm644 "$PORTAL_SOURCE/featherde-portals.conf" "$PORTAL_CONF_DEST/featherde-portals.conf"

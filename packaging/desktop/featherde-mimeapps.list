@@ -1,0 +1,4 @@
+# Программы по умолчанию в сеансе Пёрышка (XDG_CURRENT_DESKTOP=FeatherDE)
+[Default Applications]
+application/vnd.debian.binary-package=feather-installer.desktop
+application/x-deb=feather-installer.desktop

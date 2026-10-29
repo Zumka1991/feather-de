@@ -1,0 +1,15 @@
+[package]
+name = "feather-installer"
+version = "0.1.0"
+edition = "2021"
+description = "Установщик пакетов — установка программ из файлов .deb в стиле Пёрышка"
+
+[[bin]]
+name = "feather-installer"
+path = "src/main.rs"
+
+[dependencies]
+smithay-client-toolkit = { version = "0.19.2", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
+tiny-skia = "0.12.0"
+feather-ui = { path = "../crates/feather-ui" }

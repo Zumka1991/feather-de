@@ -56,7 +56,7 @@ install -Dm644 "$ROOT_DIR/packaging/README-TEST.md" "$STAGE_DIR/$PKG_NAME/README
     echo "working_tree_changes=$(git -C "$ROOT_DIR" status --porcelain --untracked-files=normal | wc -l)"
     echo "build_libc=$(getconf GNU_LIBC_VERSION)"
     echo "rustc=$(rustc --version)"
-    echo "required_glibc=$(readelf --version-info "$STAGE_DIR/$PKG_NAME"/usr/bin/feather-{de,files,terminal,notes,preview,textedit,calc} | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
+    echo "required_glibc=$(readelf --version-info "$STAGE_DIR/$PKG_NAME"/usr/bin/feather-{de,files,terminal,notes,preview,textedit,calc,installer} | grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -1)"
 } > "$STAGE_DIR/$PKG_NAME/BUILD-INFO.txt"
 (
     cd "$STAGE_DIR/$PKG_NAME"
