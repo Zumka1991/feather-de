@@ -350,8 +350,34 @@ makepkg -si
 You need `base-devel` and a current Rust/Cargo toolchain. The
 [PKGBUILD](packaging/PKGBUILD) declares glibc, gcc-libs, libinput, libxkbcommon,
 seatd, Mesa/EGL, PAM, systemd-libs, Wayland, fontconfig, Noto, and D-Bus dependencies.
-Current packaging specifies **glibc ≥ 2.44**. Debian/Ubuntu packages are not yet
-prepared; those systems require a source build and distribution-specific PAM integration.
+Current packaging specifies **glibc ≥ 2.44**.
+
+### Ubuntu
+
+There is no `.deb` yet. The script installs dependencies with apt and Rust with rustup,
+then builds Feather from source. It works on regular Ubuntu and on Ubuntu Server / a
+minimal install without a desktop:
+
+```bash
+git clone https://github.com/Zumka1991/feather-de.git
+cd feather-de
+./packaging/install-ubuntu.sh
+```
+
+Run it as a regular user; it asks for sudo itself.
+
+- **No desktop** (no login screen): installs greetd with the tuigreet text login that
+  starts Feather, and enables graphical boot. Networking is handed to NetworkManager so
+  Wi-Fi works from Control Center; this takes effect after a reboot. A previous greetd
+  config is kept as `config.toml.before-feather`. After `sudo reboot`, enter your name and
+  password.
+- **With GNOME/GDM**: GDM is left alone. Log out and pick “Пёрышко (прямой вывод DRM/KMS)”
+  under the gear; GNOME stays available as a fallback.
+
+Flags: `--no-optional` skips sound, Wi-Fi, Bluetooth, portals and X11; `--greetd` /
+`--no-greetd` force or skip the login screen. When xwayland-satellite (X11 apps) is
+missing from the repositories (Ubuntu 26.04), it is built from source.
+Uninstall with `sudo ./packaging/uninstall.sh`.
 
 ### Source build
 
