@@ -31,6 +31,9 @@ const ROW_H: f32 = 26.0;
 const HEADER_H: f32 = 28.0;
 const PLACE_H: f32 = 28.0;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// A click on the selected item's name renames it after this pause, unless a second click
+/// (double-click: open) comes first — like Finder
+const RENAME_DELAY: Duration = Duration::from_millis(700);
 
 pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
@@ -61,6 +64,10 @@ pub enum Effect {
     Inspect(PathBuf),
     /// Offer these files to other programs (text/uri-list)
     Clipboard(Vec<PathBuf>),
+    /// Ctrl+C/X in a name, path or search field: this text to the system clipboard
+    CopyText(String),
+    /// Ctrl+V there: read the clipboard's text, then `paste_text`
+    PasteText,
     /// Drag these files out (Wayland DnD: other programs, the desktop, our own folders)
     StartDrag(Vec<PathBuf>),
     Picked(feather_ui::picker::Selection),
@@ -212,6 +219,8 @@ pub struct App {
     search: feather_ui::input::TextInput,
     search_focus: bool,
     rename: Option<(PathBuf, feather_ui::input::TextInput)>,
+    /// A slow click on the selected name: rename it at this moment
+    rename_at: Option<(PathBuf, Instant)>,
     hover: Hit,
     pointer: (f32, f32),
     pressed: Option<(Hit, (f32, f32))>,
@@ -277,6 +286,7 @@ impl App {
             search: Default::default(),
             search_focus: false,
             rename: None,
+            rename_at: None,
             hover: Hit::Nothing,
             pointer: (0.0, 0.0),
             pressed: None,
@@ -585,6 +595,54 @@ impl App {
     fn preview_rect(&self) -> (f32, f32, f32, f32) {
         let (w, h) = ((self.w - 48.0).min(760.0), (self.h - 48.0).min(560.0));
         ((self.w - w) * 0.5, (self.h - h) * 0.5, w, h)
+    }
+
+    /// The text field that has the keyboard, in the order `key` serves them
+    fn active_field(&mut self) -> Option<&mut feather_ui::input::TextInput> {
+        if self.path_edit.is_some() {
+            self.path_edit.as_mut()
+        } else if self.rename.is_some() {
+            self.rename.as_mut().map(|(_, name)| name)
+        } else if self.search_focus {
+            Some(&mut self.search)
+        } else {
+            None
+        }
+    }
+
+    /// The search text changed outside `key` (cut, paste): filter again
+    fn field_edited(&mut self) {
+        if self.path_edit.is_none() && self.rename.is_none() && self.search_focus {
+            self.scroll = 0.0;
+            self.refilter();
+        }
+        self.dirty = true;
+    }
+
+    /// Clipboard text for Ctrl+V: its first line goes into the active field
+    pub fn paste_text(&mut self, text: &str) {
+        let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim_end_matches('\r');
+        if let Some(field) = self.active_field() {
+            field.insert(line);
+            self.field_edited();
+        }
+    }
+
+    pub fn rename_deadline(&self) -> Option<Instant> {
+        self.rename_at.as_ref().map(|(_, at)| *at)
+    }
+
+    /// The pause after a slow click on the name is over: rename, if it is still the selection
+    pub fn rename_due(&mut self) {
+        let Some((path, at)) = self.rename_at.take() else { return };
+        if Instant::now() < at {
+            self.rename_at = Some((path, at));
+            return;
+        }
+        let still = self.selected.len() == 1 && self.selected.contains(&path);
+        if still && self.rename.is_none() && self.cursor.is_some_and(|c| self.entry(c).path == path) {
+            self.start_rename();
+        }
     }
 
     fn start_rename(&mut self) {
@@ -1087,6 +1145,8 @@ impl App {
     }
 
     pub fn press(&mut self, button: u32, x: f32, y: f32, mods: Mods) -> Vec<Effect> {
+        // Any click (the second of a double-click too) cancels a pending rename
+        self.rename_at = None;
         if self.picker.is_some()&&button==BTN_RIGHT{return Vec::new();}
         let selection_mods=if self.picker.as_ref().is_some_and(|p|!p.config.multiple){Mods{ctrl:false,shift:false,..mods}}else{mods};
         self.pointer = (x, y);
@@ -1314,9 +1374,8 @@ impl App {
                 View::Icons => y > ry + 10.0 + GRID_ICON,
                 View::List => y >= ry && y < ry + rh && x > SIDEBAR_W + 36.0,
             };
-            let quick = self.last_click.as_ref().is_some_and(|(t, _)| t.elapsed() < DOUBLE_CLICK);
-            if on_name && !quick && self.selected.len() == 1 {
-                self.start_rename();
+            if on_name && self.selected.len() == 1 && self.rename.is_none() {
+                self.rename_at = Some((self.entry(i).path.clone(), Instant::now() + RENAME_DELAY));
             }
         }
         Vec::new()
@@ -1560,6 +1619,7 @@ impl App {
         let raw = sym;
         let sym = K::new(sym);
         let letter = shortcut_letter(sym, code);
+        self.rename_at = None;
         if let Some(effects) = self.conflict_key(sym) {
             return effects;
         }
@@ -1583,6 +1643,21 @@ impl App {
                 _ => {}
             }
             return Vec::new();
+        }
+        // Ctrl+C/X/V in a name, path or search field work on its text (any layout)
+        if mods.ctrl && !mods.alt && matches!(letter, Some('c' | 'x' | 'v')) {
+            if letter == Some('v') {
+                if self.active_field().is_some() {
+                    return vec![Effect::PasteText];
+                }
+            } else if let Some(field) = self.active_field() {
+                let Some(text) = field.selected_text().map(str::to_owned) else { return Vec::new() };
+                if letter == Some('x') {
+                    field.key(0xff08, None, false, false); // Backspace removes the selection
+                    self.field_edited();
+                }
+                return vec![Effect::CopyText(text)];
+            }
         }
         if let Some(input) = self.path_edit.as_mut() {
             match sym {
@@ -2582,6 +2657,60 @@ mod tests {
             });
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn slow_click_on_the_name_renames_and_the_field_uses_the_clipboard() {
+        feather_ui::scale::with_render_settings(1.0, feather_ui::scale::Appearance::Light, || {
+        let root = fixture("slow-rename");
+        let mut app = app_in(&root);
+        app.resize(1000.0, 640.0);
+        let ctrl = Mods { ctrl: true, ..Default::default() };
+        for view in [View::Icons, View::List] {
+            app.set_view(view);
+            let index = (0..app.visible.len()).find(|&i| app.entry(i).name == "file2.txt").unwrap();
+            let (rx, ry, rw, _) = app.item_rect(index);
+            // On the name: the label under the icon, the name column of the list
+            let (x, y) = if view == View::Icons { (rx + rw / 2.0, ry + 20.0 + GRID_ICON) } else { (SIDEBAR_W + 45.0, ry + 7.5) };
+            let click = |app: &mut App| {
+                app.press(BTN_LEFT, x, y, Mods::default());
+                app.release(BTN_LEFT, x, y);
+            };
+            app.selected.clear();
+            click(&mut app);
+            assert!(app.rename_deadline().is_none(), "the first click only selects");
+            // The second click comes later than a double-click
+            app.last_click = None;
+            click(&mut app);
+            app.rename_due();
+            assert!(app.rename.is_none(), "renaming before the pause");
+            app.rename_at.as_mut().unwrap().1 = Instant::now();
+            app.rename_due();
+            assert_eq!(app.rename.as_ref().unwrap().1.selected_text(), Some("file2.txt"));
+
+            // Ctrl+C, Ctrl+X, Ctrl+V by physical keys: the Russian layout gives С, Ч, М
+            let copied = app.key(0x6d3, 46, Some("\u{3}"), ctrl);
+            assert!(matches!(copied.as_slice(), [Effect::CopyText(t)] if t == "file2.txt"));
+            let cut = app.key(0x6de, 45, None, ctrl);
+            assert!(matches!(cut.as_slice(), [Effect::CopyText(t)] if t == "file2.txt"));
+            assert_eq!(app.rename.as_ref().unwrap().1.text(), "");
+            assert!(matches!(app.key(0x6cd, 47, None, ctrl).as_slice(), [Effect::PasteText]));
+            app.paste_text("Отчёт.txt\nвторая строка");
+            assert_eq!(app.rename.as_ref().unwrap().1.text(), "Отчёт.txt");
+            app.key(0xff1b, 0, None, Mods::default());
+
+            // A double-click opens and never renames
+            app.last_click = None;
+            click(&mut app);
+            click(&mut app);
+            assert!(app.rename_deadline().is_none() && app.rename.is_none());
+        }
+        // Search field: paste filters at once
+        app.key(0x66, 41, Some("f"), ctrl);
+        app.paste_text("photo");
+        assert_eq!(app.visible.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+        });
     }
 
     #[test]

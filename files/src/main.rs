@@ -65,6 +65,14 @@ use app::{App, Effect, Mods};
 const URI_LIST: &str = "text/uri-list";
 
 /// Results of worker threads
+/// What our clipboard offer holds: copied files or text from a field
+enum ClipData {
+    Files(Vec<PathBuf>),
+    Text(String),
+}
+
+const TEXT_MIMES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
+
 enum Msg {
     Appearance(feather_ui::scale::Appearance),
     Preview(u64, Result<preview::Content, String>),
@@ -79,6 +87,8 @@ enum Msg {
     PasteDone(u64, usize),
     Props(app::Props),
     ExternalFiles(Vec<PathBuf>),
+    /// Text read from the clipboard for Ctrl+V in a field
+    PastedText(String),
     /// Files of a drop, read from the offer; the offer is finished after the paste starts
     Dropped(Vec<PathBuf>, PathBuf, bool),
 }
@@ -97,7 +107,7 @@ struct Files {
     shm: Shm,
     data_devices: Option<DataDeviceManagerState>,
     data_device: Option<DataDevice>,
-    copy_source: Option<(CopyPasteSource, Vec<PathBuf>)>,
+    copy_source: Option<(CopyPasteSource, ClipData)>,
     /// Our drag: source, its files and the icon surface under the pointer
     drag_source: Option<(DragSource, Vec<PathBuf>, wl_surface::WlSurface)>,
     /// A drop being read: finished once the files arrived
@@ -131,6 +141,7 @@ struct Files {
     watched: Option<PathBuf>,
     reload_armed: bool,
     status_armed: bool,
+    rename_armed: bool,
     conn: Connection,
     qh: QueueHandle<Files>,
     pointer_pos: (f32, f32),
@@ -243,6 +254,10 @@ fn main() {
                         files.app.external_clipboard(paths);
                         Vec::new()
                     }
+                    Msg::PastedText(text) => {
+                        files.app.paste_text(&text);
+                        Vec::new()
+                    }
                 };
                 files.apply(effects);
             }
@@ -326,6 +341,7 @@ fn main() {
         watched: None,
         reload_armed: false,
         status_armed: false,
+        rename_armed: false,
         conn,
         qh: qh.clone(),
         pointer_pos: (0.0, 0.0),
@@ -338,6 +354,7 @@ fn main() {
             break;
         }
         files.arm_status_timer();
+        files.arm_rename_timer();
         if files.app.dirty {
             let t = Instant::now();
             if files.draw(&qh) && profile {
@@ -504,6 +521,8 @@ impl Files {
                     });
                 }
                 Effect::Clipboard(paths) => self.offer_files(paths),
+                Effect::CopyText(text) => self.offer_text(text),
+                Effect::PasteText => self.paste_text(),
                 Effect::StartDrag(paths) => self.start_drag(paths),
             }
         }
@@ -514,7 +533,38 @@ impl Files {
         let (Some(manager), Some(device)) = (self.data_devices.as_ref(), self.data_device.as_ref()) else { return };
         let source = manager.create_copy_paste_source(&self.qh, [URI_LIST, "text/plain;charset=utf-8", "text/plain"]);
         source.set_selection(device, self.serial);
-        self.copy_source = Some((source, paths));
+        self.copy_source = Some((source, ClipData::Files(paths)));
+    }
+
+    fn offer_text(&mut self, text: String) {
+        let (Some(manager), Some(device)) = (self.data_devices.as_ref(), self.data_device.as_ref()) else { return };
+        let source = manager.create_copy_paste_source(&self.qh, TEXT_MIMES);
+        source.set_selection(device, self.serial);
+        self.copy_source = Some((source, ClipData::Text(text)));
+    }
+
+    /// Our own offer is read directly; another program's text arrives through a pipe
+    fn paste_text(&mut self) {
+        match self.copy_source.as_ref().map(|(_, data)| data) {
+            Some(ClipData::Text(text)) => return self.app.paste_text(&text.clone()),
+            Some(ClipData::Files(paths)) => {
+                let text = paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n");
+                return self.app.paste_text(&text);
+            }
+            None => {}
+        }
+        let Some(offer) = self.data_device.as_ref().and_then(|d| d.data().selection_offer()) else { return };
+        let Some(mime) = offer.with_mime_types(|types| TEXT_MIMES.iter().find(|m| types.iter().any(|t| t == *m)).copied()) else { return };
+        let Ok(pipe) = offer.receive(mime.into()) else { return };
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut text = String::new();
+            let mut reader = std::fs::File::from(std::os::fd::OwnedFd::from(pipe));
+            if reader.by_ref().take(1 << 16).read_to_string(&mut text).is_ok() {
+                let _ = tx.send(Msg::PastedText(text));
+            }
+        });
     }
 
     /// Wayland DnD with the files; the compositor draws the icon surface at the pointer
@@ -548,6 +598,21 @@ impl Files {
             files.reload_armed = false;
             let effects = files.app.reload();
             files.apply(effects);
+            TimeoutAction::Drop
+        });
+    }
+
+    /// A slow click on a selected name: rename when the pause is over (one timer at a time;
+    /// a newer click moves the deadline and the loop re-arms after this one fires)
+    fn arm_rename_timer(&mut self) {
+        if self.rename_armed {
+            return;
+        }
+        let Some(deadline) = self.app.rename_deadline() else { return };
+        self.rename_armed = true;
+        let _ = self.handle.insert_source(Timer::from_deadline(deadline), |_, _, files| {
+            files.rename_armed = false;
+            files.app.rename_due();
             TimeoutAction::Drop
         });
     }
@@ -925,7 +990,19 @@ impl DataSourceHandler for Files {
 
     fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource, mime: String, pipe: WritePipe) {
         let dragged = self.drag_source.as_ref().filter(|(s, _, _)| s.inner() == source).map(|(_, p, _)| p);
-        let copied = self.copy_source.as_ref().filter(|(s, _)| s.inner() == source).map(|(_, p)| p);
+        let copied = self.copy_source.as_ref().filter(|(s, _)| s.inner() == source).map(|(_, data)| data);
+        if let Some(ClipData::Text(text)) = copied {
+            let data = text.clone();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = std::fs::File::from(std::os::fd::OwnedFd::from(pipe)).write_all(data.as_bytes());
+            });
+            return;
+        }
+        let copied = copied.and_then(|data| match data {
+            ClipData::Files(paths) => Some(paths),
+            ClipData::Text(_) => None,
+        });
         let Some(paths) = dragged.or(copied) else { return };
         let data = if mime == URI_LIST {
             fsops::uri_list(paths)
