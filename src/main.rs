@@ -368,7 +368,10 @@ impl FeatherCompositor {
     }
 
     pub fn maybe_launch_autostart(&mut self) {
-        if !self.appmenu_ready {
+        // Login items start after the password, like on macOS: on the login screen the previous
+        // session's programs may still be exiting, and a single-instance app (MouseVPN) started
+        // then handed itself to the dying instance and quit. unlock_session() calls us again.
+        if !self.appmenu_ready || (self.lock.active && self.lock.login_mode) {
             return;
         }
         if let Some(cmd) = self.pending_autostart.take() {

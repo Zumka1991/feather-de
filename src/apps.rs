@@ -637,23 +637,57 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
         .env("MOZ_ENABLE_WAYLAND", "1")
         .env("ELECTRON_OZONE_PLATFORM_HINT", "auto")
         .env("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(Stdio::null());
+    let (stdout, stderr) = app_log();
+    command.stdout(stdout).stderr(stderr);
+    tracing::info!("Запуск: {line}");
     feather_ui::process::new_session(&mut command)
         .spawn()
         .map(|mut child| {
             feather_ui::process::remember_session(&child);
+            let line = line.clone();
             // Reap the child when it exits; otherwise every closed app stays a zombie
             // until the compositor itself exits
             let _ = std::thread::Builder::new()
                 .name("feather-reaper".into())
                 .stack_size(32 * 1024)
                 .spawn(move || {
-                    let _ = child.wait();
+                    let started = std::time::Instant::now();
+                    let status = child.wait();
+                    // Gone right away is the "does not launch" case: an error, or a
+                    // single-instance app that handed itself to an instance already running
+                    let secs = started.elapsed().as_secs_f32();
+                    match status {
+                        _ if secs >= 15.0 => {}
+                        Ok(s) if s.success() => tracing::info!("Программа вышла через {secs:.1} с: {line}"),
+                        Ok(s) => tracing::warn!("Программа завершилась через {secs:.1} с ({s}): {line}; вывод в apps.log"),
+                        Err(e) => tracing::warn!("Программа: {e}: {line}"),
+                    }
                 });
         })
+        .inspect_err(|e| tracing::warn!("Не удалось запустить {line}: {e}"))
         .is_ok()
+}
+
+/// Output of launched programs: ~/.local/state/feather-de/apps.log, so a program that will
+/// not start leaves its reason somewhere. The previous login's log is kept as apps.log.old.
+fn app_log() -> (Stdio, Stdio) {
+    static PATH: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let path = PATH.get_or_init(|| {
+        let dir = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?
+            .join("feather-de");
+        fs::create_dir_all(&dir).ok()?;
+        let path = dir.join("apps.log");
+        let _ = fs::rename(&path, dir.join("apps.log.old"));
+        Some(path)
+    });
+    let file = path.as_ref().and_then(|p| fs::OpenOptions::new().create(true).append(true).open(p).ok());
+    match file.and_then(|f| Some((f.try_clone().ok()?, f))) {
+        Some((out, err)) => (out.into(), err.into()),
+        None => (Stdio::null(), Stdio::null()),
+    }
 }
 
 /// External polkit agent, used when Feather's own agent cannot register.

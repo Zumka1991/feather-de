@@ -1389,7 +1389,7 @@ impl FeatherCompositor {
         self.release_all_input();
     }
 
-    fn unlock_session(&mut self) {
+    pub(crate) fn unlock_session(&mut self) {
         if self.power.sleeping {
             return;
         }
@@ -1420,6 +1420,7 @@ impl FeatherCompositor {
         self.refresh_focus();
         self.refresh_pointer_focus();
         tracing::info!("Сессия разблокирована");
+        self.maybe_launch_autostart();
     }
 
     pub fn lock_submit(&mut self) {
