@@ -595,9 +595,14 @@ fn chromium_wayland_flags(cmd: &str, search_path: &str) -> Option<&'static str> 
 }
 
 pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
+    spawn_wayland_app(cmd_line, wayland_socket).is_some()
+}
+
+/// Like spawn_wayland_command; returns the pid, which leads the program's own session
+pub fn spawn_wayland_app(cmd_line: &str, wayland_socket: &str) -> Option<i32> {
     let trimmed = cmd_line.trim();
     if trimmed.is_empty() {
-        return false;
+        return None;
     }
 
     let current_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin".into());
@@ -645,6 +650,7 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
         .spawn()
         .map(|mut child| {
             feather_ui::process::remember_session(&child);
+            let pid = child.id() as i32;
             let line = line.clone();
             // Reap the child when it exits; otherwise every closed app stays a zombie
             // until the compositor itself exits
@@ -664,9 +670,10 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
                         Err(e) => tracing::warn!("Программа: {e}: {line}"),
                     }
                 });
+            pid
         })
         .inspect_err(|e| tracing::warn!("Не удалось запустить {line}: {e}"))
-        .is_ok()
+        .ok()
 }
 
 /// Output of launched programs: ~/.local/state/feather-de/apps.log, so a program that will

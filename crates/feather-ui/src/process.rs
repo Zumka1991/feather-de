@@ -118,6 +118,29 @@ pub fn end_sessions(grace: std::time::Duration) -> usize {
     first.len()
 }
 
+/// Session of a live process, to tell whose a window is
+pub fn session_of(pid: i32) -> Option<i32> {
+    stat(pid).filter(|s| !s.zombie).map(|s| s.session)
+}
+
+/// What each live process of a session waits on: "pid comm state wchan". For a launch that
+/// hangs without a window, wchan names the place in the kernel (FUSE request_wait_answer,
+/// a poll on a D-Bus socket, a futex), so the log says where it is stuck.
+pub fn describe_session(sid: i32) -> Vec<String> {
+    session_members(&[sid])
+        .into_iter()
+        .take(16)
+        .filter_map(|pid| {
+            let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let (head, rest) = text.rsplit_once(')')?;
+            let comm = head.split_once('(')?.1;
+            let state = rest.split_whitespace().next()?;
+            let wchan = std::fs::read_to_string(format!("/proc/{pid}/wchan")).unwrap_or_default();
+            Some(format!("{pid} {comm} {state} {}", if wchan.is_empty() { "-" } else { wchan.trim() }))
+        })
+        .collect()
+}
+
 /// Undoes an ignored SIGCHLD inherited from whoever started us (an older Files, a script), so
 /// `Command::output()` can wait for its child
 pub fn default_child_signal() {

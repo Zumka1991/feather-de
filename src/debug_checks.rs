@@ -1800,6 +1800,14 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         // Logout through the menu's own action: programs started here must end with us
         at(state, ms, |s| s.execute_shell_action(ShellClickAction::QuitCompositor))?;
     }
+    if let Ok(cmds) = std::env::var("FEATHER_DEBUG_LAUNCH") {
+        // Launches as from the Dock ("cmd1|cmd2"): one without a window is logged after 20 s
+        for cmd in cmds.split('|').map(str::to_owned) {
+            at(state, 1500, move |s| {
+                s.execute_shell_action(ShellClickAction::LaunchApp(crate::apps::AppAction::Exec(cmd.clone()), "test".into()))
+            })?;
+        }
+    }
     if let Some(ms) = std::env::var("FEATHER_DEBUG_UNLOCK").ok().and_then(|v| v.parse().ok()) {
         // The login screen as if the password were right: autostart waits for this moment
         at(state, ms, |s| s.unlock_session())?;

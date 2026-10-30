@@ -101,7 +101,7 @@ use smithay::{
 };
 
 use crate::{
-    apps::{spawn_session_services, spawn_wayland_command, AppAction, AppRegistry, BuiltinWindowKind},
+    apps::{spawn_session_services, AppAction, AppRegistry, BuiltinWindowKind},
     handlers::ClientState,
     shell::{
         AppIcon, AppKey, DockItem, DockMenuAction, DockTarget, Ghost, MacShell, MenuContext,
@@ -981,6 +981,27 @@ impl FeatherCompositor {
         }
     }
 
+    /// A launched program still without a window after 20 s hangs somewhere: log where its
+    /// processes wait, once. Nothing runs while waiting; one timer per launch.
+    fn watch_launch(&mut self, sid: i32, cmd: String) {
+        let first = self.next_win_id;
+        let _ = self.loop_handle.insert_source(Timer::from_duration(Duration::from_secs(20)), move |_, _, state| {
+            let has_window = state.windows.iter().filter(|w| w.id >= first).any(|w| {
+                w.wl_surface()
+                    .and_then(|s| smithay::reexports::wayland_server::Resource::client(s))
+                    .and_then(|c| c.get_credentials(&state.display_handle).ok())
+                    .is_some_and(|c| feather_ui::process::session_of(c.pid) == Some(sid))
+            });
+            if !has_window {
+                let waits = feather_ui::process::describe_session(sid);
+                if !waits.is_empty() {
+                    tracing::warn!("Нет окна через 20 с после запуска: {cmd}; процессы (pid имя состояние wchan): {}", waits.join("; "));
+                }
+            }
+            TimeoutAction::Drop
+        });
+    }
+
     /// Stops the bounce once the launched app has a window (after the current jump)
     pub fn advance_bounce(&mut self) {
         let Some(b) = self.shell.bounce.as_ref() else { return };
@@ -1203,7 +1224,8 @@ impl FeatherCompositor {
             }
             ShellClickAction::LaunchApp(app_action, app_name) => match app_action {
                 AppAction::Exec(cmd) => {
-                    if spawn_wayland_command(&cmd, &self.wayland_socket_name) {
+                    if let Some(sid) = crate::apps::spawn_wayland_app(&cmd, &self.wayland_socket_name) {
+                        self.watch_launch(sid, cmd.clone());
                         self.shell.notify(
                             format!("Запуск: {}", app_name),
                             format!("Команда `{}` запущена на {}", cmd, self.wayland_socket_name),
