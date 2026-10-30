@@ -755,6 +755,7 @@ dependencies = [
  "smithay-client-toolkit",
  "tiny-skia",
  "wayland-client",
+ "zeroize",
 ]
 
 [[package]]

@@ -279,15 +279,24 @@ fn unar() -> std::process::Command {
 }
 
 const MISSING_PART: &str = "Архив повреждён или не хватает одной из его частей";
+/// `extract` failed for want of a password: Files asks for one and tries again
+pub const NEEDS_PASSWORD: &str = "Архив защищён паролем";
+/// The password did not fit: asked again
+pub const WRONG_PASSWORD: &str = "Неверный пароль";
+const NO_UNAR_CRYPT: &str = "Архив защищён паролем. Распаковать его может только программа unar (пакет unar)";
 
-/// unar's failure in Russian; `volumes` — the archive is one of several parts
-fn unar_error(out: &std::process::Output, volumes: bool) -> String {
+/// unar's failure in Russian; `volumes` — the archive is one of several parts, `password` —
+/// one was given
+fn unar_error(out: &std::process::Output, volumes: bool, password: bool) -> String {
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    // Files gives no password, so a protected archive always asks for one
     if text.contains("requires a password") {
-        "Архив защищён паролем".into()
+        NEEDS_PASSWORD.into()
     } else if text.contains("Couldn't recognize") {
         "Архив повреждён или это не архив".into()
+    } else if password {
+        // A wrong key reads as garbage: "Missing or wrong password", "Error on decrunching",
+        // "Data is corrupted" — the same words as real damage, so the password is blamed
+        WRONG_PASSWORD.into()
     } else if volumes {
         MISSING_PART.into()
     } else {
@@ -300,11 +309,40 @@ fn bsdtar() -> std::process::Command {
     std::process::Command::new(std::env::var_os("FEATHER_BSDTAR").unwrap_or_else(|| "bsdtar".into()))
 }
 
+/// Runs an unpacker that may want a password with no way to ask for one: bsdtar without
+/// --passphrase (or with a wrong one) reads it from the terminal, else from stdin, and an
+/// empty stdin makes it ask forever. No controlling terminal (setsid) and a write-only stdin
+/// turn that into "Couldn't read passphrase".
+fn unattended(mut cmd: std::process::Command) -> std::io::Result<std::process::Output> {
+    use std::os::unix::process::CommandExt;
+    let stdin = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
+    // SAFETY: setsid is async-signal-safe and touches nothing of ours
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.stdin(stdin).output()
+}
+
+/// libarchive reads the archive but cannot decrypt it (RAR, 7z): unar can
+fn needs_unar(out: &std::process::Output) -> bool {
+    let text = String::from_utf8_lossy(&out.stderr);
+    text.contains("Encryption is not supported") || text.contains("encrypted, but currently not supported")
+}
+
 /// bsdtar's own words about a failure
 fn tar_error(out: &std::process::Output) -> String {
     let text = String::from_utf8_lossy(&out.stderr);
-    if text.contains("Encryption is not supported") {
-        return "Архив защищён паролем".into();
+    if text.contains("Couldn't read passphrase") {
+        return NEEDS_PASSWORD.into();
+    }
+    if text.contains("Incorrect passphrase") {
+        return WRONG_PASSWORD.into();
+    }
+    if needs_unar(out) {
+        return NO_UNAR_CRYPT.into();
     }
     text.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("bsdtar завершился с ошибкой").trim_start_matches("bsdtar: ").to_string()
 }
@@ -343,8 +381,11 @@ pub fn compress(paths: &[PathBuf]) -> Result<PathBuf, String> {
 /// appears as is; several items go into a folder named after the archive. Everything is
 /// unpacked into a hidden folder first, so a failure leaves nothing half-extracted. bsdtar
 /// and unar refuse ".." and strip leading "/" from member names. RAR goes to unar; without
-/// it bsdtar tries (old RAR mostly works, RAR5 and volumes often do not).
-pub fn extract(archive: &Path) -> Result<PathBuf, String> {
+/// it bsdtar tries (old RAR mostly works, RAR5 and volumes often do not). `password` goes to
+/// unar as -p and to bsdtar as --passphrase (zip); an encrypted 7z, which libarchive cannot
+/// decrypt, goes to unar too. A missing or wrong password comes back as `NEEDS_PASSWORD` or
+/// `WRONG_PASSWORD`.
+pub fn extract(archive: &Path, password: Option<&str>) -> Result<PathBuf, String> {
     let dir = archive.parent().ok_or("Нет папки архива")?;
     let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let stem = archive_stem(&name).to_string();
@@ -358,20 +399,43 @@ pub fn extract(archive: &Path) -> Result<PathBuf, String> {
         Err(e)
     };
     // -D: the folder for several items is ours; -nr: an inner archive stays an archive
-    let unpacked = if rar {
-        unar().args(["-q", "-nr", "-D", "-k", "skip", "-o"]).arg(&tmp).arg(archive).stdin(std::process::Stdio::null()).output().ok()
-    } else {
-        None
+    let run_unar = || {
+        let mut cmd = unar();
+        cmd.args(["-q", "-nr", "-D", "-k", "skip", "-o"]).arg(&tmp);
+        if let Some(password) = password {
+            cmd.arg("-p").arg(password);
+        }
+        cmd.arg(archive).stdin(std::process::Stdio::null()).output().ok()
     };
+    let unpacked = if rar { run_unar() } else { None };
     match unpacked {
         Some(out) if out.status.success() => {}
-        Some(out) => return fail(unar_error(&out, volumes)),
-        None => match bsdtar().arg("-xf").arg(archive).arg("-C").arg(&tmp).output() {
-            Ok(out) if out.status.success() => {}
-            Ok(out) if rar => return fail(format!("{}. Для RAR нужна программа unar (пакет unar)", tar_error(&out))),
-            Ok(out) => return fail(tar_error(&out)),
-            Err(_) => return fail("Нет программы bsdtar (пакет libarchive-tools)".into()),
-        },
+        Some(out) => return fail(unar_error(&out, volumes, password.is_some())),
+        None => {
+            let mut tar = bsdtar();
+            tar.arg("-xf").arg(archive).arg("-C").arg(&tmp);
+            if let Some(password) = password {
+                tar.arg(&*zeroize::Zeroizing::new(format!("--passphrase={password}")));
+            }
+            match unattended(tar) {
+                Ok(out) if out.status.success() => {}
+                Ok(out) if needs_unar(&out) => {
+                    // Whatever bsdtar managed goes; unar starts clean
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    if let Err(e) = std::fs::create_dir(&tmp) {
+                        return fail(e.to_string());
+                    }
+                    match run_unar() {
+                        Some(out) if out.status.success() => {}
+                        Some(out) => return fail(unar_error(&out, volumes, password.is_some())),
+                        None => return fail(NO_UNAR_CRYPT.into()),
+                    }
+                }
+                Ok(out) if rar => return fail(format!("{}. Для RAR нужна программа unar (пакет unar)", tar_error(&out))),
+                Ok(out) => return fail(tar_error(&out)),
+                Err(_) => return fail("Нет программы bsdtar (пакет libarchive-tools)".into()),
+            }
+        }
     }
     let items: Vec<PathBuf> = match std::fs::read_dir(&tmp) {
         Ok(d) => d.flatten().map(|e| e.path()).collect(),
@@ -502,14 +566,14 @@ mod tests {
         assert_eq!(compress(&[root.join("заметка.txt")]).unwrap(), root.join("заметка.txt.zip"));
         assert_eq!(compress(&[root.join("Фото"), root.join("заметка.txt")]).unwrap(), root.join("Архив 2.zip"));
         // The single folder comes out as itself (taken name → «Фото 2»), several items in a folder
-        assert_eq!(extract(&one).unwrap(), root.join("Фото 2"));
+        assert_eq!(extract(&one, None).unwrap(), root.join("Фото 2"));
         assert_eq!(std::fs::read_to_string(root.join("Фото 2/кот.txt")).unwrap(), "мяу");
-        let folder = extract(&many).unwrap();
+        let folder = extract(&many, None).unwrap();
         assert_eq!(folder, root.join("Архив"));
         assert!(folder.join("Фото/кот.txt").is_file() && folder.join("заметка.txt").is_file());
         // A broken archive leaves nothing behind
         std::fs::write(root.join("битый.zip"), "not a zip").unwrap();
-        assert!(extract(&root.join("битый.zip")).is_err());
+        assert!(extract(&root.join("битый.zip"), None).is_err());
         let leftovers = std::fs::read_dir(&root).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with('.')).count();
         assert_eq!(leftovers, 0);
         std::fs::remove_dir_all(&root).unwrap();
@@ -605,8 +669,10 @@ mod tests {
             std::process::Output { status: std::process::ExitStatus::from_raw(2 << 8), stdout: text.into(), stderr: vec![] }
         };
         let locked = said("копилка.rar: This archive requires a password to unpack. Use the -p option to provide one.\n");
-        assert_eq!(unar_error(&locked, false), "Архив защищён паролем");
-        assert_eq!(unar_error(&said("x.rar: Couldn't recognize the archive format.\n"), false), "Архив повреждён или это не архив");
+        assert_eq!(unar_error(&locked, false, false), "Архив защищён паролем");
+        assert_eq!(unar_error(&said("x.rar: Couldn't recognize the archive format.\n"), false, false), "Архив повреждён или это не архив");
+        let wrong = said("  кадр.txt  (13 B)... Failed! (Missing or wrong password)\n");
+        assert_eq!(unar_error(&wrong, false, true), WRONG_PASSWORD);
 
         // Several items → a folder named after the archive
         let cat = "мяу".repeat(100);
@@ -618,14 +684,14 @@ mod tests {
             ("заметка.txt", Some((note, 1, 0, Some(crc32(note))))),
         ]);
         std::fs::write(root.join("Снимки.rar"), one).unwrap();
-        let folder = extract(&root.join("Снимки.rar")).unwrap();
+        let folder = extract(&root.join("Снимки.rar"), None).unwrap();
         assert_eq!(folder, root.join("Снимки"));
         assert_eq!(std::fs::read(folder.join("Фото/кот.txt")).unwrap(), cat);
         assert_eq!(std::fs::read(folder.join("заметка.txt")).unwrap(), note);
 
         // A broken one says so and leaves nothing behind
         std::fs::write(root.join("битый.rar"), b"Rar!\x1a\x07\x01\x00garbage").unwrap();
-        let broken = extract(&root.join("битый.rar")).unwrap_err();
+        let broken = extract(&root.join("битый.rar"), None).unwrap_err();
         assert!(!has_unar || broken == "Архив повреждён", "{broken}");
 
         if has_unar {
@@ -636,11 +702,49 @@ mod tests {
             let crc = Some(crc32(&film));
             std::fs::write(root.join("Фильм.part1.rar"), rar5(Some((0, false)), &[("кадр.txt", Some((a, size, 0x10, None)))])).unwrap();
             std::fs::write(root.join("Фильм.part2.rar"), rar5(Some((1, true)), &[("кадр.txt", Some((b, size, 0x08, crc)))])).unwrap();
-            assert_eq!(extract(&root.join("Фильм.part2.rar")).unwrap(), root.join("кадр.txt"));
+            assert_eq!(extract(&root.join("Фильм.part2.rar"), None).unwrap(), root.join("кадр.txt"));
             assert_eq!(std::fs::read(root.join("кадр.txt")).unwrap(), film);
             // Without the second part: a clear message
             std::fs::remove_file(root.join("Фильм.part2.rar")).unwrap();
-            assert_eq!(extract(&root.join("Фильм.part1.rar")).unwrap_err(), "Архив повреждён или не хватает одной из его частей");
+            assert_eq!(extract(&root.join("Фильм.part1.rar"), None).unwrap_err(), "Архив повреждён или не хватает одной из его частей");
+        }
+        let leftovers = std::fs::read_dir(&root).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with('.')).count();
+        assert_eq!(leftovers, 0);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A zip with a password goes through bsdtar --passphrase; an encrypted 7z (libarchive
+    /// cannot decrypt it) through unar -p, when unar and 7z are there
+    #[test]
+    fn encrypted_archives_ask_for_a_password() {
+        if bsdtar().output().is_err() {
+            eprintln!("нет bsdtar — тест пропущен");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("feather-crypt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/секрет.txt"), "привет").unwrap();
+        let zip = root.join("копилка.zip");
+        let made = bsdtar().args(["--format", "zip", "--options", "zip:encryption=zipcrypt", "--passphrase", "-тайна"])
+            .arg("-cf").arg(&zip).arg("-C").arg(root.join("src")).arg("секрет.txt").status().unwrap();
+        assert!(made.success());
+        // No password: asked for one at once, not a hang on bsdtar's own prompt
+        assert_eq!(extract(&zip, None).unwrap_err(), NEEDS_PASSWORD);
+        assert_eq!(extract(&zip, Some("неверно")).unwrap_err(), WRONG_PASSWORD);
+        assert_eq!(extract(&zip, Some("-тайна")).unwrap(), root.join("секрет.txt"));
+        assert_eq!(std::fs::read_to_string(root.join("секрет.txt")).unwrap(), "привет");
+
+        let seven = root.join("сейф.7z");
+        let has_7z = std::process::Command::new("7z").arg("a").arg("-bd").arg("-pтайна").arg("-mhe=on").arg(&seven)
+            .arg(root.join("src/секрет.txt")).output().is_ok_and(|o| o.status.success());
+        if has_7z && unar().stdin(std::process::Stdio::null()).output().is_ok() {
+            assert_eq!(extract(&seven, None).unwrap_err(), NEEDS_PASSWORD);
+            assert_eq!(extract(&seven, Some("неверно")).unwrap_err(), WRONG_PASSWORD);
+            assert_eq!(extract(&seven, Some("тайна")).unwrap(), root.join("секрет 2.txt"));
+        } else if has_7z {
+            // Without unar it cannot be done, and asking for a password would never end
+            assert_eq!(extract(&seven, Some("тайна")).unwrap_err(), NO_UNAR_CRYPT);
         }
         let leftovers = std::fs::read_dir(&root).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with('.')).count();
         assert_eq!(leftovers, 0);

@@ -74,8 +74,9 @@ pub enum Effect {
     CheckSave(PathBuf),
     /// «Сжать»: these items (one folder) into a zip next to them, on a worker
     Compress(Vec<PathBuf>),
-    /// Unpack an archive next to it, on a worker
-    Extract(PathBuf),
+    /// Unpack an archive next to it, on a worker; the password, when the archive asked for one,
+    /// is wiped once the worker is done (its Debug shows nothing)
+    Extract(PathBuf, Option<zeroize::Zeroizing<String>>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -112,6 +113,7 @@ enum Hit {
     PropsClose,
     ConfirmOk,
     ConfirmCancel,
+    PasswordField,
     JobCancel(u64),
     ConflictReplace,
     ConflictKeep,
@@ -170,6 +172,8 @@ enum Confirm {
     Empty,
     /// Closing the window while a copy runs
     Close,
+    /// This archive needs a password (`App::password`); true — the last one was wrong
+    Password(PathBuf, bool),
 }
 
 struct Menu {
@@ -245,6 +249,8 @@ pub struct App {
     /// Where the last context menu was opened: «Открыть с помощью» shows its list there
     menu_at: (f32, f32),
     confirm: Option<Confirm>,
+    /// The field of `Confirm::Password`, drawn as dots; emptied once the sheet goes
+    password: feather_ui::input::TextInput,
     /// Running pastes (progress cards) and the names they wait on
     jobs: Vec<jobs::Job>,
     next_job: u64,
@@ -314,6 +320,7 @@ impl App {
             open_with_db: None,
             menu_at: (0.0, 0.0),
             confirm: None,
+            password: Default::default(),
             jobs: Vec::new(),
             next_job: 0,
             conflicts: VecDeque::new(),
@@ -491,7 +498,7 @@ impl App {
         } else if fsops::is_archive(&entry.name) && !self.dir.starts_with(fsops::trash_files_dir()) {
             // Like macOS: an archive opens by unpacking it next to itself
             self.flash(format!("Распаковка «{}»…", entry.name));
-            vec![Effect::Extract(entry.path)]
+            vec![Effect::Extract(entry.path, None)]
         } else {
             fsops::open_external(&entry.path);
             self.flash(format!("Открывается «{}»", entry.name));
@@ -512,6 +519,26 @@ impl App {
             Err(e) => self.flash(format!("{}: {e}", if compressed { "Не удалось сжать" } else { "Не удалось распаковать" })),
         }
         self.reload()
+    }
+
+    /// A worker finished unpacking `archive`. Without a password, or with a wrong one, the
+    /// password sheet asks for it and unpacking starts over
+    pub fn extract_done(&mut self, archive: PathBuf, result: Result<PathBuf, String>) -> Vec<Effect> {
+        let wrong = match &result {
+            Err(e) if e == fsops::NEEDS_PASSWORD => false,
+            Err(e) if e == fsops::WRONG_PASSWORD => true,
+            _ => return self.archive_done(result, false),
+        };
+        // Another sheet is up (deleting, closing): it is not replaced; the message says why
+        if self.confirm.as_ref().is_some_and(|c| !matches!(c, Confirm::Password(..))) {
+            return self.archive_done(result, false);
+        }
+        self.password.clear();
+        self.confirm = Some(Confirm::Password(archive, wrong));
+        self.menu = None;
+        self.search_focus = false;
+        self.dirty = true;
+        Vec::new()
     }
 
     fn open_selection(&mut self) -> Vec<Effect> {
@@ -619,7 +646,9 @@ impl App {
 
     /// The text field that has the keyboard, in the order `key` serves them
     fn active_field(&mut self) -> Option<&mut feather_ui::input::TextInput> {
-        if self.path_edit.is_some() {
+        if matches!(self.confirm, Some(Confirm::Password(..))) {
+            Some(&mut self.password)
+        } else if self.path_edit.is_some() {
             self.path_edit.as_mut()
         } else if self.rename.is_some() {
             self.rename.as_mut().map(|(_, name)| name)
@@ -632,7 +661,7 @@ impl App {
 
     /// The search text changed outside `key` (cut, paste): filter again
     fn field_edited(&mut self) {
-        if self.path_edit.is_none() && self.rename.is_none() && self.search_focus {
+        if self.confirm.is_none() && self.path_edit.is_none() && self.rename.is_none() && self.search_focus {
             self.scroll = 0.0;
             self.refilter();
         }
@@ -774,8 +803,25 @@ impl App {
                 vec![Effect::EmptyTrash]
             }
             Some(Confirm::Close) => self.cancel_all_and_close(),
+            // Nothing typed: the sheet stays, like a disabled default button
+            Some(Confirm::Password(archive, wrong)) if self.password.is_empty() => {
+                self.confirm = Some(Confirm::Password(archive, wrong));
+                Vec::new()
+            }
+            Some(Confirm::Password(archive, _)) => {
+                let name = archive.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                self.flash(format!("Распаковка «{name}»…"));
+                vec![Effect::Extract(archive, Some(self.password.take_text()))]
+            }
             None => Vec::new(),
         }
+    }
+
+    /// «Отменить» or Escape on a sheet; a typed password is wiped
+    fn cancel_confirm(&mut self) {
+        self.confirm = None;
+        self.password.clear();
+        self.dirty = true;
     }
 
     fn empty_button(&self) -> Option<(f32, f32, f32, f32)> {
@@ -831,11 +877,17 @@ impl App {
     }
 
     fn confirm_rects(&self) -> ((f32, f32, f32, f32), (f32, f32, f32, f32), (f32, f32, f32, f32)) {
-        let (w, h) = (360.0, 150.0);
+        let (w, h) = (360.0, if matches!(self.confirm, Some(Confirm::Password(..))) { 176.0 } else { 150.0 });
         let x = SIDEBAR_W + ((self.w - SIDEBAR_W - w) / 2.0).max(8.0);
         let y = TOOLBAR_H + 12.0;
         let bw = 140.0;
         ((x, y, w, h), (x + w - 20.0 - bw * 2.0 - 10.0, y + h - 46.0, bw, 30.0), (x + w - 20.0 - bw, y + h - 46.0, bw, 30.0))
+    }
+
+    /// The password field under the sheet's title
+    fn password_rect(&self) -> (f32, f32, f32, f32) {
+        let ((x, y, w, _), _, _) = self.confirm_rects();
+        (x + 20.0, y + 72.0, w - 40.0, 28.0)
     }
 
     fn trash_selection(&mut self) -> Vec<Effect> {
@@ -960,7 +1012,16 @@ impl App {
         }
         if self.confirm.is_some() {
             let (_, cancel, ok) = self.confirm_rects();
-            return if inside(ok) { Hit::ConfirmOk } else if inside(cancel) { Hit::ConfirmCancel } else { Hit::Nothing };
+            let field = matches!(self.confirm, Some(Confirm::Password(..))) && inside(self.password_rect());
+            return if inside(ok) {
+                Hit::ConfirmOk
+            } else if inside(cancel) {
+                Hit::ConfirmCancel
+            } else if field {
+                Hit::PasswordField
+            } else {
+                Hit::Nothing
+            };
         }
         if self.empty_button().is_some_and(inside) {
             return Hit::EmptyTrash;
@@ -1071,7 +1132,7 @@ impl App {
             return Cursor::Resize(edges);
         }
         match self.hit(x, y) {
-            Hit::Search => Cursor::Text,
+            Hit::Search | Hit::PasswordField => Cursor::Text,
             Hit::Title if self.path_edit.is_some() => Cursor::Text,
             Hit::Item(i) if self.rename.as_ref().is_some_and(|(p, _)| *p == self.entry(i).path) => Cursor::Text,
             _ => Cursor::Default,
@@ -1273,7 +1334,12 @@ impl App {
             return match hit {
                 Hit::ConfirmOk => self.confirm_ok(),
                 Hit::ConfirmCancel => {
-                    self.confirm = None;
+                    self.cancel_confirm();
+                    Vec::new()
+                }
+                Hit::PasswordField => {
+                    let (fx, _, fw, _) = self.password_rect();
+                    self.password.click_masked(&mut self.fonts, x - fx - 10.0, fw - 20.0, 13.0, mods.shift);
                     Vec::new()
                 }
                 _ => Vec::new(),
@@ -1326,7 +1392,7 @@ impl App {
                     self.cursor = None;
                 }
             }
-            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::Title | Hit::PropsClose | Hit::Nothing => {}
+            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::PasswordField | Hit::Title | Hit::PropsClose | Hit::Nothing => {}
             Hit::JobCancel(_) | Hit::ConflictReplace | Hit::ConflictKeep | Hit::ConflictSkip | Hit::ConflictAll => {}
         }
         effects
@@ -1599,7 +1665,7 @@ impl App {
             MenuAction::Extract => match self.selected_paths().as_slice() {
                 [one] => {
                     self.flash("Распаковка…".into());
-                    vec![Effect::Extract(one.clone())]
+                    vec![Effect::Extract(one.clone(), None)]
                 }
                 _ => Vec::new(),
             },
@@ -1693,6 +1759,19 @@ impl App {
         if let Some(effects) = self.conflict_key(sym) {
             return effects;
         }
+        if matches!(self.confirm, Some(Confirm::Password(..))) {
+            match sym {
+                K::Return | K::KP_Enter => return self.confirm_ok(),
+                K::Escape => self.cancel_confirm(),
+                // A password field gives nothing away: no copy or cut, paste only
+                _ if mods.ctrl && letter == Some('v') => return vec![Effect::PasteText],
+                _ if mods.ctrl && matches!(letter, Some('c' | 'x')) => {}
+                _ => {
+                    self.password.key(raw, text, mods.ctrl, mods.shift);
+                }
+            }
+            return Vec::new();
+        }
         if self.props.is_some() {
             if matches!(sym, K::Escape | K::Return | K::KP_Enter | K::space) {
                 self.props = None;
@@ -1747,7 +1826,7 @@ impl App {
             return match sym {
                 K::Return | K::KP_Enter => self.confirm_ok(),
                 K::Escape => {
-                    self.confirm = None;
+                    self.cancel_confirm();
                     Vec::new()
                 }
                 _ => Vec::new(),
@@ -2383,16 +2462,44 @@ impl App {
                 "Прервать",
                 "Не закрывать",
             ),
+            Confirm::Password(archive, wrong) => (
+                format!("Введите пароль для «{}»", archive.file_name().unwrap_or_default().to_string_lossy()),
+                if *wrong { "Неверный пароль. Попробуйте ещё раз." } else { "Архив защищён паролем." }.to_string(),
+                "Распаковать",
+                "Отменить",
+            ),
         };
         self.fonts.draw_text_clipped(pm, &title, x + 20.0, y + 20.0, w - 40.0, 14.0, colors::text(), true);
+        let wrong = matches!(confirm, Confirm::Password(_, true));
+        let ink = if wrong { rgba(255, 59, 48, 255) } else { colors::secondary() };
         for (i, line) in self.fonts.wrap_two_lines(&body, w - 40.0, 12.0, false).iter().enumerate() {
-            self.fonts.draw_text(pm, line, x + 20.0, y + 48.0 + i as f32 * 16.0, 12.0, colors::secondary(), false);
+            self.fonts.draw_text(pm, line, x + 20.0, y + 48.0 + i as f32 * 16.0, 12.0, ink, false);
+        }
+        let password = matches!(confirm, Confirm::Password(..));
+        if password {
+            let (fx, fy, fw, fh) = self.password_rect();
+            let a = colors::accent();
+            let ring = tiny_skia::Color::from_rgba(a.red(), a.green(), a.blue(), 110.0 / 255.0).unwrap_or(a);
+            theme::fill_rrect(pm, fx, fy, fw, fh, 7.0, colors::window());
+            theme::stroke_rrect(pm, fx - 1.0, fy - 1.0, fw + 2.0, fh + 2.0, 8.0, 2.5, ring);
+            theme::stroke_rrect(pm, fx, fy, fw, fh, 7.0, 0.6, colors::separator());
+            if self.password.is_empty() {
+                self.fonts.draw_text(pm, "Пароль", fx + 10.0, fy + 7.0, 13.0, colors::tertiary(), false);
+            }
+            self.password.draw_masked(pm, &mut self.fonts, fx + 10.0, fy + 7.0, fw - 20.0, 13.0, colors::text(), colors::accent());
         }
         let (cx, cy, cw, ch) = cancel;
         theme::fill_rrect(pm, cx, cy, cw, ch, ch / 2.0, colors::control());
         self.fonts.draw_text_centered(pm, cancel_label, cx + cw / 2.0, cy + 7.5, 13.0, colors::text(), false);
         let (ax, ay, aw, ah) = ok;
-        theme::fill_rrect(pm, ax, ay, aw, ah, ah / 2.0, colors::accent());
+        let accent = colors::accent();
+        // Disabled until a password is typed
+        let accent = if password && self.password.is_empty() {
+            tiny_skia::Color::from_rgba(accent.red(), accent.green(), accent.blue(), 0.45).unwrap_or(accent)
+        } else {
+            accent
+        };
+        theme::fill_rrect(pm, ax, ay, aw, ah, ah / 2.0, accent);
         self.fonts.draw_text_centered(pm, action, ax + aw / 2.0, ay + 7.5, 13.0, rgba(255, 255, 255, 255), false);
     }
 
@@ -2536,11 +2643,67 @@ mod tests {
         let archive = at(&app, "снимки.tar.gz");
         app.open_menu(Hit::Item(archive), 10.0, 10.0);
         assert!(app.menu.take().unwrap().items.iter().any(|(l, _)| l == "Распаковать"));
-        assert_eq!(app.open(archive), vec![Effect::Extract(root.join("снимки.tar.gz"))]);
+        assert_eq!(app.open(archive), vec![Effect::Extract(root.join("снимки.tar.gz"), None)]);
         // The worker's result is selected once the folder is read again
         let effects = app.archive_done(Ok(root.join("снимки")), false);
         assert!(effects.iter().any(|e| matches!(e, Effect::List(..))));
         assert_eq!(app.reveal.as_deref(), Some(root.join("снимки").as_path()));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn encrypted_archive_asks_for_a_password_and_unpacks_again() {
+        use smithay_client_toolkit::seat::keyboard::Keysym as K;
+        let root = fixture("password");
+        let archive = root.join("копилка.rar");
+        std::fs::write(&archive, "x").unwrap();
+        let mut app = app_in(&root);
+        let none = Mods::default();
+        let typed = |app: &mut App, text: &str| {
+            for c in text.chars() {
+                app.key(0, 0, Some(&c.to_string()), none);
+            }
+        };
+        // unar wants a password: the sheet asks for it, nothing unpacks yet
+        assert!(app.extract_done(archive.clone(), Err(fsops::NEEDS_PASSWORD.into())).is_empty());
+        assert_eq!(app.confirm, Some(Confirm::Password(archive.clone(), false)));
+        let (fx, fy, _, _) = app.password_rect();
+        assert_eq!(app.hit(fx + 5.0, fy + 5.0), Hit::PasswordField);
+        // Enter on an empty field does nothing
+        assert!(app.key(K::Return.raw(), 28, None, none).is_empty());
+        assert!(app.confirm.is_some());
+        typed(&mut app, "тай");
+        // The password cannot be copied or cut; pasting adds the clipboard's first line
+        assert!(app.key(K::c.raw(), 46, Some("\x03"), CTRL).is_empty());
+        assert!(app.key(K::x.raw(), 45, Some("\x18"), CTRL).is_empty());
+        assert_eq!(app.key(K::v.raw(), 47, Some("\x16"), CTRL), vec![Effect::PasteText]);
+        app.paste_text("на\nвторая строка");
+        assert_eq!(app.password.text(), "тайна");
+        // Enter: unpacking starts over with the password, which leaves the field
+        let effects = app.key(K::Return.raw(), 28, None, none);
+        assert_eq!(effects, vec![Effect::Extract(archive.clone(), Some(zeroize::Zeroizing::new("тайна".to_string())))]);
+        assert!(!format!("{effects:?}").contains("тайна"));
+        assert!(app.password.is_empty() && app.confirm.is_none());
+        // A wrong one: asked again, saying so
+        assert!(app.extract_done(archive.clone(), Err(fsops::WRONG_PASSWORD.into())).is_empty());
+        assert_eq!(app.confirm, Some(Confirm::Password(archive.clone(), true)));
+        typed(&mut app, "верный");
+        assert_eq!(app.key(K::KP_Enter.raw(), 96, None, none), vec![Effect::Extract(archive.clone(), Some(zeroize::Zeroizing::new("верный".to_string())))]);
+        // Escape cancels and wipes what was typed
+        app.extract_done(archive.clone(), Err(fsops::WRONG_PASSWORD.into()));
+        typed(&mut app, "ещё");
+        assert!(app.key(K::Escape.raw(), 1, None, none).is_empty());
+        assert!(app.confirm.is_none() && app.password.is_empty());
+        // Other failures are only reported; success selects the result
+        app.extract_done(archive.clone(), Err("Архив повреждён".into()));
+        assert!(app.confirm.is_none());
+        assert_eq!(app.status.as_ref().map(|(t, _)| t.as_str()), Some("Не удалось распаковать: Архив повреждён"));
+        let effects = app.extract_done(archive.clone(), Ok(root.join("копилка")));
+        assert!(effects.iter().any(|e| matches!(e, Effect::List(..))));
+        // Another sheet is not replaced by the password one
+        app.confirm = Some(Confirm::Empty);
+        app.extract_done(archive.clone(), Err(fsops::NEEDS_PASSWORD.into()));
+        assert_eq!(app.confirm, Some(Confirm::Empty));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
