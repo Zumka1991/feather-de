@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::VecDeque;
 
 const BLUEZ: &str = "org.bluez";
 const ROOT: &str = "/";
@@ -26,6 +27,11 @@ pub struct BtDevice {
 }
 
 impl BtDevice {
+    /// BlueZ keeps a record of it: paired, trusted (also when the bond was lost) or connected.
+    pub fn remembered(&self) -> bool {
+        self.paired || self.trusted || self.connected
+    }
+
     pub fn kind_label(&self) -> &'static str {
         match self.icon.as_str() {
             s if s.starts_with("audio-headphones") || s.starts_with("audio-headset") => "Наушники",
@@ -352,12 +358,13 @@ async fn action(
             pxy.call("Connect", &()).await
         }
         Control::DisconnectBluetooth(device_path) => {
-            if !current
-                .devices
-                .iter()
-                .any(|d| d.path == device_path && d.connected)
-            {
+            let Some(dev) = current.devices.iter().find(|d| d.path == device_path) else {
                 return Err("Устройство уже отключено".into());
+            };
+            if !dev.connected {
+                // «Отменить» for a pairing or connection attempt that is still pending in BlueZ.
+                cancel_connect(conn, &device_path).await;
+                return Ok(());
             }
             proxy(conn, &device_path, DEVICE)
                 .await
@@ -366,10 +373,12 @@ async fn action(
                 .await
         }
         Control::ForgetBluetooth(device_path) => {
+            // Any remembered device can be forgotten, including a Trusted one whose bond was lost
+            // (Paired = false): otherwise it stays in BlueZ and blocks a fresh pairing.
             let Some(dev) = current
                 .devices
                 .iter()
-                .find(|d| d.path == device_path && d.paired)
+                .find(|d| d.path == device_path && d.remembered())
             else {
                 return Err("Сохранённое устройство уже удалено".into());
             };
@@ -386,6 +395,67 @@ async fn action(
     result.map_err(|_| {
         "BlueZ отклонил действие. Проверьте, что устройство включено и находится рядом.".into()
     })
+}
+
+/// Best effort: abort a pending `Pair` and a pending `Connect` (BlueZ cancels it on `Disconnect`).
+async fn cancel_connect(conn: &zbus::Connection, device_path: &str) {
+    if let Ok(pxy) = proxy(conn, device_path, DEVICE).await {
+        let _ = pxy.call::<_, _, ()>("CancelPairing", &()).await;
+        let _ = pxy.call::<_, _, ()>("Disconnect", &()).await;
+    }
+}
+
+fn cancels_connect(command: &Control, device_path: &str) -> bool {
+    match command {
+        Control::DisconnectBluetooth(p) | Control::ForgetBluetooth(p) => p == device_path,
+        Control::Bluetooth(enabled) => !enabled,
+        _ => false,
+    }
+}
+
+/// `Pair` + `Connect` wait for the accessory. Meanwhile the worker keeps reading commands: a
+/// Disconnect («Отменить»), Forget or power-off of this device aborts the attempt, and any other
+/// command waits in `pending` until the attempt finishes.
+async fn connect_cancellable(
+    conn: &zbus::Connection,
+    device_path: String,
+    current: &Bluetooth,
+    started_discovery: &mut bool,
+    commands: &async_channel::Receiver<Control>,
+    pending: &mut VecDeque<Control>,
+) -> Result<(), String> {
+    enum Outcome {
+        Done(Result<(), String>),
+        Cancel(Control),
+    }
+    let outcome = future::race(
+        async {
+            let command = Control::ConnectBluetooth(device_path.clone());
+            Outcome::Done(action(conn, command, current, started_discovery).await)
+        },
+        async {
+            loop {
+                match commands.recv().await {
+                    Ok(c) if cancels_connect(&c, &device_path) => return Outcome::Cancel(c),
+                    Ok(c) => pending.push_back(c),
+                    // Closed: let the attempt finish; the main loop notices the closed channel.
+                    Err(_) => future::pending::<()>().await,
+                }
+            }
+        },
+    )
+    .await;
+    match outcome {
+        Outcome::Done(result) => result,
+        Outcome::Cancel(command) => {
+            cancel_connect(conn, &device_path).await;
+            if matches!(command, Control::DisconnectBluetooth(_)) {
+                Ok(())
+            } else {
+                action(conn, command, current, started_discovery).await
+            }
+        }
+    }
 }
 
 fn relevant(message: &zbus::Message, detailed: bool) -> bool {
@@ -489,16 +559,29 @@ async fn connected(
     let mut state = Bluetooth::default();
     let mut started_discovery = false;
     let mut command = None;
+    let mut pending = VecDeque::new();
     loop {
+        // The UI marks a device «Подключение…» itself; it learns the attempt is over only from an
+        // update, so one is sent after every action even if BlueZ state did not change.
+        let mut acted = false;
         if let Some(c) = command.take() {
             if let Control::WatchBluetooth(watch) = c {
                 *detailed = watch;
                 if !watch {
                     stop_discovery_if_needed(&conn, &state, &mut started_discovery).await;
                 }
-            } else if let Err(e) = action(&conn, c, &state, &mut started_discovery).await {
-                if updates.send(Update::Error("Bluetooth", e)).is_err() {
-                    return Ok(());
+            } else {
+                acted = !matches!(c, Control::Refresh | Control::RefreshBluetooth);
+                let result = if let Control::ConnectBluetooth(path) = c {
+                    let (s, p) = (&mut started_discovery, &mut pending);
+                    connect_cancellable(&conn, path, &state, s, commands, p).await
+                } else {
+                    action(&conn, c, &state, &mut started_discovery).await
+                };
+                if let Err(e) = result {
+                    if updates.send(Update::Error("Bluetooth", e)).is_err() {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -507,11 +590,15 @@ async fn connected(
         if !next.discovering {
             started_discovery = false;
         }
-        if next != state {
+        if next != state || acted {
             state = next;
             if updates.send(Update::Bluetooth(state.clone())).is_err() {
                 return Ok(());
             }
+        }
+        if let Some(c) = pending.pop_front() {
+            command = Some(c);
+            continue;
         }
         enum Event {
             Command(Result<Control, async_channel::RecvError>),
@@ -656,9 +743,13 @@ mod tests {
         assert!(relevant(&msg, true));
     }
 
+    /// Both mock tests own `org.bluez` on the private session bus, one at a time.
+    static BUS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn private_bus_bluez_object_manager_and_device_actions() {
         use std::sync::{Arc, Mutex};
+        let _bus = BUS.lock().unwrap_or_else(|e| e.into_inner());
         #[derive(Default)]
         struct State {
             powered: bool,
@@ -912,6 +1003,137 @@ mod tests {
             )
             .await
             .is_err());
+        });
+    }
+
+    #[test]
+    fn private_bus_forget_trusted_unpaired_device_cancels_pending_pairing() {
+        use std::sync::{Arc, Mutex};
+        const DEV: &str = "/org/bluez/hci0/dev_2C_BE_EE_00_00_01";
+        #[derive(Default)]
+        struct State {
+            cancelled: u32,
+            disconnects: u32,
+            removed: Vec<String>,
+        }
+        struct MockRoot(Arc<Mutex<State>>);
+        #[zbus::interface(name = "org.freedesktop.DBus.ObjectManager")]
+        impl MockRoot {
+            fn get_managed_objects(&self) -> ManagedObjects {
+                let adapter = OwnedObjectPath::try_from("/org/bluez/hci0").unwrap();
+                let mut out = ManagedObjects::new();
+                out.insert(
+                    adapter.clone(),
+                    HashMap::from([(
+                        ADAPTER.to_string(),
+                        HashMap::from([("Powered".into(), OwnedValue::from(true))]),
+                    )]),
+                );
+                if self.0.lock().unwrap().removed.is_empty() {
+                    // The stuck state seen on real hardware: remembered and trusted, bond lost.
+                    out.insert(
+                        OwnedObjectPath::try_from(DEV).unwrap(),
+                        HashMap::from([(
+                            DEVICE.to_string(),
+                            HashMap::from([
+                                ("Adapter".into(), Value::from(adapter).try_into().unwrap()),
+                                ("Address".into(), Value::from("2C:BE:EE:00:00:01").try_into().unwrap()),
+                                ("Alias".into(), Value::from("CMF Buds Pro 2").try_into().unwrap()),
+                                ("Icon".into(), Value::from("audio-headset").try_into().unwrap()),
+                                ("Paired".into(), OwnedValue::from(false)),
+                                ("Trusted".into(), OwnedValue::from(true)),
+                                ("Connected".into(), OwnedValue::from(false)),
+                            ]),
+                        )]),
+                    );
+                }
+                out
+            }
+        }
+        struct MockAdapter(Arc<Mutex<State>>);
+        #[zbus::interface(name = "org.bluez.Adapter1")]
+        impl MockAdapter {
+            fn remove_device(&self, device: OwnedObjectPath) {
+                self.0.lock().unwrap().removed.push(device.to_string());
+            }
+        }
+        struct MockDevice {
+            state: Arc<Mutex<State>>,
+            cancel: (async_channel::Sender<()>, async_channel::Receiver<()>),
+        }
+        #[zbus::interface(name = "org.bluez.Device1")]
+        impl MockDevice {
+            /// Headphones that never answer: only CancelPairing ends the call.
+            async fn pair(&self) -> zbus::fdo::Result<()> {
+                let _ = self.cancel.1.recv().await;
+                Err(zbus::fdo::Error::Failed("AuthenticationCanceled".into()))
+            }
+            fn cancel_pairing(&self) {
+                self.state.lock().unwrap().cancelled += 1;
+                let _ = self.cancel.0.try_send(());
+            }
+            fn disconnect(&self) {
+                self.state.lock().unwrap().disconnects += 1;
+            }
+            fn connect(&self) {}
+        }
+
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            return;
+        }
+        let _bus = BUS.lock().unwrap_or_else(|e| e.into_inner());
+        let state = Arc::new(Mutex::new(State::default()));
+        let cancel = async_channel::bounded(1);
+        let drain = cancel.1.clone();
+        future::block_on(async {
+            let _server = zbus::connection::Builder::session()
+                .unwrap()
+                .name(BLUEZ)
+                .unwrap()
+                .serve_at("/", MockRoot(state.clone()))
+                .unwrap()
+                .serve_at("/org/bluez/hci0", MockAdapter(state.clone()))
+                .unwrap()
+                .serve_at(DEV, MockDevice { state: state.clone(), cancel })
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+            let conn = zbus::Connection::session().await.unwrap();
+            let snap = snapshot(&conn).await.unwrap();
+            assert_eq!(snap.devices.len(), 1);
+            let dev = &snap.devices[0];
+            assert!(!dev.paired && dev.trusted && dev.remembered());
+
+            // «Отменить» for an attempt that is not running in this worker is a harmless no-op.
+            let mut started_discovery = false;
+            action(&conn, Control::DisconnectBluetooth(DEV.into()), &snap, &mut started_discovery)
+                .await
+                .unwrap();
+            assert_eq!(state.lock().unwrap().cancelled, 1);
+            while drain.try_recv().is_ok() {}
+
+            // Pair hangs; a Refresh queues behind it and Forget aborts it and removes the device.
+            let (tx, rx) = async_channel::bounded(16);
+            let mut pending = VecDeque::new();
+            let (result, ()) = future::zip(
+                connect_cancellable(&conn, DEV.into(), &snap, &mut started_discovery, &rx, &mut pending),
+                async {
+                    tx.send(Control::RefreshBluetooth).await.unwrap();
+                    tx.send(Control::ForgetBluetooth(DEV.into())).await.unwrap();
+                },
+            )
+            .await;
+            result.unwrap();
+            {
+                let s = state.lock().unwrap();
+                assert_eq!(s.cancelled, 2);
+                assert_eq!(s.disconnects, 2);
+                assert_eq!(s.removed, vec![DEV.to_string()]);
+            }
+            assert!(matches!(pending.pop_front(), Some(Control::RefreshBluetooth)));
+            assert!(pending.is_empty());
+            assert!(snapshot(&conn).await.unwrap().devices.is_empty());
         });
     }
 }

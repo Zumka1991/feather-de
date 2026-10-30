@@ -21,14 +21,16 @@
 2. **«Системные настройки → Bluetooth» (`system_settings::Page::Bluetooth`)**:
    - Карточка заголовка с пиктограммой Bluetooth и переключателем питания адаптера (`Control::Bluetooth(bool)`).
    - Строка «Поиск устройств» / «Остановить поиск устройств» (`Control::ScanBluetooth`).
-   - Раздел **«Мои устройства»** (сопряжённые и подключённые устройства): тип аксессуара (`Наушники`,
+   - Раздел **«Мои устройства»** (всё, что BlueZ помнит: сопряжённые, доверенные и подключённые,
+     `BtDevice::remembered`): тип аксессуара (`Наушники`,
      `Клавиатура`, `Мышь или трекпад`, `Гарнитура`, `Аудиоустройство`, `Геймпад` и др.), статус
-     (`Подключено` / `Подключение…` / `Сопряжено`), процент заряда батареи (`org.bluez.Battery1`),
-     кнопки «Отключить» / «Подключить» (`DisconnectBluetooth` / `ConnectBluetooth`) и «Забыть»
-     (`ForgetBluetooth` → `org.bluez.Adapter1.RemoveDevice`).
+     (`Подключено` / `Подключение…` / `Сопряжено` / `Требуется повторное сопряжение` — доверенное
+     устройство с потерянным ключом), процент заряда батареи (`org.bluez.Battery1`),
+     кнопки «Отключить» / «Подключить» / «Отменить» (`DisconnectBluetooth` / `ConnectBluetooth`) и
+     «Забыть» (`ForgetBluetooth` → `org.bluez.Adapter1.RemoveDevice`), доступная и во время подключения.
    - Раздел **«Другие устройства»** (обнаруженные несопряжённые аксессуары): при нажатии «Подключить»
      выполняет `Pair` (если устройство ещё не сопряжено), выставляет `Trusted = true` и вызывает
-     `Connect`. Безымянные BLE‑маяки с именем‑заглушкой вида `XX-XX-XX-XX-XX-XX` без иконки
+     `Connect`; пока попытка идёт, кнопка «Отменить» прерывает её. Безымянные BLE‑маяки с именем‑заглушкой вида `XX-XX-XX-XX-XX-XX` без иконки
      отфильтровываются (`is_mac_placeholder`), чтобы не засорять список.
    - Сервисные строки «Обновить состояние Bluetooth» (`Control::RefreshBluetooth`) и
      «Расширенный диспетчер Bluetooth…» (`Action::OpenBluetoothManager` → `blueman-manager`).
@@ -37,8 +39,13 @@
 
 - Вся работа с системной шиной D‑Bus (`org.bluez`) выполняется в отдельном фоновом потоке
   `feather-bluetooth` (стек 256 КиБ) без блокировки главного цикла событий композитора:
-  - Чтение дерева объектов за один вызов `org.freedesktop.DBus.ObjectManager.GetManagedObjects` на `/`
-    (таймаут 3 с), для `Connect` / `Pair` — таймаут 12 с.
+  - Чтение дерева объектов за один вызов `org.freedesktop.DBus.ObjectManager.GetManagedObjects` на `/`;
+    таймаут любого вызова — 5 с (`method_timeout` соединения).
+  - Пока идут `Pair` / `Connect`, поток продолжает читать команды (`connect_cancellable`):
+    `DisconnectBluetooth` («Отменить», повторное нажатие в Пункте управления), `ForgetBluetooth` или
+    выключение адаптера для этого устройства прерывают попытку (`CancelPairing` + `Disconnect`),
+    прочие команды ждут в очереди. После каждого действия поток присылает состояние, даже если оно не
+    изменилось, чтобы интерфейс снял «Подключение…».
   - Подписка на сигналы `InterfacesAdded`, `InterfacesRemoved`, `PropertiesChanged` (`org.bluez.Adapter1`,
     `org.bluez.Device1`, `org.bluez.Battery1`) и `NameOwnerChanged` — без периодических таймеров и опроса.
 - Когда закрыты и подпанель Bluetooth в Пункте управления, и страница `Системные настройки → Bluetooth`,
@@ -64,6 +71,7 @@ python3 bench/bluetooth-settings-check.py --host wayland-1 --output /tmp/feather
   - `controls::bluetooth::tests::mac_placeholder_filter_hides_unnamed_ble_beacons_but_keeps_named_or_paired_devices`
   - `controls::bluetooth::tests::signal_filter_ignores_background_rssi_when_bluetooth_view_is_closed`
   - `controls::bluetooth::tests::private_bus_bluez_object_manager_and_device_actions`
+  - `controls::bluetooth::tests::private_bus_forget_trusted_unpaired_device_cancels_pending_pairing`
   - `control_panel::tests::bluetooth_page_toggles_scans_and_connects_devices`
 - Проверены рендер‑фикстуры `Bluetooth` в светлой и тёмной темах при масштабах `1.0`, `1.25` и `2.0`.
 - Сквозной сценарий [`bench/bluetooth-settings-check.py`](../bench/bluetooth-settings-check.py)

@@ -323,7 +323,10 @@ impl Panel {
             if (88.0..278.0).contains(&y) && self.bluetooth.powered {
                 let i = ((y - 88.0) / 38.0) as usize + self.scroll;
                 if let Some(d) = self.bluetooth.devices.get(i).cloned() {
-                    if d.connected {
+                    let busy = self.bluetooth.connecting.as_deref() == Some(d.path.as_str());
+                    if d.connected || busy {
+                        // A second click on «Подключение…» cancels the attempt.
+                        self.bluetooth.connecting = None;
                         return ShellClickAction::Control(Control::DisconnectBluetooth(d.path));
                     }
                     self.bluetooth.connecting = Some(d.path.clone());
@@ -562,7 +565,7 @@ impl Panel {
                     let sub = if d.connected {
                         "Подключено · нажмите, чтобы отключить"
                     } else if self.bluetooth.connecting.as_deref() == Some(d.path.as_str()) {
-                        "Подключение…"
+                        "Подключение… · нажмите, чтобы отменить"
                     } else if d.paired {
                         "Сопряжено"
                     } else {
@@ -1090,6 +1093,12 @@ mod tests {
             panel.click(rect, 50., 143.),
             ShellClickAction::Control(Control::ConnectBluetooth(p)) if p == "/org/bluez/hci0/dev_2"
         ));
+        assert_eq!(panel.bluetooth.connecting.as_deref(), Some("/org/bluez/hci0/dev_2"));
+        assert!(matches!(
+            panel.click(rect, 50., 143.),
+            ShellClickAction::Control(Control::DisconnectBluetooth(p)) if p == "/org/bluez/hci0/dev_2"
+        ));
+        assert_eq!(panel.bluetooth.connecting, None);
         assert!(matches!(
             panel.click(rect, 50., 360.),
             ShellClickAction::BluetoothSettings

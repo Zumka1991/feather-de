@@ -1324,7 +1324,7 @@ impl Panel {
                             .bluetooth
                             .devices
                             .iter()
-                            .filter(|d| d.paired || d.connected)
+                            .filter(|d| d.remembered())
                             .collect();
                         l.header("Мои устройства");
                         if my_devices.is_empty() {
@@ -1332,12 +1332,16 @@ impl Panel {
                         } else {
                             l.begin();
                             for d in my_devices {
+                                let busy = c.bluetooth.connecting.as_deref() == Some(d.path.as_str());
                                 let state = if d.connected {
                                     "Подключено"
-                                } else if c.bluetooth.connecting.as_deref() == Some(d.path.as_str()) {
+                                } else if busy {
                                     "Подключение…"
-                                } else {
+                                } else if d.paired {
                                     "Сопряжено"
+                                } else {
+                                    // Trusted, but the bond is gone: Connect pairs it again.
+                                    "Требуется повторное сопряжение"
                                 };
                                 let mut detail = format!("{} · {state}", d.kind_label());
                                 if let Some(b) = d.battery {
@@ -1348,9 +1352,15 @@ impl Panel {
                                 let toggle = R::new(forget.x - 6.0 - 106.0, forget.y, 106.0, 26.0);
                                 l.push(
                                     toggle,
-                                    if d.connected { "Отключить" } else { "Подключить" },
-                                    Style::Push(!d.connected),
-                                    Some(Action::Bluetooth(if d.connected {
+                                    if d.connected {
+                                        "Отключить"
+                                    } else if busy {
+                                        "Отменить"
+                                    } else {
+                                        "Подключить"
+                                    },
+                                    Style::Push(!d.connected && !busy),
+                                    Some(Action::Bluetooth(if d.connected || busy {
                                         Bt::DisconnectBluetooth(d.path.clone())
                                     } else {
                                         Bt::ConnectBluetooth(d.path.clone())
@@ -1370,7 +1380,7 @@ impl Panel {
                             .bluetooth
                             .devices
                             .iter()
-                            .filter(|d| !d.paired && !d.connected)
+                            .filter(|d| !d.remembered())
                             .collect();
                         l.header("Другие устройства");
                         if other_devices.is_empty() {
@@ -1391,9 +1401,13 @@ impl Panel {
                                 let r = l.row(52.0, &d.name, detail, Style::Row, None);
                                 l.push(
                                     right(r, 112.0, 26.0),
-                                    if busy { "Подключение…" } else { "Подключить" },
+                                    if busy { "Отменить" } else { "Подключить" },
                                     Style::Push(false),
-                                    (!busy).then(|| Action::Bluetooth(Bt::ConnectBluetooth(d.path.clone()))),
+                                    Some(Action::Bluetooth(if busy {
+                                        Bt::DisconnectBluetooth(d.path.clone())
+                                    } else {
+                                        Bt::ConnectBluetooth(d.path.clone())
+                                    })),
                                 );
                             }
                             l.end();
@@ -4624,6 +4638,27 @@ mod tests {
             assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::ConnectBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02")));
             assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::ForgetBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02")));
             assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::ConnectBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03")));
+
+            // A trusted device whose bond was lost stays under «Мои устройства» and can be
+            // forgotten; a pending attempt offers «Отменить» instead of a dead button.
+            let saved_bluetooth = context.bluetooth.clone();
+            context.bluetooth.devices.push(crate::controls::bluetooth::BtDevice {
+                path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_04".into(),
+                adapter: "/org/bluez/hci0".into(),
+                address: "AA:BB:CC:DD:EE:04".into(),
+                name: "CMF Buds Pro 2".into(),
+                icon: "audio-headset".into(),
+                trusted: true,
+                ..Default::default()
+            });
+            context.bluetooth.connecting = Some("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_04".into());
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| matches!(&c.action, Some(Action::Bluetooth(Bt::ForgetBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_04")));
+            assert!(controls.iter().any(|c| c.label == "Отменить" && matches!(&c.action, Some(Action::Bluetooth(Bt::DisconnectBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_04")));
+            context.bluetooth.connecting = Some("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03".into());
+            let controls = panel.controls(800.0, 540.0, &context);
+            assert!(controls.iter().any(|c| c.label == "Отменить" && matches!(&c.action, Some(Action::Bluetooth(Bt::DisconnectBluetooth(p))) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03")));
+            context.bluetooth = saved_bluetooth;
         }
         {
             use crate::theme::{AccentColor, TextSize};
