@@ -571,3 +571,62 @@ apt не может установить этот пакет	apt cannot install 
 Распаковка «{}»…	Extracting “{}”…	Extrayendo «{}»…	„{}“ wird entpackt …	Extraction de « {} »…	正在解压“{}”…
 Создан архив «{}»	Created archive “{}”	Archivo «{}» creado	Archiv „{}“ erstellt	Archive « {} » créée	已创建归档“{}”
 Распаковано: «{}»	Extracted: “{}”	Extraído: «{}»	Entpackt: „{}“	Extrait : « {} »	已解压：“{}”
+# ── Store (feather-store) ──
+Магазин	Store	Tienda	Store	Boutique	应用商店
+Каталог программ: поиск, установка и удаление	Catalog of apps: search, install and remove	Catálogo de aplicaciones: buscar, instalar y quitar	Programmkatalog: suchen, installieren und entfernen	Catalogue d’applications : rechercher, installer et supprimer	应用目录：搜索、安装和移除
+Главная	Discover	Inicio	Entdecken	Découvrir	发现
+Интернет	Internet	Internet	Internet	Internet	互联网
+Офис	Office	Oficina	Büro	Bureautique	办公
+Графика и фото	Graphics & Photo	Gráficos y fotos	Grafik & Foto	Graphisme et photo	图形和照片
+Музыка и видео	Music & Video	Música y vídeo	Musik & Video	Musique et vidéo	音乐和视频
+Игры	Games	Juegos	Spiele	Jeux	游戏
+Разработка	Development	Desarrollo	Entwicklung	Développement	开发
+Образование и наука	Education & Science	Educación y ciencia	Bildung & Wissenschaft	Éducation et science	教育和科学
+Утилиты	Utilities	Utilidades	Dienstprogramme	Utilitaires	实用工具
+Система	System	Sistema	System	Système	系统
+Установленные	Installed	Instaladas	Installiert	Installées	已安装
+Поиск	Search	Buscar	Suche	Recherche	搜索
+Поиск:	Search:	Buscar:	Suche:	Recherche :	搜索：
+Поиск программ	Search Apps	Buscar aplicaciones	Apps suchen	Rechercher des apps	搜索应用
+Загрузка каталога…	Loading the catalog…	Cargando el catálogo…	Katalog wird geladen …	Chargement du catalogue…	正在加载目录…
+Каталог программ пуст	The catalog of apps is empty	El catálogo de aplicaciones está vacío	Der Programmkatalog ist leer	Le catalogue d’applications est vide	应用目录为空
+Он появится после обновления списков программ: sudo apt update (нужен пакет appstream)	It appears after the package lists are updated: sudo apt update (needs the appstream package)	Aparecerá tras actualizar las listas de paquetes: sudo apt update (requiere el paquete appstream)	Er erscheint nach dem Aktualisieren der Paketlisten: sudo apt update (benötigt das Paket appstream)	Il apparaîtra après la mise à jour des listes de paquets : sudo apt update (paquet appstream requis)	更新软件包列表后显示：sudo apt update（需要 appstream 软件包）
+Подборка Пёрышка	Feather Picks	Selección de Feather	Feather-Auswahl	La sélection Feather	Feather 精选
+Проверенные программы для работы, творчества и отдыха. Установка в один щелчок, обновления вместе с системой.	Proven apps for work, creativity and leisure. One click to install, updated along with the system.	Aplicaciones probadas para trabajar, crear y descansar. Se instalan con un clic y se actualizan con el sistema.	Bewährte Programme für Arbeit, Kreativität und Freizeit. Mit einem Klick installiert, aktualisiert mit dem System.	Des applications éprouvées pour travailler, créer et se détendre. Installation en un clic, mises à jour avec le système.	适合工作、创作和娱乐的可靠应用。一键安装，随系统更新。
+Программ в каталоге:	Apps in the catalog:	Aplicaciones en el catálogo:	Programme im Katalog:	Applications dans le catalogue :	目录中的应用：
+Выбор редакции	Editors’ Choice	Selección del editor	Empfehlungen der Redaktion	Choix de la rédaction	编辑推荐
+Ничего не найдено	Nothing found	No se encontró nada	Nichts gefunden	Aucun résultat	未找到任何内容
+Нет установленных программ из каталога	No apps from the catalog are installed	No hay aplicaciones del catálogo instaladas	Keine Programme aus dem Katalog installiert	Aucune application du catalogue n’est installée	未安装目录中的应用
+В этом разделе пока нет программ	No apps in this section yet	Aún no hay aplicaciones en esta sección	Noch keine Programme in diesem Bereich	Pas encore d’applications dans cette section	此分类中暂无应用
+Открыть	Open	Abrir	Öffnen	Ouvrir	打开
+Удалить	Remove	Quitar	Entfernen	Supprimer	移除
+Описание	Description	Descripción	Beschreibung	Description	描述
+Сведения	Information	Información	Informationen	Informations	信息
+Разработчик	Developer	Desarrollador	Entwickler	Développeur	开发者
+Лицензия	License	Licencia	Lizenz	Licence	许可证
+Пакет	Package	Paquete	Paket	Paquet	软件包
+Разделы	Categories	Categorías	Kategorien	Catégories	分类
+Сайт	Website	Sitio web	Website	Site web	网站
+Вместе с	Along with	Junto con	Zusammen mit	Avec	与
+будут удалены:	these will be removed:	se quitarán:	wird entfernt:	seront supprimés :	一同移除的有：
+Удалить всё	Remove All	Quitar todo	Alle entfernen	Tout supprimer	全部移除
+Отмена	Cancel	Cancelar	Abbrechen	Annuler	取消
+Подготовка…	Preparing…	Preparando…	Vorbereitung …	Préparation…	正在准备…
+У этой программы нет ярлыка для запуска	This app has no launcher	Esta aplicación no tiene lanzador	Dieses Programm hat keinen Starter	Cette application n’a pas de lanceur	此应用没有启动器
+Не удалось установить	Could not install	No se pudo instalar	Installation nicht möglich:	Impossible d’installer	无法安装
+Не удалось удалить	Could not remove	No se pudo quitar	Entfernen nicht möglich:	Impossible de supprimer	无法移除
+Ожидание другой установки или обновления…	Waiting for another installation or update…	Esperando otra instalación o actualización…	Warten auf eine andere Installation oder Aktualisierung …	En attente d’une autre installation ou mise à jour…	正在等待其他安装或更新…
+Обновление списка программ…	Updating the list of apps…	Actualizando la lista de aplicaciones…	Programmliste wird aktualisiert …	Mise à jour de la liste des applications…	正在更新应用列表…
+Проверка зависимостей…	Checking dependencies…	Comprobando dependencias…	Abhängigkeiten werden geprüft …	Vérification des dépendances…	正在检查依赖关系…
+Проверка подписей…	Checking signatures…	Comprobando firmas…	Signaturen werden geprüft …	Vérification des signatures…	正在检查签名…
+Удаление…	Removing…	Quitando…	Entfernen …	Suppression…	正在移除…
+Завершение…	Finishing…	Finalizando…	Abschließen …	Finalisation…	正在完成…
+Не удалось скачать пакеты. Проверьте подключение к интернету	Could not download the packages. Check the Internet connection	No se pudieron descargar los paquetes. Comprueba la conexión a Internet	Pakete konnten nicht heruntergeladen werden. Prüfe die Internetverbindung	Impossible de télécharger les paquets. Vérifiez la connexion Internet	无法下载软件包。请检查网络连接
+Сейчас идёт другая установка или обновление. Повторите позже	Another installation or update is running. Try again later	Hay otra instalación o actualización en curso. Inténtalo más tarde	Eine andere Installation oder Aktualisierung läuft. Später erneut versuchen	Une autre installation ou mise à jour est en cours. Réessayez plus tard	另一个安装或更新正在进行。请稍后重试
+Недостаточно места на диске	Not enough disk space	No hay suficiente espacio en disco	Nicht genügend Speicherplatz	Espace disque insuffisant	磁盘空间不足
+Это часть системы, её нельзя удалить	This is part of the system and cannot be removed	Forma parte del sistema y no se puede quitar	Dies ist Teil des Systems und kann nicht entfernt werden	Cela fait partie du système et ne peut pas être supprimé	这是系统的一部分，无法移除
+Операция не удалась	The operation failed	La operación falló	Der Vorgang ist fehlgeschlagen	L’opération a échoué	操作失败
+Служба PackageKit недоступна (пакет packagekit)	The PackageKit service is unavailable (package packagekit)	El servicio PackageKit no está disponible (paquete packagekit)	Der PackageKit-Dienst ist nicht verfügbar (Paket packagekit)	Le service PackageKit est indisponible (paquet packagekit)	PackageKit 服务不可用（packagekit 软件包）
+Пакет {} не найден в источниках программ	Package {} was not found in the software sources	No se encontró el paquete {} en las fuentes de software	Paket {} wurde in den Softwarequellen nicht gefunden	Paquet {} introuvable dans les sources de logiciels	在软件源中未找到软件包 {}
+Пакет {} не установлен	Package {} is not installed	El paquete {} no está instalado	Paket {} ist nicht installiert	Le paquet {} n’est pas installé	软件包 {} 未安装
+Не удаётся подобрать зависимости: {}	Dependencies cannot be resolved: {}	No se pueden resolver las dependencias: {}	Abhängigkeiten können nicht aufgelöst werden: {}	Impossible de résoudre les dépendances : {}	无法解析依赖关系：{}

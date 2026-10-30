@@ -114,7 +114,7 @@ SHLIBS="$(cd "$WORK/src" && dpkg-shlibdeps -O "${ELF_ARGS[@]}" 2>/dev/null | sed
 
 # Программы, которые окружение вызывает само; Recommends — то, без чего работает, но беднее
 DEPENDS="$SHLIBS, dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools"
-RECOMMENDS="breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core"
+RECOMMENDS="packagekit, appstream, breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core"
 INSTALLED_KB="$(du -sk --exclude=DEBIAN "$PKG" | cut -f1)"
 
 mkdir -p "$PKG/DEBIAN"
@@ -132,7 +132,8 @@ Homepage: https://github.com/Zumka1991/feather-de
 Description: Пёрышко (Feather DE) — рабочий стол Wayland в стиле macOS
  Быстрое и лёгкое окружение рабочего стола на Rust: композитор Wayland с
  Доком, Launchpad, Центром управления и строкой меню, а также свои Файлы,
- Терминал, Заметки, Просмотр, TextEdit, Калькулятор и установщик пакетов.
+ Терминал, Заметки, Просмотр, TextEdit, Калькулятор, Магазин программ и
+ установщик пакетов.
  Запускается сеансом «Пёрышко» из экрана входа или командой feather-session.
 EOF
 echo "/etc/pam.d/feather-lock" > "$PKG/DEBIAN/conffiles"

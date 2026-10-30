@@ -20,6 +20,7 @@ pub enum IconKind {
     Preview,
     TextEdit,
     Calculator,
+    Store,
     ScreenRecord,
     ActivityMonitor,
     Settings,
@@ -215,6 +216,11 @@ pub fn calc_command() -> Option<String> {
     own_program("feather-calc")
 }
 
+/// Feather's Store (catalog of programs) when built next to the compositor binary
+pub fn store_command() -> Option<String> {
+    own_program("feather-store")
+}
+
 pub struct AppRegistry {
     pub apps: Vec<AppEntry>,
 }
@@ -293,6 +299,16 @@ impl AppRegistry {
                 true,
             )
             .with_aliases(&["feather-calc"])
+            .with_own_icon(),
+            AppEntry::new(
+                "builtin.store",
+                "Магазин",
+                "Каталог программ: поиск, установка и удаление",
+                IconKind::Store,
+                Exec(store_command().unwrap_or_default()),
+                true,
+            )
+            .with_aliases(&["feather-store"])
             .with_own_icon(),
             AppEntry::new(
                 "builtin.screencap",
@@ -1208,6 +1224,14 @@ pub fn draw_app_icon(
             crate::theme::stroke_circle(pixmap, cx, cy, size * 0.21, (size * 0.025).max(1.0), rgba(255, 255, 255, 210));
             fill_circle(pixmap, cx, cy, size * 0.145, rgba(255, 69, 58, 255));
             fill_circle(pixmap, cx - size * 0.035, cy - size * 0.035, size * 0.04, rgba(255, 195, 190, 150));
+        }
+        IconKind::Store => {
+            // Store («Магазин»): a white shopping bag on a blue-to-violet tile, like its banner
+            tile(pixmap, rgba(70, 150, 255, 255), rgba(118, 70, 232, 255));
+            let (cx, s) = (x + size * 0.5, size);
+            crate::theme::stroke_circle(pixmap, cx, y + s * 0.36, s * 0.14, (s * 0.05).max(1.0), rgba(255, 255, 255, 240));
+            fill_rounded_rect(pixmap, x + s * 0.22, y + s * 0.38, s * 0.56, s * 0.42, s * 0.08, rgba(255, 255, 255, 250));
+            fill_rounded_rect(pixmap, x + s * 0.28, y + s * 0.45, s * 0.44, s * 0.09, s * 0.035, rgba(110, 120, 250, 120));
         }
         IconKind::ActivityMonitor => {
             tile(pixmap, rgba(58, 58, 64, 255), rgba(22, 22, 26, 255));

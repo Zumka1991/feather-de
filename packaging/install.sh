@@ -59,7 +59,7 @@ if [[ "$NO_BUILD" -eq 0 ]]; then
 fi
 
 # Validate all sources before writing anything to the destination.
-BINS=(feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-installer)
+BINS=(feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-installer feather-store)
 for bin in "${BINS[@]}"; do
     [[ -x "$TARGET_DIR/$bin" ]] || { echo "Нет бинарника: $TARGET_DIR/$bin" >&2; exit 1; }
 done

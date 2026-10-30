@@ -728,7 +728,8 @@ impl FontSystem {
         w
     }
 
-    fn ellipsize_raw(&mut self, text: &str, max_width: f32, size: f32, is_bold: bool) -> String {
+    /// `ellipsize` for literal text (names of programs and files): no UI translation
+    pub fn ellipsize_raw(&mut self, text: &str, max_width: f32, size: f32, is_bold: bool) -> String {
         if self.measure_raw(text, size, is_bold) <= max_width {
             return text.to_string();
         }
