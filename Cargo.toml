@@ -1,6 +1,6 @@
 [package]
 name = "feather-de"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "Пёрышко (Feather DE) — сверхбыстрое и легкое окружение рабочего стола для Wayland в стиле macOS на Rust"
 
