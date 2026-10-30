@@ -231,6 +231,8 @@ impl Xwayland {
         cmd.env("WAYLAND_DISPLAY", &self.wayland_socket)
             .env_remove("DISPLAY")
             .stdin(std::process::Stdio::null());
+        // X programs started by Xwayland must not get our VT either
+        feather_ui::process::new_session(&mut cmd);
         // SAFETY: only async-signal-safe fcntl calls between fork and exec
         unsafe {
             cmd.pre_exec(move || {

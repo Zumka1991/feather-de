@@ -623,7 +623,8 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
         .env("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    feather_ui::process::new_session(&mut command)
         .spawn()
         .map(|mut child| {
             // Reap the child when it exits; otherwise every closed app stays a zombie

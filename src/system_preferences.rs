@@ -450,13 +450,13 @@ pub fn launch_terminal(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 .map(|a| a.exec)
         })
         .unwrap_or_else(crate::apps::terminal_command);
-    std::process::Command::new("sh")
-        .args(["-c", &format!("exec {command}")])
+    let mut cmd = std::process::Command::new("sh");
+    cmd.args(["-c", &format!("exec {command}")])
         .current_dir(dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
+        .stderr(std::process::Stdio::null());
+    feather_ui::process::new_session(&mut cmd).spawn()?;
     Ok(())
 }
 
