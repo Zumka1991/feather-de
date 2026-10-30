@@ -1796,6 +1796,42 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-resize-check] unaligned SHM size passed");
         })?;
     }
+    if let Some(shot) = std::env::var_os("FEATHER_DEBUG_FRAMES") {
+        // Magnified Dock icons on the GPU (snapshot), then frame callbacks of a hidden window:
+        // with FEATHER_PROFILE its commits fall to ~1/s while minimized and come back after.
+        fn motion(s: &mut FeatherCompositor, x: f64, y: f64) {
+            let t = s.start_time.elapsed().as_millis() as u32;
+            s.on_pointer_motion((x, y).into(), t);
+        }
+        at(state, 2500, |s| {
+            if let Some((x, y, size)) = s.shell.dock_slot_global(DockTarget::Trash) {
+                motion(s, (x + size * 0.5) as f64, (y + size * 0.5) as f64);
+            }
+        })?;
+        at(state, 3500, move |s| {
+            eprintln!("[feather-frames-check] dock: {} icons on the GPU, {} textures", s.shell.dock_gpu_icons.len(), s.shell.dock_icon_textures.len());
+            s.screenshot_request = Some(std::path::PathBuf::from(&shot));
+            s.needs_redraw = true;
+        })?;
+        at(state, 4500, |s| {
+            motion(s, s.shell.screen_w as f64 * 0.5, s.shell.screen_h as f64 * 0.4);
+        })?;
+        at(state, 5500, |s| {
+            eprintln!("[feather-frames-check] dock left: {} icons on the GPU, {} textures", s.shell.dock_gpu_icons.len(), s.shell.dock_icon_textures.len());
+        })?;
+        at(state, 8000, |s| {
+            if let Some(i) = s.windows.iter().position(|w| w.mapped && !w.is_builtin()) {
+                s.minimize_window(i);
+                eprintln!("[feather-frames-check] minimized");
+            }
+        })?;
+        at(state, 14000, |s| {
+            if let Some(id) = s.windows.iter().find(|w| w.minimized).map(|w| w.id) {
+                s.execute_shell_action(ShellClickAction::RestoreMinimizedWindow(id));
+                eprintln!("[feather-frames-check] restored");
+            }
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_DOCK").is_some() {
         let app = state
             .app_registry

@@ -59,7 +59,7 @@ mod control_panel;
 
 use std::{
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use smithay::{
@@ -203,6 +203,20 @@ pub struct FeatherCompositor {
     pub appmenu_ready: bool,
     pub autostart_launched: bool,
     pub idle_frame_timer_armed: bool,
+    housekeeping_timer: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Wall-clock time of a minute-long housekeeping wait (None while it ticks every second)
+    housekeeping_wall_due: Option<SystemTime>,
+    /// Windows each output drew in its last frame (output name → window ids)
+    pub shown_windows: Vec<(String, Vec<u64>)>,
+    pub hidden_frame_timer_armed: bool,
+    /// DRM heads that queued a frame in the last render, and those that rendered none
+    pub frame_heads: Vec<String>,
+    pub idle_heads: Vec<String>,
+    /// Heads whose windows the armed idle timer answers (None: every output)
+    pub idle_frame_heads: Option<Vec<String>>,
+    /// Recent worst composition cost (decaying), for the DRM render deadline
+    pub frame_cost: Duration,
+    pub render_deadline_armed: Option<Instant>,
     pub frame_pending: bool,
     pub frame_seq: u64,
     pub swap_interval_disabled: bool,
@@ -221,6 +235,8 @@ pub struct FeatherCompositor {
     pub primary_selection_state: PrimarySelectionState,
     pub output_manager_state: OutputManagerState,
     pub viewporter_state: ViewporterState,
+    /// wp_presentation: clients learn when (and on which vblank) their frame was shown
+    pub presentation_state: smithay::wayland::presentation::PresentationState,
     pub fractional_scale_state: FractionalScaleManagerState,
     pub cursor_shape_state: CursorShapeManagerState,
     pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
@@ -1502,6 +1518,61 @@ impl FeatherCompositor {
     }
 
     /// Safety net in case a client vanished without destroying its toplevel cleanly
+    /// Clock, RSS, toasts, schedules. Every second only while something on screen counts
+    /// seconds or expires; otherwise when the clock's minute changes. Returns the next delay.
+    fn housekeeping_tick(&mut self) -> Duration {
+        let dnd = self.shell.dnd_active();
+        let night = self.night.active();
+        self.night_tick();
+        if self.night.active() != night { self.mark_settings_dirty(); }
+        let ticked = self.shell.tick();
+        if self.screencast_tick() { self.needs_redraw = true; }
+        // A scheduled «Не беспокоить» started or ended: the Settings switch follows
+        if self.shell.dnd_active() != dnd { self.mark_settings_dirty(); }
+        if self.lock.clock_stale() { self.needs_redraw = true; }
+        self.flush_notification_events();
+        if ticked {
+            self.needs_redraw = true;
+            if self.system_settings.page==crate::system_settings::Page::DateTime{self.mark_settings_dirty();}
+        }
+        self.prune_dead_windows();
+        self.next_housekeeping()
+    }
+
+    fn needs_second_tick(&self) -> bool {
+        self.shell.needs_second_tick()
+            || self.lock.active
+            || self.screencast.recording.is_some()
+            || self.screencast.panel.is_some()
+            // Settings (date and time, memory in «Об этом компьютере») and other own windows
+            || self.windows.iter().any(|w| w.is_builtin() && w.is_visible())
+    }
+
+    fn next_housekeeping(&mut self) -> Duration {
+        if self.needs_second_tick() {
+            self.housekeeping_wall_due = None;
+            return Duration::from_secs(1);
+        }
+        use chrono::Timelike;
+        let now = chrono::Local::now();
+        let into_minute = Duration::from_secs(now.second() as u64)
+            + Duration::from_nanos((now.nanosecond() % 1_000_000_000) as u64);
+        // Just past the boundary, so the minute has surely turned
+        let delay = Duration::from_secs(60).saturating_sub(into_minute) + Duration::from_millis(20);
+        self.housekeeping_wall_due = Some(SystemTime::now() + delay);
+        delay
+    }
+
+    /// From the idle callback: a slow wait must end now when something started counting
+    /// seconds (a toast, an open menu) or its wall-clock time passed while the monotonic
+    /// timer stood still (suspend). One comparison per dispatch, no syscall beyond vDSO.
+    fn refresh_housekeeping(&mut self) {
+        let Some(due) = self.housekeeping_wall_due else { return };
+        if self.needs_second_tick() || SystemTime::now() >= due {
+            arm_housekeeping(self, Duration::ZERO);
+        }
+    }
+
     fn prune_dead_windows(&mut self) {
         let before = self.windows.len();
         self.windows.retain(|w| match w.backend {
@@ -1674,6 +1745,19 @@ fn setup_dmabuf(
     (dmabuf_state, Some(global))
 }
 
+fn arm_housekeeping(state: &mut FeatherCompositor, after: Duration) {
+    if let Some(token) = state.housekeeping_timer.take() {
+        state.loop_handle.remove(token);
+    }
+    state.housekeeping_wall_due = None;
+    match state.loop_handle.insert_source(Timer::from_duration(after), |_, _, state| {
+        TimeoutAction::ToDuration(state.housekeeping_tick())
+    }) {
+        Ok(token) => state.housekeeping_timer = Some(token),
+        Err(e) => tracing::error!("Таймер обслуживания не запущен: {e}"),
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args_os:Vec<_>=std::env::args_os().collect();
     if args_os.get(1).is_some_and(|a|a=="--file-portal"){return file_portal::run();}
@@ -1707,6 +1791,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let primary_selection_state = PrimarySelectionState::new::<FeatherCompositor>(&dh);
     let output_manager_state = OutputManagerState::new_with_xdg_output::<FeatherCompositor>(&dh);
     let viewporter_state = ViewporterState::new::<FeatherCompositor>(&dh);
+    let presentation_state = smithay::wayland::presentation::PresentationState::new::<FeatherCompositor>(&dh, libc::CLOCK_MONOTONIC as u32);
     let fractional_scale_state = FractionalScaleManagerState::new::<FeatherCompositor>(&dh);
     let cursor_shape_state = CursorShapeManagerState::new::<FeatherCompositor>(&dh);
     let relative_pointer_state = smithay::wayland::relative_pointer::RelativePointerManagerState::new::<FeatherCompositor>(&dh);
@@ -1874,26 +1959,6 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         handle.insert_source(winit_loop, |event, _, state| state.handle_winit_event(event))?;
     }
 
-    // Slow housekeeping: clock, RSS, toasts. Nothing else polls.
-    handle.insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
-        let dnd = state.shell.dnd_active();
-        let night = state.night.active();
-        state.night_tick();
-        if state.night.active() != night { state.mark_settings_dirty(); }
-        let ticked = state.shell.tick();
-        if state.screencast_tick() { state.needs_redraw = true; }
-        // A scheduled «Не беспокоить» started or ended: the Settings switch follows
-        if state.shell.dnd_active() != dnd { state.mark_settings_dirty(); }
-        if state.lock.clock_stale() { state.needs_redraw = true; }
-        state.flush_notification_events();
-        if ticked {
-            state.needs_redraw = true;
-            if state.system_settings.page==crate::system_settings::Page::DateTime{state.mark_settings_dirty();}
-        }
-        state.prune_dead_windows();
-        TimeoutAction::ToDuration(Duration::from_secs(1))
-    })?;
-
     let (screenshot_tx, screenshot_rx) = crate::screenshot::channel_source();
     event_loop.handle().insert_source(screenshot_rx, |event, _, state| {
         if let smithay::reexports::calloop::channel::Event::Msg(finished) = event {
@@ -1966,6 +2031,15 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         appmenu_ready: false,
         autostart_launched: false,
         idle_frame_timer_armed: false,
+        housekeeping_timer: None,
+        housekeeping_wall_due: None,
+        shown_windows: Vec::new(),
+        hidden_frame_timer_armed: false,
+        frame_heads: Vec::new(),
+        idle_heads: Vec::new(),
+        idle_frame_heads: None,
+        frame_cost: Duration::ZERO,
+        render_deadline_armed: None,
         frame_pending: false,
         frame_seq: 0,
         swap_interval_disabled: false,
@@ -1983,6 +2057,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         primary_selection_state,
         output_manager_state,
         viewporter_state,
+        presentation_state,
         fractional_scale_state,
         cursor_shape_state,
         relative_pointer_state,
@@ -2448,9 +2523,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
 
 
     state.start_power();
+    // Slow housekeeping: clock, RSS, toasts. Nothing else polls.
+    arm_housekeeping(&mut state, Duration::from_secs(1));
     // Event-driven main loop: sleeps until input, a client request or a timer fires,
     // and only renders when something actually changed.
     event_loop.run(None, &mut state, |state| {
+        state.refresh_housekeeping();
         let settings_visible = state
             .windows
             .iter()

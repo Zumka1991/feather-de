@@ -28,12 +28,14 @@ use smithay::{
     utils::{DeviceFd, Transform},
 };
 use std::path::PathBuf;
+/// A queued frame carries the wp_presentation feedback of what it shows
+pub type FrameData = Option<smithay::desktop::utils::OutputPresentationFeedback>;
 pub type GbmDrmOutput =
-    DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+    DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameData, DrmDeviceFd>;
 pub type GbmDrmOutputManager = DrmOutputManager<
     GbmAllocator<DrmDeviceFd>,
     GbmFramebufferExporter<DrmDeviceFd>,
-    (),
+    FrameData,
     DrmDeviceFd,
 >;
 const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
@@ -51,6 +53,12 @@ pub struct Head {
     pub queued_protected: bool,
     pub vrr_supported: bool,
     pub vrr_enabled: bool,
+    /// Something changed since this head's last frame. Heads render at their own pace: a
+    /// slower one waiting for its vblank never holds back the others.
+    pub dirty: bool,
+    /// Not before this: the frame is composed just ahead of the next vblank, so a client
+    /// frame committed meanwhile still makes it (see `render_deadline`)
+    pub render_at: Option<std::time::Instant>,
 }
 impl Head {
     pub fn set_vrr(&mut self, want: bool) {
@@ -268,6 +276,8 @@ impl DrmBackend {
                 queued_protected: false,
                 vrr_supported,
                 vrr_enabled,
+                dirty: true,
+                render_at: None,
             });
         }
         Ok(())
@@ -327,8 +337,8 @@ pub fn init(
             state.handle_input(event);
         },
     )?;
-    handle.insert_source(drm_notifier, |event, _, state| match event {
-        DrmEvent::VBlank(crtc) => state.on_drm_vblank(crtc),
+    handle.insert_source(drm_notifier, |event, metadata, state| match event {
+        DrmEvent::VBlank(crtc) => state.on_drm_vblank(crtc, metadata.take()),
         DrmEvent::Error(e) => tracing::warn!("DRM: {e}"),
     })?;
     handle.insert_source(notifier, |event, _, state| match event {
@@ -435,14 +445,76 @@ mod tests {
         );
         assert_eq!(refresh_rate(148500, 2200, 0, 1, false, false), None);
     }
+
+    #[test]
+    fn frames_are_composed_ahead_of_the_vblank_by_their_cost() {
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        let hz60 = crate::render::refresh_period(60000).unwrap();
+        assert_eq!(hz60.as_micros(), 16666);
+        // A cheap frame waits until a quarter of the refresh is left
+        assert_eq!(deadline_wait(hz60, Duration::from_micros(650)), Some(hz60 / 2 + hz60 / 4));
+        // An expensive one starts as early as it needs: twice its cost plus a millisecond
+        assert_eq!(deadline_wait(hz60, ms(4)), Some(hz60 - ms(9)));
+        // At 144 Hz the 4 ms floor leaves under 3 ms of waiting
+        let hz144 = crate::render::refresh_period(144000).unwrap();
+        assert_eq!(deadline_wait(hz144, Duration::ZERO), Some(hz144 - ms(4)));
+        // No time to wait: compose right away
+        assert_eq!(deadline_wait(hz60, ms(8)), None);
+        assert_eq!(deadline_wait(crate::render::refresh_period(240000).unwrap(), Duration::ZERO), None);
+        assert_eq!(crate::render::refresh_period(0), None);
+    }
+}
+
+/// FEATHER_RENDER_DEADLINE=0 composes right after each vblank, as before
+fn deadline_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| !matches!(std::env::var("FEATHER_RENDER_DEADLINE").as_deref(), Ok("0" | "off" | "false")))
+}
+
+/// When the next frame of `h`, which just flipped, should be composed: ahead of the next
+/// vblank by twice the recent worst frame cost, at least 4 ms and a quarter of the refresh.
+/// Frames composed right after a vblank showed client commits that arrived a moment later
+/// only one refresh after. VRR has no fixed vblank.
+fn render_deadline(h: &Head, frame_cost: std::time::Duration) -> Option<std::time::Instant> {
+    if !deadline_enabled() || h.vrr_enabled {
+        return None;
+    }
+    deadline_wait(crate::render::refresh_period(h.refresh)?, frame_cost).map(|wait| std::time::Instant::now() + wait)
+}
+
+fn deadline_wait(period: std::time::Duration, frame_cost: std::time::Duration) -> Option<std::time::Duration> {
+    use std::time::Duration;
+    let margin = (frame_cost * 2 + Duration::from_millis(1)).max(Duration::from_millis(4));
+    let wait = period.saturating_sub(margin).min(period / 2 + period / 4);
+    (wait > Duration::from_millis(1)).then_some(wait)
 }
 
 impl FeatherCompositor {
-    pub fn on_drm_vblank(&mut self, crtc: crtc::Handle) {
+    pub fn on_drm_vblank(&mut self, crtc: crtc::Handle, meta: Option<smithay::backend::drm::DrmEventMetadata>) {
+        use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
         if let crate::backend::Backend::Drm(d) = &mut self.backend {
             if let Some(h) = d.heads.iter_mut().find(|h| h.crtc == crtc && h.pending) {
                 let success = match h.output.frame_submitted() {
-                    Ok(_) => true,
+                    Ok(feedback) => {
+                        if let Some(mut feedback) = feedback.flatten() {
+                            // The kernel's flip timestamp; without one, now (still after the flip)
+                            let (time, seq, flags) = match meta {
+                                Some(smithay::backend::drm::DrmEventMetadata { time: smithay::backend::drm::DrmEventTime::Monotonic(t), sequence }) => {
+                                    (t.into(), sequence as u64, Kind::Vsync | Kind::HwClock | Kind::HwCompletion)
+                                }
+                                _ => (smithay::utils::Clock::<smithay::utils::Monotonic>::new().now(), 0, Kind::Vsync | Kind::HwCompletion),
+                            };
+                            let refresh = match crate::render::refresh_period(h.refresh) {
+                                Some(p) if h.vrr_enabled => smithay::wayland::presentation::Refresh::variable(p),
+                                Some(p) => smithay::wayland::presentation::Refresh::fixed(p),
+                                None => smithay::wayland::presentation::Refresh::Unknown,
+                            };
+                            feedback.presented(time, refresh, seq, flags);
+                        }
+                        h.render_at = render_deadline(h, self.frame_cost);
+                        true
+                    }
                     Err(e) => {
                         tracing::warn!("DRM {}: {e:?}", h.name);
                         self.needs_redraw = true;

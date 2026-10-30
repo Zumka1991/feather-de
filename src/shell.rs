@@ -780,6 +780,13 @@ pub struct MacShell {
     dock_bar: R,
     dock_slot_gap: f32,
     dock_painted: Vec<Rectangle<i32, Buffer>>,
+    /// Magnified icons, drawn by the GPU over the shelf: rect in the Dock buffer and icon
+    pub dock_gpu_icons: Vec<(R, crate::icons::IconKey)>,
+    /// Their textures, kept while the pointer is over the Dock (see `upload_dock_icons`)
+    pub dock_icon_textures: std::collections::HashMap<crate::icons::IconKey, smithay::backend::renderer::element::texture::TextureBuffer<smithay::backend::renderer::gles::GlesTexture>>,
+    dock_icon_uploads: Vec<(crate::icons::IconKey, tiny_skia::Pixmap)>,
+    /// A texture upload failed: magnified icons are resampled on the CPU from then on
+    dock_gpu_failed: bool,
 
     pub spotlight_open: bool,
     pub spotlight_query: String,
@@ -900,6 +907,10 @@ impl MacShell {
             dock_bar: R::new(0.0, 0.0, 0.0, 0.0),
             dock_slot_gap: DOCK_ICON_GAP,
             dock_painted: Vec::new(),
+            dock_gpu_icons: Vec::new(),
+            dock_icon_textures: Default::default(),
+            dock_icon_uploads: Vec::new(),
+            dock_gpu_failed: false,
             spotlight_open: false,
             spotlight_query: String::new(),
             spotlight_input: Default::default(),
@@ -1369,6 +1380,12 @@ impl MacShell {
             now.hour(),
             now.minute(),
         )
+    }
+
+    /// Something the housekeeping tick handles within a second: toasts expire, the open
+    /// center's «N мин назад», the full-screen overlay buffer waiting to be freed
+    pub fn needs_second_tick(&self) -> bool {
+        !self.toasts.is_empty() || self.center_open || self.overlay_allocated
     }
 
     /// Periodic housekeeping (clock, RSS, toast expiry). Returns true if anything needs a redraw.
@@ -2694,11 +2711,39 @@ impl MacShell {
         use smithay::backend::renderer::{ImportMem,element::texture::TextureBuffer};
         if let Some((pixels,size))=self.wallpaper_pending.take(){
             self.wallpaper_texture = None;
-            match renderer.import_memory(&pixels,Fourcc::Abgr8888,size.into(),false){Ok(texture)=>{self.wallpaper_texture=Some(TextureBuffer::from_texture(renderer,texture,1,Transform::Normal,None));self.wallpaper_texture_size=size;},Err(e)=>tracing::warn!("wallpaper upload: {e:?}")}
+            match renderer.import_memory(&pixels,Fourcc::Abgr8888,size.into(),false){Ok(texture)=>{
+                // Decoded pictures are flattened and the built-in ones are opaque: nothing under
+                // the wallpaper needs clearing
+                let opaque=vec![Rectangle::from_size(size.into())];
+                self.wallpaper_texture=Some(TextureBuffer::from_texture(renderer,texture,1,Transform::Normal,Some(opaque)));self.wallpaper_texture_size=size;},Err(e)=>tracing::warn!("wallpaper upload: {e:?}")}
             drop(pixels);
             #[cfg(target_os = "linux")]
             unsafe { libc::malloc_trim(0); }
             self.request_raster_reclaim();
+        }
+    }
+
+    /// Textures for the magnified Dock icons; all are dropped once nothing is magnified
+    pub fn upload_dock_icons(&mut self, renderer: &mut smithay::backend::renderer::gles::GlesRenderer) {
+        use smithay::backend::renderer::{ImportMem, element::texture::TextureBuffer};
+        if self.dock_gpu_icons.is_empty() && !self.dock_icon_textures.is_empty() {
+            self.dock_icon_textures.clear();
+        }
+        for (key, pm) in std::mem::take(&mut self.dock_icon_uploads) {
+            let size = (pm.width() as i32, pm.height() as i32);
+            match renderer.import_memory(pm.data(), Fourcc::Abgr8888, size.into(), false) {
+                Ok(texture) => {
+                    self.dock_icon_textures.insert(key, TextureBuffer::from_texture(renderer, texture, 1, Transform::Normal, None));
+                }
+                Err(e) => {
+                    tracing::warn!("dock icon upload: {e:?}");
+                    self.dock_gpu_failed = true;
+                    self.dock_gpu_icons.clear();
+                    self.dock_icon_textures.clear();
+                    self.dock_dirty = true;
+                    return;
+                }
+            }
         }
     }
 
@@ -2982,6 +3027,24 @@ impl MacShell {
 
         let items = self.dock_items.clone();
         let bouncing = self.bounce.as_ref().map(|b| b.target);
+        // Magnified icons change size with every pointer move. Resampling them here cost
+        // ~0.5–1 ms each at 4K; the GPU scales their bucket image instead. An icon whose
+        // bucket is not cached yet (or only its preview is left) stays on the CPU path.
+        self.dock_gpu_icons.clear();
+        let mut on_gpu = Vec::new();
+        for (i, (slot, item)) in slots.iter().zip(items.iter()).enumerate() {
+            if self.dock_gpu_failed || slot.size == dock_icon() || bouncing == Some(item.target) {
+                continue;
+            }
+            let px = crate::icons::icon_bucket((slot.size * ui_scale()).ceil() as u32);
+            let key = crate::icons::IconKey::new(&item.icon, &item.label, px);
+            let Some(pm) = self.icons.get(&key).filter(|pm| pm.width() == px) else { continue };
+            if !self.dock_icon_textures.contains_key(&key) && !self.dock_icon_uploads.iter().any(|(k, _)| *k == key) {
+                self.dock_icon_uploads.push((key.clone(), pm.clone()));
+            }
+            self.dock_gpu_icons.push((map.rect(R::new(slot.x, slot.y, slot.size, slot.size)), key));
+            on_gpu.push(i);
+        }
         let (dock_ox, dock_oy) = self.dock_origin();
         crate::theme::set_glass_origin(dock_ox, dock_oy);
         let icons = &mut self.icons;
@@ -3008,7 +3071,7 @@ impl MacShell {
                     stroke_line(&mut pm, x0, y0, x1, y1, 1.0, p.separator);
                 }
 
-                for (slot, item) in slots.iter().zip(items.iter()) {
+                for (i, (slot, item)) in slots.iter().zip(items.iter()).enumerate() {
                     let n = item.windows.min(3) as f32;
                     for k in 0..n as usize {
                         let dx = (k as f32 - (n - 1.0) * 0.5) * 5.0 * dot_scale;
@@ -3016,7 +3079,7 @@ impl MacShell {
                         fill_circle(&mut pm, cx, cy, 1.9 * dot_scale, p.dock_dot);
                     }
                     // The bouncing icon is drawn as its own GPU element above the Dock
-                    if bouncing == Some(item.target) {
+                    if bouncing == Some(item.target) || on_gpu.contains(&i) {
                         continue;
                     }
                     let r = map.rect(R::new(slot.x, slot.y, slot.size, slot.size));
@@ -3687,6 +3750,66 @@ mod dock_tests {
                 "hovered icon in huge Dock must still magnify relative to unhovered icons"
             );
         }
+    }
+
+    #[test]
+    fn magnified_dock_icons_are_scaled_by_the_gpu_not_painted_into_the_shelf() {
+        use crate::icons::{IconKey, IconPixels};
+        let mut fonts = FontSystem::new();
+        let mut shell = MacShell::new(1440, 900);
+        shell.set_dock_items((0..6).map(|i| item(DockTarget::App(i))).collect());
+        shell.ensure_dock_rendered(&mut fonts);
+        let (x, y, size) = shell.dock_slot_global(DockTarget::App(2)).unwrap();
+        let red_at_hovered = |shell: &mut MacShell| {
+            let slot = shell.dock_slots[2].clone();
+            let (bw, _) = shell.dock_buffer_size();
+            let (px, py) = (to_phys((slot.x + slot.size * 0.5) as i32), to_phys((slot.y + slot.size * 0.5) as i32));
+            let mut red = false;
+            let _ = shell.dock_buffer.render().draw(|d| {
+                let i = ((py * to_phys(bw) + px) * 4) as usize;
+                red = d[i..i + 4] == [255, 0, 0, 255];
+                Ok::<_, ()>(Vec::new())
+            });
+            red
+        };
+
+        // No bucket image yet: the magnified icons stay on the CPU path
+        shell.update_pointer_hover((x + size * 0.5) as f64, (y + size * 0.5) as f64);
+        shell.ensure_dock_rendered(&mut fonts);
+        assert!(shell.dock_slots[2].size > dock_icon(), "the hovered icon is magnified");
+        assert!(shell.dock_gpu_icons.is_empty());
+
+        let icon = item(DockTarget::App(0)).icon;
+        for px in [64, 192, 320] {
+            let mut pm = tiny_skia::Pixmap::new(px, px).unwrap();
+            pm.fill(Color::from_rgba8(255, 0, 0, 255));
+            shell.icons.install(IconKey::new(&icon, "Test", px), Some(IconPixels::new(pm)));
+        }
+        shell.dock_dirty = true;
+        shell.ensure_dock_rendered(&mut fonts);
+        let magnified: Vec<_> = shell.dock_slots.iter().filter(|s| s.size != dock_icon()).collect();
+        assert!(!magnified.is_empty());
+        assert_eq!(shell.dock_gpu_icons.len(), magnified.len());
+        for (slot, (r, key)) in magnified.iter().zip(&shell.dock_gpu_icons) {
+            assert_eq!(*r, R::new(slot.x, slot.y, slot.size, slot.size));
+            assert!(key.px as f32 >= slot.size * ui_scale(), "the bucket covers the drawn size");
+        }
+        assert!(!shell.dock_icon_uploads.is_empty());
+        assert!(shell.dock_icon_uploads.iter().all(|(k, _)| shell.dock_icon_uploads.iter().filter(|(o, _)| o == k).count() == 1), "each texture is uploaded once");
+        assert!(!red_at_hovered(&mut shell), "the shelf buffer leaves the hovered icon to the GPU");
+
+        // After a failed upload the CPU paints them again
+        shell.dock_gpu_failed = true;
+        shell.dock_dirty = true;
+        shell.ensure_dock_rendered(&mut fonts);
+        assert!(shell.dock_gpu_icons.is_empty());
+        assert!(red_at_hovered(&mut shell));
+
+        // Leaving the Dock: nothing is magnified, the textures may go
+        shell.dock_gpu_failed = false;
+        shell.update_pointer_hover(10.0, 10.0);
+        shell.ensure_dock_rendered(&mut fonts);
+        assert!(shell.dock_gpu_icons.is_empty());
     }
 }
 

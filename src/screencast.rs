@@ -1412,6 +1412,7 @@ impl FeatherCompositor {
                 w: self.shell.screen_w,
                 h: self.shell.screen_h,
             },
+            &mut Vec::new(),
         ));
 
         let rec = self.screencast.recording.as_mut().unwrap();

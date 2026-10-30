@@ -181,6 +181,8 @@ impl From<SceneElement> for FeatherElement {
 pub(crate) const CLEAR_COLOR: Color32F = Color32F::new(0.06, 0.07, 0.12, 1.0);
 /// Frame callbacks of idle (no-damage) frames are paced to roughly 60 Hz
 const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// Frame callbacks of mapped windows that no output draws (see `schedule_hidden_frame_callbacks`)
+const HIDDEN_FRAME_INTERVAL: Duration = Duration::from_secs(1);
 /// If the host stops sending frame events (window hidden), don't stall forever
 const HOST_FRAME_TIMEOUT: Duration = Duration::from_millis(40);
 
@@ -253,6 +255,35 @@ fn push_window_surfaces(
     }
 }
 
+/// wp_presentation feedback of the windows (and their popups) a frame on `output` drew
+pub(crate) fn take_presentation_feedback(
+    output: &smithay::output::Output,
+    windows: &[ManagedWindow],
+    drawn: &[u64],
+    states: &smithay::backend::renderer::element::RenderElementStates,
+) -> smithay::desktop::utils::OutputPresentationFeedback {
+    use smithay::desktop::utils::{surface_presentation_feedback_flags_from_states, take_presentation_feedback_surface_tree, OutputPresentationFeedback};
+    let mut feedback = OutputPresentationFeedback::new(output);
+    for win in windows.iter().filter(|w| drawn.contains(&w.id)) {
+        let Some(surface) = win.wl_surface() else { continue };
+        let popups = PopupManager::popups_for_surface(surface).map(|(p, _)| p.wl_surface().clone());
+        for s in std::iter::once(surface.clone()).chain(popups) {
+            take_presentation_feedback_surface_tree(
+                &s,
+                &mut feedback,
+                |_, _| Some(output.clone()),
+                |s, _| surface_presentation_feedback_flags_from_states(s, states),
+            );
+        }
+    }
+    feedback
+}
+
+/// Duration of one refresh at `mhz` (millihertz), if known
+pub(crate) fn refresh_period(mhz: i32) -> Option<Duration> {
+    (mhz > 0).then(|| Duration::from_nanos(1_000_000_000_000 / mhz as u64))
+}
+
 /// Pointer image for the DRM backend (front-most elements)
 pub(crate) fn cursor_elements(
     renderer: &mut GlesRenderer,
@@ -306,6 +337,8 @@ fn to_phys_point(x: i32, y: i32, scale: f64) -> Point<i32, Physical> {
 }
 
 /// Builds the scene front-to-back (first element is on top), as the damage tracker expects.
+/// `drawn` gets the ids of the windows that are part of it (they get frame callbacks).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_scene(
     renderer: &mut GlesRenderer,
     shell: &MacShell,
@@ -315,10 +348,11 @@ pub(crate) fn build_scene(
     rounded: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
     animations: &crate::animation::Animations,
     view: crate::monitors::Rect,
+    drawn: &mut Vec<u64>,
 ) -> Vec<FeatherElement> {
     let mut out: Vec<FeatherElement> = Vec::with_capacity(64);
     let primary=view.x==0&&view.y==0;
-    if primary {push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations);}
+    if primary {push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations, drawn);}
     let mut mem = |out: &mut Vec<FeatherElement>, loc: (f64, f64), buf, src, visual: crate::animation::Visual| {
         if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
@@ -395,6 +429,15 @@ pub(crate) fn build_scene(
                 mem(&mut out, ((lx * scale).round(), (ly * scale).round()), &b.buffer, Some(src), crate::animation::Visual::default());
             }
         }
+        for (r, key) in &shell.dock_gpu_icons {
+            let Some(texture) = shell.dock_icon_textures.get(key) else { continue };
+            let loc = (dock_x + (r.x as f64 * scale).round(), dock_y + (r.y as f64 * scale).round());
+            let size = ((r.w as f64 * scale).round() as i32, (r.h as f64 * scale).round() as i32);
+            let src = smithay::utils::Rectangle::from_size((key.px as f64, key.px as f64).into());
+            out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer(
+                loc, texture, None, Some(src), Some(size.into()), Kind::Unspecified,
+            )).into());
+        }
         mem(&mut out, (dock_x, dock_y), &shell.dock_buffer, None, crate::animation::Visual::default());
     }
     if let Some(lp) = shell.launchpad.as_ref() {
@@ -437,6 +480,7 @@ pub(crate) fn build_scene(
         }
         let visual = animations.window(win);
         push_window(&mut out, renderer, win, visual, scale, rounded, true);
+        drawn.push(win.id);
 
         if win.fullscreen && !win.minimized && visual.identity() && win.x<=view.x && win.y<=view.y && win.x+win.width>=view.x+view.w && win.y+win.total_height()>=view.y+view.h {
             // Nothing below a fullscreen window is visible
@@ -560,6 +604,7 @@ fn push_window(
 /// Mission Control: windows of the other desktops, scaled into their strip tiles. The
 /// current desktop's windows are already in the overview (drawing them twice would give
 /// one element id two places), and desktops in a slide are drawn by the scene itself.
+#[allow(clippy::too_many_arguments)]
 fn push_space_thumbnails(
     out: &mut Vec<FeatherElement>,
     renderer: &mut GlesRenderer,
@@ -568,6 +613,7 @@ fn push_space_thumbnails(
     scale: f64,
     rounded: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
     animations: &crate::animation::Animations,
+    drawn: &mut Vec<u64>,
 ) {
     let Some(m) = shell.mission.as_ref() else { return };
     let (sw, sh) = (shell.screen_w as f64, shell.screen_h as f64);
@@ -585,6 +631,7 @@ fn push_space_thumbnails(
                 offset: (ox + center.0 * k - center.0, oy + center.1 * k - center.1),
             };
             push_window(out, renderer, win, visual, scale, rounded, false);
+            drawn.push(win.id);
         }
     }
 }
@@ -625,6 +672,39 @@ fn save_screenshot(
         .map(|pm| pm.save_png(path).is_ok())
         .unwrap_or(false);
     tracing::info!("Скриншот {} → {}", path.display(), if saved { "сохранён" } else { "ошибка" });
+}
+
+fn send_window_frames(win: &ManagedWindow, time: u32) {
+    if let Some(surface) = win.wl_surface() {
+        send_frames_surface_tree(surface, time);
+        for (popup, _) in PopupManager::popups_for_surface(surface) {
+            send_frames_surface_tree(popup.wl_surface(), time);
+        }
+    }
+}
+
+/// Some surface of the window (or of its popups) asked for a frame callback
+fn window_waits_for_frame(win: &ManagedWindow) -> bool {
+    let Some(surface) = win.wl_surface() else { return false };
+    std::iter::once(surface.clone())
+        .chain(PopupManager::popups_for_surface(surface).map(|(p, _)| p.wl_surface().clone()))
+        .any(|s| surface_waits_for_frame(&s))
+}
+
+fn surface_waits_for_frame(surface: &WlSurface) -> bool {
+    let waits = std::cell::Cell::new(false);
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, &()| TraversalAction::DoChildren(()),
+        |_, states, &()| {
+            if !states.cached_state.get::<SurfaceAttributes>().current().frame_callbacks.is_empty() {
+                waits.set(true);
+            }
+        },
+        |_, _, &()| !waits.get(),
+    );
+    waits.get()
 }
 
 pub fn send_frames_surface_tree(surface: &WlSurface, time: u32) {
@@ -739,15 +819,36 @@ impl FeatherCompositor {
     pub fn render_if_needed(&mut self) {
         // One frame in flight at a time: the next one is rendered when the previous one
         // reached the screen (host frame event / DRM vblank), so a burst of input or commits
-        // never blocks the loop while a client frame is waiting.
-        if (self.power.blanked && self.backend.is_drm()) || !self.needs_redraw || self.frame_pending {
+        // never blocks the loop while a client frame is waiting. In DRM this holds per head.
+        if self.power.blanked && self.backend.is_drm() {
             return;
         }
-        if let crate::backend::Backend::Drm(d) = &self.backend {
+        let lock = self.lock.active;
+        let mut wait_until = None;
+        if let crate::backend::Backend::Drm(d) = &mut self.backend {
             if !d.active {
                 // Switched to another VT: render again once the session comes back
                 return;
             }
+            if self.needs_redraw {
+                for h in &mut d.heads { h.dirty = true; }
+            }
+            // Under the lock every free head renders at once: none may keep the desktop
+            if lock {
+                for h in &mut d.heads { h.render_at = None; }
+            }
+            let now = Instant::now();
+            let waiting = d.heads.iter().filter(|h| h.dirty && !h.pending);
+            if !waiting.clone().any(|h| h.render_at.is_none_or(|t| now >= t)) {
+                wait_until = waiting.filter_map(|h| h.render_at).min();
+                if wait_until.is_none() { return; }
+            }
+        } else if !self.needs_redraw || self.frame_pending {
+            return;
+        }
+        if let Some(at) = wait_until {
+            self.arm_render_deadline(at);
+            return;
         }
         self.refresh_output_membership();
         self.needs_redraw = false;
@@ -756,6 +857,7 @@ impl FeatherCompositor {
         self.update_cpu_buffers();
         // The wallpaper is the lock screen's background too
         self.shell.upload_wallpaper(self.backend.renderer());
+        self.shell.upload_dock_icons(self.backend.renderer());
         if !self.lock.active {
             self.shell.desktop.ensure_layout((self.shell.screen_w, self.shell.screen_h));
             self.shell.desktop.request_tiles(self.shell.raster.as_ref(), &self.app_registry);
@@ -782,12 +884,18 @@ impl FeatherCompositor {
 
         self.shell.reclaim_after_frame();
         let gpu_time = t_gpu.elapsed();
+        // Recent worst cost, decaying: how early the next DRM frame has to start
+        self.frame_cost = (cpu_time + gpu_time).max(self.frame_cost.mul_f64(0.95));
         let swap_time = match presented {
             Some(swap) => {
                 if self.lock.active && !self.backend.is_drm() {self.lock.protected_frame=true;}
                 self.mark_frame_in_flight();
-                // Clients start their next frame while ours is being presented
-                self.send_frame_callbacks();
+                // Clients start their next frame while ours is being presented; in DRM only
+                // those of the heads that queued one (each keeps its own rate)
+                let heads = std::mem::take(&mut self.frame_heads);
+                self.send_frame_callbacks_on(self.backend.is_drm().then_some(&heads[..]));
+                self.frame_heads = heads;
+                if !self.idle_heads.is_empty() { self.schedule_idle_frame_callbacks(Some(self.idle_heads.clone())); }
                 Some(swap)
             }
             None => {
@@ -798,7 +906,8 @@ impl FeatherCompositor {
                 }
                 if self.lock.active && self.lock.protected_frame && !self.backend.is_drm(){self.lock_presented();}
                 if self.lock.active && matches!(&self.backend,crate::backend::Backend::Drm(d) if !d.heads.is_empty()&&d.heads.iter().all(|h|h.protected)){self.lock.protected_frame=true;self.lock_presented();}
-                self.schedule_idle_frame_callbacks();
+                let heads = (self.backend.is_drm() && !self.idle_heads.is_empty()).then(|| self.idle_heads.clone());
+                self.schedule_idle_frame_callbacks(heads);
                 None
             }
         };
@@ -816,6 +925,8 @@ impl FeatherCompositor {
             return None;
         };
         let scale = self.scale_factor;
+        let output = self.monitors.iter().find(|m| m.info.name == view.name).map(|m| m.output.clone());
+        let mut feedback = None;
         // Smithay's target bind resizes the native window but leaves EGL surfaceless.
         // Keep the handle only until submit (which may recreate the EGLSurface).
         let surface = backend.egl_surface().get_surface_handle();
@@ -859,6 +970,7 @@ impl FeatherCompositor {
             let pointer = (self.pointer_location.x, self.pointer_location.y);
             let now = Instant::now();
             let splash_opaque = self.lock.splash.is_opaque(now);
+            let mut drawn = Vec::new();
             let elements = if self.power.blanked || splash_opaque {Vec::new()} else if self.lock.active {
                 self.lock.monitor_elements(renderer,scale,&view,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size)))
             } else {
@@ -876,9 +988,12 @@ impl FeatherCompositor {
                     self.rounded_program.as_ref(),
                     &self.animations,
                     view.rect,
+                    &mut drawn,
                 ));
                 elements
             };
+            // Nested shows one view at a time
+            self.shown_windows = vec![(view.name.clone(), drawn.clone())];
             let mut elements=if self.lock.active {output_elements(elements,crate::monitors::Rect{x:0,y:0,..view.rect},scale)}else{output_elements(elements,view.rect,scale)};
             if !self.power.blanked && self.lock.splash.active {
                 let mut sp = output_elements(
@@ -893,7 +1008,12 @@ impl FeatherCompositor {
                 .damage_tracker
                 .render_output(renderer, &mut framebuffer, age.max(0) as usize, &elements, if self.power.blanked||self.lock.active||self.lock.splash.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR})
             {
-                Ok(res) => res.damage.cloned(),
+                Ok(res) => {
+                    if res.damage.is_some_and(|d| !d.is_empty()) {
+                        feedback = output.as_ref().map(|o| take_presentation_feedback(o, &self.windows, &drawn, &res.states));
+                    }
+                    res.damage.cloned()
+                }
                 Err(err) => {
                     tracing::warn!("Ошибка рендера: {err:?}");
                     None
@@ -918,6 +1038,13 @@ impl FeatherCompositor {
                     return None;
                 }
                 backend.window().request_redraw();
+                // The host's vblank is unknown here: the frame counts as shown at submit
+                if let Some(mut feedback) = feedback {
+                    let refresh = refresh_period(self.refresh_mhz)
+                        .map_or(smithay::wayland::presentation::Refresh::Unknown, smithay::wayland::presentation::Refresh::fixed);
+                    let now = smithay::utils::Clock::<smithay::utils::Monotonic>::new().now();
+                    feedback.presented(now, refresh, 0, smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::empty());
+                }
                 Some(t_swap.elapsed())
             }
             _ => None,
@@ -939,8 +1066,14 @@ impl FeatherCompositor {
             })
         };
         let t=Instant::now();let mut submitted=false;let mut direct_scanouts=0u32;
+        self.shown_windows.retain(|(n,_)|d.heads.iter().any(|h|h.name==*n));
+        self.frame_heads.clear();
+        self.idle_heads.clear();
+        let start=Instant::now();
         for head in &mut d.heads {
-            if head.pending {continue;}
+            if head.pending || !head.dirty || head.render_at.is_some_and(|at|start<at) {continue;}
+            head.dirty=false;
+            head.render_at=None;
             let Some(m)=self.monitors.iter().find(|m|m.info.name==head.name)else{continue};
             let info=&m.info;
             let now=Instant::now();
@@ -971,6 +1104,7 @@ impl FeatherCompositor {
                 _ => fullscreen_on_head,
             };
             head.set_vrr(want_vrr);
+            let mut drawn=Vec::new();
             let mut elements=if splash_opaque {
                 Vec::new()
             } else if self.lock.active {
@@ -986,9 +1120,14 @@ impl FeatherCompositor {
                     e.extend(crate::screencast::overlay(&mut d.renderer,&self.screencast,scale,(self.phys_w,self.phys_h)));
                 }
                 drag_overlay(&mut e,&mut d.renderer,&self.shell,pointer,scale);
-                e.extend(build_scene(&mut d.renderer,&self.shell,&self.windows,scale,pointer,self.rounded_program.as_ref(),&self.animations,info.rect));
+                e.extend(build_scene(&mut d.renderer,&self.shell,&self.windows,scale,pointer,self.rounded_program.as_ref(),&self.animations,info.rect,&mut drawn));
                 output_elements(e,info.rect,scale)
             };
+            // A head still waiting for its vblank keeps the windows of its last frame
+            match self.shown_windows.iter_mut().find(|(n,_)|*n==head.name){
+                Some((_,ids))=>*ids=drawn.clone(),
+                None=>self.shown_windows.push((head.name.clone(),drawn.clone())),
+            }
             if self.lock.splash.active {
                 let mut sp=output_elements(self.lock.splash.elements(&mut d.renderer,scale,(info.rect.w,info.rect.h),now),crate::monitors::Rect{x:0,y:0,..info.rect},scale);
                 sp.extend(elements);
@@ -1001,9 +1140,12 @@ impl FeatherCompositor {
             match head.output.render_frame(&mut d.renderer,&elements,if self.lock.active||self.lock.splash.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR},flags){
                 Ok(r) if !r.is_empty=>{
                     let scanned_out = matches!(r.primary_element, PrimaryPlaneElement::Element(_));
-                    match head.output.queue_frame(()){
+                    // Answered with the flip's own timestamp in `on_drm_vblank`
+                    let feedback = take_presentation_feedback(&m.output,&self.windows,&drawn,&r.states);
+                    match head.output.queue_frame(Some(feedback)){
                         Ok(())=>{
                             head.pending=true;
+                            self.frame_heads.push(head.name.clone());
                             head.queued_protected=self.lock.active;
                             submitted=true;
                             if scanned_out {
@@ -1013,7 +1155,8 @@ impl FeatherCompositor {
                         Err(e)=>tracing::warn!("DRM {} queue: {e:?}",head.name),
                     }
                 },
-                Ok(_)=>{},Err(e)=>tracing::warn!("DRM {} render: {e:?}",head.name),
+                // Nothing changed here: its clients get their callbacks from the idle timer
+                Ok(_)=>self.idle_heads.push(head.name.clone()),Err(e)=>tracing::warn!("DRM {} render: {e:?}",head.name),
             }
         }
         // A failed lock frame must never leave the previous desktop on any connector.
@@ -1025,6 +1168,9 @@ impl FeatherCompositor {
                 stats.direct_scanouts += direct_scanouts;
             }
         }
+        // A head that is still before its deadline renders when the timer wakes the loop
+        let next=d.heads.iter().filter(|h|h.dirty&&!h.pending).filter_map(|h|h.render_at).min();
+        if let Some(at)=next {self.arm_render_deadline(at);}
         submitted.then(||t.elapsed())
     }
 
@@ -1053,24 +1199,103 @@ impl FeatherCompositor {
     }
 
     pub fn send_frame_callbacks(&mut self) {
+        self.send_frame_callbacks_on(None);
+    }
+
+    /// The vblank to wait for: the loop wakes when the earliest waiting head is due
+    fn arm_render_deadline(&mut self, at: Instant) {
+        if self.render_deadline_armed.is_some_and(|armed| armed <= at) {
+            return;
+        }
+        self.render_deadline_armed = Some(at);
+        let res = self.loop_handle.insert_source(Timer::from_deadline(at), |_, _, state| {
+            // The idle callback after this dispatch renders the due heads
+            state.render_deadline_armed = None;
+            TimeoutAction::Drop
+        });
+        if res.is_err() {
+            self.render_deadline_armed = None;
+        }
+    }
+
+    /// Frame callbacks of the windows shown on `heads` (all outputs with None)
+    pub fn send_frame_callbacks_on(&mut self, heads: Option<&[String]>) {
         let time = self.start_time.elapsed().as_millis() as u32;
         if self.lock.active {for (_,s) in &self.lock.extra_surfaces{send_frames_surface_tree(s.wl_surface(),time);}return;}
         if let smithay::input::pointer::CursorImageStatus::Surface(ref s) = self.cursor.status {
             send_frames_surface_tree(s, time);
         }
+        let mut hidden_waiting = false;
         for win in &self.windows {
-            if let Some(surface) = win.wl_surface() {
-                send_frames_surface_tree(surface, time);
-                for (popup, _) in PopupManager::popups_for_surface(surface) {
-                    send_frames_surface_tree(popup.wl_surface(), time);
-                }
+            if self.window_shown_on(win, heads) {
+                send_window_frames(win, time);
+            } else if self.window_shown(win) {
+                // Shown on another head: its own frame (or idle timer) answers it
+            } else if !hidden_waiting {
+                hidden_waiting = window_waits_for_frame(win);
             }
+        }
+        if hidden_waiting {
+            self.schedule_hidden_frame_callbacks();
+        }
+    }
+
+    /// Drawn in the last frame of some output. A window without its first buffer is not
+    /// drawn yet, but it must not wait a second for the frame it may need to map.
+    fn window_shown(&self, win: &ManagedWindow) -> bool {
+        self.window_shown_on(win, None)
+    }
+
+    fn window_shown_on(&self, win: &ManagedWindow, heads: Option<&[String]>) -> bool {
+        !win.mapped
+            || self
+                .shown_windows
+                .iter()
+                .filter(|(name, _)| heads.is_none_or(|h| h.contains(name)))
+                .any(|(_, ids)| ids.contains(&win.id))
+    }
+
+    /// Minimized, on another desktop or under a fullscreen window: the client gets its frame
+    /// callbacks once a second instead of at the refresh rate, so it stops rendering what
+    /// nobody sees but never stalls. The timer is armed only while such a callback waits.
+    fn schedule_hidden_frame_callbacks(&mut self) {
+        if self.hidden_frame_timer_armed {
+            return;
+        }
+        self.hidden_frame_timer_armed = true;
+        let res = self
+            .loop_handle
+            .insert_source(Timer::from_duration(HIDDEN_FRAME_INTERVAL), |_, _, state| {
+                state.hidden_frame_timer_armed = false;
+                state.send_hidden_frame_callbacks();
+                TimeoutAction::Drop
+            });
+        if res.is_err() {
+            self.hidden_frame_timer_armed = false;
+            self.send_hidden_frame_callbacks();
+        }
+    }
+
+    fn send_hidden_frame_callbacks(&mut self) {
+        if self.lock.active {
+            return;
+        }
+        let time = self.start_time.elapsed().as_millis() as u32;
+        for win in self.windows.iter().filter(|w| !self.window_shown(w)) {
+            send_window_frames(win, time);
         }
     }
 
     /// A frame without damage does not block on vsync. Answering frame callbacks right away
     /// would let a client that commits without changes spin us at 100% CPU, so delay them.
-    fn schedule_idle_frame_callbacks(&mut self) {
+    /// `heads`: only the windows of these DRM heads (their frame was empty); None: all.
+    fn schedule_idle_frame_callbacks(&mut self, heads: Option<Vec<String>>) {
+        let pending = self.idle_frame_heads.take();
+        self.idle_frame_heads = match (self.idle_frame_timer_armed, pending, heads) {
+            (false, _, heads) => heads,
+            (true, Some(mut armed), Some(more)) => { armed.extend(more); Some(armed) }
+            _ => None,
+        };
         if self.idle_frame_timer_armed {
             return;
         }
@@ -1079,12 +1304,14 @@ impl FeatherCompositor {
             .loop_handle
             .insert_source(Timer::from_duration(IDLE_FRAME_INTERVAL), |_, _, state| {
                 state.idle_frame_timer_armed = false;
-                state.send_frame_callbacks();
+                let heads = state.idle_frame_heads.take();
+                state.send_frame_callbacks_on(heads.as_deref());
                 TimeoutAction::Drop
             });
         if res.is_err() {
             self.idle_frame_timer_armed = false;
-            self.send_frame_callbacks();
+            let heads = self.idle_frame_heads.take();
+            self.send_frame_callbacks_on(heads.as_deref());
         }
     }
 

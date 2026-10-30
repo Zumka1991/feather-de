@@ -57,7 +57,7 @@ calloop EventLoop (один поток)
 ├─ ListeningSocketSource      — новые клиенты
 ├─ Generic(Display)           — запросы клиентов, обрабатываются сразу
 ├─ WinitEventLoop             — ввод хоста; Redraw = «предыдущий кадр показан»
-├─ Timer 1 с                  — часы, RSS, истечение уведомлений
+├─ Timer 1 с / к смене минуты — часы, RSS, истечение уведомлений (в простое раз в минуту)
 ├─ appmenu channel            — готовые снимки меню от D-Bus worker
 ├─ raster channel             — готовые CPU-буферы иконок/обоев/плиток от worker
 └─ idle-callback              — pointer focus → render_if_needed → flush_clients
@@ -103,7 +103,14 @@ calloop EventLoop (один поток)
 3. Грязные CPU-буферы перерисовываются, и в GPU загружаются **только изменённые области**.
 4. `OutputDamageTracker` перерисовывает только изменённые области экрана, swap не блокирует (интервал 0).
 5. Frame callbacks уходят клиентам сразу после submit: клиент рисует следующий кадр, пока наш показывается.
+   Только окнам, которые этот выход нарисовал (`shown_windows`); свёрнутые, на других
+   столах и закрытые полноэкранным окном получают их раз в секунду. Там же собирается
+   обратная связь `wp_presentation`, в DRM её отвечают временем переворота из ядра.
 6. `WinitEvent::Redraw` (vblank хоста) снимает `frame_pending`. Страховка — 40 мс.
+   В DRM у каждого выхода свои `pending`/`dirty`: монитор не ждёт vblank соседнего. После
+   vblank следующий кадр собирается не сразу, а к сроку `render_at` — за 2 × недавняя
+   стоимость кадра (≥ 4 мс и ≥ ¼ периода) до следующего vblank; без VRR, не под
+   блокировкой, `FEATHER_RENDER_DEADLINE=0` отключает.
 7. Кадр без damage не делает swap, а callbacks отправляются по таймеру 16 мс (защита от busy-loop).
 8. Активная пружина оставляет `needs_redraw` до следующего vblank. После достижения цели
    пружина фиксируется точно в конечном состоянии; отдельного таймера анимаций нет.
@@ -155,7 +162,7 @@ premultiplied source-over, а билинейное стекло переиспо
 ## 4. Протоколы
 
 Есть: wl_compositor, wl_subcompositor, wl_shm, xdg_shell (toplevel + popup, move/resize/
-maximize/fullscreen/minimize), xdg_decoration (решает клиент), xdg_activation_v1,
+maximize/fullscreen/minimize), xdg_decoration (решает клиент), xdg_activation_v1, wp_presentation,
 linux-dmabuf v4 с feedback, wl_data_device, primary_selection, wp_viewporter,
 wp_fractional_scale_v1, wp_cursor_shape_v1, xdg_output.
 Также `org_kde_kwin_appmenu_manager` v2: адрес меню связывается с конкретной wl_surface.
@@ -168,7 +175,6 @@ D-Bus worker отправляет снимки через ограниченны
 |---|---|---|
 | P0 | `zwp_text_input_v3` + `zwp_input_method_v2` | IME, ввод в Chromium/GTK с `--enable-wayland-ime` |
 | P0 | клавиатурный grab для `xdg_popup` | навигация по меню клавиатурой |
-| P0 | `wp_presentation` | точный vsync-тайминг Chromium/Firefox/mpv |
 | P0 | `zwlr_layer_shell_v1` | сторонние панели, уведомления (mako), лаунчеры |
 | P1 | `ext_session_lock_v1`, `ext_idle_notify_v1`, `zwp_idle_inhibit_manager_v1` | блокировка экрана, гашение, видео без засыпания |
 | P1 | `zwlr_screencopy_v1` / `ext_image_copy_capture` + xdg-desktop-portal | скриншоты, демонстрация экрана |
@@ -226,7 +232,8 @@ libseat (logind) → udev (основная видеокарта) → GBM/EGL �
 Лог: `~/.local/state/feather-de/drm.log`.
 
 Ещё не сделано: несколько мониторов и горячее подключение, выбор режима/частоты, VRR,
-explicit sync, XWayland (X11-программы в DRM-сессии не запустятся), рендер «впритык» к vblank.
+explicit sync, XWayland (X11-программы в DRM-сессии не запустятся). Рендер к сроку перед
+vblank реализован (2026-10-30), приёмка в DRM открыта.
 
 Исходный план:
 - Отказаться от labwc: udev + libseat + libinput + DRM/GBM, direct scanout полноэкранных окон,

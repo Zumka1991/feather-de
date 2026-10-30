@@ -688,3 +688,4 @@ delegate_output!(FeatherCompositor);
 delegate_viewporter!(FeatherCompositor);
 delegate_fractional_scale!(FeatherCompositor);
 delegate_cursor_shape!(FeatherCompositor);
+smithay::delegate_presentation!(FeatherCompositor);
