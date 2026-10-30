@@ -247,6 +247,7 @@ impl Xwayland {
         }
         match cmd.spawn() {
             Ok(mut child) => {
+                feather_ui::process::remember_session(&child);
                 self.running_pid = Some(child.id());
                 self.running = true;
                 self.started = Instant::now();

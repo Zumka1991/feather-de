@@ -456,7 +456,8 @@ pub fn launch_terminal(dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    feather_ui::process::new_session(&mut cmd).spawn()?;
+    let child = feather_ui::process::new_session(&mut cmd).spawn()?;
+    feather_ui::process::remember_session(&child);
     Ok(())
 }
 

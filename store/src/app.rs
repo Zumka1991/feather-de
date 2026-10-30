@@ -1510,7 +1510,7 @@ mod tests {
             let theme = if dark { "dark" } else { "light" };
             let mut app = App::new(FontSystem::new());
             app.loaded(Catalog { apps: catalog.apps.clone(), installed: catalog.installed.clone() });
-            let mut shot = |app: &mut App, name: &str| {
+            let shot = |app: &mut App, name: &str| {
                 // Twice: the first paint asks for icons, loaded here synchronously
                 painted(app);
                 let icons = app.take_icon_queue().into_iter().map(|(i, p)| (i, Pixmap::load_png(p).ok())).collect();

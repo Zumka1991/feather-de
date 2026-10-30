@@ -2581,5 +2581,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
 
+    // Logout: our programs run in sessions of their own and would outlive us
+    let ended = feather_ui::process::end_sessions(Duration::from_millis(1500));
+    tracing::info!("Выход: завершено программ сеанса: {ended}");
     Ok(())
 }

@@ -1796,6 +1796,10 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-resize-check] unaligned SHM size passed");
         })?;
     }
+    if let Some(ms) = std::env::var("FEATHER_DEBUG_QUIT").ok().and_then(|v| v.parse().ok()) {
+        // Logout through the menu's own action: programs started here must end with us
+        at(state, ms, |s| s.execute_shell_action(ShellClickAction::QuitCompositor))?;
+    }
     if let Some(shot) = std::env::var_os("FEATHER_DEBUG_FRAMES") {
         // Magnified Dock icons on the GPU (snapshot), then frame callbacks of a hidden window:
         // with FEATHER_PROFILE its commits fall to ~1/s while minimized and come back after.

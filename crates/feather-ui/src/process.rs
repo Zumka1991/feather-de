@@ -43,6 +43,81 @@ pub fn new_session(cmd: &mut std::process::Command) -> &mut std::process::Comman
     }
 }
 
+/// Sessions `new_session` gave the programs we started: leader pid and its start time
+static SESSIONS: std::sync::Mutex<Vec<(i32, Option<u64>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Remembers the session of a child started with `new_session`, for `end_sessions`
+pub fn remember_session(child: &std::process::Child) {
+    let pid = child.id() as i32;
+    let mut sessions = SESSIONS.lock().unwrap();
+    // A long session launches many programs; the oldest entries are long gone
+    if sessions.len() >= 4096 {
+        sessions.drain(..1024);
+    }
+    sessions.push((pid, stat(pid).map(|s| s.start)));
+}
+
+struct Stat {
+    zombie: bool,
+    session: i32,
+    start: u64,
+}
+
+fn stat(pid: i32) -> Option<Stat> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Fields after "(comm)": state ppid pgrp session … starttime (the 22nd field)
+    let fields: Vec<&str> = text.rsplit_once(')')?.1.split_whitespace().collect();
+    Some(Stat { zombie: *fields.first()? == "Z", session: fields.get(3)?.parse().ok()?, start: fields.get(19)?.parse().ok()? })
+}
+
+/// Live processes (not ourselves) in one of `sessions`
+fn session_members(sessions: &[i32]) -> Vec<i32> {
+    let me = std::process::id() as i32;
+    let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
+    dir.flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|&pid| pid != me && stat(pid).is_some_and(|s| !s.zombie && sessions.contains(&s.session)))
+        .collect()
+}
+
+/// On logout: the programs we started live in sessions of their own, so no hangup of our
+/// terminal reaches them any more. Without this, Telegram or a VPN client kept running
+/// without a display, and the next login's launch only handed its window to that instance.
+/// SIGTERM, then SIGKILL for whatever is left after `grace`. A leader pid that now belongs
+/// to another process is skipped: while any member of our session lived, the kernel would
+/// not have reused its number. Returns how many processes were asked to quit.
+pub fn end_sessions(grace: std::time::Duration) -> usize {
+    let sessions: Vec<i32> = std::mem::take(&mut *SESSIONS.lock().unwrap())
+        .into_iter()
+        .filter(|&(sid, start)| stat(sid).is_none_or(|s| Some(s.start) == start))
+        .map(|(sid, _)| sid)
+        .collect();
+    if sessions.is_empty() {
+        return 0;
+    }
+    let first = session_members(&sessions);
+    for &pid in &first {
+        // SAFETY: a signal to a process of a session we created
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        let left = session_members(&sessions);
+        if left.is_empty() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            for pid in left {
+                // SAFETY: as above; it ignored SIGTERM
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    first.len()
+}
+
 /// Undoes an ignored SIGCHLD inherited from whoever started us (an older Files, a script), so
 /// `Command::output()` can wait for its child
 pub fn default_child_signal() {
@@ -68,5 +143,25 @@ mod tests {
         assert_ne!(session, ours);
         assert_eq!(session, pgrp, "the child leads its new session");
         assert_eq!(tty, 0, "no controlling terminal");
+    }
+
+    #[test]
+    fn logout_ends_the_sessions_of_started_programs() {
+        // A leader with a background child, as `sh -c` leaves an app behind
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "sleep 30 & exec sleep 30"]);
+        let mut child = super::new_session(&mut cmd).spawn().unwrap();
+        super::remember_session(&child);
+        let sid = child.id() as i32;
+        let start = std::time::Instant::now();
+        while super::session_members(&[sid]).len() < 2 {
+            assert!(start.elapsed().as_secs() < 5, "both sleeps start");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(super::end_sessions(std::time::Duration::from_secs(2)), 2);
+        let _ = child.wait();
+        assert!(super::session_members(&[sid]).is_empty(), "nothing of the session survives");
+        // Forgotten afterwards: a second logout has nothing to end
+        assert_eq!(super::end_sessions(std::time::Duration::from_secs(1)), 0);
     }
 }

@@ -643,6 +643,7 @@ pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
     feather_ui::process::new_session(&mut command)
         .spawn()
         .map(|mut child| {
+            feather_ui::process::remember_session(&child);
             // Reap the child when it exits; otherwise every closed app stays a zombie
             // until the compositor itself exits
             let _ = std::thread::Builder::new()
