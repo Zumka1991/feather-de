@@ -33,6 +33,7 @@ optdepends=(
     'bluez: управление Bluetooth в Центре управления и Настройках'
     'greetd: экран входа Пёрышка (--login)'
     'poppler: pdftoppm для полного рендеринга PDF в Просмотре'
+    'unarchiver: распаковка RAR (RAR5, многотомные) в Файлах'
 )
 makedepends=('cargo' 'rust' 'pkgconf')
 options=('!debug' '!lto')

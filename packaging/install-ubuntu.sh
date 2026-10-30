@@ -85,8 +85,9 @@ RUNTIME_PKGS=(
     # update-desktop-database: без индекса типов файлов порталы (браузер из snap) не находят,
     # чем открыть .deb и другие файлы
     desktop-file-utils shared-mime-info
-    # bsdtar: «Сжать» и распаковка архивов в Файлах (zip, tar.*, 7z, rar)
-    libarchive-tools
+    # bsdtar: «Сжать» и распаковка архивов в Файлах (zip, tar.*, 7z); unar — RAR, включая
+    # RAR5 и многотомные (bsdtar на них зависает или сбивается)
+    libarchive-tools unar
     fonts-noto-core fonts-noto-mono fonts-noto-color-emoji fonts-noto-cjk fonts-dejavu-core
     breeze-cursor-theme polkitd
 )
