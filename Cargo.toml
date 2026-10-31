@@ -3,6 +3,8 @@ name = "feather-de"
 version = "0.6.3"
 edition = "2021"
 description = "Пёрышко (Feather DE) — сверхбыстрое и легкое окружение рабочего стола для Wayland в стиле macOS на Rust"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zumka1991/feather-de"
 
 [dependencies]
 smithay = { version = "0.7.0", default-features = false, features = [

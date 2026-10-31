@@ -3,6 +3,8 @@ name = "feather-textedit"
 version = "0.1.0"
 edition = "2021"
 description = "Текстовый редактор — редактор текста и кода Пёрышка в стиле macOS Tahoe"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zumka1991/feather-de"
 
 [[bin]]
 name = "feather-textedit"

@@ -3,6 +3,8 @@ name = "feather-store"
 version = "0.1.0"
 edition = "2021"
 description = "Магазин — каталог программ Пёрышка: поиск, установка и удаление через PackageKit"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zumka1991/feather-de"
 
 [[bin]]
 name = "feather-store"

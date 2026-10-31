@@ -3,6 +3,8 @@ name = "feather-terminal"
 version = "0.1.0"
 edition = "2021"
 description = "Терминал — быстрый и лёгкий терминал Пёрышка в стиле macOS Tahoe, со своим ядром VT/xterm"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zumka1991/feather-de"
 
 [[bin]]
 name = "feather-terminal"

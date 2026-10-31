@@ -592,5 +592,13 @@ covers the same main feature and setup information as the Russian version.
 
 ## License
 
-A license for the project's own code has not yet been selected; there is no LICENSE
-file. Dependencies retain their respective licenses.
+Feather DE is free software: you can use, study, modify and redistribute it under the terms
+of the [GNU General Public License version 3](LICENSE) or (at your option) any later version
+(`GPL-3.0-or-later`). Modified versions you distribute must stay open under the same license.
+It comes with no warranty of any kind.
+
+The license covers the code of every component in this repository and the project's own
+assets (wallpapers, icons). The fonts in `assets/fonts` keep their own licenses (OFL-1.1 or
+Apache-2.0, see the `*.copyright` files), as do xwayland-satellite in the package (MPL-2.0)
+and the library dependencies (MIT, Apache-2.0, BSD, Zlib and other permissive licenses
+compatible with GPL-3.0).

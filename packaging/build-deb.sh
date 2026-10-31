@@ -84,8 +84,18 @@ Source: https://github.com/Zumka1991/feather-de
 
 Files: *
 Copyright: $(date -u +%Y) Zumka1991
-License: none
- The project has not chosen a license for its own code yet (see README.md).
+License: GPL-3.0+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ On Debian systems the full text is in /usr/share/common-licenses/GPL-3.
 
 Files: usr/libexec/feather-de/xwayland-satellite
 Copyright: xwayland-satellite contributors

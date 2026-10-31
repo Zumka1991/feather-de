@@ -3,6 +3,8 @@ name = "feather-ui"
 version = "0.1.0"
 edition = "2021"
 description = "Общие для Пёрышка и его программ: масштаб, текст, примитивы рисования, иконки файлов"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zumka1991/feather-de"
 
 [dependencies]
 tiny-skia = "0.12.0"
