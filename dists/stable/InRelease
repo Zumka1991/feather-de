@@ -1,0 +1,33 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: Feather DE
+Label: Feather DE
+Suite: stable
+Codename: stable
+Date: Sat, 31 Oct 2026 08:05:18 UTC
+Architectures: amd64
+Components: main
+Description: Пёрышко (Feather DE) — рабочий стол Wayland в стиле macOS
+MD5Sum:
+ e5910326fae023f2ff42922ea2046cc8            10737 main/binary-amd64/Packages
+ 33a09549cd97492525fb8a7982673fc5             2378 main/binary-amd64/Packages.gz
+SHA256:
+ aa2ad2b978c0d0f1d36e1746a42dc4f933595e4edf51e3faa14bfc6514df730e            10737 main/binary-amd64/Packages
+ 287faee930cc334a9d884b87a7421205041bd41d126e17693afd9de56f168997             2378 main/binary-amd64/Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEE1ebCYocZ7x1gaFdYx/lEwUhcX8QFAmrloT4ACgkQx/lEwUhc
+X8QZMxAAntpKSVy3MA/jpv6e8ZG1lUvpUDnI76yoRn7Fv/wD7znIw3yZ08rbPpYx
+nmfyQMAn+w0HRbMxfd5Jov9AB7sIrI5jsN06s8Y5W4JywFypZ56prPh/TYZDtHjC
+oUztO1V5ehTTQQ03e2D/l2UER68MFJzHdVSwwbOSAAKsK/RFINOHys4V0H273Fy9
+V09cQ/9Bq5L/x40QZdOX+bVJf1hzgjj/pJN5/nJJ7y63FAj7FamuHVLkmH+cVzF8
+J9XlAeH73U+nblafrrvnX2+RlvGvkey3qFiddSySFCahFWcpkavzlEOzEHvRGZvq
+ixFYcfPll7sqRfIOu9PfwEHCT9fPdSbcr76Fh2td2NxdRTpGAhbPKZDTTXARlCmj
+imhQ39Q3F6RbbX6Cg1uyDZHdbEubqPqKqshkk+oWdsNkh3tv7SAVlp7ptIeYIu0h
+LVKxa9Zq5maGXZRjWeZIWPBSzjv6dQhD32LOWIttLa59UjjITkNfAEbosK5YfhZU
+MuFLczpiZmPbJt9DkXxQRvJtlEgJwHlXx4h9eVQ0b1aNatWBq+4nR7wksUnqRLgK
+zJP09qts1JYY3tUFMYPX4a1AC28F+UREg47kiXcunzTm+UikSGmdclwR9++YMBXX
+UlD1bnaMVXHLta02SBu0UVC1O4zL/5mxcYlPY9ZPs75xW0GltkM=
+=VLEY
+-----END PGP SIGNATURE-----

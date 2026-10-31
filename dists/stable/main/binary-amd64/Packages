@@ -1,0 +1,126 @@
+Package: feather-de
+Version: 0.7.1
+Architecture: amd64
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 58644
+Depends: libc6 (>= 2.39), libgbm1 (>= 21.3.0~rc1), libgcc-s1 (>= 4.2), libinput10 (>= 1.19.1), libseat1 (>= 0.5.0), libudev1 (>= 183), libxcb-cursor0 (>= 0.0.99), libxcb1 (>= 1.11.1), libxkbcommon0 (>= 0.5.0), dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools, unar
+Recommends: udisks2, packagekit, appstream, breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core
+Filename: pool/main/f/feather-de/feather-de_0.7.1_amd64.deb
+Size: 17378404
+MD5sum: 663f0df7ed15490a0395d69c875b36a9
+SHA1: 983c322e7fea67653504c4ed7d9e2913ccaccfe8
+SHA256: 931c8d788623e0d1ee45d97516016ae4d7b2bbcbf421686855179b1ff71913dd
+Section: x11
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Пёрышко (Feather DE) — рабочий стол Wayland в стиле macOS
+ Быстрое и лёгкое окружение рабочего стола на Rust: композитор Wayland с
+ Доком, Launchpad, Центром управления и строкой меню, а также свои Файлы,
+ Терминал, Заметки, Просмотр, TextEdit, Калькулятор, Магазин программ и
+ установщик пакетов.
+ Запускается сеансом «Пёрышко» из экрана входа или командой feather-session.
+
+Package: feather-de
+Version: 0.8.0
+Architecture: amd64
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 58660
+Depends: libc6 (>= 2.39), libgbm1 (>= 21.3.0~rc1), libgcc-s1 (>= 4.2), libinput10 (>= 1.19.1), libseat1 (>= 0.5.0), libudev1 (>= 183), libxcb-cursor0 (>= 0.0.99), libxcb1 (>= 1.11.1), libxkbcommon0 (>= 0.5.0), dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools, unar
+Recommends: udisks2, packagekit, appstream, breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core
+Filename: pool/main/f/feather-de/feather-de_0.8.0_amd64.deb
+Size: 17382064
+MD5sum: eea0c4f48aea24c325b1734a400bd1de
+SHA1: 8f4ee4c0c1c38609eb1121134e5a74af5a75855d
+SHA256: 0d5085dbc5cc1eec2ce4ec0d09f5480d35d3e4a0f3855cebf04a5dcae0181590
+Section: x11
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Пёрышко (Feather DE) — рабочий стол Wayland в стиле macOS
+ Быстрое и лёгкое окружение рабочего стола на Rust: композитор Wayland с
+ Доком, Launchpad, Центром управления и строкой меню, а также свои Файлы,
+ Терминал, Заметки, Просмотр, TextEdit, Калькулятор, Магазин программ и
+ установщик пакетов.
+ Запускается сеансом «Пёрышко» из экрана входа или командой feather-session.
+
+Package: feather-de
+Version: 0.8.1
+Architecture: amd64
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 58676
+Depends: libc6 (>= 2.39), libgbm1 (>= 21.3.0~rc1), libgcc-s1 (>= 4.2), libinput10 (>= 1.19.1), libseat1 (>= 0.5.0), libudev1 (>= 183), libxcb-cursor0 (>= 0.0.99), libxcb1 (>= 1.11.1), libxkbcommon0 (>= 0.5.0), dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools, unar
+Recommends: udisks2, packagekit, appstream, breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core
+Filename: pool/main/f/feather-de/feather-de_0.8.1_amd64.deb
+Size: 17387948
+MD5sum: 0d81c072c6c65ed87f04629f3df35fc1
+SHA1: 26527ccf498800cb4ac282e1f7b8f6528778f8de
+SHA256: 751dcee55b1d11228d710c29f81660e3bafea2ab92b9a223c67ffeee4abd0ebf
+Section: x11
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Пёрышко (Feather DE) — рабочий стол Wayland в стиле macOS
+ Быстрое и лёгкое окружение рабочего стола на Rust: композитор Wayland с
+ Доком, Launchpad, Центром управления и строкой меню, а также свои Файлы,
+ Терминал, Заметки, Просмотр, TextEdit, Калькулятор, Магазин программ и
+ установщик пакетов.
+ Запускается сеансом «Пёрышко» из экрана входа или командой feather-session.
+
+Package: feather-desktop
+Version: 0.7.1
+Architecture: all
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 8
+Depends: feather-de (>= 0.7.1)
+Recommends: snapd, gnome-keyring, libpam-gnome-keyring, gvfs-backends, gvfs-fuse, udisks2, upower, power-profiles-daemon, fwupd, ubuntu-drivers-common, unattended-upgrades, avahi-daemon, libnss-mdns, cups, system-config-printer, simple-scan, gstreamer1.0-libav, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire, qt6-wayland, qtwayland5, yaru-theme-gtk, yaru-theme-icon, fonts-liberation, hunspell-ru, hunspell-en-us, zip, unzip, 7zip, exfatprogs, ntfs-3g, libfuse2t64 | libfuse2, gnome-software, gnome-software-plugin-snap, software-properties-gtk, showtime | totem, rhythmbox, gnome-snapshot, gnome-disk-utility, resources | gnome-system-monitor, baobab, gnome-characters, transmission-gtk, libreoffice-writer, libreoffice-calc, libreoffice-impress, libreoffice-gtk3, libreoffice-style-yaru, libreoffice-l10n-ru
+Filename: pool/main/f/feather-desktop/feather-desktop_0.7.1_all.deb
+Size: 2164
+MD5sum: 688821e5680c2999e401140823e69de3
+SHA1: 5c2e7dfbd98bf95f8fa2abca02201384b68097f3
+SHA256: d3f102bd9fc5dac980937798e3fd4610588ba3feb7aad605ed78a1ac39b323c2
+Section: metapackages
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Пёрышко с набором программ, как в Ubuntu Desktop
+ Метапакет: рабочий стол Пёрышко, офис LibreOffice, видео, музыка, камера,
+ магазин приложений с Snap, печать и сканер, диски, хранилище паролей,
+ кодеки и драйверы. Любую программу из набора можно удалить отдельно.
+
+Package: feather-desktop
+Version: 0.8.0
+Architecture: all
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 8
+Depends: feather-de (>= 0.8.0)
+Recommends: snapd, gnome-keyring, libpam-gnome-keyring, gvfs-backends, gvfs-fuse, udisks2, upower, power-profiles-daemon, fwupd, ubuntu-drivers-common, unattended-upgrades, avahi-daemon, libnss-mdns, cups, system-config-printer, simple-scan, gstreamer1.0-libav, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire, qt6-wayland, qtwayland5, yaru-theme-gtk, yaru-theme-icon, fonts-liberation, hunspell-ru, hunspell-en-us, zip, unzip, 7zip, exfatprogs, ntfs-3g, libfuse2t64 | libfuse2, gnome-software, gnome-software-plugin-snap, software-properties-gtk, showtime | totem, rhythmbox, gnome-snapshot, gnome-disk-utility, resources | gnome-system-monitor, baobab, gnome-characters, transmission-gtk, libreoffice-writer, libreoffice-calc, libreoffice-impress, libreoffice-gtk3, libreoffice-style-yaru, libreoffice-l10n-ru
+Filename: pool/main/f/feather-desktop/feather-desktop_0.8.0_all.deb
+Size: 2160
+MD5sum: 4f8e19c28ef18d88110757444965950e
+SHA1: a93720b7d32e8e81c29261f121bae70b47a86541
+SHA256: 5e70a77a137bee1143fe6d86d4aae895b3a4421f215ae4d235e9a9db79adbc14
+Section: metapackages
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Пёрышко с набором программ, как в Ubuntu Desktop
+ Метапакет: рабочий стол Пёрышко, офис LibreOffice, видео, музыка, камера,
+ магазин приложений с Snap, печать и сканер, диски, хранилище паролей,
+ кодеки и драйверы. Любую программу из набора можно удалить отдельно.
+
+Package: feather-desktop
+Version: 0.8.1
+Architecture: all
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 8
+Depends: feather-de (>= 0.8.1)
+Recommends: snapd, gnome-keyring, libpam-gnome-keyring, gvfs-backends, gvfs-fuse, udisks2, upower, power-profiles-daemon, fwupd, ubuntu-drivers-common, unattended-upgrades, avahi-daemon, libnss-mdns, cups, system-config-printer, simple-scan, gstreamer1.0-libav, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire, qt6-wayland, qtwayland5, yaru-theme-gtk, yaru-theme-icon, fonts-liberation, hunspell-ru, hunspell-en-us, zip, unzip, 7zip, exfatprogs, ntfs-3g, libfuse2t64 | libfuse2, gnome-software, gnome-software-plugin-snap, software-properties-gtk, showtime | totem, rhythmbox, gnome-snapshot, gnome-disk-utility, resources | gnome-system-monitor, baobab, gnome-characters, transmission-gtk, libreoffice-writer, libreoffice-calc, libreoffice-impress, libreoffice-gtk3, libreoffice-style-yaru, libreoffice-l10n-ru
+Filename: pool/main/f/feather-desktop/feather-desktop_0.8.1_all.deb
+Size: 2164
+MD5sum: f28e72ade27ee98682f5bd1721e9e671
+SHA1: c1788d0b054342b5b330e83bc5793d7d21bcd774
+SHA256: a8c09c60676c140f70749441732165367a8d86aeb9a4493585521ce5a1cb4861
+Section: metapackages
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Пёрышко с набором программ, как в Ubuntu Desktop
+ Метапакет: рабочий стол Пёрышко, офис LibreOffice, видео, музыка, камера,
+ магазин приложений с Snap, печать и сканер, диски, хранилище паролей,
+ кодеки и драйверы. Любую программу из набора можно удалить отдельно.
+

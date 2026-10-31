@@ -1,0 +1,14 @@
+Origin: Feather DE
+Label: Feather DE
+Suite: stable
+Codename: stable
+Date: Sat, 31 Oct 2026 08:05:18 UTC
+Architectures: amd64
+Components: main
+Description: Пёрышко (Feather DE) — рабочий стол Wayland в стиле macOS
+MD5Sum:
+ e5910326fae023f2ff42922ea2046cc8            10737 main/binary-amd64/Packages
+ 33a09549cd97492525fb8a7982673fc5             2378 main/binary-amd64/Packages.gz
+SHA256:
+ aa2ad2b978c0d0f1d36e1746a42dc4f933595e4edf51e3faa14bfc6514df730e            10737 main/binary-amd64/Packages
+ 287faee930cc334a9d884b87a7421205041bd41d126e17693afd9de56f168997             2378 main/binary-amd64/Packages.gz
