@@ -36,6 +36,10 @@ pub struct Panel {
     pub hover: Option<(f32, f32)>,
     /// Display brightness 0…1; None when no display can be controlled
     pub brightness: Option<f32>,
+    /// The «Сейчас исполняется» card: the current MPRIS player
+    pub media: Option<crate::mpris::Player>,
+    /// Opened from the menu bar speaker: just the Sound page, no way back to the tiles
+    pub sound_only: bool,
     /// Volume set by the last drag, shown until the sound server reports it (no jump back)
     pending_volume: Option<(String, f32, u8)>,
     /// Last volume sent while dragging (sent again only after a 2 % change)
@@ -55,6 +59,23 @@ impl Panel {
         self.selected = None;
         self.drag = None;
         self.error = None;
+        self.sound_only = false;
+    }
+    /// Height of the speaker's panel: the slider, up to three outputs and an error line
+    pub fn sound_height(&self) -> f32 {
+        let rows = self.audio.sinks.len().clamp(1, 3) as f32;
+        151.0 + rows * 36.0 + self.bottom_gap()
+    }
+    /// Room under the lists: the footer button and error line, or only the error line in the
+    /// speaker's panel
+    fn bottom_gap(&self) -> f32 {
+        if !self.sound_only {
+            90.0
+        } else if self.error.is_some() || self.audio.error.is_some() {
+            40.0
+        } else {
+            14.0
+        }
     }
     pub fn open(&mut self, page: Page) {
         self.password.clear();
@@ -215,12 +236,12 @@ impl Panel {
         let (gx, gy) = self.hover?;
         let (x, y) = (gx - p.x, gy - p.y);
         let row = |y0: f32, h: f32| R::new(p.x + 10.0, p.y + y0, p.w - 20.0, h);
-        if y < 48.0 && x < 55.0 {
+        if y < 48.0 && x < 55.0 && !self.sound_only {
             return Some((1, R::new(p.x + 8.0, p.y + 9.0, 36.0, 32.0)));
         }
         match self.page {
             Page::Password => (y > p.h - 65.0).then(|| (5, row(p.h - 60.0, 40.0))),
-            _ if y > p.h - 43.0 => matches!(self.page, Page::Wifi | Page::Bluetooth).then(|| (4, row(p.h - 42.0, 34.0))),
+            Page::Wifi | Page::Bluetooth if y > p.h - 43.0 => Some((4, row(p.h - 42.0, 34.0))),
             Page::Wifi => {
                 if (50.0..85.0).contains(&y) && self.wifi.enabled {
                     return Some((3, row(50.0, 34.0)));
@@ -264,7 +285,7 @@ impl Panel {
     pub fn click(&mut self, p: R, x: f32, y: f32) -> ShellClickAction {
         let x = x - p.x;
         let y = y - p.y;
-        if y < 48.0 && x < 55.0 {
+        if y < 48.0 && x < 55.0 && !self.sound_only {
             self.open(if self.page == Page::Password {
                 Page::Wifi
             } else {
@@ -278,7 +299,7 @@ impl Panel {
             }
             return ShellClickAction::None;
         }
-        if y > p.h - 43.0 {
+        if y > p.h - 43.0 && matches!(self.page, Page::Wifi | Page::Bluetooth) {
             return match self.page {
                 Page::Wifi => ShellClickAction::NetworkSettings,
                 Page::Bluetooth => ShellClickAction::BluetoothSettings,
@@ -357,7 +378,9 @@ impl Panel {
             let tint = if appearance() == Appearance::Dark { rgba(255, 255, 255, 22) } else { rgba(0, 0, 0, 16) };
             fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 8.0, tint);
         }
-        fonts.draw_text(pm, "‹", p.x + 16.0, p.y + 10.0, 24.0, pal.text, false);
+        if !self.sound_only {
+            fonts.draw_text(pm, "‹", p.x + 16.0, p.y + 10.0, 24.0, pal.text, false);
+        }
         let title = match self.page {
             Page::Wifi => "Wi‑Fi",
             Page::Bluetooth => "Bluetooth",
@@ -365,7 +388,7 @@ impl Panel {
             Page::Password => "Подключение",
             _ => "",
         };
-        fonts.draw_text(pm, title, p.x + 48.0, p.y + 17.0, 15.0, pal.text, true);
+        fonts.draw_text(pm, title, p.x + if self.sound_only { 18.0 } else { 48.0 }, p.y + 17.0, 15.0, pal.text, true);
         if self.page == Page::Wifi {
             let can = self.wifi.available && self.wifi.hardware;
             fill_rounded_rect(
@@ -670,7 +693,7 @@ impl Panel {
                 .enumerate()
             {
                 let y = p.y + 151.0 + row as f32 * 36.0;
-                if y + 36.0 > p.y + p.h - 90.0 {
+                if y + 36.0 > p.y + p.h - self.bottom_gap() {
                     break;
                 }
                 let active = sink.name == self.audio.default;
@@ -785,7 +808,7 @@ impl Panel {
                     pm,
                     err,
                     p.x + 18.0,
-                    p.y + p.h - 74.0,
+                    p.y + p.h - if self.sound_only { 30.0 } else { 74.0 },
                     p.w - 36.0,
                     11.0,
                     pal.text_secondary,
@@ -821,6 +844,85 @@ pub fn slider(pm: &mut PixmapMut, r: R, value: f32, enabled: bool) {
     }
     stroke_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, 0.5, p.glass_outline);
 }
+/// Centres of ⏮ ⏯ ⏭ on the «Сейчас исполняется» card
+fn media_buttons(r: R) -> [f32; 3] {
+    [r.x + r.w - 92.0, r.x + r.w - 60.0, r.x + r.w - 28.0]
+}
+
+/// A click on the card: a button, else the title brings the player's window back
+pub fn media_hit(player: &crate::mpris::Player, r: R, x: f32) -> crate::mpris::Command {
+    use crate::mpris::Command;
+    let [prev, play, next] = media_buttons(r);
+    let near = |cx: f32| (x - cx).abs() <= 15.0;
+    if near(prev) {
+        Command::Previous
+    } else if near(play) {
+        Command::PlayPause
+    } else if near(next) {
+        Command::Next
+    } else if player.can_raise {
+        Command::Raise
+    } else {
+        Command::PlayPause
+    }
+}
+
+pub fn paint_media(pm: &mut PixmapMut, fonts: &mut FontSystem, player: Option<&crate::mpris::Player>, r: R) {
+    let pal = palette();
+    let Some(player) = player else {
+        fonts.draw_text(pm, "Не исполняется", r.x + 16.0, r.y + 20.0, 13.0, pal.text_secondary, false);
+        return;
+    };
+    let [prev, play, next] = media_buttons(r);
+    let width = prev - 18.0 - (r.x + 16.0);
+    fonts.draw_text_clipped(pm, &player.title, r.x + 16.0, r.y + 11.0, width, 13.0, pal.text, true);
+    fonts.draw_text_clipped(pm, player.subtitle(), r.x + 16.0, r.y + 30.0, width, 11.5, pal.text_secondary, false);
+    let cy = r.y + r.h * 0.5;
+    let ink = |on: bool| if on { pal.text } else { pal.text_tertiary };
+    media_glyph(pm, MediaGlyph::Previous, prev, cy, ink(player.can_previous));
+    media_glyph(pm, if player.playing { MediaGlyph::Pause } else { MediaGlyph::Play }, play, cy, pal.text);
+    media_glyph(pm, MediaGlyph::Next, next, cy, ink(player.can_next));
+}
+
+#[derive(Clone, Copy)]
+enum MediaGlyph {
+    Previous,
+    Play,
+    Pause,
+    Next,
+}
+
+fn media_glyph(pm: &mut PixmapMut, kind: MediaGlyph, x: f32, y: f32, color: Color) {
+    let triangle = |pm: &mut PixmapMut, tip: f32, base: f32, h: f32| {
+        let mut path = tiny_skia::PathBuilder::new();
+        path.move_to(x + base, y - h);
+        path.line_to(x + tip, y);
+        path.line_to(x + base, y + h);
+        path.close();
+        if let Some(path) = path.finish() {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color(color);
+            paint.anti_alias = true;
+            pm.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::from_scale(ui_scale(), ui_scale()), None);
+        }
+    };
+    match kind {
+        MediaGlyph::Play => triangle(pm, 7.0, -5.0, 7.0),
+        MediaGlyph::Pause => {
+            fill_rounded_rect(pm, x - 5.5, y - 7.0, 4.0, 14.0, 1.0, color);
+            fill_rounded_rect(pm, x + 1.5, y - 7.0, 4.0, 14.0, 1.0, color);
+        }
+        MediaGlyph::Next => {
+            triangle(pm, 1.0, -8.0, 6.0);
+            triangle(pm, 9.0, 0.0, 6.0);
+        }
+        MediaGlyph::Previous => {
+            triangle(pm, -1.0, 8.0, 6.0);
+            triangle(pm, -9.0, 0.0, 6.0);
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Icon {
     Wifi,
@@ -1048,6 +1150,38 @@ mod tests {
             ShellClickAction::None
         ));
     }
+    /// The menu bar speaker's panel: only Sound, no way back to the tiles, sized to its outputs
+    #[test]
+    fn speaker_panel_has_no_back_and_fits_outputs() {
+        let mut panel = Panel::default();
+        panel.open(Page::Sound);
+        panel.sound_only = true;
+        let sink = |name: &str| crate::controls::Sink { name: name.into(), label: name.into(), channels: vec![32768, 32768], ..Default::default() };
+        panel.audio = Audio { sinks: vec![sink("a"), sink("b")], default: "a".into(), ..Default::default() };
+        assert_eq!(panel.sound_height(), 151.0 + 72.0 + 14.0);
+        let p = R::new(100.0, 40.0, 300.0, panel.sound_height());
+        assert!(matches!(panel.click(p, p.x + 20.0, p.y + 20.0), ShellClickAction::None));
+        assert!(panel.page == Page::Sound && panel.sound_only);
+        assert!(panel.hover_target(p).is_none());
+        // The second output is still in reach
+        assert!(matches!(panel.click(p, p.x + 60.0, p.y + 151.0 + 36.0 + 10.0), ShellClickAction::Control(Control::Output(ref s)) if s == "b"));
+        panel.close();
+        assert!(!panel.sound_only && panel.page == Page::Main);
+    }
+
+    #[test]
+    fn media_card_buttons_and_title() {
+        use crate::mpris::{Command, Player};
+        let r = R::new(0.0, 0.0, 300.0, 58.0);
+        let mut player = Player { title: "Песня".into(), can_raise: true, ..Default::default() };
+        assert_eq!(media_hit(&player, r, 300.0 - 92.0), Command::Previous);
+        assert_eq!(media_hit(&player, r, 300.0 - 60.0), Command::PlayPause);
+        assert_eq!(media_hit(&player, r, 300.0 - 28.0), Command::Next);
+        assert_eq!(media_hit(&player, r, 40.0), Command::Raise);
+        player.can_raise = false;
+        assert_eq!(media_hit(&player, r, 40.0), Command::PlayPause);
+    }
+
     #[test]
     fn bluetooth_page_toggles_scans_and_connects_devices() {
         use crate::controls::bluetooth::BtDevice;
@@ -1160,6 +1294,30 @@ mod tests {
                     .unwrap();
                 panel.password.clear();
             }
+            // The menu bar speaker's panel and the «Сейчас исполняется» card
+            panel.page = Page::Sound;
+            panel.sound_only = true;
+            panel.audio.sinks.push(crate::controls::Sink { name: "hdmi".into(), label: "HDMI · Монитор".into(), channels: vec![30000, 30000], ..Default::default() });
+            let h = panel.sound_height();
+            let mut image = tiny_skia::Pixmap::new(600, (h * 2.0) as u32).unwrap();
+            panel.paint(&mut image.as_mut(), &mut fonts, R::new(0., 0., 300., h));
+            image.save_png("/tmp/feather-controls/fixture-speaker.png").unwrap();
+            let player = crate::mpris::Player {
+                identity: "Rhythmbox".into(),
+                title: "Тяжелые Времена".into(),
+                artist: "Цифей".into(),
+                playing: true,
+                can_next: true,
+                can_previous: false,
+                ..Default::default()
+            };
+            let mut image = tiny_skia::Pixmap::new(600, 260).unwrap();
+            for (i, p) in [Some(&player), None].into_iter().enumerate() {
+                let r = R::new(0., i as f32 * 66.0, 300., 58.);
+                fill_rounded_rect(&mut image.as_mut(), r.x, r.y, r.w, r.h, 14.0, rgba(235, 235, 240, 255));
+                paint_media(&mut image.as_mut(), &mut fonts, p, r);
+            }
+            image.save_png("/tmp/feather-controls/fixture-media.png").unwrap();
         });
     }
 }

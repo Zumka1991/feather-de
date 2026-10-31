@@ -576,6 +576,11 @@ impl FeatherCompositor {
                 if key_state == KeyState::Pressed { deferred = Some(KeyAction::Audio(key)); }
                 return FilterResult::Intercept(());
             }
+            // Media keys go to the current MPRIS player; with none they stay with the focused app
+            if let Some(command) = crate::mpris::Command::from_keysym(repeat_sym.raw()).filter(|_| st.shell.cc.media.is_some()) {
+                if key_state == KeyState::Pressed { deferred = Some(KeyAction::Shell(ShellClickAction::Media(command))); }
+                return FilterResult::Intercept(());
+            }
             if st.capturing_shortcut() {
                 if key_state == KeyState::Pressed {
                     st.capture_shortcut(repeat_sym.raw(), repeat_latin.raw(), mods);

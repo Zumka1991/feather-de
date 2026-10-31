@@ -351,10 +351,34 @@ const MAX_TOASTS: usize = 3;
 const MAX_HISTORY: usize = 50;
 const CENTER_HEADER_H: f32 = 40.0;
 const CENTER_GROUP_H: f32 = 26.0;
+/// The month calendar above the notifications: header, weekdays and six weeks
+const CALENDAR_H: f32 = 236.0;
+const CALENDAR_ROW_H: f32 = 26.0;
+const MONTHS: [&str; 12] = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+const WEEKDAYS: [&str; 7] = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+
+/// Six weeks from the Monday on or before the 1st: (day, in this month), so the card never
+/// changes height
+fn month_grid(year: i32, month: u32) -> [(u32, bool); 42] {
+    let first = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_default();
+    let start = first - chrono::Duration::days(first.weekday().num_days_from_monday() as i64);
+    std::array::from_fn(|i| {
+        let d = start + chrono::Duration::days(i as i64);
+        (d.day(), d.month() == month)
+    })
+}
+
+/// The month `offset` months from (year, month)
+fn shift_month(year: i32, month: u32, offset: i32) -> (i32, u32) {
+    let index = year * 12 + month as i32 - 1 + offset;
+    (index.div_euclid(12), index.rem_euclid(12) as u32 + 1)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CenterHit {
     ClearAll,
+    /// Calendar: ‹ (-1), › (+1), the month title back to today (0)
+    Month(i32),
     /// Clear the group whose newest entry has this history index
     ClearGroup(usize),
     Card(usize, ToastPart),
@@ -520,6 +544,8 @@ enum TopbarItem {
     Menu(TopMenu),
     Layout,
     Wifi,
+    /// Speaker: opens the Sound page of Control Center straight away
+    Sound,
     Spotlight,
     ControlCenter,
     Clock,
@@ -536,6 +562,7 @@ enum CcItem {
     DarkMode,
     Brightness,
     Volume,
+    Media,
     Scale,
     Wallpaper,
     Layout,
@@ -562,6 +589,8 @@ pub enum ShellClickAction {
     DockMenu(DockMenuAction, DockTarget),
     ActivateWindow(u64),
     RestoreMinimizedWindow(u64),
+    /// «Сейчас исполняется» buttons and media keys
+    Media(crate::mpris::Command),
     ToggleLayout,
     CycleTheme,
     ToggleAppearance,
@@ -820,6 +849,8 @@ pub struct MacShell {
     pub history: Vec<NotificationToast>,
     pub center_open: bool,
     center_first: usize,
+    /// Calendar page: months from the current one
+    calendar_offset: i32,
     center_hover: Option<CenterHit>,
     /// Closes and actions for D-Bus clients; drained by the compositor
     pub notification_events: Vec<NotificationEvent>,
@@ -935,6 +966,7 @@ impl MacShell {
             history: Vec::new(),
             center_open: false,
             center_first: 0,
+            calendar_offset: 0,
             center_hover: None,
             notification_events: Vec::new(),
             notify_apps: Vec::new(),
@@ -1200,6 +1232,7 @@ impl MacShell {
         self.close_menus();
         self.center_open = open;
         self.center_first = 0;
+        self.calendar_offset = 0;
         if open {
             // Banners on screen join the center at once, like on macOS
             for t in std::mem::take(&mut self.toasts).into_iter().rev() { self.to_history(t); }
@@ -1224,9 +1257,25 @@ impl MacShell {
 
     /// Panel, visible rows with their rectangles and the «clear all» target. Rows scroll
     /// whole, so nothing needs clipping; `center_first` is the first shown row.
+    fn calendar_rect(&self) -> R {
+        R::new(self.screen_w as f32 - TOAST_W - 10.0, TOP_BAR_HEIGHT as f32 + 8.0, TOAST_W, CALENDAR_H)
+    }
+
+    /// Shown month and today's day if it is in it
+    fn calendar_month(&self) -> (i32, u32, Option<u32>) {
+        let today = Local::now().date_naive();
+        let (year, month) = shift_month(today.year(), today.month(), self.calendar_offset);
+        (year, month, (self.calendar_offset == 0).then(|| today.day()))
+    }
+
+    /// ‹ › and the month title in the calendar card
+    fn calendar_buttons(r: R) -> [(R, i32); 3] {
+        [(R::new(r.x + r.w - 64.0, r.y + 10.0, 26.0, 26.0), -1), (R::new(r.x + r.w - 36.0, r.y + 10.0, 26.0, 26.0), 1), (R::new(r.x + 8.0, r.y + 8.0, 180.0, 30.0), 0)]
+    }
+
     fn center_layout(&self) -> (R, Vec<(R, CenterRow)>, Option<R>) {
         let x = self.screen_w as f32 - TOAST_W - 10.0;
-        let y = TOP_BAR_HEIGHT as f32 + 8.0;
+        let y = TOP_BAR_HEIGHT as f32 + 8.0 + CALENDAR_H + 10.0;
         let max_h = (self.screen_h as f32 - y - 96.0).max(160.0);
         let rows = self.center_rows();
         if rows.is_empty() {
@@ -1249,6 +1298,9 @@ impl MacShell {
 
     fn center_at(&self, x: f32, y: f32) -> Option<CenterHit> {
         if !self.center_open { return None; }
+        if let Some((_, delta)) = Self::calendar_buttons(self.calendar_rect()).into_iter().find(|(b, _)| b.contains(x, y)) {
+            return Some(CenterHit::Month(delta));
+        }
         let (panel, rows, clear) = self.center_layout();
         if clear.is_some_and(|c| c.contains(x, y)) { return Some(CenterHit::ClearAll); }
         for (r, row) in rows {
@@ -1289,6 +1341,11 @@ impl MacShell {
     fn center_click(&mut self, hit: CenterHit) {
         use crate::notifications::Reason;
         match hit {
+            CenterHit::Month(delta) => {
+                self.calendar_offset = if delta == 0 { 0 } else { self.calendar_offset + delta };
+                self.overlay_dirty = true;
+                return;
+            }
             CenterHit::ClearAll => {
                 for t in std::mem::take(&mut self.history) { self.toast_closed(t.id, Reason::Dismissed); }
             }
@@ -1538,7 +1595,7 @@ impl MacShell {
     /// Identity and pivot of the modal overlay. Hover/query changes do not restart motion.
     pub fn animation_overlay(&self) -> Option<(OverlayKind, R)> {
         if let Some(m) = self.open_menu { return Some((OverlayKind::Menu(m), self.menu_rect(m))); }
-        if self.control_center_open { return Some((OverlayKind::ControlCenter, self.cc_layout().0)); }
+        if self.control_center_open { return Some((OverlayKind::ControlCenter, self.cc_live().0)); }
         if self.spotlight_open {
             return Some((OverlayKind::Spotlight, self.spotlight_bar_rect()));
         }
@@ -1697,12 +1754,16 @@ impl MacShell {
                 self.cc.bluetooth = bluetooth;
             }
             crate::controls::Update::AudioFeedback(audio) => {
+                let muted = self.sound_muted();
                 self.cc.keyboard_audio_updated(audio);
+                self.topbar_dirty |= muted != self.sound_muted();
             }
             crate::controls::Update::Audio(audio) => {
                 if self.cc.audio==audio {return false;}
+                let muted = self.sound_muted();
                 self.cc.audio=audio;
                 self.cc.audio_updated();
+                self.topbar_dirty |= muted != self.sound_muted();
             }
             crate::controls::Update::Error(title,error) => {
                 if self.control_center_open {
@@ -2219,6 +2280,11 @@ impl MacShell {
         None
     }
 
+    /// The menu bar speaker is crossed out while the output is muted
+    fn sound_muted(&self) -> bool {
+        self.cc.audio.current().is_some_and(|s| s.muted)
+    }
+
     fn topbar_item_at(&self, px: f32) -> Option<TopbarItem> {
         self.topbar_hits
             .iter()
@@ -2227,7 +2293,19 @@ impl MacShell {
     }
 
     pub(crate) fn control_panel_rect(&self) -> R {
-        self.cc_layout().0
+        self.cc_live().0
+    }
+
+    /// Control Center as it is open now: the menu bar speaker opens only the Sound page, as a
+    /// smaller panel under the speaker
+    fn cc_live(&self) -> (R, Vec<(R, CcItem)>) {
+        if !self.cc.sound_only {
+            return self.cc_layout();
+        }
+        let w = 300.0;
+        let center = self.topbar_hits.iter().find(|(_, _, h)| *h == TopbarItem::Sound).map(|(a, b, _)| (a + b) * 0.5);
+        let x = center.map_or(self.screen_w as f32 - w - 8.0, |c| c - w * 0.5).clamp(8.0, (self.screen_w as f32 - w - 8.0).max(8.0));
+        (R::new(x, TOP_BAR_HEIGHT as f32 + 5.0, w, self.cc.sound_height()), Vec::new())
     }
 
     fn cc_layout(&self) -> (R, Vec<(R, CcItem)>) {
@@ -2250,6 +2328,8 @@ impl MacShell {
         items.push((R::new(x + p, cy, w - p * 2.0, 58.0), CcItem::Brightness));
         cy += 58.0 + p;
         items.push((R::new(x + p, cy, w - p * 2.0, 58.0), CcItem::Volume));
+        cy += 58.0 + p;
+        items.push((R::new(x + p, cy, w - p * 2.0, 58.0), CcItem::Media));
         cy += 58.0 + p;
         items.push((R::new(x + p, cy, col, 50.0), CcItem::Scale));
         items.push((R::new(x + p * 2.0 + col, cy, col, 50.0), CcItem::Wallpaper));
@@ -2426,7 +2506,7 @@ impl MacShell {
             self.overlay_dirty = true;
         }
         if self.control_center_open {
-            let (panel, items) = self.cc_layout();
+            let (panel, items) = self.cc_live();
             let pos = (px as f32, py as f32);
             let inside = panel.contains(pos.0, pos.1).then_some(pos);
             let key = |cc: &crate::control_panel::Panel| {
@@ -2534,6 +2614,7 @@ impl MacShell {
         if mx>=0.0 && mx<self.screen_w as f32 && my >= 0.0 && my < TOP_BAR_HEIGHT as f32 {
             let hit = self.topbar_item_at(mx);
             let was = (self.open_menu, self.control_center_open, self.spotlight_open, self.center_open);
+            let sound_open = self.control_center_open && self.cc.sound_only;
             self.close_menus();
             match hit {
                 Some(TopbarItem::Menu(m)) => {
@@ -2543,7 +2624,16 @@ impl MacShell {
                 }
                 Some(TopbarItem::Clock)=>{ if !was.3 { self.toggle_center(); } }
                 Some(TopbarItem::ControlCenter) | Some(TopbarItem::Wifi) => {
-                    self.control_center_open = !was.1
+                    // From the speaker's panel straight to the whole Control Center
+                    self.control_center_open = !was.1 || sound_open;
+                    if sound_open { self.cc.close(); }
+                }
+                Some(TopbarItem::Sound) => {
+                    if !sound_open {
+                        self.control_center_open = true;
+                        self.cc.open(crate::control_panel::Page::Sound);
+                        self.cc.sound_only = true;
+                    }
                 }
                 Some(TopbarItem::Spotlight) => self.spotlight_open = !was.2,
                 Some(TopbarItem::Layout) => {
@@ -2588,7 +2678,7 @@ impl MacShell {
         }
 
         if self.control_center_open {
-            let (panel, items) = self.cc_layout();
+            let (panel, items) = self.cc_live();
             if !panel.contains(mx, my) {
                 self.close_menus();
                 return Some(ShellClickAction::None);
@@ -2615,6 +2705,11 @@ impl MacShell {
                             if mx<r.x+45.0 {return Some(self.cc.mute());}
                             self.cc.open(crate::control_panel::Page::Sound);
                         } else {self.cc.start_slider(R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),mx);}
+                    }
+                    CcItem::Media => {
+                        if let Some(player) = &self.cc.media {
+                            return Some(ShellClickAction::Media(crate::control_panel::media_hit(player, *r, mx)));
+                        }
                     }
                     CcItem::Scale => return Some(ShellClickAction::CycleHiDpiScale),
                     CcItem::Wallpaper => return Some(ShellClickAction::CycleTheme),
@@ -2652,7 +2747,7 @@ impl MacShell {
         if self.center_open && my >= TOP_BAR_HEIGHT as f32 {
             match self.center_at(mx, my) {
                 Some(hit) => self.center_click(hit),
-                None if self.center_layout().0.contains(mx, my) => {}
+                None if self.center_layout().0.contains(mx, my) || self.calendar_rect().contains(mx, my) => {}
                 None => self.close_menus(),
             }
             return Some(ShellClickAction::None);
@@ -2763,6 +2858,10 @@ impl MacShell {
         let clock = self.last_clock_str.clone();
         let (open_menu, cc_open, sp_open, wifi) =
             (self.open_menu, self.control_center_open, self.spotlight_open, self.wifi_enabled);
+        let sound_open = cc_open && self.cc.sound_only;
+        let muted = self.sound_muted();
+        // No Wi‑Fi adapter (a desktop on a cable): no Wi‑Fi icon
+        let has_wifi = self.cc.wifi.available;
         let p = palette();
         let bar = self.bar_colors();
         let mut hits = Vec::with_capacity(16);
@@ -2803,7 +2902,7 @@ impl MacShell {
                 draw_feather_logo(&mut pm, 22.0, lh * 0.5, 0.95, bar.text);
                 hits.push((0.0, 38.0, TopbarItem::Menu(TopMenu::Feather)));
                 let mut x = 46.0;
-                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 162.0+tray_width;
+                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 192.0+tray_width;
                 for (label, menu, bold, enabled) in &menus {
                     let available = lw - right_reserved - x - 12.0;
                     if available < 24.0 { break; }
@@ -2825,13 +2924,15 @@ impl MacShell {
                 fonts.draw_text(&mut pm,&clock,rx-cw,text_y,13.0,bar.text,false);
                 if dnd {crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Moon,rx-cw-12.0,lh*0.5,bar.text,false);}
                 hits.push((rx-clock_width-4.0,lw,TopbarItem::Clock));rx-=clock_width+14.0;
-                for (hit,opened) in [(TopbarItem::ControlCenter,cc_open),(TopbarItem::Spotlight,sp_open),(TopbarItem::Wifi,cc_open)]{
+                for (hit,opened) in [(TopbarItem::ControlCenter,cc_open&&!sound_open),(TopbarItem::Spotlight,sp_open),(TopbarItem::Wifi,cc_open&&!sound_open),(TopbarItem::Sound,sound_open)]{
+                    if hit==TopbarItem::Wifi&&!has_wifi {continue;}
                     if opened||hover==Some(hit){highlight(&mut pm,rx-29.0,rx-1.0);}
                     let center=rx-15.0;
                     match hit {
                         TopbarItem::ControlCenter=>draw_control_center_icon(&mut pm,center,lh*0.5,bar.text),
                         TopbarItem::Spotlight=>draw_search_icon(&mut pm,center,lh*0.5,5.0,bar.text),
-                        TopbarItem::Wifi=>draw_wifi_icon(&mut pm,center,lh*0.5-2.0,bar.text,wifi),_=>{}
+                        TopbarItem::Wifi=>draw_wifi_icon(&mut pm,center,lh*0.5-2.0,bar.text,wifi),
+                        TopbarItem::Sound=>crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Speaker,center,lh*0.5,bar.text,muted),_=>{}
                     }
                     hits.push((rx-30.0,rx,hit));rx-=30.0;
                 }
@@ -3120,7 +3221,7 @@ impl MacShell {
         let mut rects = Vec::with_capacity(4);
         rects.extend(self.menu_panels().into_iter().map(|(r, _, _)| r));
         if self.control_center_open {
-            rects.push(self.cc_layout().0);
+            rects.push(self.cc_live().0);
         }
         if self.spotlight_open {
             let (bar, list, _, _) = self.spotlight_layout(registry);
@@ -3133,6 +3234,7 @@ impl MacShell {
             rects.extend(self.toast_rects());
         }
         if self.center_open {
+            rects.push(self.calendar_rect());
             rects.push(self.center_layout().0);
         }
         if let Some(m) = &self.mission {
@@ -3180,7 +3282,7 @@ impl MacShell {
         let p = palette();
         let menu_panels: Vec<_> = self.menu_panels().into_iter().map(|(r, rows, hovered)| (local(r), rows, hovered)).collect();
         let cc = if self.control_center_open {
-            let (panel, items) = self.cc_layout();
+            let (panel, items) = self.cc_live();
             (local(panel), items.into_iter().map(|(r, item)| (local(r), item)).collect::<Vec<_>>())
         } else {
             (R::new(0.0, 0.0, 0.0, 0.0), Vec::new())
@@ -3209,7 +3311,7 @@ impl MacShell {
                 CenterRow::Group(i) => CenterItem::Group(i, self.history[i].app_label.clone()),
                 CenterRow::Card(i) => CenterItem::Card(i, self.history[i].clone()),
             })).collect();
-            (local(panel), rows, clear.filter(|_| !self.history.is_empty()).map(local))
+            (local(panel), rows, clear.filter(|_| !self.history.is_empty()).map(local), (local(self.calendar_rect()), self.calendar_month()))
         });
         let input_badges:Vec<_>=if self.open_menu==Some(TopMenu::Input){self.input_sources.iter().map(|s|s.badge).collect()}else{Vec::new()};
         let active_input_label=self.input_sources.get(self.input_selected).map_or("ABC",|s|s.label);
@@ -3352,6 +3454,7 @@ impl MacShell {
                             fonts.draw_text_right(&mut pm,&sub,r.x+r.w-14.0,r.y+8.0,11.0,p.text_secondary,false);
                             crate::control_panel::slider(&mut pm,R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),vol,controls.audio.current().is_some());
                         }
+                        CcItem::Media => crate::control_panel::paint_media(&mut pm, fonts, controls.media.as_ref(), *r),
                         CcItem::Scale => {
                             crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Scale,r.x+23.0,r.y+25.0,p.text_secondary,false);
                             fonts.draw_text(&mut pm, "Масштаб", r.x + 42.0, r.y + 8.0, 13.0, p.text, true);
@@ -3467,7 +3570,8 @@ impl MacShell {
                 }
             }
 
-            if let Some((r, rows, clear)) = center.as_ref() {
+            if let Some((r, rows, clear, (cal, (year, month, today)))) = center.as_ref() {
+                Self::draw_calendar(&mut pm, fonts, *cal, *year, *month, *today, center_hover);
                 let r = *r;
                 draw_glass_panel(&mut pm, r.x, r.y, r.w, r.h, 18.0, false);
                 fonts.draw_text(&mut pm, "Уведомления", r.x + 16.0, r.y + 12.0, 15.0, p.text, true);
@@ -3497,6 +3601,38 @@ impl MacShell {
 
             Result::<_, ()>::Ok(damage)
         });
+    }
+
+    fn draw_calendar(pm: &mut PixmapMut, fonts: &mut FontSystem, r: R, year: i32, month: u32, today: Option<u32>, hover: Option<CenterHit>) {
+        let p = palette();
+        draw_glass_panel(pm, r.x, r.y, r.w, r.h, 18.0, false);
+        let [prev, next, title] = Self::calendar_buttons(r);
+        let title_ink = if hover == Some(CenterHit::Month(0)) && today.is_none() { p.accent } else { p.text };
+        let name = format!("{} {year}", MONTHS[month as usize - 1]);
+        fonts.draw_text(pm, &name, title.0.x + 8.0, r.y + 14.0, 15.0, title_ink, true);
+        for (b, delta) in [prev, next] {
+            if hover == Some(CenterHit::Month(delta)) {
+                fill_rounded_rect(pm, b.x, b.y, b.w, b.h, 13.0, p.control_fill);
+            }
+            fonts.draw_text_centered(pm, if delta < 0 { "‹" } else { "›" }, b.x + b.w * 0.5, b.y + 1.0, 20.0, p.text, false);
+        }
+        let cell = (r.w - 24.0) / 7.0;
+        let cx = |col: usize| r.x + 12.0 + cell * (col as f32 + 0.5);
+        for (col, day) in WEEKDAYS.iter().enumerate() {
+            fonts.draw_text_centered(pm, day, cx(col), r.y + 46.0, 11.0, p.text_secondary, true);
+        }
+        for (i, (day, inside)) in month_grid(year, month).into_iter().enumerate() {
+            let (col, row) = (i % 7, i / 7);
+            let cy = r.y + 66.0 + row as f32 * CALENDAR_ROW_H;
+            let label = day.to_string();
+            if inside && Some(day) == today {
+                fill_circle(pm, cx(col), cy + CALENDAR_ROW_H * 0.5, 12.0, p.accent);
+                fonts.draw_text_centered(pm, &label, cx(col), cy + 6.0, 13.0, p.on_accent, true);
+            } else {
+                let ink = if !inside { p.text_tertiary } else if col >= 5 { p.text_secondary } else { p.text };
+                fonts.draw_text_centered(pm, &label, cx(col), cy + 6.0, 13.0, ink, false);
+            }
+        }
     }
 
     // ───────────────────────── App switcher (Alt+Tab) ─────────────────────────
@@ -3932,6 +4068,38 @@ mod appmenu_tests {
         assert_eq!(shell.notification_events, [NotificationEvent::Closed(10, Reason::Expired), NotificationEvent::Closed(11, Reason::Expired)]);
     }
 
+    /// Six weeks from Monday; ‹ › page months across years and the title comes back to today
+    #[test]
+    fn calendar_grid_and_month_paging() {
+        // 1 October 2026 is a Thursday: the grid opens on Monday 28 September
+        let grid = month_grid(2026, 10);
+        assert_eq!(&grid[..4], &[(28, false), (29, false), (30, false), (1, true)]);
+        assert_eq!(grid[33], (31, true));
+        assert_eq!(grid[41], (8, false));
+        assert_eq!(shift_month(2026, 1, -1), (2025, 12));
+        assert_eq!(shift_month(2026, 12, 1), (2027, 1));
+        assert_eq!(shift_month(2026, 10, -22), (2024, 12));
+        let registry = AppRegistry::new();
+        let mut shell = MacShell::new(1000, 700);
+        shell.toggle_center();
+        let [prev, next, title] = MacShell::calendar_buttons(shell.calendar_rect());
+        let click = |shell: &mut MacShell, (r, _): (R, i32)| shell.handle_pointer_click((r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64, &registry);
+        click(&mut shell, next);
+        click(&mut shell, next);
+        click(&mut shell, prev);
+        assert!(shell.center_open, "calendar clicks keep the center open");
+        assert_eq!(shell.calendar_offset, 1);
+        assert_eq!(shell.calendar_month().2, None, "today is not marked in another month");
+        click(&mut shell, title);
+        assert_eq!(shell.calendar_offset, 0);
+        assert_eq!(shell.calendar_month().2, Some(Local::now().day()));
+        // Notifications go under the calendar
+        assert!(shell.center_layout().0.y >= shell.calendar_rect().y + CALENDAR_H);
+        shell.toggle_center();
+        shell.toggle_center();
+        assert_eq!(shell.calendar_offset, 0);
+    }
+
     #[test]
     fn per_app_delivery_remembers_senders_and_routes_their_notifications() {
         use crate::notifications::{Delivery, Reason};
@@ -4254,6 +4422,34 @@ mod appmenu_tests {
         let action = shell.debug_client_menu_path("File/Nested/Child", true, &registry);
         assert!(matches!(action, Some(ShellClickAction::AppMenuActivate { generation: 7, id: 6 })));
         assert!(shell.client_open_ids().is_empty());
+    }
+
+    /// No Wi‑Fi adapter, no Wi‑Fi icon; the speaker opens only the Sound panel under itself,
+    /// a second click closes it and the Control Center icon switches to the whole panel
+    #[test]
+    fn speaker_opens_sound_panel_and_wifi_icon_needs_an_adapter() {
+        let mut fonts = FontSystem::new();
+        let registry = AppRegistry::new();
+        let mut shell = MacShell::new(1000, 700);
+        shell.ensure_topbar_rendered(&mut fonts, "Терминал", "EN");
+        assert!(!shell.topbar_hits.iter().any(|(_, _, h)| *h == TopbarItem::Wifi));
+        shell.cc.wifi.available = true;
+        shell.topbar_dirty = true;
+        shell.ensure_topbar_rendered(&mut fonts, "Терминал", "EN");
+        assert!(shell.topbar_hits.iter().any(|(_, _, h)| *h == TopbarItem::Wifi));
+        let hit = |shell: &MacShell, item: TopbarItem| shell.topbar_hits.iter().find(|(_, _, h)| *h == item).map(|(a, b, _)| ((a + b) * 0.5) as f64).unwrap();
+        let speaker = hit(&shell, TopbarItem::Sound);
+        shell.handle_pointer_click(speaker, 10.0, &registry);
+        assert!(shell.control_center_open && shell.cc.sound_only && shell.cc.page == crate::control_panel::Page::Sound);
+        let panel = shell.cc_live().0;
+        assert!(panel.w < shell.cc_layout().0.w && (panel.x..panel.x + panel.w).contains(&(speaker as f32)));
+        shell.handle_pointer_click(speaker, 10.0, &registry);
+        assert!(!shell.control_center_open);
+        shell.cc.close();
+        shell.handle_pointer_click(speaker, 10.0, &registry);
+        let center = hit(&shell, TopbarItem::ControlCenter);
+        shell.handle_pointer_click(center, 10.0, &registry);
+        assert!(shell.control_center_open && !shell.cc.sound_only && shell.cc.page == crate::control_panel::Page::Main);
     }
 
     #[test]

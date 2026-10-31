@@ -55,6 +55,7 @@ mod theme;
 mod ui_raster;
 mod window;
 mod controls;
+mod mpris;
 mod control_panel;
 
 use std::{
@@ -178,6 +179,8 @@ pub struct FeatherCompositor {
     /// Our own session (DRM or standalone), not a nested window: may change user config
     pub own_session: bool,
     pub controls: Option<crate::controls::Controls>,
+    /// «Сейчас исполняется» and media keys (MPRIS2 players)
+    pub mpris: Option<crate::mpris::Mpris>,
     controls_password_focus: bool,
     pub auth: crate::auth_dialog::AuthUi,
     pub polkit: Option<crate::polkit_agent::Agent>,
@@ -1337,6 +1340,12 @@ impl FeatherCompositor {
                     self.refresh_focus();
                 }
             }
+            ShellClickAction::Media(command) => {
+                if command == crate::mpris::Command::Raise {
+                    self.shell.close_menus();
+                }
+                if let Some(mpris) = &self.mpris { mpris.send(command); }
+            }
             ShellClickAction::ToggleLayout => {
                 self.select_input_source((self.active_layout_index+1)%self.keyboard_config.layouts.len());
             }
@@ -2011,6 +2020,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = FeatherCompositor {
         debug_input_only: std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_some(),
         controls: None,
+        mpris: None,
         controls_password_focus: false,
         auth: Default::default(),
         polkit: None,
@@ -2196,6 +2206,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         crate::labwc::apply(state.pointer_config.clone(), state.scale_factor);
     }
     state.controls=Some(crate::controls::Controls::new(&state.loop_handle)?);
+    state.mpris=crate::mpris::Mpris::new(&state.loop_handle).map_err(|e| tracing::warn!("MPRIS: {e}")).ok();
     state.sounds=Some(crate::sounds::Sounds::new(&state.loop_handle)?);
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_TRAY").is_some() {
         state.tray=Some(crate::tray::Tray::new(&state.loop_handle)?);
