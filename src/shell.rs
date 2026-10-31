@@ -2932,7 +2932,7 @@ impl MacShell {
                         TopbarItem::ControlCenter=>draw_control_center_icon(&mut pm,center,lh*0.5,bar.text),
                         TopbarItem::Spotlight=>draw_search_icon(&mut pm,center,lh*0.5,5.0,bar.text),
                         TopbarItem::Wifi=>draw_wifi_icon(&mut pm,center,lh*0.5-2.0,bar.text,wifi),
-                        TopbarItem::Sound=>crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Speaker,center,lh*0.5,bar.text,muted),_=>{}
+                        TopbarItem::Sound=>crate::control_panel::speaker(&mut pm,center-0.5,lh*0.5,0.72,bar.text,muted),_=>{}
                     }
                     hits.push((rx-30.0,rx,hit));rx-=30.0;
                 }

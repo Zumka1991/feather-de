@@ -923,6 +923,21 @@ fn media_glyph(pm: &mut PixmapMut, kind: MediaGlyph, x: f32, y: f32, color: Colo
     }
 }
 
+/// Speaker, crossed out when muted; `s` scales it (the menu bar one is smaller)
+pub fn speaker(pm: &mut PixmapMut, x: f32, y: f32, s: f32, color: Color, muted: bool) {
+    let line = |pm: &mut PixmapMut, a: f32, b: f32, c: f32, d: f32| stroke_line(pm, x + a * s, y + b * s, x + c * s, y + d * s, 1.5, color);
+    for (a, b, c, d) in [(-9., -3., -5., -3.), (-5., -3., 1., -8.), (1., -8., 1., 8.), (1., 8., -5., 3.), (-5., 3., -9., 3.), (-9., 3., -9., -3.)] {
+        line(pm, a, b, c, d);
+    }
+    if muted {
+        line(pm, 5., -4., 11., 4.);
+        line(pm, 5., 4., 11., -4.);
+    } else {
+        line(pm, 5., -5., 8., 0.);
+        line(pm, 8., 0., 5., 5.);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum Icon {
     Wifi,
@@ -982,25 +997,7 @@ pub fn icon(pm: &mut PixmapMut, kind: Icon, x: f32, y: f32, color: Color, muted:
                 line(pm, a.cos() * 7., a.sin() * 7., a.cos() * 10., a.sin() * 10.);
             }
         }
-        Icon::Speaker => {
-            for (a, b, c, d) in [
-                (-9., -3., -5., -3.),
-                (-5., -3., 1., -8.),
-                (1., -8., 1., 8.),
-                (1., 8., -5., 3.),
-                (-5., 3., -9., 3.),
-                (-9., 3., -9., -3.),
-            ] {
-                line(pm, a, b, c, d);
-            }
-            if muted {
-                line(pm, 5., -4., 11., 4.);
-                line(pm, 5., 4., 11., -4.);
-            } else {
-                line(pm, 5., -5., 8., 0.);
-                line(pm, 8., 0., 5., 5.);
-            }
-        }
+        Icon::Speaker => speaker(pm, x, y, 1.0, color, muted),
         Icon::Scale => {
             stroke_rounded_rect(pm, x - 8., y - 7., 16., 14., 2., 1.5, color);
             line(pm, -4., 3., 4., -3.);
