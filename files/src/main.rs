@@ -164,7 +164,11 @@ fn main() {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let picker_config=args.iter().any(|a|a.as_os_str()=="--file-picker").then(||feather_ui::picker::read_config().expect("запрос выбора файла"));
     let rename = args.iter().any(|a| a.as_os_str() == "--rename");
-    let target = if let Some(config)=&picker_config{use std::os::unix::ffi::OsStringExt;config.start.as_ref().map(|p|PathBuf::from(std::ffi::OsString::from_vec(p.clone())))}else{args.into_iter().find(|a| a.as_os_str() != "--rename"&&a.as_os_str()!="--file-picker")};
+    // «Открыть» from another program (the .desktop file): an archive unpacks, like Archive
+    // Utility; a plain path (FileManager1 «Показать в папке») only selects the file
+    let open = args.iter().any(|a| a.as_os_str() == "--open");
+    let target = if let Some(config)=&picker_config{use std::os::unix::ffi::OsStringExt;config.start.as_ref().map(|p|PathBuf::from(std::ffi::OsString::from_vec(p.clone())))}else{args.into_iter().find(|a| !matches!(a.to_str(), Some("--rename" | "--file-picker" | "--open")))};
+    let unpack = target.clone().filter(|p| open && p.is_file() && fsops::is_archive(&p.file_name().unwrap_or_default().to_string_lossy()));
     let (start, reveal) = match target {
         Some(p) if p.is_dir() && !rename => (p, None),
         Some(p) => (p.parent().map(PathBuf::from).unwrap_or_else(fsops::home), Some(p)),
@@ -290,7 +294,10 @@ fn main() {
             }
         }).expect("поток предпросмотра");
     }
-    let (mut app, effects) = App::new(fonts, start, reveal, rename);
+    let (mut app, mut effects) = App::new(fonts, start, reveal, rename);
+    if let Some(archive) = unpack {
+        effects.extend(app.extract_path(archive));
+    }
     if let Some(config)=picker_config{app.set_picker(config);window.set_title(app.window_title());window.set_min_size(Some((640,(app.picker_height() as u32+160).max(320))));}
     {
         let tx = tx.clone();

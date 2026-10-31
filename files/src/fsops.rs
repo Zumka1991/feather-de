@@ -23,8 +23,56 @@ pub struct Entry {
     pub ext: String,
 }
 
+/// «Упорядочить»: what the list is sorted by; folders always stay on top, as in Finder
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SortBy {
+    #[default]
+    Name,
+    Kind,
+    Modified,
+    Size,
+}
+impl SortBy {
+    pub const ALL: [SortBy; 4] = [SortBy::Name, SortBy::Kind, SortBy::Modified, SortBy::Size];
+    /// Dates and sizes start from the newest and the largest
+    pub fn descending_first(self) -> bool {
+        matches!(self, Self::Modified | Self::Size)
+    }
+    /// A row under «Упорядочить» in the menu
+    pub fn menu_label(self) -> &'static str {
+        match self {
+            Self::Name => "Имя",
+            Self::Kind => "Тип",
+            Self::Modified => "Дата изменения",
+            Self::Size => "Размер",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Sort {
+    pub by: SortBy,
+    pub descending: bool,
+}
+
 pub fn sort_entries(entries: &mut [Entry]) {
-    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| natural_cmp(&a.name, &b.name)));
+    sort_entries_by(entries, Sort::default());
+}
+
+/// Ties (same type, date or size; folders by size) fall back to the name
+pub fn sort_entries_by(entries: &mut [Entry], sort: Sort) {
+    use std::cmp::Ordering;
+    entries.sort_by(|a, b| {
+        let key = match sort.by {
+            SortBy::Name => natural_cmp(&a.name, &b.name),
+            SortBy::Kind => a.kind.label().cmp(b.kind.label()).then_with(|| a.ext.cmp(&b.ext)),
+            SortBy::Modified => a.modified.cmp(&b.modified),
+            SortBy::Size if a.is_dir && b.is_dir => Ordering::Equal,
+            SortBy::Size => a.size.cmp(&b.size),
+        };
+        let key = if sort.descending { key.reverse() } else { key };
+        b.is_dir.cmp(&a.is_dir).then(key).then_with(|| natural_cmp(&a.name, &b.name))
+    });
 }
 
 /// Reads a folder (one `statx`-equivalent per entry); symlinks to folders count as folders
@@ -207,8 +255,10 @@ fn volumes_in(sys: &Path, udev: &Path, mountinfo: &str) -> Vec<Volume> {
             || std::fs::read_to_string(disk.join("removable")).is_ok_and(|r| r.trim() == "1");
         let label = prop("ID_FS_LABEL_ENC").map(|l| unescape_udev(&l)).filter(|l| !l.trim().is_empty());
         let size = std::fs::read_to_string(block.join("size")).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0) * 512;
+        // udisks names the folder of a disk without a label by its UUID: «Диск 249 ГБ» reads
+        // better; a folder the user named in /mnt stays
         let name_of = label
-            .or_else(|| mount.as_ref().and_then(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()))
+            .or_else(|| mount.as_ref().filter(|m| !ejectable_mount(m)).and_then(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| format!("Диск {}", human_size(size)));
         out.push(Volume {
             name: name_of,
@@ -443,7 +493,11 @@ pub fn open_terminal(dir: &Path) {
 }
 
 /// Archives Files extracts on double-click: everything bsdtar (libarchive) reads
-const ARCHIVES: [&str; 13] = [".tar.gz", ".tar.xz", ".tar.zst", ".tar.bz2", ".tgz", ".txz", ".tzst", ".tbz2", ".tbz", ".tar", ".zip", ".7z", ".rar"];
+/// Compound endings first: «x.tar.gz» unpacks as a tar, «x.txt.gz» as one file
+const ARCHIVES: [&str; 28] = [
+    ".tar.gz", ".tar.xz", ".tar.zst", ".tar.bz2", ".tar.lz", ".tar.lzma", ".tgz", ".txz", ".tzst", ".tbz2", ".tbz", ".tlz", ".tar",
+    ".zip", ".7z", ".rar", ".gz", ".xz", ".bz2", ".zst", ".lz", ".lzma", ".cab", ".arj", ".lzh", ".lha", ".cpio", ".ace",
+];
 
 pub fn is_archive(name: &str) -> bool {
     let lower = name.to_lowercase();
@@ -530,6 +584,41 @@ fn unattended(mut cmd: std::process::Command) -> std::io::Result<std::process::O
         });
     }
     cmd.stdin(stdin).output()
+}
+
+/// A zip whose names are neither ASCII nor marked UTF-8 nor valid UTF-8: written by Windows
+/// in the OEM code page. Reads only the central directory at the end of the file
+fn zip_legacy_names(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    let Ok(len) = file.metadata().map(|m| m.len()) else { return false };
+    let tail_len = len.min(65_557);
+    let mut tail = vec![0; tail_len as usize];
+    if file.seek(SeekFrom::Start(len - tail_len)).is_err() || file.read_exact(&mut tail).is_err() {
+        return false;
+    }
+    let u16_at = |b: &[u8], i: usize| b.get(i..i + 2).map_or(0, |s| u16::from_le_bytes([s[0], s[1]]) as usize);
+    let u32_at = |b: &[u8], i: usize| b.get(i..i + 4).map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as u64);
+    let Some(end) = (0..tail.len().saturating_sub(21)).rev().find(|&i| tail[i..i + 4] == [0x50, 0x4b, 0x05, 0x06]) else { return false };
+    let (size, offset) = (u32_at(&tail, end + 12), u32_at(&tail, end + 16));
+    // Zip64 and absurd directories are left to bsdtar as they are
+    if size > 16 << 20 || offset == 0xFFFF_FFFF || offset + size > len {
+        return false;
+    }
+    let mut dir = vec![0; size as usize];
+    if file.seek(SeekFrom::Start(offset)).is_err() || file.read_exact(&mut dir).is_err() {
+        return false;
+    }
+    let mut i = 0;
+    while dir.get(i..i + 4) == Some(&[0x50, 0x4b, 0x01, 0x02]) {
+        let (flags, name_len) = (u16_at(&dir, i + 8), u16_at(&dir, i + 28));
+        let Some(name) = dir.get(i + 46..i + 46 + name_len) else { return false };
+        if flags & 0x800 == 0 && !name.is_ascii() && std::str::from_utf8(name).is_err() {
+            return true;
+        }
+        i += 46 + name_len + u16_at(&dir, i + 30) + u16_at(&dir, i + 32);
+    }
+    false
 }
 
 /// libarchive reads the archive but cannot decrypt it (RAR, 7z): unar can
@@ -619,27 +708,42 @@ pub fn extract(archive: &Path, password: Option<&str>) -> Result<PathBuf, String
         Some(out) => return fail(unar_error(&out, volumes, password.is_some())),
         None => {
             let mut tar = bsdtar();
+            // Windows writes Russian names in zip as CP866 without the UTF-8 flag
+            if name.to_lowercase().ends_with(".zip") && zip_legacy_names(archive) {
+                tar.args(["--options", "zip:hdrcharset=CP866"]);
+            }
             tar.arg("-xf").arg(archive).arg("-C").arg(&tmp);
             if let Some(password) = password {
                 tar.arg(&*zeroize::Zeroizing::new(format!("--passphrase={password}")));
             }
-            match unattended(tar) {
-                Ok(out) if out.status.success() => {}
-                Ok(out) if needs_unar(&out) => {
-                    // Whatever bsdtar managed goes; unar starts clean
-                    let _ = std::fs::remove_dir_all(&tmp);
-                    if let Err(e) = std::fs::create_dir(&tmp) {
-                        return fail(e.to_string());
-                    }
-                    match run_unar() {
-                        Some(out) if out.status.success() => {}
-                        Some(out) => return fail(unar_error(&out, volumes, password.is_some())),
-                        None => return fail(NO_UNAR_CRYPT.into()),
-                    }
+            let tar = match unattended(tar) {
+                Ok(out) if out.status.success() => None,
+                Ok(out) => Some(Some(out)),
+                Err(_) => Some(None),
+            };
+            if let Some(tar) = tar {
+                // A password question is bsdtar's to ask (zip); the rest goes to unar
+                let tar_says = tar.as_ref().map(tar_error);
+                if let Some(e) = tar_says.as_ref().filter(|e| *e == NEEDS_PASSWORD || *e == WRONG_PASSWORD) {
+                    return fail(e.clone());
                 }
-                Ok(out) if rar => return fail(format!("{}. Для RAR нужна программа unar (пакет unar)", tar_error(&out))),
-                Ok(out) => return fail(tar_error(&out)),
-                Err(_) => return fail("Нет программы bsdtar (пакет libarchive-tools)".into()),
+                let encrypted = tar.as_ref().is_some_and(needs_unar);
+                // bsdtar cannot read it (a lone .gz, ARJ, deflate64, an encrypted 7z…): unar may.
+                // Whatever bsdtar managed goes; unar starts clean
+                let _ = std::fs::remove_dir_all(&tmp);
+                if let Err(e) = std::fs::create_dir(&tmp) {
+                    return fail(e.to_string());
+                }
+                match (run_unar(), tar_says) {
+                    (Some(out), _) if out.status.success() => {}
+                    (Some(out), _) if encrypted => return fail(unar_error(&out, volumes, password.is_some())),
+                    (Some(out), None) => return fail(unar_error(&out, volumes, password.is_some())),
+                    (Some(_), Some(e)) => return fail(e),
+                    (None, _) if encrypted => return fail(NO_UNAR_CRYPT.into()),
+                    (None, Some(e)) if rar => return fail(format!("{e}. Для RAR нужна программа unar (пакет unar)")),
+                    (None, Some(e)) => return fail(e),
+                    (None, None) => return fail("Нет программ bsdtar и unar (пакеты libarchive-tools и unar)".into()),
+                }
             }
         }
     }
@@ -723,6 +827,9 @@ mod tests {
                 ("WINRE".into(), None, false, true),
             ]
         );
+        let by_uuid = "62 44 8:2 / /media/u/F6C08D59C08D214B rw - ntfs /dev/sda2 rw\n";
+        let disk = volumes_in(&sys, &udev, by_uuid).into_iter().find(|v| v.device == Path::new("/dev/sda2")).unwrap();
+        assert_eq!((disk.name.as_str(), disk.ejectable), ("Диск 1,0 ГБ", true));
         let unmounted = "44 1 252:0 / / rw - ext4 /dev/mapper/vg-root rw\n";
         let names: Vec<_> = volumes_in(&sys, &udev, unmounted).into_iter().map(|v| v.name).collect();
         assert_eq!(names, ["Диск 1,0 ГБ", "DATA", "Мои фото", "WINRE"]);
@@ -912,6 +1019,109 @@ mod tests {
 
     /// FEATHER_UNAR=/path/to/unar when the unar package is not installed. Without unar, plain
     /// RAR goes through bsdtar, volumes cannot unpack
+    /// A stored zip whose one name is written as raw bytes, with or without the UTF-8 flag
+    fn stored_zip(name: &[u8], data: &[u8], utf8: bool) -> Vec<u8> {
+        let flags: u16 = if utf8 { 0x800 } else { 0 };
+        let (crc, len, name_len) = (crc32(data), data.len() as u32, name.len() as u16);
+        let mut out = Vec::new();
+        out.extend([0x50, 0x4b, 0x03, 0x04, 20, 0]);
+        out.extend(flags.to_le_bytes());
+        out.extend([0u8; 6]);
+        out.extend(crc.to_le_bytes());
+        out.extend(len.to_le_bytes());
+        out.extend(len.to_le_bytes());
+        out.extend(name_len.to_le_bytes());
+        out.extend([0, 0]);
+        out.extend(name);
+        out.extend(data);
+        let dir = out.len() as u32;
+        out.extend([0x50, 0x4b, 0x01, 0x02, 20, 0, 20, 0]);
+        out.extend(flags.to_le_bytes());
+        out.extend([0u8; 6]);
+        out.extend(crc.to_le_bytes());
+        out.extend(len.to_le_bytes());
+        out.extend(len.to_le_bytes());
+        out.extend(name_len.to_le_bytes());
+        out.extend([0u8; 12]);
+        out.extend(0u32.to_le_bytes());
+        out.extend(name);
+        let dir_len = out.len() as u32 - dir;
+        out.extend([0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0, 1, 0, 1, 0]);
+        out.extend(dir_len.to_le_bytes());
+        out.extend(dir.to_le_bytes());
+        out.extend([0, 0]);
+        out
+    }
+
+    /// Windows zips name files in CP866; UTF-8 ones (flagged or not) stay as they are; a lone
+    /// .gz, which bsdtar cannot read, goes to unar
+    #[test]
+    fn windows_zip_names_and_single_compressed_files() {
+        let root = std::env::temp_dir().join(format!("feather-zip-cp866-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        // CP866 for «Отчёт.txt»
+        let cp866: Vec<u8> = [0x8e, 0xe2, 0xe7, 0xf1, 0xe2].into_iter().chain(*b".txt").collect();
+        let windows = root.join("windows.zip");
+        std::fs::write(&windows, stored_zip(&cp866, b"hi", false)).unwrap();
+        let linux = root.join("linux.zip");
+        std::fs::write(&linux, stored_zip("Отчёт.txt".as_bytes(), b"hi", false)).unwrap();
+        let flagged = root.join("flagged.zip");
+        std::fs::write(&flagged, stored_zip("Отчёт.txt".as_bytes(), b"hi", true)).unwrap();
+        assert!(zip_legacy_names(&windows));
+        assert!(!zip_legacy_names(&linux) && !zip_legacy_names(&flagged));
+        for zip in [&windows, &linux, &flagged] {
+            let out = extract(zip, None).unwrap();
+            assert_eq!(out.file_name().unwrap(), "Отчёт.txt", "{zip:?}");
+            std::fs::remove_file(out).unwrap();
+        }
+        let gz = root.join("заметка.txt.gz");
+        let mut gzip = std::process::Command::new("gzip").arg("-c").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        std::io::Write::write_all(gzip.stdin.as_mut().unwrap(), b"note").unwrap();
+        std::fs::write(&gz, gzip.wait_with_output().unwrap().stdout).unwrap();
+        assert!(is_archive("заметка.txt.gz") && archive_stem("x.tar.gz") == "x" && archive_stem("a.txt.xz") == "a.txt");
+        let out = extract(&gz, None).unwrap();
+        assert_eq!(out, root.join("заметка.txt"));
+        assert_eq!(std::fs::read(out).unwrap(), b"note");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn sort_by_name_kind_date_and_size_keeps_folders_on_top() {
+        let at = |s: u64| Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s));
+        let e = |name: &str, dir: bool, size: u64, modified: u64, kind: Kind| Entry {
+            name: name.into(),
+            path: PathBuf::from(name),
+            kind,
+            is_dir: dir,
+            hidden: false,
+            size,
+            modified: at(modified),
+            ext: name.rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_default(),
+        };
+        let mut list = vec![
+            e("b.png", false, 300, 30, Kind::Image),
+            e("Папка", true, 0, 5, Kind::Folder),
+            e("a.txt", false, 10, 50, Kind::Text),
+            e("c.png", false, 20, 40, Kind::Image),
+            e("Архив", true, 0, 60, Kind::Folder),
+        ];
+        let names = |l: &[Entry]| l.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+        let by = |by: SortBy, descending: bool| Sort { by, descending };
+        sort_entries_by(&mut list, by(SortBy::Name, false));
+        assert_eq!(names(&list), ["Архив", "Папка", "a.txt", "b.png", "c.png"]);
+        sort_entries_by(&mut list, by(SortBy::Name, true));
+        assert_eq!(names(&list), ["Папка", "Архив", "c.png", "b.png", "a.txt"]);
+        sort_entries_by(&mut list, by(SortBy::Modified, true));
+        assert_eq!(names(&list), ["Архив", "Папка", "a.txt", "c.png", "b.png"]);
+        sort_entries_by(&mut list, by(SortBy::Size, true));
+        assert_eq!(names(&list), ["Архив", "Папка", "b.png", "c.png", "a.txt"]);
+        sort_entries_by(&mut list, by(SortBy::Kind, false));
+        // «Изображение» before «Текст»; the same type by name
+        assert_eq!(names(&list), ["Архив", "Папка", "b.png", "c.png", "a.txt"]);
+        assert!(SortBy::Modified.descending_first() && !SortBy::Name.descending_first());
+    }
+
     #[test]
     fn rar_unpacks_with_volumes() {
         let has_unar = unar().stdin(std::process::Stdio::null()).output().is_ok();

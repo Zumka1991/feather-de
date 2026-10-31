@@ -107,6 +107,8 @@ enum Hit {
     ViewList,
     Search,
     Place(usize),
+    /// A column title of the list: sorts by it, a second click turns the order around
+    Header(fsops::SortBy),
     /// The eject button of a mounted disk in the sidebar
     Eject(usize),
     Item(usize),
@@ -146,6 +148,7 @@ enum MenuAction {
     ToggleHidden,
     ShowIcons,
     ShowList,
+    SortBy(fsops::SortBy),
     Compress,
     Extract,
     /// «Открыть с помощью»: the menu turns into the list of programs for the file
@@ -239,6 +242,8 @@ pub struct App {
     view: View,
     scroll: f32,
     show_hidden: bool,
+    /// «Упорядочить»
+    sort: fsops::Sort,
     search: feather_ui::input::TextInput,
     search_focus: bool,
     rename: Option<(PathBuf, feather_ui::input::TextInput)>,
@@ -316,6 +321,7 @@ impl App {
             view: View::Icons,
             scroll: 0.0,
             show_hidden: false,
+            sort: fsops::Sort::default(),
             search: Default::default(),
             search_focus: false,
             rename: None,
@@ -502,7 +508,8 @@ impl App {
         }
         self.loading = false;
         match result {
-            Ok(entries) => {
+            Ok(mut entries) => {
+                fsops::sort_entries_by(&mut entries, self.sort);
                 self.entries = entries;
                 self.error = None;
             }
@@ -526,6 +533,31 @@ impl App {
             }
         }
         self.dirty = true;
+    }
+
+    /// A new order (menu or a column title): `toggle` turns the current one around. The
+    /// selection and the item under the cursor stay
+    fn set_sort(&mut self, by: fsops::SortBy, toggle: bool) {
+        self.sort = if self.sort.by == by {
+            fsops::Sort { by, descending: self.sort.descending ^ toggle }
+        } else {
+            fsops::Sort { by, descending: by.descending_first() }
+        };
+        let cursor = self.cursor.map(|c| self.entry(c).path.clone());
+        fsops::sort_entries_by(&mut self.entries, self.sort);
+        self.refilter();
+        self.cursor = cursor.and_then(|p| (0..self.visible.len()).find(|&i| self.entry(i).path == p));
+        self.anchor = self.cursor;
+        self.dirty = true;
+    }
+
+    /// Left edges of the list's date, size and type columns; the type column needs room
+    fn list_columns(&self) -> (f32, f32, f32, f32) {
+        let (cx, _, cw, _) = self.content();
+        let (date_w, size_w) = (160.0, 90.0);
+        let kind_w = if cw > 640.0 { 130.0 } else { 0.0 };
+        let col_date = cx + 20.0 + (cw - date_w - size_w - kind_w - 40.0);
+        (col_date, col_date + date_w, col_date + date_w + size_w, kind_w)
     }
 
     fn refilter(&mut self) {
@@ -565,6 +597,13 @@ impl App {
             self.flash(format!("Открывается «{}»", entry.name));
             Vec::new()
         }
+    }
+
+    /// An archive opened from another program: unpack it next to itself
+    pub fn extract_path(&mut self, archive: PathBuf) -> Vec<Effect> {
+        let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.flash(format!("Распаковка «{name}»…"));
+        vec![Effect::Extract(archive, None)]
     }
 
     /// A worker finished compressing or extracting: show the result selected
@@ -796,7 +835,7 @@ impl App {
                 // Insert now so rename starts immediately; the watcher re-read keeps it in place
                 let name = path.file_name().unwrap().to_string_lossy().into_owned();
                 self.entries.push(Entry { name: name.clone(), path: path.clone(), kind: Kind::Folder, is_dir: true, hidden: false, size: 0, modified: Some(std::time::SystemTime::now()), ext: String::new() });
-                fsops::sort_entries(&mut self.entries);
+                fsops::sort_entries_by(&mut self.entries, self.sort);
                 self.search.clear();
                 self.refilter();
                 let i = self.visible.iter().position(|&i| self.entries[i].path == path);
@@ -1091,8 +1130,8 @@ impl App {
             let (mx, my, mw, _) = self.menu_rect(menu);
             if x >= mx && x < mx + mw {
                 let mut iy = my + 6.0;
-                for (i, (_, action)) in menu.items.iter().enumerate() {
-                    let ih = if action.is_some() { 24.0 } else { 9.0 };
+                for (i, (label, action)) in menu.items.iter().enumerate() {
+                    let ih = menu_item_h(label, action);
                     if y >= iy && y < iy + ih && action.is_some() {
                         return Hit::Menu(i);
                     }
@@ -1148,7 +1187,16 @@ impl App {
         }
         let (_, cy, _, _) = self.content();
         if self.view == View::List && y < cy + HEADER_H {
-            return Hit::Nothing;
+            let (col_date, col_size, col_kind, kind_w) = self.list_columns();
+            return Hit::Header(if x < col_date {
+                fsops::SortBy::Name
+            } else if x < col_size {
+                fsops::SortBy::Modified
+            } else if x < col_kind || kind_w == 0.0 {
+                fsops::SortBy::Size
+            } else {
+                fsops::SortBy::Kind
+            });
         }
         if let Some(i) = self.item_at(x, y) {
             return Hit::Item(i);
@@ -1431,6 +1479,7 @@ impl App {
                 let (sx, _, sw, _) = self.search_rect();
                 self.search.click(&mut self.fonts, x - sx - 28.0, sw - 40.0, 13.0, false, mods.shift);
             },
+            Hit::Header(by) => self.set_sort(by, true),
             Hit::Place(i) if self.places[i].path.as_os_str().is_empty() => {
                 if let Some(v) = &self.places[i].volume {
                     if self.mounting.as_ref() != Some(&v.device) {
@@ -1690,7 +1739,13 @@ impl App {
                     item(if self.show_hidden { "✓ Скрытые файлы" } else { "Скрытые файлы" }, MenuAction::ToggleHidden),
                     item(if self.view == View::Icons { "✓ Значки" } else { "Значки" }, MenuAction::ShowIcons),
                     item(if self.view == View::List { "✓ Список" } else { "Список" }, MenuAction::ShowList),
+                    sep(),
+                    ("Упорядочить".into(), None),
                 ]);
+                for by in fsops::SortBy::ALL {
+                    let label = if self.sort.by == by { format!("✓ {}", by.menu_label()) } else { by.menu_label().to_string() };
+                    items.push((label, Some(MenuAction::SortBy(by))));
+                }
                 if self.in_trash() && !self.entries.is_empty() {
                     items.extend([sep(), item("Очистить Корзину…", MenuAction::EmptyTrash)]);
                 }
@@ -1710,7 +1765,7 @@ impl App {
 
     fn menu_rect(&self, menu: &Menu) -> (f32, f32, f32, f32) {
         let w = menu.w;
-        let h = 12.0 + menu.items.iter().map(|(_, a)| if a.is_some() { 24.0 } else { 9.0 }).sum::<f32>();
+        let h = 12.0 + menu.items.iter().map(|(l, a)| menu_item_h(l, a)).sum::<f32>();
         let x = menu.x.min(self.w - w - 6.0).max(6.0);
         let y = if menu.y + h > self.h - 6.0 { (menu.y - h).max(6.0) } else { menu.y };
         (x, y, w, h)
@@ -1784,6 +1839,10 @@ impl App {
             }
             MenuAction::ShowList => {
                 self.set_view(View::List);
+                Vec::new()
+            }
+            MenuAction::SortBy(by) => {
+                self.set_sort(by, false);
                 Vec::new()
             }
             MenuAction::OpenWith => {
@@ -2325,13 +2384,9 @@ impl App {
             tiny_skia::Color::from_rgba(c.red(), c.green(), c.blue(), a as f32 / 255.0).unwrap_or(c)
         };
         let (cx, cy, cw, ch) = self.content();
-        let date_w = 160.0;
-        let size_w = 90.0;
-        let kind_w = if cw > 640.0 { 130.0 } else { 0.0 };
-        let name_w = cw - date_w - size_w - kind_w - 40.0;
-        let col_date = cx + 20.0 + name_w;
-        let col_size = col_date + date_w;
-        let col_kind = col_size + size_w;
+        let (col_date, col_size, col_kind, kind_w) = self.list_columns();
+        let (date_w, size_w) = (col_size - col_date, col_kind - col_size);
+        let name_w = col_date - cx - 20.0;
         for i in self.visible_range() {
             let (_, y, _, _) = self.item_rect(i);
             if y + ROW_H < cy + HEADER_H || y > cy + ch {
@@ -2370,11 +2425,20 @@ impl App {
         }
         // Sticky header over the scrolled rows
         theme::fill_rect(pm, cx, cy, cw, HEADER_H, colors::window());
-        for (label, x) in [("Имя", cx + 44.0), ("Дата изменения", col_date), ("Размер", col_size + 4.0), ("Тип", col_kind)] {
-            if label == "Тип" && kind_w == 0.0 {
+        use fsops::SortBy;
+        for (label, x, by) in [("Имя", cx + 44.0, SortBy::Name), ("Дата изменения", col_date, SortBy::Modified), ("Размер", col_size + 4.0, SortBy::Size), ("Тип", col_kind, SortBy::Kind)] {
+            if by == SortBy::Kind && kind_w == 0.0 {
                 continue;
             }
-            self.fonts.draw_text(pm, label, x, cy + 7.0, 11.5, colors::secondary(), true);
+            let active = self.sort.by == by;
+            let ink = if active || self.hover == Hit::Header(by) { colors::text() } else { colors::secondary() };
+            self.fonts.draw_text(pm, label, x, cy + 7.0, 11.5, ink, true);
+            if active {
+                // ˄ ascending, ˅ descending, right after the title
+                let ax = x + self.fonts.measure_text(label, 11.5, true) + 8.0;
+                let (tip, base) = if self.sort.descending { (cy + 17.0, cy + 12.5) } else { (cy + 12.5, cy + 17.0) };
+                theme::polyline(pm, &[(ax - 3.5, base), (ax, tip), (ax + 3.5, base)], 1.3, colors::secondary());
+            }
         }
         theme::fill_rect(pm, cx + 8.0, cy + HEADER_H - 1.0, cw - 16.0, 1.0, colors::separator());
     }
@@ -2600,8 +2664,12 @@ impl App {
         let mut iy = y + 6.0;
         for (i, (label, action)) in items.iter().enumerate() {
             if action.is_none() {
-                theme::fill_rect(pm, x + 12.0, iy + 4.0, w - 24.0, 1.0, colors::separator());
-                iy += 9.0;
+                if label.is_empty() {
+                    theme::fill_rect(pm, x + 12.0, iy + 4.0, w - 24.0, 1.0, colors::separator());
+                } else {
+                    self.fonts.draw_text(pm, label, x + 16.0, iy + 5.0, 11.5, colors::secondary(), true);
+                }
+                iy += menu_item_h(label, action);
                 continue;
             }
             let hovered = self.menu_hover == Some(i);
@@ -2613,6 +2681,17 @@ impl App {
             self.fonts.draw_text(pm, &label, x + 16.0, iy + 4.5, 13.0, ink, false);
             iy += 24.0;
         }
+    }
+}
+
+/// A menu row: an item, a separator (no label) or a section title like «Упорядочить»
+fn menu_item_h(label: &str, action: &Option<MenuAction>) -> f32 {
+    if action.is_some() {
+        24.0
+    } else if label.is_empty() {
+        9.0
+    } else {
+        22.0
     }
 }
 
@@ -2875,6 +2954,43 @@ mod tests {
                 app.listed(generation, fsops::list(&path).map_err(|e| e.to_string()));
             }
         }
+    }
+
+    /// Column titles sort and turn the order around, the menu picks an order, a re-read of
+    /// the folder keeps it and the selected item stays selected
+    #[test]
+    fn sorting_from_column_titles_and_the_menu() {
+        let root = fixture("sort");
+        std::fs::write(root.join("big.bin"), vec![0u8; 5000]).unwrap();
+        let mut app = app_in(&root);
+        app.set_view(View::List);
+        let names = |app: &App| (0..app.visible.len()).map(|i| app.entry(i).name.clone()).filter(|n| !n.starts_with('.')).collect::<Vec<_>>();
+        let (cx, cy, _, _) = app.content();
+        let (_, col_size, _, _) = app.list_columns();
+        assert_eq!(app.hit(col_size + 10.0, cy + 10.0), Hit::Header(fsops::SortBy::Size));
+        app.select_only(app.visible.iter().position(|&i| app.entries[i].name == "photo.png").unwrap());
+        app.press(BTN_LEFT, col_size + 10.0, cy + 10.0, Mods::default());
+        app.release(BTN_LEFT, col_size + 10.0, cy + 10.0);
+        // Largest first, folders stay on top
+        assert_eq!(names(&app)[..3], ["beta", "Альфа", "big.bin"]);
+        assert_eq!(app.selected_paths(), [root.join("photo.png")]);
+        app.press(BTN_LEFT, col_size + 10.0, cy + 10.0, Mods::default());
+        app.release(BTN_LEFT, col_size + 10.0, cy + 10.0);
+        assert!(!app.sort.descending);
+        assert_eq!(names(&app).last().unwrap(), "big.bin");
+        app.open_menu(Hit::Content, cx + 200.0, cy + 200.0);
+        let menu = app.menu.take().unwrap();
+        assert!(menu.items.iter().any(|(l, a)| l == "Упорядочить" && a.is_none()));
+        assert!(menu.items.iter().any(|(l, _)| l == "✓ Размер"));
+        assert_eq!(menu.w, MENU_MIN_W);
+        app.menu_action(MenuAction::SortBy(fsops::SortBy::Name));
+        assert_eq!(app.sort, fsops::Sort::default());
+        assert_eq!(names(&app), ["beta", "Альфа", "big.bin", "file2.txt", "file10.txt", "photo.png"]);
+        app.listed(app.generation, fsops::list(&root).map_err(|e| e.to_string()));
+        app.set_sort(fsops::SortBy::Modified, false);
+        app.listed(app.generation, fsops::list(&root).map_err(|e| e.to_string()));
+        assert_eq!(app.sort.by, fsops::SortBy::Modified);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn fixture(tag: &str) -> PathBuf {
