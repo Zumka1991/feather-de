@@ -83,7 +83,7 @@ enum Msg {
     /// Compress finished: the new archive, or bsdtar's error
     Archived(Result<PathBuf, String>, bool),
     /// This archive is unpacked: the new folder or file, or why not (a password may be asked)
-    Extracted(PathBuf, Result<PathBuf, String>),
+    Extracted(u64, PathBuf, Result<PathBuf, String>),
     /// A paste copied more (throttled), stopped on a taken name, or finished (failures)
     JobTick,
     Conflict(u64, PathBuf, bool),
@@ -237,7 +237,7 @@ fn main() {
                     }
                     Msg::Done(failed, what) => files.app.operation_done(failed, what),
                     Msg::Archived(result, compressed) => files.app.archive_done(result, compressed),
-                    Msg::Extracted(archive, result) => files.app.extract_done(archive, result),
+                    Msg::Extracted(id, archive, result) => files.app.extract_done(id, archive, result),
                     Msg::JobTick => {
                         files.app.job_tick();
                         Vec::new()
@@ -537,12 +537,16 @@ impl Files {
                     });
                 }
                 Effect::Extract(archive, password) => {
+                    let (id, progress) = self.app.start_extract_job(&archive);
                     let tx = self.tx.clone();
                     std::thread::spawn(move || {
-                        let result = fsops::extract(&archive, password.as_deref().map(String::as_str));
+                        let ticks = tx.clone();
+                        let result = fsops::extract_with(&archive, password.as_deref().map(String::as_str), &progress, &mut || {
+                            let _ = ticks.send(Msg::JobTick);
+                        });
                         // Wiped before the result is shown, whatever it is
                         drop(password);
-                        let _ = tx.send(Msg::Extracted(archive, result));
+                        let _ = tx.send(Msg::Extracted(id, archive, result));
                     });
                 }
                 Effect::Clipboard(paths) => self.offer_files(paths),

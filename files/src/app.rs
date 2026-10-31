@@ -623,7 +623,10 @@ impl App {
 
     /// A worker finished unpacking `archive`. Without a password, or with a wrong one, the
     /// password sheet asks for it and unpacking starts over
-    pub fn extract_done(&mut self, archive: PathBuf, result: Result<PathBuf, String>) -> Vec<Effect> {
+    pub fn extract_done(&mut self, id: u64, archive: PathBuf, result: Result<PathBuf, String>) -> Vec<Effect> {
+        if let Some(effects) = self.extract_job_done(id) {
+            return effects;
+        }
         let wrong = match &result {
             Err(e) if e == fsops::NEEDS_PASSWORD => false,
             Err(e) if e == fsops::WRONG_PASSWORD => true,
@@ -2607,6 +2610,12 @@ impl App {
                 "Очистить Корзину",
                 "Отменить",
             ),
+            Confirm::Close if self.jobs_verb() == "Распаковка" => (
+                "Распаковка ещё не закончена".to_string(),
+                "Если закрыть окно, распаковка прервётся. Уже распакованное будет удалено.".to_string(),
+                "Прервать",
+                "Не закрывать",
+            ),
             Confirm::Close => (
                 "Копирование ещё не закончено".to_string(),
                 "Если закрыть окно, копирование прервётся. Недокопированный файл будет удалён.".to_string(),
@@ -2844,7 +2853,7 @@ mod tests {
             }
         };
         // unar wants a password: the sheet asks for it, nothing unpacks yet
-        assert!(app.extract_done(archive.clone(), Err(fsops::NEEDS_PASSWORD.into())).is_empty());
+        assert!(app.extract_done(0, archive.clone(), Err(fsops::NEEDS_PASSWORD.into())).is_empty());
         assert_eq!(app.confirm, Some(Confirm::Password(archive.clone(), false)));
         let (fx, fy, _, _) = app.password_rect();
         assert_eq!(app.hit(fx + 5.0, fy + 5.0), Hit::PasswordField);
@@ -2864,24 +2873,24 @@ mod tests {
         assert!(!format!("{effects:?}").contains("тайна"));
         assert!(app.password.is_empty() && app.confirm.is_none());
         // A wrong one: asked again, saying so
-        assert!(app.extract_done(archive.clone(), Err(fsops::WRONG_PASSWORD.into())).is_empty());
+        assert!(app.extract_done(0, archive.clone(), Err(fsops::WRONG_PASSWORD.into())).is_empty());
         assert_eq!(app.confirm, Some(Confirm::Password(archive.clone(), true)));
         typed(&mut app, "верный");
         assert_eq!(app.key(K::KP_Enter.raw(), 96, None, none), vec![Effect::Extract(archive.clone(), Some(zeroize::Zeroizing::new("верный".to_string())))]);
         // Escape cancels and wipes what was typed
-        app.extract_done(archive.clone(), Err(fsops::WRONG_PASSWORD.into()));
+        app.extract_done(0, archive.clone(), Err(fsops::WRONG_PASSWORD.into()));
         typed(&mut app, "ещё");
         assert!(app.key(K::Escape.raw(), 1, None, none).is_empty());
         assert!(app.confirm.is_none() && app.password.is_empty());
         // Other failures are only reported; success selects the result
-        app.extract_done(archive.clone(), Err("Архив повреждён".into()));
+        app.extract_done(0, archive.clone(), Err("Архив повреждён".into()));
         assert!(app.confirm.is_none());
         assert_eq!(app.status.as_ref().map(|(t, _)| t.as_str()), Some("Не удалось распаковать: Архив повреждён"));
-        let effects = app.extract_done(archive.clone(), Ok(root.join("копилка")));
+        let effects = app.extract_done(0, archive.clone(), Ok(root.join("копилка")));
         assert!(effects.iter().any(|e| matches!(e, Effect::List(..))));
         // Another sheet is not replaced by the password one
         app.confirm = Some(Confirm::Empty);
-        app.extract_done(archive.clone(), Err(fsops::NEEDS_PASSWORD.into()));
+        app.extract_done(0, archive.clone(), Err(fsops::NEEDS_PASSWORD.into()));
         assert_eq!(app.confirm, Some(Confirm::Empty));
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -3056,6 +3065,7 @@ mod tests {
         let home = fsops::home();
         app.debug_job(vec![home.join("Видео/Отпуск.mkv")], home.join("Документы"), false, 1_300_000_000, 4_600_000_000, &home.join("Видео/Отпуск.mkv"));
         app.debug_job(vec![home.join("a"), home.join("b"), home.join("c")], home.join("Загрузки"), true, 42_000_000, 0, &home.join("b"));
+        app.debug_extract_job(&home.join("Загрузки/L2Erica_ep.zip"), 2_100_000_000, 5_756_407_392);
         app.paint(&mut pm.as_mut());
         pm.save_png(out.join("jobs.png")).unwrap();
         app.job_conflict(1, home.join("Документы/Отчёт за октябрь.pdf"), false);

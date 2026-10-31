@@ -573,7 +573,7 @@ fn bsdtar() -> std::process::Command {
 /// --passphrase (or with a wrong one) reads it from the terminal, else from stdin, and an
 /// empty stdin makes it ask forever. No controlling terminal (setsid) and a write-only stdin
 /// turn that into "Couldn't read passphrase".
-fn unattended(mut cmd: std::process::Command) -> std::io::Result<std::process::Output> {
+fn unattended(mut cmd: std::process::Command) -> std::io::Result<std::process::Command> {
     use std::os::unix::process::CommandExt;
     let stdin = std::fs::OpenOptions::new().write(true).open("/dev/null")?;
     // SAFETY: setsid is async-signal-safe and touches nothing of ours
@@ -583,7 +583,60 @@ fn unattended(mut cmd: std::process::Command) -> std::io::Result<std::process::O
             Ok(())
         });
     }
-    cmd.stdin(stdin).output()
+    cmd.stdin(stdin);
+    Ok(cmd)
+}
+
+/// Bytes the process has read so far (`rchar` of /proc/<pid>/io): for an unpacker that is
+/// nearly all the archive, read once from start to end
+fn bytes_read(pid: u32) -> Option<u64> {
+    let io = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    io.lines().find_map(|l| l.strip_prefix("rchar:"))?.trim().parse().ok()
+}
+
+/// `cmd.output()` that reports how much of the archive the unpacker has read into
+/// `progress.done` (out of `progress.total`, the archive size) and kills it on cancel
+fn run_watched(mut cmd: std::process::Command, progress: &Progress, tick: &mut dyn FnMut()) -> std::io::Result<std::process::Output> {
+    use std::{io::Read, process::Stdio, sync::atomic::Ordering};
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    // Both pipes drain on their own threads: a chatty unpacker must not block on a full pipe
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let stderr = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let total = progress.total.load(Ordering::Relaxed);
+    progress.done.store(0, Ordering::Relaxed);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if progress.cancelled() {
+            let _ = child.kill();
+        }
+        if let Some(read) = bytes_read(child.id()) {
+            progress.done.store(read.min(total), Ordering::Relaxed);
+            tick();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    Ok(std::process::Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+}
+
+/// Volumes of a "….partN.rar" set that are there (just `archive` for any other archive)
+fn volumes_of(archive: &Path) -> Vec<PathBuf> {
+    let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let Some((start, end)) = rar_volume(&name) else { return vec![archive.to_path_buf()] };
+    (1..)
+        .map(|n| archive.with_file_name(format!("{}{:0>width$}{}", &name[..start], n, &name[end..], width = end - start)))
+        .take_while(|p| p.is_file())
+        .collect()
 }
 
 /// A zip whose names are neither ASCII nor marked UTF-8 nor valid UTF-8: written by Windows
@@ -680,13 +733,25 @@ pub fn compress(paths: &[PathBuf]) -> Result<PathBuf, String> {
 /// unar as -p and to bsdtar as --passphrase (zip); an encrypted 7z, which libarchive cannot
 /// decrypt, goes to unar too. A missing or wrong password comes back as `NEEDS_PASSWORD` or
 /// `WRONG_PASSWORD`.
+#[cfg(test)]
 pub fn extract(archive: &Path, password: Option<&str>) -> Result<PathBuf, String> {
+    extract_with(archive, password, &Progress::default(), &mut || {})
+}
+
+/// Unpacking was cancelled from its card
+pub const EXTRACT_STOPPED: &str = "Распаковка остановлена";
+
+/// [`extract`] with progress (bytes of the archive read) and cancellation; `tick` runs about
+/// ten times a second while the unpacker works
+pub fn extract_with(archive: &Path, password: Option<&str>, progress: &Progress, tick: &mut dyn FnMut()) -> Result<PathBuf, String> {
     let dir = archive.parent().ok_or("Нет папки архива")?;
     let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let stem = archive_stem(&name).to_string();
     let rar = name.to_lowercase().ends_with(".rar");
     let volumes = rar_volume(&name).is_some();
     let archive = &first_volume(archive);
+    let total = volumes_of(archive).iter().filter_map(|p| p.metadata().ok()).map(|m| m.len()).sum();
+    progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
     let tmp = dir.join(format!(".{stem}.feather-extract-{}", std::process::id()));
     std::fs::create_dir(&tmp).map_err(|e| e.to_string())?;
     let fail = |e: String| {
@@ -694,15 +759,19 @@ pub fn extract(archive: &Path, password: Option<&str>) -> Result<PathBuf, String
         Err(e)
     };
     // -D: the folder for several items is ours; -nr: an inner archive stays an archive
-    let run_unar = || {
+    let run_unar = |tick: &mut dyn FnMut()| {
         let mut cmd = unar();
         cmd.args(["-q", "-nr", "-D", "-k", "skip", "-o"]).arg(&tmp);
         if let Some(password) = password {
             cmd.arg("-p").arg(password);
         }
-        cmd.arg(archive).stdin(std::process::Stdio::null()).output().ok()
+        cmd.arg(archive).stdin(std::process::Stdio::null());
+        run_watched(cmd, progress, tick).ok()
     };
-    let unpacked = if rar { run_unar() } else { None };
+    let unpacked = if rar { run_unar(tick) } else { None };
+    if progress.cancelled() {
+        return fail(EXTRACT_STOPPED.into());
+    }
     match unpacked {
         Some(out) if out.status.success() => {}
         Some(out) => return fail(unar_error(&out, volumes, password.is_some())),
@@ -716,7 +785,8 @@ pub fn extract(archive: &Path, password: Option<&str>) -> Result<PathBuf, String
             if let Some(password) = password {
                 tar.arg(&*zeroize::Zeroizing::new(format!("--passphrase={password}")));
             }
-            let tar = match unattended(tar) {
+            let tar = match unattended(tar).and_then(|tar| run_watched(tar, progress, tick)) {
+                _ if progress.cancelled() => return fail(EXTRACT_STOPPED.into()),
                 Ok(out) if out.status.success() => None,
                 Ok(out) => Some(Some(out)),
                 Err(_) => Some(None),
@@ -734,7 +804,11 @@ pub fn extract(archive: &Path, password: Option<&str>) -> Result<PathBuf, String
                 if let Err(e) = std::fs::create_dir(&tmp) {
                     return fail(e.to_string());
                 }
-                match (run_unar(), tar_says) {
+                let unpacked = run_unar(tick);
+                if progress.cancelled() {
+                    return fail(EXTRACT_STOPPED.into());
+                }
+                match (unpacked, tar_says) {
                     (Some(out), _) if out.status.success() => {}
                     (Some(out), _) if encrypted => return fail(unar_error(&out, volumes, password.is_some())),
                     (Some(out), None) => return fail(unar_error(&out, volumes, password.is_some())),
@@ -909,6 +983,46 @@ mod tests {
         assert_eq!(paste(&[a.clone()], &a.join("sub"), false), 1);
         let listed: Vec<_> = list(&a).unwrap().into_iter().map(|e| e.name).collect();
         assert_eq!(listed, ["sub", "sub копия", "x копия.txt"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The card's bar ends at the archive size; a cancel kills the unpacker and leaves nothing
+    #[test]
+    fn extract_reports_progress_and_stops() {
+        use std::sync::atomic::Ordering;
+        if std::process::Command::new(std::env::var_os("FEATHER_BSDTAR").unwrap_or_else(|| "bsdtar".into())).arg("--version").output().is_err() {
+            eprintln!("нет bsdtar — тест пропущен");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("feather-extract-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Игра")).unwrap();
+        // Incompressible, so the zip is big enough for bsdtar to be seen reading it
+        let mut noise = vec![0u8; 8 << 20];
+        let mut x = 0x9e3779b97f4a7c15u64;
+        for b in noise.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *b = x as u8;
+        }
+        std::fs::write(root.join("Игра/данные.bin"), &noise).unwrap();
+        let zip = compress(&[root.join("Игра")]).unwrap();
+        std::fs::remove_dir_all(root.join("Игра")).unwrap();
+        let size = zip.metadata().unwrap().len();
+
+        let progress = Progress::default();
+        let mut ticks = 0;
+        assert_eq!(extract_with(&zip, None, &progress, &mut || ticks += 1).unwrap(), root.join("Игра"));
+        assert_eq!(progress.total.load(Ordering::Relaxed), size);
+        assert!(progress.done.load(Ordering::Relaxed) <= size);
+        std::fs::remove_dir_all(root.join("Игра")).unwrap();
+
+        let progress = Progress::default();
+        progress.cancel.store(true, Ordering::Relaxed);
+        assert_eq!(extract_with(&zip, None, &progress, &mut || {}).unwrap_err(), EXTRACT_STOPPED);
+        let left: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, [zip.file_name().unwrap()]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

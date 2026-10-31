@@ -1,7 +1,7 @@
-//! Copy/move jobs: Finder-like progress cards at the bottom of the window and the sheet that
-//! asks what to do with a name already taken in the target folder.
-//! The copying itself runs on a worker (`fileops::paste_with`); this side only reads its
-//! shared `Progress` while painting.
+//! Copy/move/unpack jobs: Finder-like progress cards at the bottom of the window and the sheet
+//! that asks what to do with a name already taken in the target folder.
+//! The work itself runs on a worker (`fileops::paste_with`, `fsops::extract_with`); this side
+//! only reads its shared `Progress` while painting.
 
 use super::*;
 use feather_ui::fileops::{Conflict, Progress};
@@ -12,10 +12,27 @@ const SHOW_AFTER: Duration = Duration::from_millis(300);
 const CARD_H: f32 = 64.0;
 const CARD_GAP: f32 = 8.0;
 
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Copy,
+    Move,
+    Extract,
+}
+
+impl Kind {
+    fn verb(self) -> &'static str {
+        match self {
+            Kind::Copy => "Копирование",
+            Kind::Move => "Перемещение",
+            Kind::Extract => "Распаковка",
+        }
+    }
+}
+
 pub(super) struct Job {
     id: u64,
     progress: Arc<Progress>,
-    cut: bool,
+    kind: Kind,
     count: usize,
     /// Name of the only item, for «Копирование «x» в «y»»
     first: String,
@@ -51,7 +68,7 @@ impl App {
         self.jobs.push(Job {
             id,
             progress: Arc::default(),
-            cut,
+            kind: if cut { Kind::Move } else { Kind::Copy },
             count: paths.len(),
             first: paths.first().map(|p| file_name(p)).unwrap_or_default(),
             dest: file_name(&dir),
@@ -70,6 +87,54 @@ impl App {
         job.progress.total.store(total, Ordering::Relaxed);
         job.progress.done.store(done, Ordering::Relaxed);
         job.progress.debug_set_current(current);
+    }
+
+    /// An archive starts unpacking on a worker: its card, and the progress the worker fills
+    pub fn start_extract_job(&mut self, archive: &Path) -> (u64, Arc<Progress>) {
+        self.next_job += 1;
+        let id = self.next_job;
+        let progress = Arc::<Progress>::default();
+        self.jobs.push(Job {
+            id,
+            progress: progress.clone(),
+            kind: Kind::Extract,
+            count: 1,
+            first: file_name(archive),
+            dest: String::new(),
+            started: Instant::now(),
+        });
+        self.dirty = true;
+        (id, progress)
+    }
+
+    /// The unpacking worker `id` finished: its card goes. `Some` when it was stopped from
+    /// the card: the effects to apply instead of reporting the result
+    pub(super) fn extract_job_done(&mut self, id: u64) -> Option<Vec<Effect>> {
+        let index = self.jobs.iter().position(|j| j.id == id)?;
+        let job = self.jobs.remove(index);
+        self.dirty = true;
+        if !job.progress.cancelled() {
+            return None;
+        }
+        self.flash(fsops::EXTRACT_STOPPED.into());
+        if self.close_after_jobs && self.jobs.is_empty() {
+            return Some(vec![Effect::Close]);
+        }
+        Some(self.reload())
+    }
+
+    /// What closing the window would interrupt: «Копирование», «Распаковка»…
+    pub(super) fn jobs_verb(&self) -> &'static str {
+        self.jobs.first().map_or(Kind::Copy, |j| j.kind).verb()
+    }
+
+    /// Preview renders: an archive half read
+    #[cfg(test)]
+    pub(super) fn debug_extract_job(&mut self, archive: &Path, done: u64, total: u64) {
+        let (_, progress) = self.start_extract_job(archive);
+        self.jobs.last_mut().unwrap().started = Instant::now() - Duration::from_secs(40);
+        progress.total.store(total, Ordering::Relaxed);
+        progress.done.store(done, Ordering::Relaxed);
     }
 
     pub fn job_progress(&self, id: u64) -> Option<Arc<Progress>> {
@@ -98,13 +163,13 @@ impl App {
         let Some(index) = self.jobs.iter().position(|j| j.id == id) else { return Vec::new() };
         let job = self.jobs.remove(index);
         self.conflicts.retain(|c| c.job != id);
-        let what = if job.cut { "Перемещение" } else { "Копирование" };
+        let what = job.kind.verb();
         if job.progress.cancelled() {
             self.flash(format!("{what} остановлено"));
         } else if failed > 0 {
             self.flash(format!("{what}: не удалось для {failed}"));
         } else {
-            self.flash(format!("{} {}", if job.cut { "Перемещено:" } else { "Скопировано:" }, objects(job.count)));
+            self.flash(format!("{} {}", if job.kind == Kind::Move { "Перемещено:" } else { "Скопировано:" }, objects(job.count)));
         }
         if self.close_after_jobs && self.jobs.is_empty() {
             return vec![Effect::Close];
@@ -246,8 +311,10 @@ impl App {
             let Some(job) = self.jobs.iter().find(|j| j.id == id) else { continue };
             let (total, done) = (job.progress.total.load(Ordering::Relaxed), job.progress.done.load(Ordering::Relaxed));
             let cancelled = job.progress.cancelled();
-            let verb = if job.cut { "Перемещение" } else { "Копирование" };
-            let title = if job.count == 1 {
+            let verb = job.kind.verb();
+            let title = if job.kind == Kind::Extract {
+                format!("{verb} «{}»", job.first)
+            } else if job.count == 1 {
                 format!("{verb} «{}» в «{}»", job.first, job.dest)
             } else {
                 format!("{verb} {} в «{}»", objects_genitive(job.count), job.dest)
