@@ -590,6 +590,13 @@ current code and recent changelog entries when assessing the present state.
 Most detailed development documents are currently in Russian; this English README
 covers the same main feature and setup information as the Russian version.
 
+## Support the project
+
+Feather DE is free and open source. If you enjoy it, you can support its development:
+
+- [Boosty subscription](https://boosty.to/featheros) — monthly support and development news;
+- [One-time donation via CloudTips](https://pay.cloudtips.ru/p/235b60f7) — any amount, by bank card.
+
 ## License
 
 Feather DE is free software: you can use, study, modify and redistribute it under the terms
