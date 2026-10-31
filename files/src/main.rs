@@ -94,6 +94,10 @@ enum Msg {
     PastedText(String),
     /// Files of a drop, read from the offer; the offer is finished after the paste starts
     Dropped(Vec<PathBuf>, PathBuf, bool),
+    /// Disks came, went, were mounted or unmounted
+    Volumes(Vec<fsops::Volume>),
+    Mounted(PathBuf, Result<PathBuf, String>),
+    Ejected(PathBuf, Result<(), String>),
 }
 
 struct Files {
@@ -262,6 +266,9 @@ fn main() {
                         files.app.paste_text(&text);
                         Vec::new()
                     }
+                    Msg::Volumes(volumes) => files.app.volumes_changed(volumes),
+                    Msg::Mounted(device, result) => files.app.mounted(device, result),
+                    Msg::Ejected(device, result) => files.app.ejected(device, result),
                 };
                 files.apply(effects);
             }
@@ -285,6 +292,10 @@ fn main() {
     }
     let (mut app, effects) = App::new(fonts, start, reveal, rename);
     if let Some(config)=picker_config{app.set_picker(config);window.set_title(app.window_title());window.set_min_size(Some((640,(app.picker_height() as u32+160).max(320))));}
+    {
+        let tx = tx.clone();
+        fsops::watch_volumes(move |volumes| tx.send(Msg::Volumes(volumes)).is_ok());
+    }
     let watcher = fsops::Watcher::new();
     if let Some(w) = &watcher {
         let fd = w.fd();
@@ -531,6 +542,20 @@ impl Files {
                 Effect::CopyText(text) => self.offer_text(text),
                 Effect::PasteText => self.paste_text(),
                 Effect::StartDrag(paths) => self.start_drag(paths),
+                Effect::Mount(device) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let result = fsops::mount(&device);
+                        let _ = tx.send(Msg::Mounted(device, result));
+                    });
+                }
+                Effect::Eject(device, removable) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let result = fsops::eject(&device, removable);
+                        let _ = tx.send(Msg::Ejected(device, result));
+                    });
+                }
             }
         }
     }

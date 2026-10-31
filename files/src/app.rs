@@ -77,6 +77,10 @@ pub enum Effect {
     /// Unpack an archive next to it, on a worker; the password, when the archive asked for one,
     /// is wiped once the worker is done (its Debug shows nothing)
     Extract(PathBuf, Option<zeroize::Zeroizing<String>>),
+    /// Mount this device through udisks on a worker, then open it
+    Mount(PathBuf),
+    /// Unmount it (and power a removable drive off) on a worker
+    Eject(PathBuf, bool),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -103,6 +107,8 @@ enum Hit {
     ViewList,
     Search,
     Place(usize),
+    /// The eject button of a mounted disk in the sidebar
+    Eject(usize),
     Item(usize),
     Crumb(PathBuf),
     Content,
@@ -191,9 +197,11 @@ const MENU_PAD: f32 = 32.0;
 
 struct Place {
     name: String,
+    /// Empty for a disk that is not mounted yet
     path: PathBuf,
     glyph: Glyph,
     section: &'static str,
+    volume: Option<fsops::Volume>,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -263,6 +271,8 @@ pub struct App {
     menu_hover: Option<usize>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
     places: Vec<Place>,
+    /// A disk being mounted: a second click on it waits for the first
+    mounting: Option<PathBuf>,
     generation: u64,
     loading: bool,
     error: Option<String>,
@@ -331,6 +341,7 @@ impl App {
             menu_hover: None,
             clipboard: None,
             places: Vec::new(),
+            mounting: None,
             generation: 0,
             loading: false,
             error: None,
@@ -381,14 +392,64 @@ impl App {
         ]
         .into_iter()
         .filter(|(_, p, g)| *g == Glyph::Home || p.is_dir())
-        .map(|(n, p, g)| Place { name: n.into(), path: p, glyph: g, section: "Избранное" })
+        .map(|(n, p, g)| Place { name: n.into(), path: p, glyph: g, section: "Избранное", volume: None })
         .collect::<Vec<_>>();
-        places.push(Place { name: "Корзина".into(), path: fsops::trash_files_dir(), glyph: Glyph::Trash, section: "Избранное" });
-        places.push(Place { name: "Компьютер".into(), path: PathBuf::from("/"), glyph: Glyph::Computer, section: "Места" });
-        for (name, path) in fsops::volumes() {
-            places.push(Place { name, path, glyph: Glyph::Drive, section: "Места" });
-        }
+        places.push(Place { name: "Корзина".into(), path: fsops::trash_files_dir(), glyph: Glyph::Trash, section: "Избранное", volume: None });
+        places.push(Place { name: "Компьютер".into(), path: PathBuf::from("/"), glyph: Glyph::Computer, section: "Места", volume: None });
         self.places = places;
+        self.set_volumes(fsops::volumes());
+    }
+
+    /// Disks after «Компьютер»: mounted ones open, the others mount on click
+    fn set_volumes(&mut self, volumes: Vec<fsops::Volume>) {
+        self.places.retain(|p| p.volume.is_none());
+        for v in volumes {
+            let path = v.mount.clone().unwrap_or_default();
+            self.places.push(Place { name: v.name.clone(), path, glyph: Glyph::Drive, section: "Места", volume: Some(v) });
+        }
+        self.dirty = true;
+    }
+
+    /// A disk came, went, was mounted or unmounted: a window left on a disk that is gone
+    /// goes home
+    pub fn volumes_changed(&mut self, volumes: Vec<fsops::Volume>) -> Vec<Effect> {
+        let gone = self.places.iter().filter_map(|p| p.volume.as_ref()?.mount.clone()).any(|m| {
+            self.dir.starts_with(&m) && !volumes.iter().any(|v| v.mount.as_ref() == Some(&m))
+        });
+        self.set_volumes(volumes);
+        if gone { self.navigate(fsops::home(), true) } else { Vec::new() }
+    }
+
+    pub fn mounted(&mut self, device: PathBuf, result: Result<PathBuf, String>) -> Vec<Effect> {
+        self.mounting = None;
+        self.set_volumes(fsops::volumes());
+        let name = self.volume_name(&device);
+        match result {
+            Ok(path) => self.navigate(path, true),
+            Err(e) => {
+                self.flash(format!("Не удалось подключить «{name}»: {e}"));
+                Vec::new()
+            }
+        }
+    }
+
+    pub fn ejected(&mut self, device: PathBuf, result: Result<(), String>) -> Vec<Effect> {
+        let name = self.volume_name(&device);
+        match result {
+            Ok(()) => self.flash(format!("«{name}» можно отключить")),
+            Err(e) => self.flash(format!("Не удалось извлечь «{name}»: {e}")),
+        }
+        self.volumes_changed(fsops::volumes())
+    }
+
+    fn volume_name(&self, device: &Path) -> String {
+        self.places.iter().filter_map(|p| p.volume.as_ref()).find(|v| v.device == device).map(|v| v.name.clone())
+            .unwrap_or_else(|| device.to_string_lossy().into_owned())
+    }
+
+    /// Mounted disks show «Извлечь» at the right of their row
+    fn eject_x(&self, i: usize) -> Option<f32> {
+        self.places[i].volume.as_ref().filter(|v| v.ejectable).map(|_| SIDEBAR_W - 38.0)
     }
 
     /// Glyph engraved on a folder icon if it is one of the user folders
@@ -1051,6 +1112,9 @@ impl App {
         if x < SIDEBAR_W {
             for (i, py) in self.place_rects() {
                 if y >= py && y < py + PLACE_H && x > 16.0 && x < SIDEBAR_W - 16.0 {
+                    if self.eject_x(i).is_some_and(|ex| x >= ex - 4.0) {
+                        return Hit::Eject(i);
+                    }
                     return Hit::Place(i);
                 }
             }
@@ -1367,6 +1431,21 @@ impl App {
                 let (sx, _, sw, _) = self.search_rect();
                 self.search.click(&mut self.fonts, x - sx - 28.0, sw - 40.0, 13.0, false, mods.shift);
             },
+            Hit::Place(i) if self.places[i].path.as_os_str().is_empty() => {
+                if let Some(v) = &self.places[i].volume {
+                    if self.mounting.as_ref() != Some(&v.device) {
+                        self.mounting = Some(v.device.clone());
+                        let (device, name) = (v.device.clone(), v.name.clone());
+                        self.flash(format!("Подключение «{name}»…"));
+                        effects.push(Effect::Mount(device));
+                    }
+                }
+            }
+            Hit::Eject(i) => {
+                if let Some(v) = &self.places[i].volume {
+                    effects.push(Effect::Eject(v.device.clone(), v.removable));
+                }
+            }
             Hit::Place(i) => {
                 let path = self.places[i].path.clone();
                 if self.picker.is_none() && path == fsops::trash_files_dir() {
@@ -1498,7 +1577,7 @@ impl App {
         self.pointer = (x, y);
         let target = match self.hit(x, y) {
             Hit::Item(i) if self.entry(i).is_dir => self.entry(i).path.clone(),
-            Hit::Place(i) => self.places[i].path.clone(),
+            Hit::Place(i) if !self.places[i].path.as_os_str().is_empty() => self.places[i].path.clone(),
             Hit::Crumb(path) => path,
             _ => self.dir.clone(),
         };
@@ -2044,12 +2123,20 @@ impl App {
             let active = self.dir == place.path || self.drop_target.as_ref() == Some(&place.path);
             if active {
                 theme::fill_rrect(pm, 14.0, py, SIDEBAR_W - 28.0, PLACE_H - 2.0, 7.0, colors::selected_gray());
-            } else if self.hover == Hit::Place(i) {
+            } else if self.hover == Hit::Place(i) || self.hover == Hit::Eject(i) {
                 theme::fill_rrect(pm, 14.0, py, SIDEBAR_W - 28.0, PLACE_H - 2.0, 7.0, colors::hover());
             }
-            draw_glyph(pm, place.glyph, 24.0, py + 5.0, 16.0, colors::accent());
-            let name = self.fonts.ellipsize(&place.name, SIDEBAR_W - 84.0, 13.0, false);
-            self.fonts.draw_text(pm, &name, 48.0, py + 5.5, 13.0, colors::text(), false);
+            // A disk that is not mounted yet is drawn dimmer
+            let unmounted = place.path.as_os_str().is_empty();
+            draw_glyph(pm, place.glyph, 24.0, py + 5.0, 16.0, if unmounted { colors::tertiary() } else { colors::accent() });
+            let eject = self.eject_x(i);
+            let width = SIDEBAR_W - 84.0 - if eject.is_some() { 20.0 } else { 0.0 };
+            let name = self.fonts.ellipsize(&place.name, width, 13.0, false);
+            self.fonts.draw_text(pm, &name, 48.0, py + 5.5, 13.0, if unmounted { colors::secondary() } else { colors::text() }, false);
+            if let Some(ex) = eject {
+                let ink = if self.hover == Hit::Eject(i) { colors::text() } else { colors::secondary() };
+                draw_eject(pm, ex, py + 7.0, 12.0, ink);
+            }
         }
     }
 
@@ -2559,6 +2646,19 @@ pub fn objects(n: usize) -> String {
     format!("{n} {word}")
 }
 
+/// ⏏: a triangle over a bar, `size` points square
+fn draw_eject(pm: &mut PixmapMut, x: f32, y: f32, size: f32, color: tiny_skia::Color) {
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to(x + size * 0.5, y + size * 0.08);
+    pb.line_to(x + size * 0.95, y + size * 0.6);
+    pb.line_to(x + size * 0.05, y + size * 0.6);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        theme::fill_path(pm, &path, color);
+    }
+    theme::fill_rrect(pm, x + size * 0.05, y + size * 0.74, size * 0.9, size * 0.16, size * 0.04, color);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3050,6 +3150,45 @@ mod tests {
         assert!(root.join("Переименовано.txt").exists());
         std::fs::remove_dir_all(root).unwrap();
         });
+    }
+
+    /// A disk that is not mounted mounts on click and opens once mounted; a mounted one
+    /// ejects from its button, and a window on it goes home when it is gone
+    #[test]
+    fn sidebar_disks_mount_open_and_eject() {
+        let root = fixture("disks");
+        let mut app = app_in(&root);
+        let stick = |mount: Option<PathBuf>| fsops::Volume {
+            name: "WINRE".into(),
+            device: "/dev/sdx1".into(),
+            ejectable: mount.is_some(),
+            mount,
+            removable: true,
+        };
+        app.set_volumes(vec![stick(None)]);
+        let i = app.places.len() - 1;
+        let (_, py) = app.place_rects()[i];
+        let y = py + PLACE_H * 0.5;
+        assert_eq!(app.hit(SIDEBAR_W - 30.0, y), Hit::Place(i), "no eject button while unmounted");
+        assert_eq!(app.press(BTN_LEFT, 60.0, y, Mods::default()), [Effect::Mount("/dev/sdx1".into())]);
+        app.release(BTN_LEFT, 60.0, y);
+        // The mount is still running: a second click does not start another
+        assert!(app.press(BTN_LEFT, 60.0, y, Mods::default()).is_empty());
+        app.release(BTN_LEFT, 60.0, y);
+        let mount = root.join("beta");
+        let effects = app.mounted("/dev/sdx1".into(), Ok(mount.clone()));
+        assert_eq!(app.dir(), mount);
+        run(&mut app, effects);
+        app.set_volumes(vec![stick(Some(mount.clone()))]);
+        let mut image = tiny_skia::Pixmap::new(1000, 640).unwrap();
+        app.paint(&mut image.as_mut());
+        assert_eq!(app.hit(SIDEBAR_W - 30.0, y), Hit::Eject(i));
+        assert_eq!(app.press(BTN_LEFT, SIDEBAR_W - 30.0, y, Mods::default()), [Effect::Eject("/dev/sdx1".into(), true)]);
+        app.release(BTN_LEFT, SIDEBAR_W - 30.0, y);
+        let effects = app.volumes_changed(vec![stick(None)]);
+        assert_eq!(app.dir(), fsops::home());
+        assert!(effects.iter().any(|e| matches!(e, Effect::List(..))));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

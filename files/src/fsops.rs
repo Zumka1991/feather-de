@@ -86,21 +86,227 @@ pub fn human_date(time: Option<SystemTime>) -> String {
     }
 }
 
-/// Mounted removable volumes (udisks mounts under /run/media/$USER or /media)
-pub fn volumes() -> Vec<(String, PathBuf)> {
-    let user = std::env::var("USER").unwrap_or_default();
-    let mut out = Vec::new();
-    for base in [PathBuf::from("/run/media").join(&user), PathBuf::from("/media").join(&user), PathBuf::from("/media")] {
-        if let Ok(dir) = std::fs::read_dir(&base) {
-            for item in dir.flatten() {
-                let path = item.path();
-                if path.is_dir() && !out.iter().any(|(_, p)| *p == path) && path != PathBuf::from("/media").join(&user) {
-                    out.push((item.file_name().to_string_lossy().into_owned(), path));
-                }
+/// A filesystem the sidebar lists: a mounted one opens, the others mount on click (udisks)
+#[derive(Clone, Debug, PartialEq)]
+pub struct Volume {
+    pub name: String,
+    /// /dev/sdc1
+    pub device: PathBuf,
+    pub mount: Option<PathBuf>,
+    /// Mounted by udisks (/media, /run/media): «Извлечь» unmounts it without root
+    pub ejectable: bool,
+    /// USB or removable media: «Извлечь» also powers the drive off
+    pub removable: bool,
+}
+
+/// Mount points of the user's disks; the rest (/, /boot, /home…) belong to the system
+fn user_mount(path: &Path) -> bool {
+    ["/media/", "/run/media/", "/mnt/"].iter().any(|base| path.starts_with(base))
+}
+
+fn ejectable_mount(path: &Path) -> bool {
+    path.starts_with("/media/") || path.starts_with("/run/media/")
+}
+
+/// mountinfo escapes space, tab, newline and backslash as \ooo
+fn unescape_mount(field: &str) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let code = bytes.get(i + 1..i + 4).and_then(|d| std::str::from_utf8(d).ok()).and_then(|d| u8::from_str_radix(d, 8).ok());
+        match code {
+            Some(byte) if bytes[i] == b'\\' => {
+                out.push(byte);
+                i += 4;
+            }
+            _ => {
+                out.push(bytes[i]);
+                i += 1;
             }
         }
     }
+    PathBuf::from(std::ffi::OsString::from_vec(out))
+}
+
+/// udev's \x20 escapes in ID_FS_LABEL_ENC
+fn unescape_udev(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let code = bytes.get(i + 2..i + 4).and_then(|d| std::str::from_utf8(d).ok()).and_then(|d| u8::from_str_radix(d, 16).ok());
+        match code {
+            Some(byte) if bytes[i] == b'\\' && bytes[i + 1] == b'x' => {
+                out.push(byte);
+                i += 4;
+            }
+            _ => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Partition types that are never user data: EFI system, Windows recovery, BIOS boot
+const SYSTEM_PARTITIONS: [&str; 5] = [
+    "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+    "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+    "21686148-6449-6e6f-744e-656564454649",
+    "0xef",
+    "0x27",
+];
+
+/// Disks and partitions with a filesystem, read from sysfs, the udev database and mountinfo:
+/// only small files, no subprocess, so it is cheap enough for the event loop
+pub fn volumes() -> Vec<Volume> {
+    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    volumes_in(Path::new("/sys/class/block"), Path::new("/run/udev/data"), &mountinfo)
+}
+
+fn volumes_in(sys: &Path, udev: &Path, mountinfo: &str) -> Vec<Volume> {
+    // major:minor → first mount point
+    let mut mounts: Vec<(&str, PathBuf)> = Vec::new();
+    for line in mountinfo.lines() {
+        let mut fields = line.split(' ');
+        let (Some(dev), Some(point)) = (fields.nth(2), fields.nth(1)) else { continue };
+        if !mounts.iter().any(|(d, _)| *d == dev) {
+            mounts.push((dev, unescape_mount(point)));
+        }
+    }
+    let Ok(dir) = std::fs::read_dir(sys) else { return Vec::new() };
+    let mut names: Vec<String> = dir.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    names.sort_by(|a, b| device_order(a, b));
+    let mut out = Vec::new();
+    for name in names {
+        if ["loop", "ram", "zram", "dm-", "md", "nbd"].iter().any(|p| name.starts_with(p)) {
+            continue;
+        }
+        let block = sys.join(&name);
+        let Ok(dev) = std::fs::read_to_string(block.join("dev")) else { continue };
+        let dev = dev.trim();
+        let Ok(props) = std::fs::read_to_string(udev.join(format!("b{dev}"))) else { continue };
+        let prop = |key: &str| props.lines().find_map(|l| l.strip_prefix("E:")?.strip_prefix(key)?.strip_prefix('=').map(str::to_owned));
+        let part_type = prop("ID_PART_ENTRY_TYPE").unwrap_or_default().to_ascii_lowercase();
+        if prop("ID_FS_USAGE").as_deref() != Some("filesystem")
+            || prop("UDISKS_IGNORE").as_deref() == Some("1")
+            || SYSTEM_PARTITIONS.contains(&part_type.as_str())
+        {
+            continue;
+        }
+        let mount = mounts.iter().find(|(d, _)| *d == dev).map(|(_, p)| p.clone());
+        if mount.as_deref().is_some_and(|m| !user_mount(m)) {
+            continue;
+        }
+        // A partition's own `removable` is always 0: the disk above it says
+        let disk = if block.join("partition").exists() { block.join("..") } else { block.clone() };
+        let removable = prop("ID_BUS").as_deref() == Some("usb")
+            || std::fs::read_to_string(disk.join("removable")).is_ok_and(|r| r.trim() == "1");
+        let label = prop("ID_FS_LABEL_ENC").map(|l| unescape_udev(&l)).filter(|l| !l.trim().is_empty());
+        let size = std::fs::read_to_string(block.join("size")).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0) * 512;
+        let name_of = label
+            .or_else(|| mount.as_ref().and_then(|m| m.file_name()).map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| format!("Диск {}", human_size(size)));
+        out.push(Volume {
+            name: name_of,
+            device: PathBuf::from("/dev").join(&name),
+            ejectable: mount.as_deref().is_some_and(ejectable_mount),
+            mount,
+            removable,
+        });
+    }
     out
+}
+
+fn device_order(a: &str, b: &str) -> std::cmp::Ordering {
+    // sdb < sdb1 < sdb2 < sdb10; nvme0n1p2 < nvme0n1p10
+    let split = |s: &str| {
+        let digits = s.len() - s.bytes().rev().take_while(u8::is_ascii_digit).count();
+        (s[..digits].to_owned(), s[digits..].parse::<u64>().unwrap_or(0))
+    };
+    split(a).cmp(&split(b))
+}
+
+fn udisksctl(args: &[&std::ffi::OsStr]) -> Result<(), String> {
+    let out = std::process::Command::new("udisksctl")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "Для дисков нужен пакет udisks2".to_string() } else { e.to_string() })?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr);
+    Err(if err.contains("NotAuthorized") {
+        "нет прав".into()
+    } else if err.contains("target is busy") || err.contains("DeviceBusy") {
+        "диск используется — закройте открытые на нём файлы".into()
+    } else if err.contains("AlreadyMounted") {
+        "уже подключён".into()
+    } else {
+        // "Error mounting /dev/sdc1: GDBus.Error:org.freedesktop.UDisks2.Error.Failed: <why>"
+        err.trim().rsplit(": ").next().unwrap_or("ошибка udisks").to_string()
+    })
+}
+
+/// Mounts through udisks (the compositor's polkit agent asks for a password if needed) and
+/// returns where; runs on a worker
+pub fn mount(device: &Path) -> Result<PathBuf, String> {
+    let found = || volumes().into_iter().find(|v| v.device == device).and_then(|v| v.mount);
+    match udisksctl(&["mount".as_ref(), "-b".as_ref(), device.as_os_str()]) {
+        Ok(()) => found().ok_or_else(|| "диск подключён, но не найден".into()),
+        Err(e) => found().ok_or(e),
+    }
+}
+
+/// Unmounts, then powers a removable drive off so it can be pulled out; runs on a worker
+pub fn eject(device: &Path, removable: bool) -> Result<(), String> {
+    udisksctl(&["unmount".as_ref(), "-b".as_ref(), device.as_os_str()])?;
+    if removable {
+        // A card reader cannot be powered off; the data is already safe
+        let _ = udisksctl(&["power-off".as_ref(), "-b".as_ref(), device.as_os_str()]);
+    }
+    Ok(())
+}
+
+/// Sends the new list whenever it changes: a worker waits on udev's database (a disk came or
+/// went) and on mountinfo (POLLPRI on every mount or unmount), never polls
+pub fn watch_volumes(mut notify: impl FnMut(Vec<Volume>) -> bool + Send + 'static) {
+    let _ = std::thread::Builder::new().name("feather-volumes".into()).stack_size(128 * 1024).spawn(move || {
+        let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+        if fd < 0 {
+            return;
+        }
+        unsafe { libc::inotify_add_watch(fd, c"/run/udev/data".as_ptr(), libc::IN_CREATE | libc::IN_DELETE | libc::IN_MOVED_TO | libc::IN_CLOSE_WRITE) };
+        let mountinfo = std::fs::File::open("/proc/self/mountinfo").ok();
+        let mut last = volumes();
+        let mut buf = [0u8; 4096];
+        loop {
+            let mut fds = vec![libc::pollfd { fd, events: libc::POLLIN, revents: 0 }];
+            if let Some(m) = &mountinfo {
+                fds.push(libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(m), events: libc::POLLPRI, revents: 0 });
+            }
+            if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) } < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return;
+            }
+            // udev rewrites a device's entry several times while probing it: let it settle
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            while unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
+            let now = volumes();
+            if now != last {
+                last = now.clone();
+                if !notify(now) {
+                    return;
+                }
+            }
+        }
+    });
 }
 
 /// Opens a file with its default application; children are reaped by our SIGCHLD handler
@@ -467,6 +673,61 @@ pub fn extract(archive: &Path, password: Option<&str>) -> Result<PathBuf, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A USB stick not mounted yet, a data disk in fstab, the system disk, Windows' recovery
+    /// partition and a disk without a filesystem
+    #[test]
+    fn volumes_from_sysfs_udev_and_mountinfo() {
+        let root = std::env::temp_dir().join(format!("feather-volumes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (sys, udev) = (root.join("block"), root.join("udev"));
+        std::fs::create_dir_all(&udev).unwrap();
+        let disk = |name: &str, parent: Option<&str>, dev: &str, sectors: u64, props: &str| {
+            let dir = match parent {
+                Some(p) => sys.join(p).join(name),
+                None => sys.join(name),
+            };
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("dev"), format!("{dev}\n")).unwrap();
+            std::fs::write(dir.join("size"), format!("{sectors}\n")).unwrap();
+            if parent.is_some() {
+                std::fs::write(dir.join("partition"), "1").unwrap();
+                // sysfs links partitions under their disk; the flat list holds a link too
+                std::os::unix::fs::symlink(&dir, sys.join(name)).unwrap();
+            } else {
+                std::fs::write(dir.join("removable"), if name == "sdc" { "1\n" } else { "0\n" }).unwrap();
+            }
+            std::fs::write(udev.join(format!("b{dev}")), props).unwrap();
+        };
+        let fs = "E:ID_FS_USAGE=filesystem\n";
+        disk("sda", None, "8:0", 0, "E:ID_PART_TABLE_TYPE=gpt\n");
+        disk("sda2", Some("sda"), "8:2", 2_000_000, &format!("{fs}E:ID_FS_TYPE=ntfs\n"));
+        disk("sda3", Some("sda"), "8:3", 2_000_000, &format!("{fs}E:UDISKS_IGNORE=1\n"));
+        disk("sda4", Some("sda"), "8:4", 2_000, &format!("{fs}E:ID_PART_ENTRY_TYPE=C12A7328-F81F-11D2-BA4B-00A0C93EC93B\n"));
+        disk("sdb", None, "8:16", 0, "");
+        disk("sdb1", Some("sdb"), "8:17", 2_000, &format!("{fs}E:ID_FS_LABEL_ENC=DATA\n"));
+        disk("sdb2", Some("sdb"), "8:18", 2_000, &format!("{fs}E:ID_FS_LABEL_ENC=Мои\\x20фото\n"));
+        disk("sdc", None, "8:32", 0, "");
+        disk("sdc1", Some("sdc"), "8:33", 60_000_000, &format!("{fs}E:ID_FS_LABEL_ENC=WINRE\nE:ID_BUS=usb\n"));
+        disk("loop0", None, "7:0", 100, fs);
+        let mountinfo = "44 1 252:0 / / rw - ext4 /dev/mapper/vg-root rw\n\
+                         60 44 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n\
+                         61 44 8:18 / /media/u/Мои\\040фото rw - ext4 /dev/sdb2 rw\n\
+                         62 44 8:2 / /boot/win rw - ntfs /dev/sda2 rw\n";
+        let got: Vec<_> = volumes_in(&sys, &udev, mountinfo).into_iter().map(|v| (v.name, v.mount, v.ejectable, v.removable)).collect();
+        assert_eq!(
+            got,
+            [
+                ("DATA".into(), Some(PathBuf::from("/mnt/data")), false, false),
+                ("Мои фото".into(), Some(PathBuf::from("/media/u/Мои фото")), true, false),
+                ("WINRE".into(), None, false, true),
+            ]
+        );
+        let unmounted = "44 1 252:0 / / rw - ext4 /dev/mapper/vg-root rw\n";
+        let names: Vec<_> = volumes_in(&sys, &udev, unmounted).into_iter().map(|v| v.name).collect();
+        assert_eq!(names, ["Диск 1,0 ГБ", "DATA", "Мои фото", "WINRE"]);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     use std::cmp::Ordering;
 
     #[test]
