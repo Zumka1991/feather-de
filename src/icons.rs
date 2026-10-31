@@ -491,8 +491,8 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
         };
         let (top, bottom) = if dark {
             (
-                tiny_skia::Color::from_rgba8(72, 72, 76, 255),
-                tiny_skia::Color::from_rgba8(52, 52, 56, 255),
+                tiny_skia::Color::from_rgba8(78, 78, 84, 255),
+                tiny_skia::Color::from_rgba8(56, 56, 62, 255),
             )
         } else {
             (
@@ -519,6 +519,9 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
             Transform::identity(),
             None,
         );
+        if dark {
+            dark_tile_rim(&mut out, size);
+        }
     }
     let inner = size * 0.72;
     let scale = inner / bw.max(bh);
@@ -533,6 +536,29 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
         None,
     );
     out
+}
+
+/// A dark tile vanishes on the dark Dock glass: a thin light rim, brighter at the top like
+/// Tahoe's glass edge, outlines it
+fn dark_tile_rim(out: &mut Pixmap, size: f32) {
+    let width = (size / 64.0).clamp(1.0, 2.5);
+    let Some(rim) = squircle_path(width * 0.5, width * 0.5, size - width) else { return };
+    let mut paint = tiny_skia::Paint { anti_alias: true, ..Default::default() };
+    if let Some(shader) = tiny_skia::LinearGradient::new(
+        tiny_skia::Point::from_xy(0.0, 0.0),
+        tiny_skia::Point::from_xy(0.0, size),
+        vec![
+            tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(255, 255, 255, 92)),
+            tiny_skia::GradientStop::new(0.5, tiny_skia::Color::from_rgba8(255, 255, 255, 34)),
+            tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(255, 255, 255, 52)),
+        ],
+        tiny_skia::SpreadMode::Pad,
+        Transform::identity(),
+    ) {
+        paint.shader = shader;
+    }
+    let stroke = tiny_skia::Stroke { width, ..Default::default() };
+    out.stroke_path(&rim, &paint, &stroke, Transform::identity(), None);
 }
 
 /// Draws a cached icon pixmap at logical `(x, y)` with logical `size` (HiDPI aware)
@@ -556,6 +582,25 @@ pub fn draw_icon(target: &mut PixmapMut, icon: &Pixmap, x: f32, y: f32, size: f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A round icon on the dark tile gets a light rim, brightest at the top; the light tile
+    /// stays as it was
+    #[test]
+    fn dark_neutral_tile_has_a_light_rim() {
+        let mut raw = Pixmap::new(64, 64).unwrap();
+        let mut red = tiny_skia::Paint::default();
+        red.set_color_rgba8(220, 40, 40, 255);
+        raw.fill_path(&tiny_skia::PathBuilder::from_circle(32.0, 32.0, 30.0).unwrap(), &red, tiny_skia::FillRule::Winding, Transform::identity(), None);
+        let luma = |p: &Pixmap, x: u32, y: u32| {
+            let c = p.pixel(x, y).unwrap();
+            c.red() as u32 + c.green() as u32 + c.blue() as u32
+        };
+        let dark = macify(raw.clone(), 128, true);
+        // Top edge in the middle: the rim; a few pixels below: the tile itself
+        assert!(luma(&dark, 64, 1) > luma(&dark, 64, 8) + 60, "rim {} tile {}", luma(&dark, 64, 1), luma(&dark, 64, 8));
+        let light = macify(raw, 128, false);
+        assert!(luma(&light, 64, 1) >= luma(&light, 64, 8));
+    }
 
     #[test]
     fn new_programs_list_icon_folders_again() {
