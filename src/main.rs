@@ -236,6 +236,9 @@ pub struct FeatherCompositor {
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    /// Clipboard managers and wl-copy/wl-paste/arboard work without a focused window
+    pub ext_data_control_state: smithay::wayland::selection::ext_data_control::DataControlState,
+    pub wlr_data_control_state: smithay::wayland::selection::wlr_data_control::DataControlState,
     pub output_manager_state: OutputManagerState,
     pub viewporter_state: ViewporterState,
     /// wp_presentation: clients learn when (and on which vblank) their frame was shown
@@ -1829,6 +1832,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let mut seat = seat_state.new_wl_seat(&dh, "feather-seat");
     let data_device_state = DataDeviceState::new::<FeatherCompositor>(&dh);
     let primary_selection_state = PrimarySelectionState::new::<FeatherCompositor>(&dh);
+    let ext_data_control_state = smithay::wayland::selection::ext_data_control::DataControlState::new::<FeatherCompositor, _>(&dh, Some(&primary_selection_state), |_| true);
+    let wlr_data_control_state = smithay::wayland::selection::wlr_data_control::DataControlState::new::<FeatherCompositor, _>(&dh, Some(&primary_selection_state), |_| true);
     let output_manager_state = OutputManagerState::new_with_xdg_output::<FeatherCompositor>(&dh);
     let viewporter_state = ViewporterState::new::<FeatherCompositor>(&dh);
     let presentation_state = smithay::wayland::presentation::PresentationState::new::<FeatherCompositor>(&dh, libc::CLOCK_MONOTONIC as u32);
@@ -2096,6 +2101,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         seat_state,
         data_device_state,
         primary_selection_state,
+        ext_data_control_state,
+        wlr_data_control_state,
         output_manager_state,
         viewporter_state,
         presentation_state,

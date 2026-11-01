@@ -35,6 +35,14 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// (double-click: open) comes first — like Finder
 const RENAME_DELAY: Duration = Duration::from_millis(700);
 
+/// The text fields a mouse drag selects in
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextField {
+    Rename,
+    Path,
+    Search,
+}
+
 pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
 pub const BTN_BACK: u32 = 0x113;
@@ -290,6 +298,8 @@ pub struct App {
     rename_on_reveal: bool,
     /// Item pressed with the left button: moving far enough starts a drag
     drag_origin: Option<(f32, f32)>,
+    /// A text field pressed with the left button: moving selects (field, text x, width, size)
+    text_drag: Option<(TextField, f32, f32, f32)>,
     /// Where a drag over the window would drop (folder, sidebar place, path segment or here)
     drop_target: Option<PathBuf>,
     /// Path bar segments (path, label, x, width) as last painted, for hit testing
@@ -356,6 +366,7 @@ impl App {
             last_click: None,
             reveal: None,
             rename_on_reveal: false,
+            text_drag: None,
             drag_origin: None,
             drop_target: None,
             crumb_layout: Vec::new(),
@@ -1269,6 +1280,22 @@ impl App {
     pub fn motion(&mut self, x: f32, y: f32) -> Vec<Effect> {
         if self.picker.is_some(){self.drag_origin=None;}
         self.pointer = (x, y);
+        if let Some((field, tx, width, size)) = self.text_drag {
+            let input = match field {
+                TextField::Rename => self.rename.as_mut().map(|(_, n)| n),
+                TextField::Path => self.path_edit.as_mut(),
+                TextField::Search => Some(&mut self.search),
+            };
+            match input {
+                Some(input) => {
+                    let before = (input.caret(), input.selection());
+                    input.click(&mut self.fonts, x - tx, width, size, false, true);
+                    self.dirty |= before != (input.caret(), input.selection());
+                    return Vec::new();
+                }
+                None => self.text_drag = None,
+            }
+        }
         if let Some(origin) = self.drag_origin {
             if (x - origin.0).hypot(y - origin.1) > 4.0 {
                 self.drag_origin = None;
@@ -1343,6 +1370,7 @@ impl App {
     pub fn press(&mut self, button: u32, x: f32, y: f32, mods: Mods) -> Vec<Effect> {
         // Any click (the second of a double-click too) cancels a pending rename
         self.rename_at = None;
+        self.text_drag = None;
         if self.picker.is_some()&&button==BTN_RIGHT{return Vec::new();}
         let selection_mods=if self.picker.as_ref().is_some_and(|p|!p.config.multiple){Mods{ctrl:false,shift:false,..mods}}else{mods};
         self.pointer = (x, y);
@@ -1391,6 +1419,7 @@ impl App {
                 let (tx, _, tw, _) = self.title_rect();
                 if let Some(input) = self.path_edit.as_mut() {
                     input.click(&mut self.fonts, x - tx - 10.0, tw - 20.0, 13.0, false, mods.shift);
+                    self.text_drag = Some((TextField::Path, tx + 10.0, tw - 20.0, 13.0));
                 }
             }
             return Vec::new();
@@ -1423,6 +1452,7 @@ impl App {
                     };
                     if (ty - 3.0..ty + 18.0).contains(&y) {
                         self.rename.as_mut().unwrap().1.click(&mut self.fonts, x - tx, width, size, false, mods.shift);
+                        self.text_drag = Some((TextField::Rename, tx, width, size));
                         return Vec::new();
                     }
                 }
@@ -1481,6 +1511,7 @@ impl App {
                 self.search_focus = true;
                 let (sx, _, sw, _) = self.search_rect();
                 self.search.click(&mut self.fonts, x - sx - 28.0, sw - 40.0, 13.0, false, mods.shift);
+                self.text_drag = Some((TextField::Search, sx + 28.0, sw - 40.0, 13.0));
             },
             Hit::Header(by) => self.set_sort(by, true),
             Hit::Place(i) if self.places[i].path.as_os_str().is_empty() => {
@@ -1565,6 +1596,7 @@ impl App {
             return Vec::new();
         }
         self.drag_origin = None;
+        self.text_drag = None;
         if self.rubber.take().is_some() {
             self.dirty = true;
         }
@@ -3243,6 +3275,11 @@ mod tests {
         let (x, y, _, _) = app.search_rect();
         app.press(BTN_LEFT, x + 28.0, y + 12.0, Mods::default());
         assert_eq!(app.search.caret(), 0);
+        app.motion(x + 300.0, y + 12.0);
+        assert_eq!(app.search.selected_text(), Some("photo"), "dragging selects in the search field");
+        app.release(BTN_LEFT, x + 300.0, y + 12.0);
+        app.press(BTN_LEFT, x + 28.0, y + 12.0, Mods::default());
+        app.release(BTN_LEFT, x + 28.0, y + 12.0);
         app.key(0xffff, 0, None, Mods::default());
         assert_eq!(app.search.text(), "hoto");
         app.key(0xff1b, 0, None, Mods::default());
@@ -3261,6 +3298,15 @@ mod tests {
             assert_eq!(app.rename.as_ref().unwrap().1.selected_text(), Some("и"));
             app.key(0, 0, Some("И"), Mods::default());
             assert_eq!(app.rename.as_ref().unwrap().1.text(), "Имя.txt");
+            // Dragging across the name selects it; after the release moving selects nothing
+            app.press(BTN_LEFT, x, y + 2.0, Mods::default());
+            app.motion(x + 300.0, y + 40.0);
+            assert_eq!(app.rename.as_ref().unwrap().1.selected_text(), Some("Имя.txt"));
+            app.release(BTN_LEFT, x + 300.0, y + 40.0);
+            app.motion(x, y + 2.0);
+            assert_eq!(app.rename.as_ref().unwrap().1.selected_text(), Some("Имя.txt"));
+            app.press(BTN_LEFT, x, y + 2.0, Mods::default());
+            app.release(BTN_LEFT, x, y + 2.0);
             assert!(root.join("file2.txt").exists(), "editing already renamed the file");
             let mut image = tiny_skia::Pixmap::new(1000, 640).unwrap();
             app.paint(&mut image.as_mut());

@@ -82,6 +82,7 @@
 - [x] Resize XWayland с CSD: внешний край поверх нижнего окна, `Resizing`, настоящий размер X11-клиента — [GAMING.md](GAMING.md)
 - [x] Lineage II в DRM: масштаб/UI, ПКМ и камера, resize и переключение из Dock после повторного входа (проверено пользователем)
 - [x] Глобальное меню GTK (`org.gtk.Menus` / `org.gtk.Actions`, `gtk_shell1`) — [APPMENU.md](APPMENU.md#gtk)
+- [x] Буфер обмена без фокуса окна: `ext-data-control-v1` и `zwlr-data-control-v1` (wl-copy/wl-paste, менеджеры буфера, arboard; картинки больше не уходят в X11-буфер)
 
 ## Окна и рабочие столы
 

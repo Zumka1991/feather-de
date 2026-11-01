@@ -536,6 +536,18 @@ impl PrimarySelectionHandler for FeatherCompositor {
     }
 }
 
+impl smithay::wayland::selection::ext_data_control::DataControlHandler for FeatherCompositor {
+    fn data_control_state(&self) -> &smithay::wayland::selection::ext_data_control::DataControlState {
+        &self.ext_data_control_state
+    }
+}
+
+impl smithay::wayland::selection::wlr_data_control::DataControlHandler for FeatherCompositor {
+    fn data_control_state(&self) -> &smithay::wayland::selection::wlr_data_control::DataControlState {
+        &self.wlr_data_control_state
+    }
+}
+
 impl CompositorHandler for FeatherCompositor {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -684,6 +696,8 @@ delegate_drm_syncobj!(FeatherCompositor);
 delegate_seat!(FeatherCompositor);
 delegate_data_device!(FeatherCompositor);
 delegate_primary_selection!(FeatherCompositor);
+smithay::delegate_ext_data_control!(FeatherCompositor);
+smithay::delegate_data_control!(FeatherCompositor);
 delegate_output!(FeatherCompositor);
 delegate_viewporter!(FeatherCompositor);
 delegate_fractional_scale!(FeatherCompositor);
