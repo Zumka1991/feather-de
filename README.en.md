@@ -33,6 +33,7 @@ installation image for a separate operating system.
 | `feather-preview` | Raster image, SVG, and multipage PDF viewer |
 | `feather-textedit` | Tabbed text editor with syntax highlighting and find/replace |
 | `feather-calc` | Basic, scientific, and programmer calculator |
+| `feather-monitor` | Activity Monitor (Ctrl+Alt+Del): processes, End Task, CPU, memory, disk and network graphs |
 | `feather-ui` | Shared drawing, text, scaling, localization, and UI primitives |
 
 The components share a Cargo workspace. Applications are separate Wayland clients

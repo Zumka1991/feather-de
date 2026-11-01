@@ -269,6 +269,7 @@ ABC — США	ABC — U.S.	ABC — EE. UU.	ABC — USA	ABC — États-Unis	ABC 
 Подведите указатель в угол экрана, чтобы выполнить действие.	Move the pointer into a screen corner to perform its action.	Lleva el puntero a una esquina de la pantalla para ejecutar su acción.	Bewegen Sie den Zeiger in eine Bildschirmecke, um die Aktion auszuführen.	Placez le pointeur dans un coin de l’écran pour exécuter son action.	将指针移到屏幕角落即可执行对应操作。
 Никогда	Never	Nunca	Nie	Jamais	永不
 Через {} мин	After {} min	Tras {} min	Nach {} Min.	Après {} min	{} 分钟后
+Через {} ч	After {} h	Tras {} h	Nach {} Std.	Après {} h	{} 小时后
 Блокировка экрана перед сном	Lock screen before sleep	Bloquear la pantalla antes del reposo	Bildschirm vor dem Ruhezustand sperren	Verrouiller l’écran avant la suspension	睡眠前锁定屏幕
 Стекло	Glass	Cristal	Glas	Verre	玻璃
 Капля	Drop	Gota	Tropfen	Goutte	水滴
@@ -630,3 +631,42 @@ apt не может установить этот пакет	apt cannot install 
 Пакет {} не найден в источниках программ	Package {} was not found in the software sources	No se encontró el paquete {} en las fuentes de software	Paket {} wurde in den Softwarequellen nicht gefunden	Paquet {} introuvable dans les sources de logiciels	在软件源中未找到软件包 {}
 Пакет {} не установлен	Package {} is not installed	El paquete {} no está instalado	Paket {} ist nicht installiert	Le paquet {} n’est pas installé	软件包 {} 未安装
 Не удаётся подобрать зависимости: {}	Dependencies cannot be resolved: {}	No se pueden resolver las dependencias: {}	Abhängigkeiten können nicht aufgelöst werden: {}	Impossible de résoudre les dépendances : {}	无法解析依赖关系：{}
+# ── Activity Monitor (feather-monitor, Ctrl+Alt+Del) ──
+Диспетчер задач: процессы, ЦП, память, диск и сеть (Ctrl+Alt+Del)	Task manager: processes, CPU, memory, disk and network (Ctrl+Alt+Del)	Administrador de tareas: procesos, CPU, memoria, disco y red (Ctrl+Alt+Del)	Task-Manager: Prozesse, CPU, Speicher, Festplatte und Netzwerk (Strg+Alt+Entf)	Gestionnaire des tâches : processus, processeur, mémoire, disque et réseau (Ctrl+Alt+Suppr)	任务管理器：进程、CPU、内存、磁盘和网络 (Ctrl+Alt+Del)
+Процессы	Processes	Procesos	Prozesse	Processus	进程
+Производительность	Performance	Rendimiento	Leistung	Performances	性能
+Поиск процесса	Search processes	Buscar procesos	Prozesse suchen	Rechercher un processus	搜索进程
+ЦП	CPU	CPU	CPU	Processeur	CPU
+Диск	Disk	Disco	Festplatte	Disque	磁盘
+Нет подходящих процессов	No matching processes	No hay procesos coincidentes	Keine passenden Prozesse	Aucun processus correspondant	没有匹配的进程
+завершается…	ending…	finalizando…	wird beendet…	arrêt…	正在结束…
+Все пользователи	All users	Todos los usuarios	Alle Benutzer	Tous les utilisateurs	所有用户
+Процессов: {}	Processes: {}	Procesos: {}	Prozesse: {}	Processus : {}	进程：{}
+Нет прав завершить «{}»	Not allowed to end “{}”	Sin permiso para finalizar «{}»	Keine Berechtigung, „{}“ zu beenden	Non autorisé à arrêter « {} »	无权结束“{}”
+Снять задачу	End Task	Finalizar tarea	Task beenden	Fin de tâche	结束任务
+Завершить сразу	Kill Now	Forzar cierre	Sofort beenden	Forcer l’arrêt	立即终止
+Это сам Пёрышко: все окна закроются и сеанс завершится.	This is Feather itself: all windows will close and the session will end.	Es el propio Feather: se cerrarán todas las ventanas y la sesión terminará.	Das ist Feather selbst: Alle Fenster werden geschlossen und die Sitzung endet.	C’est Feather lui-même : toutes les fenêtres se fermeront et la session prendra fin.	这是轻羽本身：所有窗口将关闭，会话将结束。
+Без «{}» могут перестать работать окна, звук или сеанс.	Without “{}”, windows, sound or the session may stop working.	Sin «{}», las ventanas, el sonido o la sesión pueden dejar de funcionar.	Ohne „{}“ können Fenster, Ton oder die Sitzung ausfallen.	Sans « {} », les fenêtres, le son ou la session peuvent cesser de fonctionner.	没有“{}”，窗口、声音或会话可能停止工作。
+Загрузка за 60 секунд	Utilization over 60 seconds	Uso en 60 segundos	Auslastung über 60 Sekunden	Utilisation sur 60 secondes	60 秒内的使用率
+Использование памяти	Memory usage	Uso de memoria	Speichernutzung	Utilisation de la mémoire	内存使用
+Скорость чтения и записи	Read and write speed	Velocidad de lectura y escritura	Lese- und Schreibrate	Vitesse de lecture et d’écriture	读写速度
+Скорость приёма и передачи	Receive and send speed	Velocidad de recepción y envío	Empfangs- und Senderate	Vitesse de réception et d’envoi	接收和发送速度
+60 секунд	60 seconds	60 segundos	60 Sekunden	60 secondes	60 秒
+Загрузка	Utilization	Uso	Auslastung	Utilisation	使用率
+Процессов	Processes	Procesos	Prozesse	Processus	进程
+Потоков	Threads	Hilos	Threads	Threads	线程
+Логических ядер	Logical cores	Núcleos lógicos	Logische Kerne	Cœurs logiques	逻辑核心
+Время работы	Uptime	Tiempo activo	Betriebszeit	Temps de fonctionnement	运行时间
+Используется	In use	En uso	Belegt	Utilisée	已使用
+Доступно	Available	Disponible	Verfügbar	Disponible	可用
+Кэш	Cached	En caché	Im Cache	En cache	缓存
+Всего	Total	Total	Gesamt	Total	总计
+Подкачка	Swap	Intercambio	Auslagerung	Swap	交换空间
+нет	none	ninguno	keine	aucun	无
+Чтение	Read	Lectura	Lesen	Lecture	读取
+Запись	Write	Escritura	Schreiben	Écriture	写入
+Приём	Receive	Recepción	Empfangen	Réception	接收
+Передача	Send	Envío	Senden	Envoi	发送
+{} КБ/с	{} KB/s	{} KB/s	{} KB/s	{} Ko/s	{} KB/s
+{} МБ/с	{} MB/s	{} MB/s	{} MB/s	{} Mo/s	{} MB/s
+{} ГБ/с	{} GB/s	{} GB/s	{} GB/s	{} Go/s	{} GB/s

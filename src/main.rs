@@ -1324,6 +1324,12 @@ impl FeatherCompositor {
                 DockMenuAction::Desktop(_) => {}
             },
             ShellClickAction::ActivateApp(idx) => self.activate_app(AppKey::App(idx)),
+            ShellClickAction::TaskManager => {
+                self.shell.close_menus();
+                if let Some(i) = self.app_registry.index_of("builtin.monitor") {
+                    self.activate_app(AppKey::App(i));
+                }
+            }
             ShellClickAction::ActivateWindow(win_id) => {
                 self.execute_shell_action(ShellClickAction::FocusWindow(win_id));
             }

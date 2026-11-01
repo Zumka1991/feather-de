@@ -23,7 +23,7 @@ pub struct Preferences {
     pub suspend: u32,
 }
 impl Preferences {
-    pub const TIMES: [u32; 8] = [0, 1, 2, 5, 10, 15, 30, 60];
+    pub const TIMES: [u32; 10] = [0, 1, 2, 5, 10, 15, 30, 60, 120, 300];
     pub fn next(value: u32) -> u32 {
         Self::TIMES
             .iter()
@@ -34,6 +34,8 @@ impl Preferences {
     pub fn label(value: u32) -> String {
         if value == 0 {
             "Никогда".into()
+        } else if value % 60 == 0 {
+            format!("Через {} ч", value / 60)
         } else {
             format!("Через {value} мин")
         }
@@ -565,8 +567,12 @@ mod tests {
     fn time_choices_are_bounded_and_wrap() {
         assert_eq!(Preferences::next(0), 1);
         assert_eq!(Preferences::next(7), 10);
-        assert_eq!(Preferences::next(60), 0);
+        assert_eq!(Preferences::next(60), 120);
+        assert_eq!(Preferences::next(120), 300);
+        assert_eq!(Preferences::next(300), 0);
         assert_eq!(Preferences::label(0), "Никогда");
+        assert_eq!(Preferences::label(30), "Через 30 мин");
+        assert_eq!(Preferences::label(300), "Через 5 ч");
     }
 
     #[derive(Default)]

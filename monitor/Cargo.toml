@@ -1,0 +1,18 @@
+[package]
+name = "feather-monitor"
+version = "0.1.0"
+edition = "2021"
+description = "Диспетчер задач Пёрышка (Ctrl+Alt+Del): процессы, загрузка ЦП, памяти, диска и сети"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zumka1991/feather-de"
+
+[[bin]]
+name = "feather-monitor"
+path = "src/main.rs"
+
+[dependencies]
+smithay-client-toolkit = { version = "0.19.2", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-client = "0.31"
+tiny-skia = "0.12.0"
+feather-ui = { path = "../crates/feather-ui" }
+libc = "0.2"

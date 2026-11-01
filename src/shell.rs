@@ -584,6 +584,8 @@ pub enum ShellClickAction {
     TrayMenu {generation:u64,id:i32},
     TrayOverflow,
     ActivateApp(usize),
+    /// Ctrl+Alt+Del: raises the running task manager or starts it
+    TaskManager,
     /// Press on a Dock icon: becomes a click or a drag depending on what the pointer does
     DockPress(DockTarget),
     DockMenu(DockMenuAction, DockTarget),
@@ -701,7 +703,7 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
             item("Мастер приветствия…", "", builtin(BuiltinWindowKind::FirstRun, "Добро пожаловать в Пёрышко")),
             Separator,
             item("Системные настройки…", "", builtin(BuiltinWindowKind::SystemSettings, "Системные настройки")),
-            item("Мониторинг системы", "", builtin(BuiltinWindowKind::ActivityMonitor, "Мониторинг системы")),
+            item("Мониторинг системы", "⌃⌥⌦", Some(ShellClickAction::TaskManager)),
             item("Запись экрана…", "⇧⌘5", Some(ShellClickAction::ToggleScreenRecorder)),
             item("Программы", "⌘A", Some(ShellClickAction::LaunchApp(crate::apps::AppAction::OpenLaunchpad, "Программы".into()))),
             Separator,

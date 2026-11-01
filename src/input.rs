@@ -706,6 +706,11 @@ impl FeatherCompositor {
                     deferred = Some(KeyAction::Mission { focus_hover: raw != keysyms::KEY_Escape, close_only: true });
                     return FilterResult::Intercept(());
                 }
+                // Ctrl+Alt+Del, as in Windows: the task manager, even over a hung full-screen app
+                if mods.ctrl && mods.alt && !mods.logo && matches!(raw, keysyms::KEY_Delete | keysyms::KEY_KP_Delete) {
+                    deferred = Some(KeyAction::Shell(ShellClickAction::TaskManager));
+                    return FilterResult::Intercept(());
+                }
                 if mods.ctrl && mods.alt && raw == keysyms::KEY_BackSpace {
                     deferred = Some(KeyAction::Shell(ShellClickAction::QuitCompositor));
                     return FilterResult::Intercept(());

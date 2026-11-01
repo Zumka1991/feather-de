@@ -216,6 +216,11 @@ pub fn calc_command() -> Option<String> {
     own_program("feather-calc")
 }
 
+/// Feather's task manager (Ctrl+Alt+Del) when built next to the compositor binary
+pub fn monitor_command() -> Option<String> {
+    own_program("feather-monitor")
+}
+
 /// Feather's Store (catalog of programs) when built next to the compositor binary
 pub fn store_command() -> Option<String> {
     own_program("feather-store")
@@ -320,14 +325,27 @@ impl AppRegistry {
             )
             .with_aliases(&["screenshot", "screencast", "screen-recorder"])
             .with_own_icon(),
-            AppEntry::new(
-                "builtin.monitor",
-                "Мониторинг системы",
-                "Память, окна Wayland и рендер",
-                IconKind::ActivityMonitor,
-                BuiltinWindow(BuiltinWindowKind::ActivityMonitor),
-                true,
-            ),
+            // Id stays "builtin.monitor" for saved Dock pins; the task manager when installed
+            match monitor_command() {
+                Some(cmd) => AppEntry::new(
+                    "builtin.monitor",
+                    "Мониторинг системы",
+                    "Диспетчер задач: процессы, ЦП, память, диск и сеть (Ctrl+Alt+Del)",
+                    IconKind::ActivityMonitor,
+                    Exec(cmd),
+                    true,
+                )
+                .with_aliases(&["feather-monitor"])
+                .with_own_icon(),
+                None => AppEntry::new(
+                    "builtin.monitor",
+                    "Мониторинг системы",
+                    "Память, окна Wayland и рендер",
+                    IconKind::ActivityMonitor,
+                    BuiltinWindow(BuiltinWindowKind::ActivityMonitor),
+                    true,
+                ),
+            },
             AppEntry::new(
                 "builtin.settings",
                 "Системные настройки",

@@ -1,0 +1,16 @@
+[Desktop Entry]
+Name=Мониторинг системы
+Name[en]=Activity Monitor
+Name[es]=Monitor de actividad
+Name[de]=Aktivitätsanzeige
+Name[fr]=Moniteur d’activité
+Name[zh_CN]=活动监视器
+Comment=Диспетчер задач Пёрышка: процессы, ЦП, память, диск и сеть (Ctrl+Alt+Del)
+Comment[en]=Feather task manager: processes, CPU, memory, disk and network (Ctrl+Alt+Del)
+Exec=feather-monitor
+Icon=utilities-system-monitor
+Terminal=false
+Type=Application
+Categories=System;Monitor;
+StartupWMClass=feather-monitor
+Keywords=task manager;process;cpu;memory;диспетчер задач;процессы;память;
