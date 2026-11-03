@@ -154,6 +154,8 @@ mod client {
         fn set_night_shift(&self, on: bool) -> Result<()>;
         fn set_dark_mode(&self, on: bool) -> Result<()>;
         fn set_do_not_disturb(&self, on: bool) -> Result<()>;
+        fn get_dock_edge(&self) -> Result<String>;
+        fn set_dock_edge(&self, edge: &str) -> Result<()>;
 
         fn get_media(&self) -> Result<MediaInfo>;
         fn media_play_pause(&self) -> Result<()>;

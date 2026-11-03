@@ -133,6 +133,14 @@ impl Server {
     async fn set_do_not_disturb(&self, on: bool) -> Result<(), Error> {
         self.done(Call::SetDoNotDisturb(on)).await
     }
+    async fn get_dock_edge(&self) -> Result<String, Error> {
+        want!(self.call(Call::GetDockEdge).await, Reply::DockEdge(edge) => edge)
+    }
+    async fn set_dock_edge(&self, edge: String) -> Result<(), Error> {
+        let edge = crate::theme::DockEdge::parse(&edge)
+            .ok_or_else(|| Error::InvalidArgs("Положение Dock: left, bottom или right".into()))?;
+        self.done(Call::SetDockEdge(edge)).await
+    }
 
     // Медиа
     async fn get_media(&self) -> Result<MediaInfo, Error> {

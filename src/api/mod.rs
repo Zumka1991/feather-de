@@ -39,6 +39,8 @@ pub enum Call {
     SetNightShift(bool),
     SetDarkMode(bool),
     SetDoNotDisturb(bool),
+    GetDockEdge,
+    SetDockEdge(crate::theme::DockEdge),
     GetMedia,
     Media(crate::mpris::Command),
     Screenshot(Shot),
@@ -63,6 +65,7 @@ pub enum Reply {
     Apps(Vec<AppInfo>),
     Audio(AudioInfo),
     Display(DisplayInfo),
+    DockEdge(String),
     Media(MediaInfo),
     Percent(u32),
     Path(String),
@@ -130,6 +133,7 @@ pub fn allowed_while_locked(call: &Call) -> bool {
             | Call::ListApps
             | Call::GetAudio
             | Call::GetDisplay
+            | Call::GetDockEdge
             | Call::GetMedia
             | Call::SetVolume(_)
             | Call::ChangeVolume(_)
@@ -476,6 +480,12 @@ impl FeatherCompositor {
             Call::SetDoNotDisturb(on) => {
                 if self.shell.dnd_active() != on {
                     self.apply_system_setting(crate::system_settings::Action::DoNotDisturb);
+                }
+            }
+            Call::GetDockEdge => return Ok(Reply::DockEdge(crate::theme::dock_edge().id().into())),
+            Call::SetDockEdge(edge) => {
+                if crate::theme::dock_edge() != edge {
+                    self.apply_system_setting(crate::system_settings::Action::DockEdge(edge));
                 }
             }
             Call::GetMedia => {
