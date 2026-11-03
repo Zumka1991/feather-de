@@ -254,6 +254,13 @@ fn cursor_for_edges(edges: Edges) -> CursorIcon {
 impl FeatherCompositor {
     /// Input from either backend (winit when nested, libinput on DRM)
     pub fn handle_input<B: InputBackend>(&mut self, event: InputEvent<B>) {
+        if matches!(
+            &event,
+            InputEvent::Keyboard { .. } | InputEvent::PointerButton { .. } | InputEvent::PointerAxis { .. }
+                | InputEvent::GestureSwipeBegin { .. } | InputEvent::GesturePinchBegin { .. }
+        ) {
+            self.api_invalidate_view();
+        }
         // The event which wakes a blank screen is consumed in full.
         let activity = matches!(
             &event,

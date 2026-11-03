@@ -16,7 +16,8 @@ use smithay::{
             damage::OutputDamageTracker,
             element::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
-                Kind,
+                utils::{Relocate, RelocateRenderElement},
+                Element, Kind,
             },
             gles::{GlesRenderer, GlesTexture},
             Bind, ExportMem, Offscreen,
@@ -333,15 +334,24 @@ impl FeatherCompositor {
 
     /// `api`: answered with the saved file's path from the encoder thread (dropped on failure)
     pub fn take_screenshot_for(&mut self, target: Target, api: Option<crate::api::Responder>) {
+        self.capture(target, api, None);
+    }
+
+    pub(crate) fn capture_window_for(&mut self, target: Target, id: u64, token: u64, reply: crate::api::Responder) {
+        self.capture(target, Some(reply), Some((id, token)));
+    }
+
+    fn capture(&mut self, target: Target, api: Option<crate::api::Responder>, window: Option<(u64, u64)>) {
         if self.lock.active {return;}
         let (sw, sh, s) = (self.phys_w, self.phys_h, self.scale_factor);
-        let (region, radius) = match target {
+        let (mut region, radius) = match target {
             Target::Screen => (Rectangle::<i32, smithay::utils::Physical>::from_size((sw, sh).into()), 0.0),
             Target::Area { x, y, w, h, radius } => {
-                let x0 = ((x * s).round() as i32).clamp(0, sw);
-                let y0 = ((y * s).round() as i32).clamp(0, sh);
-                let x1 = (((x + w) * s).round() as i32).clamp(0, sw);
-                let y1 = (((y + h) * s).round() as i32).clamp(0, sh);
+                let px = |n: f64, limit| {
+                    let px = (n * s).round() as i32;
+                    if window.is_some() { px } else { px.clamp(0, limit) }
+                };
+                let (x0, y0, x1, y1) = (px(x, sw), px(y, sh), px(x + w, sw), px(y + h, sh));
                 (Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()), radius * s as f32)
             }
         };
@@ -351,16 +361,41 @@ impl FeatherCompositor {
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let profile = self.frame_stats.is_some().then(std::time::Instant::now);
         let renderer = self.backend.renderer();
-        let elements = crate::render::build_scene(renderer, &self.shell, &self.windows, s, pointer, self.rounded_program.as_ref(), &self.animations,crate::monitors::Rect{x:0,y:0,w:self.shell.screen_w,h:self.shell.screen_h},&mut Vec::new());
+        let elements = if let Some((id, _)) = window {
+            let Some(win) = self.windows.iter().find(|w| w.id == id) else { return };
+            let mut elements = Vec::new();
+            crate::render::push_window(&mut elements, renderer, win, Default::default(), s, None, false);
+            // Menus and dropdowns can extend past the toplevel frame.
+            for elem in &elements {
+                region = region.merge(elem.geometry(1.0.into()));
+            }
+            elements
+        } else {
+            crate::render::build_scene(renderer, &self.shell, &self.windows, s, pointer, self.rounded_program.as_ref(), &self.animations,crate::monitors::Rect{x:0,y:0,w:self.shell.screen_w,h:self.shell.screen_h},&mut Vec::new())
+        };
+        let (size, read_at, offset) = if window.is_some() {
+            if i64::from(region.size.w) * i64::from(region.size.h) > 16_777_216 {
+                if let Some(reply) = api {
+                    reply.send(Err(feather_api::Error::Unavailable("Окно слишком велико для распознавания".into())));
+                }
+                return;
+            }
+            (region.size, (0, 0), (-region.loc.x, -region.loc.y))
+        } else {
+            ((sw, sh).into(), (region.loc.x, region.loc.y), (0, 0))
+        };
+        let elements: Vec<_> = elements.into_iter()
+            .map(|e| RelocateRenderElement::from_element(e, offset, Relocate::Relative))
+            .collect();
         let mapping = (|| {
-            let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, (sw, sh).into()).ok()?;
+            let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, (size.w, size.h).into()).ok()?;
             let mut fb = renderer.bind(&mut texture).ok()?;
-            OutputDamageTracker::new((sw, sh), 1.0, Transform::Normal)
+            OutputDamageTracker::new(size, 1.0, Transform::Normal)
                 .render_output(renderer, &mut fb, 0, &elements, crate::render::CLEAR_COLOR)
                 .ok()?;
             // Smithay renders offscreen textures top-down: row 0 is the top of the screen,
             // so the region needs no flip (unlike reading back the window's back buffer).
-            let rows = Rectangle::<i32, smithay::utils::Buffer>::new((region.loc.x, region.loc.y).into(), (region.size.w, region.size.h).into());
+            let rows = Rectangle::<i32, smithay::utils::Buffer>::new(read_at.into(), (region.size.w, region.size.h).into());
             renderer.copy_framebuffer(&fb, rows, Fourcc::Abgr8888).ok()
         })();
         drop(elements);
@@ -368,6 +403,9 @@ impl FeatherCompositor {
             self.shell.notify("Снимок экрана", "Не удалось прочитать изображение");
             return;
         };
+        if let Some((id, token)) = window {
+            self.api_record_view(id, token, region);
+        }
         if let Some(t) = profile {
             eprintln!("[feather-profile] снимок: сцена+ReadPixels {:.2} мс (главный поток)", t.elapsed().as_secs_f64() * 1e3);
         }
@@ -390,6 +428,15 @@ impl FeatherCompositor {
                     let api = api.take();
                     let spawned = std::thread::Builder::new().name("feather-screenshot".into()).spawn(move || {
                         let t = std::time::Instant::now();
+                        if let Some((_, token)) = window {
+                            if let Some(api) = api {
+                                api.send(match to_png(pixels, w, h, false, 0.0) {
+                                    Some(png) => Ok(crate::api::Reply::WindowImage(token, w, h, png)),
+                                    None => Err(feather_api::Error::Failed("Не удалось закодировать снимок окна".into())),
+                                });
+                            }
+                            return;
+                        }
                         let finished = encode_and_save_with(pixels, w, h, false, radius, fmt, dir.as_deref());
                         if profile.is_some() {
                             eprintln!("[feather-profile] снимок: {}+файл {:.1} мс (поток)", fmt.label(), t.elapsed().as_secs_f64() * 1e3);

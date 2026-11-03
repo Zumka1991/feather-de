@@ -1,13 +1,14 @@
 //! `org.feather.Shell1` на сессионной шине. Каждый метод превращается в `Call`, уходит в цикл
 //! событий через ограниченный calloop-канал и ждёт ответа на одноразовом канале. Цикл никогда
 //! не ждёт этот поток: запросы отправляются `try_send`, события — тоже.
-use super::{screenshot_target, space_index, Call, Event, Reply, Request, Responder};
+use super::{automation::Input, screenshot_target, space_index, Call, Event, Reply, Request, Responder};
 use feather_api::{AppInfo, AudioInfo, DisplayInfo, Error, MediaInfo, SpaceInfo, WindowInfo};
 use smithay::reexports::calloop::channel;
 use zbus::{object_server::SignalEmitter, Connection};
 
 pub struct Server {
     pub requests: channel::SyncSender<Request>,
+    automation_enabled: bool,
 }
 
 fn unexpected() -> Error {
@@ -151,6 +152,33 @@ impl Server {
     async fn screenshot(&self, target: String) -> Result<String, Error> {
         want!(self.call(Call::Screenshot(screenshot_target(&target)?)).await, Reply::Path(p) => p)
     }
+    #[zbus(out_args("token", "width", "height", "png"))]
+    async fn observe_window(&self, id: u64) -> Result<(u64, u32, u32, Vec<u8>), Error> {
+        want!(self.call(Call::ObserveWindow(id)).await, Reply::WindowImage(t, w, h, png) => (t, w, h, png))
+    }
+    async fn window_click(&self, token: u64, x: u32, y: u32, button: u32, count: u32) -> Result<(), Error> {
+        if !(1..=3).contains(&button) || !(1..=2).contains(&count) {
+            return Err(Error::InvalidArgs("Кнопка: 1–3, число нажатий: 1–2".into()));
+        }
+        self.done(Call::WindowInput(token, Input::Click { x, y, button, count })).await
+    }
+    async fn window_scroll(&self, token: u64, x: u32, y: u32, steps: i32) -> Result<(), Error> {
+        if steps == 0 || !(-12..=12).contains(&steps) {
+            return Err(Error::InvalidArgs("Прокрутка: от −12 до 12 шагов".into()));
+        }
+        self.done(Call::WindowInput(token, Input::Scroll { x, y, steps })).await
+    }
+    async fn window_key(&self, token: u64, keys: Vec<u32>) -> Result<(), Error> {
+        super::automation::validate_keys(&keys)?;
+        self.done(Call::WindowInput(token, Input::Key(keys))).await
+    }
+    async fn window_paste(&self, token: u64, text: String, keys: Vec<u32>) -> Result<(), Error> {
+        if text.is_empty() || text.len() > 65_536 {
+            return Err(Error::InvalidArgs("Вставляемый текст: от 1 до 65536 байт".into()));
+        }
+        super::automation::validate_keys(&keys)?;
+        self.done(Call::WindowInput(token, Input::Paste(text, keys))).await
+    }
     async fn lock_screen(&self) -> Result<(), Error> {
         self.done(Call::LockScreen).await
     }
@@ -166,6 +194,10 @@ impl Server {
     fn compositor_version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
+    #[zbus(property)]
+    fn automation_enabled(&self) -> bool {
+        self.automation_enabled
+    }
 
     #[zbus(signal)]
     async fn window_opened(emitter: &SignalEmitter<'_>, id: u64, app_id: &str, title: &str) -> zbus::Result<()>;
@@ -175,16 +207,16 @@ impl Server {
     async fn focus_changed(emitter: &SignalEmitter<'_>, id: u64) -> zbus::Result<()>;
 }
 
-pub async fn run(requests: channel::SyncSender<Request>, events: async_channel::Receiver<Event>, name: String, replace: bool) -> zbus::Result<()> {
+pub async fn run(requests: channel::SyncSender<Request>, events: async_channel::Receiver<Event>, name: String, replace: bool, automation_enabled: bool) -> zbus::Result<()> {
     let conn = zbus::connection::Builder::session()?.build().await?;
-    serve(&conn, requests, events, &name, replace).await
+    serve(&conn, requests, events, &name, replace, automation_enabled).await
 }
 
 /// Our own session takes the name over (a stale nested run may hold it); a nested run never
 /// takes it from the real session. Either one lets a later owner replace it.
-pub async fn serve(conn: &Connection, requests: channel::SyncSender<Request>, events: async_channel::Receiver<Event>, name: &str, replace: bool) -> zbus::Result<()> {
+async fn serve(conn: &Connection, requests: channel::SyncSender<Request>, events: async_channel::Receiver<Event>, name: &str, replace: bool, automation_enabled: bool) -> zbus::Result<()> {
     use zbus::fdo::{RequestNameFlags as F, RequestNameReply as R};
-    conn.object_server().at(feather_api::PATH, Server { requests }).await?;
+    conn.object_server().at(feather_api::PATH, Server { requests, automation_enabled }).await?;
     let mut flags = F::AllowReplacement | F::DoNotQueue;
     if replace {
         flags |= F::ReplaceExisting;

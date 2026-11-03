@@ -4,6 +4,7 @@
 //! ждёт: снимок экрана отвечает из своего потока кодирования. Сигналы окон собираются в
 //! `refresh_focus()` — через него проходит каждое открытие, закрытие и смена фокуса.
 mod server;
+pub(crate) mod automation;
 
 use crate::{shell::ShellClickAction, FeatherCompositor};
 use feather_api::{AppInfo, AudioInfo, DisplayInfo, Error, MediaInfo, SpaceInfo, WindowInfo};
@@ -41,6 +42,8 @@ pub enum Call {
     GetMedia,
     Media(crate::mpris::Command),
     Screenshot(Shot),
+    ObserveWindow(u64),
+    WindowInput(u64, automation::Input),
     LockScreen,
     Suspend,
 }
@@ -63,6 +66,7 @@ pub enum Reply {
     Media(MediaInfo),
     Percent(u32),
     Path(String),
+    WindowImage(u64, u32, u32, Vec<u8>),
 }
 
 /// Одноразовый ответ; брошенный без ответа превращается у клиента в ошибку
@@ -142,6 +146,10 @@ pub struct Api {
     /// Открытые (mapped) окна, о которых уже сообщили, по возрастанию id
     known: Vec<u64>,
     focus: u64,
+    view: Option<automation::View>,
+    next_view: u64,
+    last_observation: Option<std::time::Instant>,
+    automation_enabled: bool,
 }
 
 impl Api {
@@ -155,17 +163,23 @@ impl Api {
         })?;
         let (events, rx) = async_channel::bounded(64);
         let name = feather_api::bus_name();
+        let automation_enabled = std::env::var("FEATHER_AUTOMATION").as_deref() == Ok("1");
         std::thread::Builder::new()
             .name("feather-api".into())
             .stack_size(512 * 1024)
             .spawn(move || {
                 futures_lite::future::block_on(async move {
-                    if let Err(e) = server::run(requests, rx, name, replace).await {
+                    if let Err(e) = server::run(requests, rx, name, replace, automation_enabled).await {
                         tracing::warn!("API: {e}");
                     }
                 })
             })?;
-        Ok(Self { events, known: Vec::new(), focus: 0 })
+        let next_view = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_nanos() as u64;
+        Ok(Self {
+            events, known: Vec::new(), focus: 0, view: None, next_view,
+            last_observation: None, automation_enabled,
+        })
     }
 }
 
@@ -178,6 +192,12 @@ fn unavailable(what: impl Into<String>) -> Error {
 }
 
 impl FeatherCompositor {
+    pub(crate) fn api_invalidate_view(&mut self) {
+        if let Some(api) = self.api.as_mut() {
+            api.view = None;
+        }
+    }
+
     /// Открытия, закрытия и смена фокуса с прошлого вызова → сигналы (из `refresh_focus`)
     pub fn api_sync(&mut self) {
         let Some(api) = self.api.as_mut() else { return };
@@ -194,6 +214,7 @@ impl FeatherCompositor {
         }
         let focus = self.windows.iter().rfind(|w| w.activated).map_or(0, |w| w.id);
         if focus != api.focus {
+            api.view = None;
             api.focus = focus;
             let _ = api.events.try_send(Event::Focus(focus));
         }
@@ -204,8 +225,10 @@ impl FeatherCompositor {
         if self.lock.active && !allowed_while_locked(&call) {
             return reply.send(Err(unavailable("Экран заблокирован")));
         }
-        if let Call::Screenshot(target) = call {
-            return self.api_screenshot(target, reply);
+        match call {
+            Call::Screenshot(target) => return self.api_screenshot(target, reply),
+            Call::ObserveWindow(id) => return self.api_observe(id, reply),
+            _ => {}
         }
         let result = self.api_call(call);
         if result.is_ok() {
@@ -474,7 +497,8 @@ impl FeatherCompositor {
             }
             Call::LockScreen => self.lock_session(),
             Call::Suspend => self.sleep_system(),
-            Call::Screenshot(_) => unreachable!("answered from the encoder thread"),
+            Call::WindowInput(token, input) => self.api_window_input(token, input)?,
+            Call::Screenshot(_) | Call::ObserveWindow(_) => unreachable!("answered from the encoder thread"),
         }
         Ok(Reply::Done)
     }
@@ -539,7 +563,7 @@ mod tests {
         let name = "org.feather.Shell1.RouteTest";
         let (requests, source) = channel::sync_channel::<Request>(8);
         let (events, rx) = async_channel::bounded(8);
-        std::thread::spawn(move || futures_lite::future::block_on(server::run(requests, rx, name.into(), false)).unwrap());
+        std::thread::spawn(move || futures_lite::future::block_on(server::run(requests, rx, name.into(), false, true)).unwrap());
         // The fake event loop: records each call and answers like the compositor would
         let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Call>::new()));
         let seen = calls.clone();
@@ -633,7 +657,7 @@ mod tests {
         let (r2, _s2) = channel::sync_channel::<Request>(1);
         let (_e2, rx2) = async_channel::bounded(1);
         drop(_e2);
-        futures_lite::future::block_on(server::run(r2, rx2, name.into(), false)).unwrap();
+        futures_lite::future::block_on(server::run(r2, rx2, name.into(), false, false)).unwrap();
         let after = zbus::blocking::fdo::DBusProxy::new(&conn).unwrap().get_name_owner(name.try_into().unwrap()).unwrap();
         assert_eq!(owner, after);
     }

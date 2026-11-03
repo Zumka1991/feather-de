@@ -97,6 +97,10 @@ export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-xdgdesktopportal}"
 export ELECTRON_OZONE_PLATFORM_HINT="auto"
 export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-logind}"
 export PATH="$(cd "$(dirname "$0")" && pwd):$PATH"
+# Личное разрешение на автоматизацию при входе через экран приветствия.
+if [[ -z "${FEATHER_AUTOMATION+x}" && -f "${XDG_CONFIG_HOME:-$HOME/.config}/feather-de/enable-automation" ]]; then
+    export FEATHER_AUTOMATION=1
+fi
 if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" ]]; then
     export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus"
 fi

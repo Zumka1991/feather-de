@@ -511,7 +511,7 @@ pub(crate) fn build_scene(
 }
 
 /// One window: popups, surfaces (rounded corners), our titlebar and, optionally, shadow
-fn push_window(
+pub(crate) fn push_window(
     out: &mut Vec<FeatherElement>,
     renderer: &mut GlesRenderer,
     win: &ManagedWindow,
