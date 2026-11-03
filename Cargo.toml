@@ -44,10 +44,14 @@ serde_json = "1"
 x11rb = { version = "0.13", default-features = false }
 zeroize = "1"
 libloading = "0.8"
+feather-api = { path = "crates/feather-api", default-features = false }
+
+[dev-dependencies]
+feather-api = { path = "crates/feather-api" }
 
 [workspace]
-members = [".", "files", "terminal", "notes", "preview", "textedit", "calc", "monitor", "installer", "store", "crates/feather-ui"]
-default-members = [".", "files", "terminal", "notes", "preview", "textedit", "calc", "monitor", "installer", "store"]
+members = [".", "files", "terminal", "notes", "preview", "textedit", "calc", "monitor", "installer", "store", "crates/feather-ui", "crates/feather-api"]
+default-members = [".", "files", "terminal", "notes", "preview", "textedit", "calc", "monitor", "installer", "store", "crates/feather-api"]
 
 [profile.dev]
 opt-level = 2

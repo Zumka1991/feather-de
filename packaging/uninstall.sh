@@ -19,7 +19,7 @@ PORTAL_CONF_DEST="${DESTDIR}${PREFIX}/share/xdg-desktop-portal"
 WSESSIONS_DEST="${DESTDIR}${PREFIX}/share/wayland-sessions"
 DOC_DEST="${DESTDIR}${PREFIX}/share/doc/feather-de"
 
-for bin in feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-monitor feather-installer feather-store feather-session; do
+for bin in feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-monitor feather-installer feather-store featherctl feather-session; do
     rm -f "$BIN_DEST/$bin"
 done
 

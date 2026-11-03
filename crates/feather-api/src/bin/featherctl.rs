@@ -1,0 +1,485 @@
+//! featherctl — управление Пёрышком из терминала, скриптов и горячих клавиш через
+//! `org.feather.Shell1`. `featherctl help` — список команд.
+use feather_api::{connect, Error, Shell1ProxyBlocking};
+
+const HELP: &str = "featherctl — управление рабочим столом Пёрышка (org.feather.Shell1)
+
+Использование: featherctl [--json] КОМАНДА
+
+Окна (ID — число из `window list` или `active`):
+  window list                        список окон
+  window focus|close|minimize ID     показать / закрыть (опасно) / свернуть
+  window maximize|fullscreen ID [on|off|toggle]
+  window move ID СТОЛ                перенести на рабочий стол (с 1)
+Рабочие столы:
+  space [list]                       список столов
+  space N                            перейти на стол N
+  mission [on|off]                   Mission Control
+  launchpad [on|off]                 Launchpad
+Приложения:
+  app list                           приложения из .desktop
+  app launch ID                      новый экземпляр
+  app open ID                        показать открытое или запустить
+Звук и экран:
+  volume [N|+N|-N|mute|unmute|toggle]
+  mic [mute|unmute|toggle]
+  brightness [N|+N|-N]
+  night|dark|dnd [on|off|toggle]     ночной режим / тёмная тема / «Не беспокоить»
+  display                            яркость и режимы
+Медиа: media [status|play-pause|next|previous]
+Система:
+  screenshot [screen|window]         снимок, печатает путь к файлу
+  lock                               заблокировать экран
+  suspend                            сон (опасно)
+  version                            версии API и Пёрышка
+  watch                              печатать события окон
+
+Другое имя сервиса: FEATHER_API_NAME=org.feather.Shell1.Test featherctl …";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Switch {
+    On,
+    Off,
+    Toggle,
+}
+
+impl Switch {
+    fn resolve(self, current: bool) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::Toggle => !current,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Level {
+    Show,
+    Set(u32),
+    Change(i32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Night,
+    Dark,
+    Dnd,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Command {
+    Help,
+    Version,
+    Watch,
+    Windows,
+    Focus(u64),
+    Close(u64),
+    Minimize(u64),
+    Maximize(u64, Switch),
+    Fullscreen(u64, Switch),
+    MoveWindow(u64, u32),
+    Spaces,
+    SwitchSpace(u32),
+    Mission(bool),
+    Launchpad(bool),
+    Apps,
+    Launch(String),
+    Activate(String),
+    Volume(Level),
+    Mute(Switch),
+    MicMute(Switch),
+    Brightness(Level),
+    Mode(Mode, Switch),
+    Display,
+    MediaStatus,
+    PlayPause,
+    Next,
+    Previous,
+    Screenshot(String),
+    Lock,
+    Suspend,
+}
+
+fn bad(msg: impl Into<String>) -> String {
+    msg.into()
+}
+
+fn window_id(arg: Option<&str>) -> Result<u64, String> {
+    match arg {
+        None => Err(bad("Нужен ID окна (число из `window list` или active)")),
+        Some("active") => Ok(0),
+        Some(s) => s.parse().map_err(|_| bad(format!("Неверный ID окна: {s}"))),
+    }
+}
+
+fn switch(arg: Option<&str>, default: Switch) -> Result<Switch, String> {
+    match arg {
+        None => Ok(default),
+        Some("on" | "1" | "true" | "вкл") => Ok(Switch::On),
+        Some("off" | "0" | "false" | "выкл") => Ok(Switch::Off),
+        Some("toggle") => Ok(Switch::Toggle),
+        Some(s) => Err(bad(format!("Ожидалось on, off или toggle, а не {s}"))),
+    }
+}
+
+fn number(arg: &str, what: &str) -> Result<u32, String> {
+    arg.parse().map_err(|_| bad(format!("Неверное значение {what}: {arg}")))
+}
+
+fn level(arg: Option<&str>) -> Result<Level, String> {
+    let Some(s) = arg else { return Ok(Level::Show) };
+    let parsed = if let Some(d) = s.strip_prefix('+') {
+        d.parse::<i32>().map(Level::Change)
+    } else if s.starts_with('-') {
+        s.parse::<i32>().map(Level::Change)
+    } else {
+        s.trim_end_matches('%').parse::<u32>().map(Level::Set)
+    };
+    parsed.map_err(|_| bad(format!("Неверный уровень: {s} (N, +N или -N)")))
+}
+
+fn mute(arg: Option<&str>) -> Result<Switch, String> {
+    match arg {
+        Some("mute") => Ok(Switch::On),
+        Some("unmute") => Ok(Switch::Off),
+        Some("toggle") | None => Ok(Switch::Toggle),
+        Some(s) => Err(bad(format!("Ожидалось mute, unmute или toggle, а не {s}"))),
+    }
+}
+
+/// Разбор аргументов без `--json`
+fn parse(args: &[&str]) -> Result<Command, String> {
+    let arg = |i: usize| args.get(i).copied();
+    let no_more = |n: usize, c: Command| if args.len() > n { Err(bad(format!("Лишний аргумент: {}", args[n]))) } else { Ok(c) };
+    let Some(&head) = args.first() else { return Ok(Command::Help) };
+    match head {
+        "help" | "-h" | "--help" => Ok(Command::Help),
+        "version" | "--version" => no_more(1, Command::Version),
+        "watch" => no_more(1, Command::Watch),
+        "windows" => no_more(1, Command::Windows),
+        "window" => {
+            let id = || window_id(arg(2));
+            match arg(1) {
+                None | Some("list") => no_more(2, Command::Windows),
+                Some("focus") => no_more(3, Command::Focus(id()?)),
+                Some("close") => no_more(3, Command::Close(id()?)),
+                Some("minimize") => no_more(3, Command::Minimize(id()?)),
+                Some("maximize") => no_more(4, Command::Maximize(id()?, switch(arg(3), Switch::Toggle)?)),
+                Some("fullscreen") => no_more(4, Command::Fullscreen(id()?, switch(arg(3), Switch::Toggle)?)),
+                Some("move") => {
+                    let space = arg(3).ok_or_else(|| bad("Нужен номер стола"))?;
+                    no_more(4, Command::MoveWindow(id()?, number(space, "стола")?))
+                }
+                Some(s) => Err(bad(format!("Неизвестная команда окна: {s}"))),
+            }
+        }
+        "spaces" => no_more(1, Command::Spaces),
+        "space" => match arg(1) {
+            None | Some("list") => no_more(2, Command::Spaces),
+            Some(n) => no_more(2, Command::SwitchSpace(number(n, "стола")?)),
+        },
+        "mission" => no_more(2, Command::Mission(switch(arg(1), Switch::On)? != Switch::Off)),
+        "launchpad" => no_more(2, Command::Launchpad(switch(arg(1), Switch::On)? != Switch::Off)),
+        "apps" => no_more(1, Command::Apps),
+        "app" => match (arg(1), arg(2)) {
+            (None | Some("list"), _) => no_more(2, Command::Apps),
+            (Some("launch"), Some(id)) => no_more(3, Command::Launch(id.into())),
+            (Some("open"), Some(id)) => no_more(3, Command::Activate(id.into())),
+            (Some("launch" | "open"), None) => Err(bad("Нужен ID приложения из `app list`")),
+            (Some(s), _) => Err(bad(format!("Неизвестная команда приложения: {s}"))),
+        },
+        "volume" => match arg(1) {
+            Some(s @ ("mute" | "unmute" | "toggle")) => no_more(2, Command::Mute(mute(Some(s))?)),
+            other => no_more(2, Command::Volume(level(other)?)),
+        },
+        "mic" => no_more(2, Command::MicMute(mute(arg(1))?)),
+        "brightness" => no_more(2, Command::Brightness(level(arg(1))?)),
+        "night" | "dark" | "dnd" => {
+            let mode = match head { "night" => Mode::Night, "dark" => Mode::Dark, _ => Mode::Dnd };
+            no_more(2, Command::Mode(mode, switch(arg(1), Switch::Toggle)?))
+        }
+        "display" => no_more(1, Command::Display),
+        "media" => match arg(1) {
+            None | Some("status") => no_more(2, Command::MediaStatus),
+            Some("play-pause" | "play" | "pause") => no_more(2, Command::PlayPause),
+            Some("next") => no_more(2, Command::Next),
+            Some("previous" | "prev") => no_more(2, Command::Previous),
+            Some(s) => Err(bad(format!("Неизвестная команда медиа: {s}"))),
+        },
+        "screenshot" => match arg(1) {
+            None => no_more(1, Command::Screenshot("screen".into())),
+            Some(t @ ("screen" | "window")) => no_more(2, Command::Screenshot(t.into())),
+            Some(s) => Err(bad(format!("Снимок: screen или window, а не {s}"))),
+        },
+        "lock" => no_more(1, Command::Lock),
+        "suspend" => no_more(1, Command::Suspend),
+        s => Err(bad(format!("Неизвестная команда: {s}. featherctl help — список команд"))),
+    }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b { "вкл" } else { "выкл" }
+}
+
+fn print_json<T: serde::Serialize>(value: &T) {
+    println!("{}", serde_json::to_string_pretty(value).unwrap_or_default());
+}
+
+fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), Error> {
+    match command {
+        Command::Help => println!("{HELP}"),
+        Command::Version => {
+            let (v, c) = (proxy.version()?, proxy.compositor_version()?);
+            if json { print_json(&serde_json::json!({"api": v, "compositor": c})) } else { println!("API {v}, Пёрышко {c}") }
+        }
+        Command::Watch => {
+            // One stream keeps the signals in the order they were sent
+            for m in proxy.inner().receive_all_signals()? {
+                let header = m.header();
+                let body = m.body();
+                match header.member().map(|m| m.as_str()) {
+                    Some("WindowOpened") => {
+                        if let Ok((id, app_id, title)) = body.deserialize::<(u64, String, String)>() {
+                            println!("opened {id} {app_id} {title:?}");
+                        }
+                    }
+                    Some("WindowClosed") => {
+                        if let Ok(id) = body.deserialize::<u64>() {
+                            println!("closed {id}");
+                        }
+                    }
+                    Some("FocusChanged") => {
+                        if let Ok(id) = body.deserialize::<u64>() {
+                            println!("focus {id}");
+                        }
+                    }
+                    _ => continue,
+                }
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
+        }
+        Command::Windows => {
+            let list = proxy.list_windows()?;
+            if json {
+                print_json(&list);
+            } else {
+                for w in list {
+                    let mut flags = Vec::new();
+                    if w.focused { flags.push("фокус") }
+                    if w.minimized { flags.push("свёрнуто") }
+                    if w.maximized { flags.push("развёрнуто") }
+                    if w.fullscreen { flags.push("полный экран") }
+                    let app = if w.app_name.is_empty() { &w.app_id } else { &w.app_name };
+                    println!("{:>4}  стол {}  {:<20} {}{}", w.id, w.space, app, w.title, if flags.is_empty() { String::new() } else { format!("  [{}]", flags.join(", ")) });
+                }
+            }
+        }
+        Command::Focus(id) => proxy.focus_window(id)?,
+        Command::Close(id) => proxy.close_window(id)?,
+        Command::Minimize(id) => proxy.minimize_window(id)?,
+        Command::Maximize(id, s) | Command::Fullscreen(id, s) => {
+            let full = matches!(command, Command::Fullscreen(..));
+            let current = || -> Result<bool, Error> {
+                let list = proxy.list_windows()?;
+                let w = list.iter().find(|w| if id == 0 { w.focused } else { w.id == id });
+                let w = w.ok_or_else(|| Error::NotFound(format!("Нет окна {id}")))?;
+                Ok(if full { w.fullscreen } else { w.maximized })
+            };
+            let on = if s == Switch::Toggle { !current()? } else { s.resolve(false) };
+            if full { proxy.fullscreen_window(id, on)? } else { proxy.maximize_window(id, on)? }
+        }
+        Command::MoveWindow(id, space) => proxy.move_window_to_space(id, space)?,
+        Command::Spaces => {
+            let list = proxy.list_spaces()?;
+            if json {
+                print_json(&list);
+            } else {
+                for s in list {
+                    println!("{}{}  окон: {}", s.number, if s.current { " *" } else { "  " }, s.windows);
+                }
+            }
+        }
+        Command::SwitchSpace(n) => proxy.switch_space(n)?,
+        Command::Mission(on) => proxy.show_mission_control(on)?,
+        Command::Launchpad(on) => proxy.show_launchpad(on)?,
+        Command::Apps => {
+            let list = proxy.list_apps()?;
+            if json {
+                print_json(&list);
+            } else {
+                for a in list {
+                    println!("{:<40} {}{}", a.id, a.name, if a.running { "  [открыто]" } else { "" });
+                }
+            }
+        }
+        Command::Launch(id) => proxy.launch_app(&id)?,
+        Command::Activate(id) => proxy.activate_app(&id)?,
+        Command::Volume(Level::Show) | Command::MediaStatus | Command::Display => {
+            let show = |value: serde_json::Value, text: String| if json { print_json(&value) } else { println!("{text}") };
+            match command {
+                Command::Volume(_) => {
+                    let a = proxy.get_audio()?;
+                    let mut text = if a.available {
+                        format!("{} %{}  ({})", a.volume, if a.muted { ", без звука" } else { "" }, a.output)
+                    } else {
+                        "Нет устройства вывода звука".into()
+                    };
+                    if a.mic_available {
+                        text += &format!("\nмикрофон: {} %{}  ({})", a.mic_volume, if a.mic_muted { ", выключен" } else { "" }, a.input);
+                    } else {
+                        text += "\nмикрофона нет";
+                    }
+                    show(serde_json::to_value(&a).unwrap_or_default(), text);
+                }
+                Command::Display => {
+                    let d = proxy.get_display()?;
+                    let b = if d.brightness < 0 { "недоступна".to_string() } else { format!("{} %", d.brightness) };
+                    show(
+                        serde_json::to_value(&d).unwrap_or_default(),
+                        format!("яркость: {b}\nночной режим: {}\nтёмная тема: {}\nне беспокоить: {}", on_off(d.night_shift), on_off(d.dark_mode), on_off(d.do_not_disturb)),
+                    );
+                }
+                _ => {
+                    let m = proxy.get_media()?;
+                    let text = if m.available { format!("{} — {} — {} ({})", m.player, m.artist, m.title, if m.playing { "играет" } else { "пауза" }) } else { "Плеер не найден".into() };
+                    show(serde_json::to_value(&m).unwrap_or_default(), text);
+                }
+            }
+        }
+        Command::Volume(Level::Set(v)) => println!("{}", proxy.set_volume(v)?),
+        Command::Volume(Level::Change(d)) => println!("{}", proxy.change_volume(d)?),
+        Command::Mute(s) => {
+            let on = if s == Switch::Toggle { !proxy.get_audio()?.muted } else { s.resolve(false) };
+            proxy.set_mute(on)?
+        }
+        Command::MicMute(s) => {
+            let on = if s == Switch::Toggle { !proxy.get_audio()?.mic_muted } else { s.resolve(false) };
+            proxy.set_mic_mute(on)?
+        }
+        Command::Brightness(Level::Show) => {
+            let b = proxy.get_display()?.brightness;
+            if b < 0 { return Err(Error::Unavailable("Яркость этого экрана не управляется".into())) }
+            println!("{b}");
+        }
+        Command::Brightness(Level::Set(v)) => println!("{}", proxy.set_brightness(v)?),
+        Command::Brightness(Level::Change(d)) => println!("{}", proxy.change_brightness(d)?),
+        Command::Mode(mode, s) => {
+            let current = || -> Result<bool, Error> {
+                let d = proxy.get_display()?;
+                Ok(match mode { Mode::Night => d.night_shift, Mode::Dark => d.dark_mode, Mode::Dnd => d.do_not_disturb })
+            };
+            let on = if s == Switch::Toggle { !current()? } else { s.resolve(false) };
+            match mode {
+                Mode::Night => proxy.set_night_shift(on)?,
+                Mode::Dark => proxy.set_dark_mode(on)?,
+                Mode::Dnd => proxy.set_do_not_disturb(on)?,
+            }
+        }
+        Command::PlayPause => proxy.media_play_pause()?,
+        Command::Next => proxy.media_next()?,
+        Command::Previous => proxy.media_previous()?,
+        Command::Screenshot(target) => println!("{}", proxy.screenshot(&target)?),
+        Command::Lock => proxy.lock_screen()?,
+        Command::Suspend => proxy.suspend()?,
+    }
+    Ok(())
+}
+
+/// Сообщение ошибки без имени D-Bus, если сервер его дал
+fn message(e: &Error) -> String {
+    use zbus::DBusError;
+    match e {
+        Error::ZBus(zbus::Error::MethodError(name, Some(text), _)) => format!("{text} ({name})"),
+        Error::ZBus(zbus::Error::FDO(f)) if matches!(**f, zbus::fdo::Error::ServiceUnknown(_)) => {
+            format!("Пёрышко не отвечает: на шине нет {}", feather_api::bus_name())
+        }
+        Error::ZBus(e) => e.to_string(),
+        other => other.description().unwrap_or("ошибка").to_string(),
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let json = args.iter().any(|a| a == "--json");
+    let args: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--json").collect();
+    let command = match parse(&args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("featherctl: {e}");
+            std::process::exit(2);
+        }
+    };
+    if command == Command::Help {
+        println!("{HELP}");
+        return;
+    }
+    let result = connect().and_then(|proxy| run(&proxy, command, json));
+    if let Err(e) = result {
+        eprintln!("featherctl: {}", message(&e));
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(s: &str) -> Result<Command, String> {
+        parse(&s.split_whitespace().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn windows_and_spaces() {
+        assert_eq!(p("window list"), Ok(Command::Windows));
+        assert_eq!(p("window"), Ok(Command::Windows));
+        assert_eq!(p("window focus 12"), Ok(Command::Focus(12)));
+        assert_eq!(p("window close active"), Ok(Command::Close(0)));
+        assert_eq!(p("window maximize 3"), Ok(Command::Maximize(3, Switch::Toggle)));
+        assert_eq!(p("window fullscreen active off"), Ok(Command::Fullscreen(0, Switch::Off)));
+        assert_eq!(p("window move 7 2"), Ok(Command::MoveWindow(7, 2)));
+        assert!(p("window move 7").is_err());
+        assert!(p("window focus").is_err());
+        assert!(p("window focus x").is_err());
+        assert!(p("window focus 1 2").is_err(), "extra arguments are refused");
+        assert_eq!(p("space"), Ok(Command::Spaces));
+        assert_eq!(p("space 2"), Ok(Command::SwitchSpace(2)));
+        assert_eq!(p("mission"), Ok(Command::Mission(true)));
+        assert_eq!(p("launchpad off"), Ok(Command::Launchpad(false)));
+    }
+
+    #[test]
+    fn levels_and_switches() {
+        assert_eq!(p("volume"), Ok(Command::Volume(Level::Show)));
+        assert_eq!(p("volume +5"), Ok(Command::Volume(Level::Change(5))));
+        assert_eq!(p("volume -10"), Ok(Command::Volume(Level::Change(-10))));
+        assert_eq!(p("volume 40%"), Ok(Command::Volume(Level::Set(40))));
+        assert_eq!(p("volume mute"), Ok(Command::Mute(Switch::On)));
+        assert_eq!(p("volume toggle"), Ok(Command::Mute(Switch::Toggle)));
+        assert_eq!(p("mic unmute"), Ok(Command::MicMute(Switch::Off)));
+        assert_eq!(p("brightness -10"), Ok(Command::Brightness(Level::Change(-10))));
+        assert!(p("volume loud").is_err());
+        assert_eq!(p("night"), Ok(Command::Mode(Mode::Night, Switch::Toggle)));
+        assert_eq!(p("dark on"), Ok(Command::Mode(Mode::Dark, Switch::On)));
+        assert_eq!(p("dnd off"), Ok(Command::Mode(Mode::Dnd, Switch::Off)));
+        assert!(p("dnd maybe").is_err());
+        assert!(Switch::Toggle.resolve(false) && !Switch::Toggle.resolve(true) && !Switch::Off.resolve(true));
+    }
+
+    #[test]
+    fn apps_media_and_system() {
+        assert_eq!(p("app list"), Ok(Command::Apps));
+        assert_eq!(p("app launch firefox"), Ok(Command::Launch("firefox".into())));
+        assert_eq!(p("app open org.gnome.Nautilus"), Ok(Command::Activate("org.gnome.Nautilus".into())));
+        assert!(p("app launch").is_err());
+        assert_eq!(p("media"), Ok(Command::MediaStatus));
+        assert_eq!(p("media prev"), Ok(Command::Previous));
+        assert_eq!(p("screenshot"), Ok(Command::Screenshot("screen".into())));
+        assert_eq!(p("screenshot window"), Ok(Command::Screenshot("window".into())));
+        assert!(p("screenshot area").is_err());
+        assert_eq!(p("suspend"), Ok(Command::Suspend));
+        assert_eq!(p(""), Ok(Command::Help));
+        assert!(p("reboot").is_err());
+    }
+}

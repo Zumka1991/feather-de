@@ -703,6 +703,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "feather-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zbus",
+ "zvariant",
+]
+
+[[package]]
 name = "feather-calc"
 version = "0.1.0"
 dependencies = [
@@ -720,6 +730,7 @@ dependencies = [
  "async-channel",
  "bitflags 2.13.2",
  "chrono",
+ "feather-api",
  "feather-ui",
  "futures-lite",
  "image",

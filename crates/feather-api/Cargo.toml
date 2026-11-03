@@ -1,0 +1,22 @@
+[package]
+name = "feather-api"
+version = "0.1.0"
+edition = "2021"
+description = "API рабочего стола Пёрышка (org.feather.Shell1): общие типы, клиент на zbus и утилита featherctl"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zumka1991/feather-de"
+
+[features]
+default = ["client"]
+# Blocking proxy and featherctl; the compositor uses only the types and errors
+client = ["zbus/blocking-api", "dep:serde_json"]
+
+[dependencies]
+zbus = { version = "5.18", default-features = false, features = ["async-io"] }
+zvariant = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", optional = true }
+
+[[bin]]
+name = "featherctl"
+required-features = ["client"]

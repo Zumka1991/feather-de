@@ -1,4 +1,5 @@
 mod animation;
+mod api;
 mod appmenu;
 mod apps;
 mod app_watch;
@@ -166,6 +167,8 @@ pub struct FeatherCompositor {
     pub appmenus: crate::appmenu::AppMenus,
     pub tray: Option<crate::tray::Tray>,
     pub notifications: Option<crate::notifications::Notifications>,
+    /// org.feather.Shell1 for voice assistants, scripts and featherctl
+    pub api: Option<crate::api::Api>,
     pub sounds: Option<crate::sounds::Sounds>,
     pub sound_preferences: crate::sounds::Preferences,
     pub xwayland: Option<crate::xwayland::Xwayland>,
@@ -363,6 +366,7 @@ impl FeatherCompositor {
         self.dock_model_dirty = true;
         self.needs_redraw = true;
         self.sync_appmenu_focus();
+        self.api_sync();
     }
 
     pub fn mark_builtin_windows_dirty(&mut self) {
@@ -2063,6 +2067,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         appmenus,
         tray: None,
         notifications: None,
+        api: None,
         sounds: None,
         sound_preferences: saved.sounds,
         xwayland: None,
@@ -2237,6 +2242,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Nested runs share the host's session bus: they never serve its notifications.
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_NOTIFY").is_some() {
         state.notifications=Some(crate::notifications::Notifications::new(&state.loop_handle)?);
+    }
+    // Desktop API: a nested run serves it only while the name is free; FEATHER_API=0 turns it off
+    if std::env::var("FEATHER_API").as_deref() != Ok("0") {
+        state.api = crate::api::Api::new(&state.loop_handle, is_standalone || use_drm)
+            .map_err(|e| tracing::warn!("API: {e}"))
+            .ok();
     }
 
     // Start Polkit Authentication Agent (for MouseVPN / pkexec password prompts) and D-Bus env

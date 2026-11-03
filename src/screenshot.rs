@@ -328,6 +328,11 @@ impl FeatherCompositor {
     }
 
     pub fn take_screenshot(&mut self, target: Target) {
+        self.take_screenshot_for(target, None);
+    }
+
+    /// `api`: answered with the saved file's path from the encoder thread (dropped on failure)
+    pub fn take_screenshot_for(&mut self, target: Target, api: Option<crate::api::Responder>) {
         if self.lock.active {return;}
         let (sw, sh, s) = (self.phys_w, self.phys_h, self.scale_factor);
         let (region, radius) = match target {
@@ -371,6 +376,7 @@ impl FeatherCompositor {
         let fmt = format();
         let dir = custom_dir();
         // Map the PBO a frame later: by then the GPU has finished, nothing stalls the loop
+        let mut api = api;
         let _ = self.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(16)), move |_, _, state| {
             let t = std::time::Instant::now();
             let pixels = state.backend.renderer().map_texture(&mapping).map(<[u8]>::to_vec);
@@ -381,11 +387,18 @@ impl FeatherCompositor {
                 Ok(pixels) => {
                     let tx = tx.clone();
                     let dir = dir.clone();
+                    let api = api.take();
                     let spawned = std::thread::Builder::new().name("feather-screenshot".into()).spawn(move || {
                         let t = std::time::Instant::now();
                         let finished = encode_and_save_with(pixels, w, h, false, radius, fmt, dir.as_deref());
                         if profile.is_some() {
                             eprintln!("[feather-profile] снимок: {}+файл {:.1} мс (поток)", fmt.label(), t.elapsed().as_secs_f64() * 1e3);
+                        }
+                        if let Some(api) = api {
+                            api.send(match finished.as_ref().and_then(|f| f.saved.as_ref()) {
+                                Some(path) => Ok(crate::api::Reply::Path(path.to_string_lossy().into_owned())),
+                                None => Err(feather_api::Error::Failed("Снимок не удалось сохранить в файл".into())),
+                            });
                         }
                         let _ = tx.send(finished);
                     });
