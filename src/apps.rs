@@ -612,6 +612,62 @@ fn chromium_wayland_flags(cmd: &str, search_path: &str) -> Option<&'static str> 
     chromium.then_some(" --ozone-platform=wayland --enable-wayland-ime")
 }
 
+fn larvis_snap_profile(browser: &str) -> Option<PathBuf> {
+    std::path::Path::new("/snap/bin").join(browser).exists().then(|| {
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+            .join("snap").join(browser).join("common/larvis-profile")
+    })
+}
+
+pub fn prepare_larvis_profiles(profile: &std::path::Path) -> std::io::Result<()> {
+    // Firefox requires an existing directory when passed an explicit profile.
+    std::fs::create_dir_all(profile.join("firefox"))?;
+    if let Some(path) = larvis_snap_profile("firefox") {
+        std::fs::create_dir_all(path)?;
+    }
+    Ok(())
+}
+
+/// Prevent single-instance browsers from forwarding launches to the host profile.
+fn larvis_browser_command(command: &str, profile: &std::path::Path) -> String {
+    let executable = command.split_whitespace()
+        .find(|word| *word != "env" && !word.contains('='))
+        .unwrap_or_default()
+        .trim_matches(['\'', '"'])
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+    let snap = match executable {
+        "firefox" => larvis_snap_profile("firefox").map(|path| ("firefox", path)),
+        "chromium" | "chromium-browser" => larvis_snap_profile("chromium").map(|path| ("chromium", path)),
+        _ => None,
+    };
+    let (flag, dir) = match executable {
+        "firefox" => ("--profile ", snap.as_ref().map_or_else(|| profile.join("firefox"), |(_, path)| path.clone())),
+        "firefox-esr" => ("--profile ", profile.join("firefox")),
+        "chromium" | "chromium-browser" => (
+            "--no-first-run --ozone-platform=wayland --user-data-dir=",
+            snap.as_ref().map_or_else(|| profile.join("chromium"), |(_, path)| path.clone()),
+        ),
+        "google-chrome" | "google-chrome-stable" | "google-chrome-beta" | "google-chrome-unstable"
+        | "brave-browser" | "microsoft-edge" | "microsoft-edge-stable" | "vivaldi" | "vivaldi-stable" =>
+            ("--no-first-run --ozone-platform=wayland --user-data-dir=", profile.join(executable)),
+        _ => return command.to_owned(),
+    };
+    let quoted = dir.to_string_lossy().replace('\'', "'\\''");
+    let line = format!("{command} {flag}'{quoted}'");
+    if let Some((app, _)) = snap {
+        // Snap's launcher needs its own user scope. Create it without switching the
+        // browser back to the host session bus.
+        static NEXT_SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let serial = NEXT_SCOPE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pid = std::process::id();
+        let quoted = line.replace('\'', "'\\''");
+        return format!("exec systemd-run --user --scope --quiet --unit=snap.{app}.{app}-larvis-{pid}-{serial}.scope sh -c '{quoted}'");
+    }
+    line
+}
+
 pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
     spawn_wayland_app(cmd_line, wayland_socket).is_some()
 }
@@ -626,10 +682,14 @@ pub fn spawn_wayland_app(cmd_line: &str, wayland_socket: &str) -> Option<i32> {
     let current_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin".into());
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/zumka".into());
     let enriched_path = format!("{home}/.cargo/bin:{home}/.local/bin:/usr/local/bin:{current_path}");
-    let line = match chromium_wayland_flags(trimmed, &enriched_path) {
+    let mut line = match chromium_wayland_flags(trimmed, &enriched_path) {
         Some(flags) => format!("{trimmed}{flags}"),
         None => trimmed.to_string(),
     };
+
+    if let Some(profile) = std::env::var_os("FEATHER_LARVIS_PROFILE") {
+        line = larvis_browser_command(&line, std::path::Path::new(&profile));
+    }
 
     let mut command = Command::new("sh");
     if let Some((theme, size)) = CURSOR_ENV.lock().unwrap().clone() {

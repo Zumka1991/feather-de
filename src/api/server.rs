@@ -202,6 +202,22 @@ impl Server {
     fn compositor_version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
+    async fn stop_larvis_desktop(&self) -> Result<(), Error> {
+        self.done(Call::StopLarvisDesktop).await
+    }
+    /// (запущен, показан)
+    async fn get_larvis_desktop(&self) -> Result<(bool, bool), Error> {
+        want!(self.call(Call::GetLarvisDesktop).await, Reply::LarvisDesktop(running, shown) => (running, shown))
+    }
+    async fn show_larvis_desktop(&self, show: bool) -> Result<(), Error> {
+        self.done(Call::ShowLarvisDesktop(show)).await
+    }
+
+    #[zbus(property)]
+    fn larvis_desktop_supported(&self) -> bool {
+        true
+    }
+
     #[zbus(property)]
     fn automation_enabled(&self) -> bool {
         self.automation_enabled

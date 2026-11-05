@@ -56,13 +56,16 @@ impl FeatherCompositor {
     }
 
     pub fn apply_space_visibility(&mut self) {
-        let current = self.spaces.current;
+        let (current, larvis) = (self.spaces.current, self.larvis_shown);
         for w in &mut self.windows {
-            w.off_space = w.space != current;
+            // Larvis's desktop replaces every desktop of the user while it is shown
+            w.off_space = if w.larvis { !larvis } else { larvis || w.space != current };
         }
     }
 
     pub fn switch_space(&mut self, target: u32) {
+        // Any desktop switch leaves Larvis's desktop, even to the desktop under it
+        self.leave_larvis_desktop();
         if target == self.spaces.current || target >= self.spaces.count {
             return;
         }
@@ -81,6 +84,11 @@ impl FeatherCompositor {
 
     /// Ctrl+Alt+←/→; with `carry` (Shift) the front window comes along
     pub fn space_step(&mut self, delta: i32, carry: bool) {
+        // From Larvis's desktop any step leads back to the user's desktop
+        if self.larvis_shown {
+            self.leave_larvis_desktop();
+            return;
+        }
         let front = self.windows.iter().rposition(|w| w.is_visible());
         let has = self.space_has_windows(self.spaces.current);
         let Some(next) = step(self.spaces, delta, has) else { return };
@@ -122,6 +130,10 @@ impl FeatherCompositor {
 
     /// A window about to be shown: its desktop comes forward first
     pub fn reveal_window_space(&mut self, id: u64) {
+        if self.windows.iter().any(|w| w.id == id && w.larvis) {
+            self.set_larvis_shown(true);
+            return;
+        }
         if let Some(space) = self.windows.iter().find(|w| w.id == id && w.mapped && !w.minimized).map(|w| w.space) {
             self.switch_space(space);
         }

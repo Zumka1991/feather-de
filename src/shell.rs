@@ -112,6 +112,20 @@ pub fn bar_luma(glass: &tiny_skia::Pixmap, screen_h: i32) -> f32 {
 
 /// True when a tray icon is too close in brightness to the bar to stand out; it then gets
 /// a soft chip behind it. Icons keep their own colours (white symbolic ones included).
+/// Menu bar item of Larvis's desktop: a small screen with his dot in the middle
+fn draw_larvis_desktop_icon(pm: &mut PixmapMut, cx: f32, cy: f32, color: Color, tint: Color, shown: bool) {
+    let (w, h) = (17.0, 13.0);
+    let (x, y) = (cx - w * 0.5, cy - h * 0.5);
+    if shown {
+        fill_rounded_rect(pm, x, y, w, h, 3.0, color);
+        let tint = tint.to_color_u8();
+        fill_circle(pm, cx, cy, 2.6, rgba(tint.red(), tint.green(), tint.blue(), 255));
+    } else {
+        stroke_rounded_rect(pm, x + 0.6, y + 0.6, w - 1.2, h - 1.2, 2.6, 1.3, color);
+        fill_circle(pm, cx, cy, 2.3, color);
+    }
+}
+
 pub fn tray_icon_needs_chip(icon: &tiny_skia::Pixmap, dark_bar: bool) -> bool {
     let (mut n, mut luma) = (0.0f32, 0.0f32);
     for px in icon.data().chunks_exact(4) {
@@ -552,6 +566,8 @@ enum TopbarItem {
     Tray(usize),
     TrayOverflow,
     StopRecording,
+    /// Larvis's desktop, next to the tray: switches to it and back
+    Larvis,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -618,6 +634,7 @@ pub enum ShellClickAction {
     FirstRun(crate::first_run::Action),
     ToggleScreenRecorder,
     StopRecording,
+    ToggleLarvisDesktop,
     SleepSystem,
     ConfirmRestart,
     ConfirmPowerOff,
@@ -793,6 +810,10 @@ pub struct MacShell {
     topbar_hits: Vec<(f32, f32, TopbarItem)>,
     status_hover: Option<TopbarItem>,
     pub tray_items: Vec<crate::tray::Item>,
+    /// Larvis's desktop: None without one, Some(shown) while it runs
+    larvis: Option<bool>,
+    /// Larvis's nested desktop draws no menu bar: the main session's bar covers its place
+    pub topbar_hidden: bool,
     pub input_sources: Vec<crate::settings::InputSource>,
     pub input_selected: usize,
     input_shortcut: &'static str,
@@ -926,6 +947,8 @@ impl MacShell {
             topbar_dirty: true,
             topbar_hits: Vec::new(),status_hover:None,
             tray_items: Vec::new(),
+            larvis: None,
+            topbar_hidden: false,
             input_sources: crate::settings::Keyboard::default().sources(),input_selected:0,input_shortcut:"Alt + Shift",
             tray_menu: None,
             dock_buffer: new_buffer(to_phys(w), to_phys(dock_buf_height())),
@@ -2077,6 +2100,16 @@ impl MacShell {
         let Some(TopMenu::Tray(id))=self.open_menu else{return Vec::new()};
         std::iter::once(id).chain(self.client_submenus.iter().copied()).collect()
     }
+    /// Middle of Larvis's item in the menu bar, for checks
+    pub fn larvis_item_x(&self) -> Option<f32> {
+        self.topbar_hits.iter().find_map(|&(x0, x1, hit)| (hit == TopbarItem::Larvis).then_some((x0 + x1) * 0.5))
+    }
+    pub fn set_larvis(&mut self, larvis: Option<bool>) {
+        if self.larvis != larvis {
+            self.larvis = larvis;
+            self.topbar_dirty = true;
+        }
+    }
     pub fn set_tray_items(&mut self,items:Vec<crate::tray::Item>){
         if self.tray_menu.as_ref().is_some_and(|m|!items.iter().any(|i|i.key==m.0)){self.close_menus();}
         if self.tray_items!=items{
@@ -2651,6 +2684,9 @@ impl MacShell {
                 Some(TopbarItem::StopRecording) => {
                     return Some(ShellClickAction::StopRecording);
                 }
+                Some(TopbarItem::Larvis) => {
+                    return Some(ShellClickAction::ToggleLarvisDesktop);
+                }
                 None => {}
             }
             self.overlay_dirty = true;
@@ -2870,7 +2906,9 @@ impl MacShell {
         let tray=self.tray_items.clone();let visible_tray=self.tray_visible_count();
         let rec_secs = self.recording_secs;
         let rec_width = if rec_secs.is_some() { 70.0 } else { 0.0 };
-        let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0} + rec_width;
+        let larvis = self.larvis;
+        let larvis_width = if larvis.is_some() { 28.0 } else { 0.0 };
+        let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0} + rec_width + larvis_width;
         let input=self.input_sources.get(self.input_selected).copied().unwrap_or(crate::settings::SOURCES[0]);
         let hover=self.status_hover;
         let (center_open,dnd)=(self.center_open,self.dnd_active());
@@ -2958,6 +2996,13 @@ impl MacShell {
                     fonts.draw_text(&mut pm, &timer_str, px0 + 19.0, (lh - 11.5) * 0.5 - 1.0, 11.5, Color::WHITE, true);
                     hits.push((px0 - 2.0, rx + 2.0, TopbarItem::StopRecording));
                     rx -= pill_w + 8.0;
+                }
+                if let Some(shown) = larvis {
+                    // A screen with Larvis's dot; filled while his desktop is in front
+                    if hover == Some(TopbarItem::Larvis) { highlight(&mut pm, rx - 27.0, rx - 1.0); }
+                    draw_larvis_desktop_icon(&mut pm, rx - 14.0, lh * 0.5, bar.text, bar.tint, shown);
+                    hits.push((rx - 28.0, rx, TopbarItem::Larvis));
+                    rx -= 28.0;
                 }
                 for (index,item) in tray.iter().take(visible_tray).enumerate(){
                     let x=rx-23.0;let y=(lh-18.0)*0.5;

@@ -132,6 +132,7 @@ impl GestureState {
 /// Actions decided inside the keyboard filter. They run after it returns, because changing
 /// keyboard focus from inside `KeyboardHandle::input` would deadlock on the keyboard lock.
 pub(crate) enum KeyAction {
+    LarvisDesktop,
     Shell(ShellClickAction),
     CloseTop,
     MinimizeTop,
@@ -748,6 +749,13 @@ impl FeatherCompositor {
 
             let sym = keysym_handle.modified_sym();
             let latin_sym = keysym_handle.raw_latin_sym_or_raw_current_sym().unwrap_or(sym);
+            // The visible nested desktop owns the manual-control chord.
+            if mods.logo && mods.shift && !mods.ctrl && !mods.alt
+                && matches!(latin_sym.raw(), keysyms::KEY_u | keysyms::KEY_U)
+                && st.windows.iter().any(|window| window.activated && window.larvis)
+            {
+                return FilterResult::Forward;
+            }
             if let Some(action) = st.keybindings.action(crate::shortcuts::Chord::new(mods, latin_sym.raw())) {
                 deferred = st.shortcut_action(action);
                 repeat_candidate = None;
@@ -874,6 +882,10 @@ impl FeatherCompositor {
                 self.refresh_focus();
             }
             Some(KeyAction::Shell(act)) => self.execute_shell_action(act),
+            Some(KeyAction::LarvisDesktop) => self.toggle_larvis_desktop(),
+            // Larvis's desktop is not a window of the user: Cmd+W and Cmd+M leave it
+            Some(KeyAction::CloseTop | KeyAction::MinimizeTop) if self.larvis_shown => self.leave_larvis_desktop(),
+            Some(KeyAction::ToggleMaximizeTop) if self.larvis_shown => {}
             Some(KeyAction::CloseTop) => self.close_top_window(),
             Some(KeyAction::MinimizeTop) => {
                 if let Some(top) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
@@ -1478,7 +1490,9 @@ impl FeatherCompositor {
         }
 
         let primary=self.primary_monitor().map(|m|m.info.rect).unwrap_or_else(||self.monitor_at(0.0,0.0));
-        let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen);
+        // Larvis's desktop keeps our menu bar over its own, so its item can switch back
+        let over_bar=pos.y<(primary.y+TOP_BAR_HEIGHT) as f64;
+        let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen&&!(w.larvis&&over_bar));
         if !primary.contains(pos.x,pos.y)&&self.shell.launchpad.is_some(){self.shell.launchpad=None;self.needs_redraw=true;}
         if (!fullscreen_top || self.shell.has_visible_overlay()) && self.shell.launchpad.is_none() {
             if let Some((item,_))=self.shell.tray_hit(pos.x,pos.y).map(|(i,r)|(i.clone(),r)) {
@@ -1827,7 +1841,7 @@ impl FeatherCompositor {
             if self.lock.external(){self.forward_pointer_axis::<B>(event);}
             return;
         }
-        let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|w.fullscreen);
+        let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|w.fullscreen&&!w.larvis);
         if !fullscreen&&self.shell.launchpad.is_none() {
             if let Some(key)=self.shell.tray_hit(self.pointer_location.x,self.pointer_location.y).map(|(i,_)|i.key.clone()) {
                 for (axis,horizontal) in [(Axis::Vertical,false),(Axis::Horizontal,true)] {

@@ -94,6 +94,7 @@ actions! {
     Applications, "applications", "Приложения", SUPER, k::KEY_a;
     Terminal, "terminal", "Терминал", SUPER, k::KEY_Return;
     Files, "files", "Файлы", SUPER, k::KEY_e;
+    LarvisDesktop, "larvis-desktop", "Рабочий стол Ларвиса", SUPER, k::KEY_u;
     ControlCenter, "control-center", "Пункт управления", SUPER, k::KEY_n;
     Close, "close", "Закрыть окно", SUPER, k::KEY_w;
     Quit, "quit", "Завершить программу", SUPER, k::KEY_q;
@@ -377,6 +378,7 @@ impl crate::FeatherCompositor {
                 self.shell.overlay_dirty = true;
                 return None;
             }
+            Action::LarvisDesktop => A::LarvisDesktop,
             Action::Close => A::CloseTop,
             Action::Quit => A::Shell(S::QuitFocusedApp),
             Action::Minimize => A::MinimizeTop,

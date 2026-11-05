@@ -367,11 +367,13 @@ pub(crate) fn build_scene(
         }
     };
 
-    let fullscreen_top = windows
+    let top = windows
         .iter()
         .rev()
-        .find(|w| w.is_visible() && crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(view)>0)
-        .is_some_and(|w| w.fullscreen && animations.window(w).identity());
+        .find(|w| w.is_visible() && crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(view)>0);
+    let fullscreen_top = top.is_some_and(|w| w.fullscreen && animations.window(w).identity());
+    // Larvis's desktop is fullscreen under our menu bar (its item switches back); its own Dock stays
+    let larvis_top = top.is_some_and(|w| w.larvis);
 
     if primary {
     if shell.ghost.is_some() {
@@ -401,7 +403,7 @@ pub(crate) fn build_scene(
         }
     }
     let launchpad_open = shell.launchpad.is_some();
-    if !fullscreen_top && !launchpad_open {
+    if (!fullscreen_top || larvis_top) && !launchpad_open && !shell.topbar_hidden {
         mem(&mut out, (0.0, 0.0), &shell.topbar_buffer, None, crate::animation::Visual::default());
     }
     if !fullscreen_top || launchpad_open {
@@ -921,6 +923,7 @@ impl FeatherCompositor {
     fn render_winit(&mut self) -> Option<Duration> {
         let view=self.monitors.iter().find(|m|self.preview_monitor.as_ref()==Some(&m.info.name)).or_else(||self.primary_monitor()).map(|m|m.info.clone())?;
 
+        let draw_pointer = self.larvis_desktop && !self.larvis_manual_input && !self.pointer_locked();
         let crate::backend::Backend::Winit(backend) = &mut self.backend else {
             return None;
         };
@@ -976,6 +979,9 @@ impl FeatherCompositor {
             } else {
                 let mut elements = if view.primary {self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h))}else{Vec::new()};
                 if view.primary {elements.extend(self.audio_hud.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h)));}
+                if draw_pointer {
+                    elements.extend(cursor_elements(renderer, &mut self.cursor, pointer, scale));
+                }
                 elements.extend(crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
                 elements.extend(crate::screencast::overlay(renderer, &self.screencast, scale, (self.phys_w, self.phys_h)));
                 drag_overlay(&mut elements, renderer, &self.shell, pointer, scale);

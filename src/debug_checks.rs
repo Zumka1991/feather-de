@@ -1611,6 +1611,64 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-settings-check] XKB add/remove/menu/Ctrl+Space, animations, Dock and scale passed");
         })?;
     }
+    // Larvis's desktop as a desktop of the main session; the nested one comes from --autostart
+    if let Some(dir) = std::env::var_os("FEATHER_DEBUG_LARVIS_DESKTOP").filter(|_| !state.larvis_desktop) {
+        if state.backend.is_drm() || !state.debug_input_only { return Err("Larvis desktop check requires isolated windowed input".into()); }
+        let dir = std::path::PathBuf::from(dir);
+        fn snap(s: &mut FeatherCompositor, path: std::path::PathBuf) {
+            s.screenshot_request = Some(path);
+            s.damage_tracker = smithay::backend::renderer::damage::OutputDamageTracker::new(
+                (s.phys_w, s.phys_h), 1.0, smithay::utils::Transform::Flipped180);
+            s.needs_redraw = true;
+        }
+        fn click(s: &mut FeatherCompositor) {
+            let x = s.shell.larvis_item_x().expect("no Larvis item in the menu bar");
+            s.debug_pointer_motion(x as f64, 12.0);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+        }
+        fn user_visible(s: &FeatherCompositor) -> bool {
+            s.windows.iter().any(|w| !w.larvis && w.is_visible())
+        }
+        fn larvis_front(s: &FeatherCompositor) -> bool {
+            let i = s.larvis_window().expect("Larvis desktop is gone");
+            s.larvis_shown && s.windows[i].is_visible() && s.windows[i].activated && !user_visible(s)
+        }
+        let first = dir.join("1-user.png");
+        at(state, 6000, move |s| {
+            let i = s.larvis_window().expect("Larvis desktop did not map");
+            let id = s.windows[i].id;
+            assert!(!s.windows[i].is_visible() && s.windows[i].fullscreen && !s.larvis_shown);
+            assert!(user_visible(s), "the user's window did not map");
+            assert!(s.build_dock_items().iter().all(|d| d.target != DockTarget::Window(id) && !d.label.contains("Ларвис")), "Larvis's desktop is in the Dock");
+            assert!(s.switcher_items().iter().all(|item| item.window_id != id), "Larvis's desktop is in Alt+Tab");
+            assert_eq!(s.spaces.count, 1, "Larvis's desktop counts as a desktop of the user");
+            snap(s, first.clone());
+        })?;
+        at(state, 7000, |s| { click(s); assert!(larvis_front(s), "the menu bar item did not show Larvis's desktop"); })?;
+        let second = dir.join("2-larvis.png");
+        at(state, 7600, move |s| snap(s, second.clone()))?;
+        at(state, 8400, |s| {
+            click(s);
+            assert!(!s.larvis_shown && user_visible(s), "the second click did not return");
+        })?;
+        let third = dir.join("3-back.png");
+        at(state, 9000, move |s| snap(s, third.clone()))?;
+        at(state, 9800, |s| {
+            chord(s, 125, 22);
+            assert!(larvis_front(s), "Cmd+U did not show Larvis's desktop");
+            chord(s, 125, 17);
+            assert!(!s.larvis_shown && s.larvis_window().is_some(), "Cmd+W must return, not close the desktop");
+            chord(s, 125, 22);
+            s.space_step(1, false);
+            assert!(!s.larvis_shown && user_visible(s) && s.spaces.count == 1, "a desktop step must lead back");
+            chord(s, 125, 22);
+            s.open_mission();
+            assert!(!s.larvis_shown, "Mission Control must open from the user's desktop");
+            s.close_mission(None);
+            eprintln!("[feather-larvis-check] hidden from Dock/Alt+Tab/desktops, menu bar toggle, Cmd+U, Cmd+W, desktop step: ok");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_TRAY_CHECK").is_some() {
         at(state, 2500, |state| {
             assert_eq!(

@@ -224,6 +224,8 @@ pub struct ManagedWindow {
     pub space: u32,
     /// On another desktop than the current one: hidden, no input, no focus
     pub off_space: bool,
+    /// Larvis's nested desktop: its own desktop, not a task (`larvis.rs`)
+    pub larvis: bool,
     pub title: String,
     pub app_id: String,
     /// Logical top-left of the visible frame (titlebar top for SSD, content top for CSD)
@@ -402,6 +404,7 @@ impl ManagedWindow {
             minimized: false,
             space: 0,
             off_space: false,
+            larvis: false,
             maximized: false,
             fullscreen: false,
             saved_rect: None,
@@ -454,6 +457,7 @@ impl ManagedWindow {
             minimized: false,
             space: 0,
             off_space: false,
+            larvis: false,
             maximized: false,
             fullscreen: false,
             saved_rect: None,

@@ -45,6 +45,9 @@ pub(super) fn validate_keys(keys: &[u32]) -> Result<(), Error> {
 
 impl FeatherCompositor {
     fn automation_window(&self, id: u64) -> Result<&ManagedWindow, Error> {
+        if self.larvis_manual_input {
+            return Err(unavailable("Рабочий стол в ручном режиме. Нажмите Cmd + Shift + U, чтобы вернуть управление Ларвису."));
+        }
         if id == 0 {
             return Err(Error::InvalidArgs("Укажите конкретный ID окна".into()));
         }
@@ -165,6 +168,7 @@ impl FeatherCompositor {
             self.owner_of_surface(surface).0.as_ref() == win.wl_surface()
         }).ok_or_else(|| unavailable("Точка перекрыта или находится вне интерфейса окна"))?;
         self.pointer_location = pos;
+        self.needs_redraw |= self.larvis_desktop;
         let pointer = self.pointer.clone();
         pointer.motion(self, Some(under), &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
         pointer.frame(self);

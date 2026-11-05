@@ -174,8 +174,9 @@ impl FeatherCompositor {
             tracing::debug!(id = self.windows[idx].id, mapped = self.windows[idx].mapped, "window mapping changed");
             self.pointer_focus_dirty = true;
         }
-        if changes.newly_mapped {
-            // A new window opens on the desktop in front
+        if changes.newly_mapped && !self.adopt_larvis_window(idx) {
+            // A new window opens on the user's desktop in front
+            self.leave_larvis_desktop();
             self.windows[idx].space = self.spaces.current;
             self.windows[idx].off_space = false;
             self.place_new_window(idx);
@@ -187,6 +188,7 @@ impl FeatherCompositor {
         if changes.unmapped {
             self.drop_keyboard_focus_if(surface);
             self.refresh_focus();
+            self.sync_larvis_desktop();
         }
         if changes.title_changed || changes.newly_mapped || changes.unmapped {
             self.shell.topbar_dirty = true;
@@ -356,6 +358,7 @@ impl XdgShellHandler for FeatherCompositor {
             self.shell.dock_dirty = true;
             self.drop_keyboard_focus_if(surface.wl_surface());
             self.refresh_focus();
+            self.sync_larvis_desktop();
             self.needs_redraw = true;
         }
     }

@@ -113,6 +113,8 @@ impl FeatherCompositor {
         if self.lock.active {
             return;
         }
+        // The overview shows the user's desktops, so it opens from the user's desktop
+        self.leave_larvis_desktop();
         self.shell.close_menus();
         self.shell.switcher = None;
         self.shell.launchpad = None;

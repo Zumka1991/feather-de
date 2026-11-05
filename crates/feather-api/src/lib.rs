@@ -157,6 +157,10 @@ mod client {
         fn get_dock_edge(&self) -> Result<String>;
         fn set_dock_edge(&self, edge: &str) -> Result<()>;
 
+        /// Стол Ларвиса: (запущен, показан вместо столов пользователя)
+        fn get_larvis_desktop(&self) -> Result<(bool, bool)>;
+        fn show_larvis_desktop(&self, show: bool) -> Result<()>;
+
         fn get_media(&self) -> Result<MediaInfo>;
         fn media_play_pause(&self) -> Result<()>;
         fn media_next(&self) -> Result<()>;

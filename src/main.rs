@@ -14,6 +14,7 @@ mod x11_wm;
 mod gtk_menu;
 mod hot_corners;
 mod spaces;
+mod larvis;
 mod mission;
 mod night;
 mod brightness;
@@ -28,6 +29,8 @@ mod icons;
 mod input;
 mod pointer_constraints;
 mod shortcuts;
+
+const LARVIS_DESKTOP_ID: &str = "org.feather.LarvisDesktop";
 mod key_repeat;
 mod audio_hud;
 mod launchpad;
@@ -152,6 +155,12 @@ pub enum DragOperation {
 pub struct FeatherCompositor {
     /// Deterministic nested checks accept only their internal pointer events.
     debug_input_only: bool,
+    larvis_desktop: bool,
+    larvis_manual_input: bool,
+    larvis_held_keys: std::collections::HashSet<u32>,
+    larvis_wait_for_release: bool,
+    /// The main session shows Larvis's desktop instead of the user's (`larvis.rs`)
+    larvis_shown: bool,
     pub display_handle: DisplayHandle,
     pub loop_handle: LoopHandle<'static, FeatherCompositor>,
     pub loop_signal: LoopSignal,
@@ -400,6 +409,10 @@ impl FeatherCompositor {
 
     pub fn apply_cursor(&mut self, image: CursorImageStatus) {
         self.cursor.status = image.clone();
+        if self.larvis_desktop && !self.larvis_manual_input {
+            self.needs_redraw = true;
+            return;
+        }
         let image = if self.pointer_locked() { CursorImageStatus::Hidden } else { image };
         let window = match &self.backend {
             crate::backend::Backend::Winit(b) => b.window(),
@@ -550,7 +563,7 @@ impl FeatherCompositor {
         let keys: Vec<(AppKey, &ManagedWindow)> = self
             .windows
             .iter()
-            .filter(|w| w.mapped && !self.auxiliary_game_window(w))
+            .filter(|w| w.mapped && !w.larvis && !self.auxiliary_game_window(w))
             .map(|w| (self.app_key(w), w))
             .collect();
 
@@ -636,8 +649,8 @@ impl FeatherCompositor {
             .windows
             .iter()
             .rev()
-            .filter(|w| w.mapped && !w.minimized && !self.auxiliary_game_window(w))
-            .chain(self.windows.iter().rev().filter(|w| w.mapped && w.minimized && !self.auxiliary_game_window(w)));
+            .filter(|w| w.mapped && !w.larvis && !w.minimized && !self.auxiliary_game_window(w))
+            .chain(self.windows.iter().rev().filter(|w| w.mapped && !w.larvis && w.minimized && !self.auxiliary_game_window(w)));
         for w in order {
             let key = self.app_key(w);
             if items.iter().any(|i| i.key == key) {
@@ -661,7 +674,7 @@ impl FeatherCompositor {
         self.windows
             .iter()
             .rev()
-            .find(|w| w.is_visible() && !self.auxiliary_game_window(w))
+            .find(|w| w.is_visible() && !w.larvis && !self.auxiliary_game_window(w))
             .map(|w| self.app_key(w))
     }
 
@@ -685,7 +698,7 @@ impl FeatherCompositor {
 
     /// Snapshot of the frontmost app for the App / Window menus
     pub fn build_menu_context(&self) -> MenuContext {
-        let Some(top) = self.windows.iter().rev().find(|w| w.is_visible()) else {
+        let Some(top) = self.windows.iter().rev().find(|w| w.is_visible() && !w.larvis) else {
             return MenuContext::default();
         };
         let key = self.app_key(top);
@@ -714,7 +727,7 @@ impl FeatherCompositor {
         let ids: Vec<u64> = self
             .windows
             .iter()
-            .filter(|w| w.mapped && self.app_key(w) == key)
+            .filter(|w| w.mapped && !w.larvis && self.app_key(w) == key)
             .map(|w| w.id)
             .collect();
         if ids.is_empty() {
@@ -723,6 +736,7 @@ impl FeatherCompositor {
             }
             return;
         }
+        self.leave_larvis_desktop();
         // Nothing of it on this desktop: go where its most recent window is
         let here = self.windows.iter().any(|w| ids.contains(&w.id) && !w.minimized && w.space == self.spaces.current);
         if !here {
@@ -1183,7 +1197,18 @@ impl FeatherCompositor {
     pub fn execute_shell_action(&mut self, action: ShellClickAction) {
         self.needs_redraw = true;
         self.flush_notification_events();
+        // On Larvis's desktop the front window is his desktop itself, not an app of the user:
+        // closing or hiding it returns to the user's desktop, nothing else applies to it
+        if self.larvis_shown {
+            match action {
+                ShellClickAction::CloseFocused | ShellClickAction::MinimizeFocused => return self.leave_larvis_desktop(),
+                ShellClickAction::QuitFocusedApp | ShellClickAction::ZoomFocused | ShellClickAction::FullscreenFocused
+                | ShellClickAction::TogglePinFocused => return,
+                _ => {}
+            }
+        }
         match action {
+            ShellClickAction::ToggleLarvisDesktop => self.toggle_larvis_desktop(),
             ShellClickAction::SystemSettings(action)=>self.apply_system_setting(action),
             ShellClickAction::None => {}
             ShellClickAction::ToggleDoNotDisturb => self.apply_system_setting(crate::system_settings::Action::DoNotDisturb),
@@ -1342,6 +1367,7 @@ impl FeatherCompositor {
             }
             ShellClickAction::ToggleAppearance => self.toggle_appearance(),
             ShellClickAction::RestoreMinimizedWindow(win_id) => {
+                self.leave_larvis_desktop();
                 if let Some(pos) = self.windows.iter().position(|w| w.id == win_id) {
                     let mut win = self.windows.remove(pos);
                     win.minimized = false;
@@ -1676,15 +1702,67 @@ impl FeatherCompositor {
         }
     }
 
+    fn set_larvis_manual_input(&mut self, enabled: bool) {
+        self.release_all_input();
+        self.pointer_capture_suspended = false;
+        self.larvis_manual_input = enabled;
+        self.api_invalidate_view();
+        if enabled {
+            self.apply_cursor(self.cursor.status.clone());
+        } else if let crate::backend::Backend::Winit(backend) = &self.backend {
+            backend.window().set_cursor_visible(false);
+        }
+        self.needs_redraw = true;
+    }
+
+    fn larvis_host_input<B: smithay::backend::input::InputBackend>(
+        &mut self, input: smithay::backend::input::InputEvent<B>,
+    ) {
+        use smithay::backend::input::{InputEvent, KeyState, KeyboardKeyEvent};
+        if let InputEvent::Keyboard { event } = &input {
+            // Winit reports physical evdev keys with the XKB offset.
+            let key = event.key_code().raw().saturating_sub(8);
+            let pressed = event.state() == KeyState::Pressed;
+            let changed = if pressed {
+                self.larvis_held_keys.insert(key)
+            } else {
+                self.larvis_held_keys.remove(&key)
+            };
+            if self.larvis_wait_for_release {
+                self.larvis_wait_for_release = !self.larvis_held_keys.is_empty();
+                return;
+            }
+            let super_held = [125, 126].iter().any(|key| self.larvis_held_keys.contains(key));
+            let shift_held = [42, 54].iter().any(|key| self.larvis_held_keys.contains(key));
+            let extra_held = [29, 97, 56, 100].iter().any(|key| self.larvis_held_keys.contains(key));
+            if pressed && changed && key == 22 && super_held && shift_held && !extra_held {
+                self.set_larvis_manual_input(!self.larvis_manual_input);
+                self.larvis_wait_for_release = true;
+                return;
+            }
+        }
+        if self.larvis_manual_input && !self.larvis_wait_for_release {
+            self.handle_input(input);
+        }
+    }
+
     pub fn handle_winit_event(&mut self, event: WinitEvent) {
         match event {
             WinitEvent::Resized { size, scale_factor } => {self.on_resized(size, scale_factor);self.lock_resized();},
+            WinitEvent::Input(event) if self.larvis_desktop => self.larvis_host_input(event),
             WinitEvent::Input(event) if !self.debug_input_only => self.handle_input(event),
             WinitEvent::Input(_) => {},
             // Rendering is driven by our own damage; the host's redraw event only tells us
             // that the previous frame was presented and the next one may go out
             WinitEvent::Redraw => self.on_host_frame(),
             WinitEvent::CloseRequested => self.loop_signal.stop(),
+            WinitEvent::Focus(false) if self.larvis_desktop => {
+                if self.larvis_manual_input {
+                    self.set_larvis_manual_input(false);
+                }
+                self.larvis_held_keys.clear();
+                self.larvis_wait_for_release = false;
+            }
             WinitEvent::Focus(false) if !self.debug_input_only => self.release_all_input(),
             WinitEvent::Focus(true) if !self.debug_input_only => { self.pointer_capture_suspended = false; self.pointer_focus_dirty = true; },
             WinitEvent::Focus(_) => {}
@@ -1847,12 +1925,20 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let pointer_constraints_state = smithay::wayland::pointer_constraints::PointerConstraintsState::new::<FeatherCompositor>(&dh);
 
     let args: Vec<String> = std::env::args().collect();
-    let is_windowed = args.iter().any(|a| a == "--windowed");
+    let larvis_desktop = args.iter().any(|a| a == "--larvis-desktop");
+    let is_windowed = larvis_desktop || args.iter().any(|a| a == "--windowed");
     let is_standalone = args.iter().any(|a| a == "--standalone");
 
     // Directly on the GPU when started from a TTY / display manager without a host compositor
     let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
-    let use_drm = args.iter().any(|a| a == "--drm") || (!nested && !is_windowed);
+    let use_drm = !larvis_desktop && (args.iter().any(|a| a == "--drm") || (!nested && !is_windowed));
+    if larvis_desktop {
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return Err("Larvis desktop requires a Wayland host".into());
+        }
+        let profile = std::env::var_os("FEATHER_LARVIS_PROFILE").ok_or("missing Larvis profile path")?;
+        crate::apps::prepare_larvis_profiles(std::path::Path::new(&profile))?;
+    }
 
     let saved = crate::settings::Settings::load();
     // Before the shell exists: its Dock buffer is sized from these
@@ -1866,7 +1952,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         drm_info = Some((d.size, d.refresh, d.physical_mm, d.connector_name.clone(), d.render_node));
         crate::backend::Backend::Drm(Box::new(d))
     } else {
-        let window_attrs = if is_windowed {
+        let window_attrs = if larvis_desktop {
+            use smithay::reexports::winit::platform::wayland::WindowAttributesExtWayland;
+            smithay::reexports::winit::window::Window::default_attributes()
+                .with_name(LARVIS_DESKTOP_ID, LARVIS_DESKTOP_ID)
+                .with_inner_size(smithay::reexports::winit::dpi::LogicalSize::new(1440.0, 900.0))
+                .with_title("Рабочий стол Ларвиса")
+                .with_decorations(false)
+        } else if is_windowed {
             smithay::reexports::winit::window::Window::default_attributes()
                 .with_inner_size(smithay::reexports::winit::dpi::LogicalSize::new(1440.0, 900.0))
                 .with_title("Пёрышко DE (Windowed)")
@@ -1879,7 +1972,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
                 .with_visible(true)
         };
         let (b, l) = winit::init_from_attributes::<GlesRenderer>(window_attrs)?;
-        if std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_some() {
+        if larvis_desktop {
+            b.window().set_cursor_visible(false);
+        } else if std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_some() {
             // Internal test input does not need host hit testing. An empty input
             // region also keeps host pointer motion out of idle CPU measurements.
             b.window().set_cursor_hittest(false)?;
@@ -2033,7 +2128,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|pos| args.get(pos + 1)).cloned();
 
     let mut state = FeatherCompositor {
-        debug_input_only: std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_some(),
+        debug_input_only: larvis_desktop || std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_some(),
+        larvis_desktop,
+        larvis_manual_input: false,
+        larvis_held_keys: Default::default(),
+        larvis_wait_for_release: false,
+        larvis_shown: false,
         controls: None,
         mpris: None,
         controls_password_focus: false,
@@ -2056,7 +2156,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         backend,
         cursor: crate::cursor::CursorManager::new(saved.pointer.cursor_theme.as_deref(), saved.pointer.cursor_size),
         pointer_config: saved.pointer.clone(),
-        show_about: saved.show_about,
+        show_about: !larvis_desktop && saved.show_about,
         pointer_managed: false,
         input_devices: Vec::new(),
         refresh_mhz,
@@ -2251,8 +2351,15 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Start Polkit Authentication Agent (for MouseVPN / pkexec password prompts) and D-Bus env
-    spawn_session_services(&socket_name, is_standalone);
+    if larvis_desktop {
+        let ready = std::env::var_os("FEATHER_LARVIS_READY").ok_or("missing Larvis readiness path")?;
+        let bus = std::env::var("DBUS_SESSION_BUS_ADDRESS")?;
+        std::fs::write(ready, format!("{bus}\n{socket_name}\n"))?;
+    } else {
+        spawn_session_services(&socket_name, is_standalone);
+    }
     state.own_session = is_standalone || use_drm;
+    state.shell.topbar_hidden = larvis_desktop;
     crate::gtk_theme::set_enabled(state.gtk_theme);
     if state.own_session && state.gtk_theme {
         crate::gtk_theme::apply(appearance() == Appearance::Dark);

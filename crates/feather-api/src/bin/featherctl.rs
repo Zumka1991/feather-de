@@ -16,6 +16,7 @@ const HELP: &str = "featherctl — управление рабочим стол�
   space N                            перейти на стол N
   mission [on|off]                   Mission Control
   launchpad [on|off]                 Launchpad
+  larvis [status|on|off|toggle]      стол Ларвиса вместо твоих столов
 Приложения:
   app list                           приложения из .desktop
   app launch ID                      новый экземпляр
@@ -83,6 +84,8 @@ enum Command {
     SwitchSpace(u32),
     Mission(bool),
     Launchpad(bool),
+    LarvisStatus,
+    Larvis(Switch),
     Apps,
     Launch(String),
     Activate(String),
@@ -211,6 +214,10 @@ fn parse(args: &[&str]) -> Result<Command, String> {
             None => no_more(1, Command::Screenshot("screen".into())),
             Some(t @ ("screen" | "window")) => no_more(2, Command::Screenshot(t.into())),
             Some(s) => Err(bad(format!("Снимок: screen или window, а не {s}"))),
+        },
+        "larvis" => match arg(1) {
+            None | Some("status") => no_more(2, Command::LarvisStatus),
+            s => no_more(2, Command::Larvis(switch(s, Switch::Toggle)?)),
         },
         "lock" => no_more(1, Command::Lock),
         "suspend" => no_more(1, Command::Suspend),
@@ -381,6 +388,18 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
         Command::Next => proxy.media_next()?,
         Command::Previous => proxy.media_previous()?,
         Command::Screenshot(target) => println!("{}", proxy.screenshot(&target)?),
+        Command::LarvisStatus => {
+            let (running, shown) = proxy.get_larvis_desktop()?;
+            if json {
+                print_json(&serde_json::json!({"running": running, "shown": shown}))
+            } else {
+                println!("{}", if !running { "не запущен" } else if shown { "показан" } else { "скрыт" });
+            }
+        }
+        Command::Larvis(s) => {
+            let shown = if s == Switch::Toggle { !proxy.get_larvis_desktop()?.1 } else { s.resolve(false) };
+            proxy.show_larvis_desktop(shown)?
+        }
         Command::Lock => proxy.lock_screen()?,
         Command::Suspend => proxy.suspend()?,
     }
@@ -463,6 +482,10 @@ mod tests {
         assert_eq!(p("night"), Ok(Command::Mode(Mode::Night, Switch::Toggle)));
         assert_eq!(p("dark on"), Ok(Command::Mode(Mode::Dark, Switch::On)));
         assert_eq!(p("dnd off"), Ok(Command::Mode(Mode::Dnd, Switch::Off)));
+        assert_eq!(p("larvis"), Ok(Command::LarvisStatus));
+        assert_eq!(p("larvis toggle"), Ok(Command::Larvis(Switch::Toggle)));
+        assert_eq!(p("larvis off"), Ok(Command::Larvis(Switch::Off)));
+        assert!(p("larvis maybe").is_err());
         assert!(p("dnd maybe").is_err());
         assert!(Switch::Toggle.resolve(false) && !Switch::Toggle.resolve(true) && !Switch::Off.resolve(true));
     }

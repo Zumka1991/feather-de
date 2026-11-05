@@ -12,6 +12,9 @@ use smithay::reexports::calloop::{channel, LoopHandle};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Call {
+    StopLarvisDesktop,
+    GetLarvisDesktop,
+    ShowLarvisDesktop(bool),
     ListWindows,
     /// Окно 0 — активное
     FocusWindow(u64),
@@ -66,6 +69,8 @@ pub enum Reply {
     Audio(AudioInfo),
     Display(DisplayInfo),
     DockEdge(String),
+    /// Стол Ларвиса: запущен, показан
+    LarvisDesktop(bool, bool),
     Media(MediaInfo),
     Percent(u32),
     Path(String),
@@ -134,6 +139,7 @@ pub fn allowed_while_locked(call: &Call) -> bool {
             | Call::GetAudio
             | Call::GetDisplay
             | Call::GetDockEdge
+            | Call::GetLarvisDesktop
             | Call::GetMedia
             | Call::SetVolume(_)
             | Call::ChangeVolume(_)
@@ -205,18 +211,19 @@ impl FeatherCompositor {
     /// Открытия, закрытия и смена фокуса с прошлого вызова → сигналы (из `refresh_focus`)
     pub fn api_sync(&mut self) {
         let Some(api) = self.api.as_mut() else { return };
-        let mut now: Vec<u64> = self.windows.iter().filter(|w| w.mapped).map(|w| w.id).collect();
+        // Larvis's desktop is a desktop, not a window of the user
+        let mut now: Vec<u64> = self.windows.iter().filter(|w| w.mapped && !w.larvis).map(|w| w.id).collect();
         now.sort_unstable();
         if now != api.known {
             for id in api.known.iter().filter(|id| now.binary_search(id).is_err()) {
                 let _ = api.events.try_send(Event::Closed(*id));
             }
-            for w in self.windows.iter().filter(|w| w.mapped && api.known.binary_search(&w.id).is_err()) {
+            for w in self.windows.iter().filter(|w| w.mapped && !w.larvis && api.known.binary_search(&w.id).is_err()) {
                 let _ = api.events.try_send(Event::Opened { id: w.id, app_id: w.app_id.clone(), title: w.title.clone() });
             }
             api.known = now;
         }
-        let focus = self.windows.iter().rfind(|w| w.activated).map_or(0, |w| w.id);
+        let focus = self.windows.iter().rfind(|w| w.activated && !w.larvis).map_or(0, |w| w.id);
         if focus != api.focus {
             api.view = None;
             api.focus = focus;
@@ -244,9 +251,9 @@ impl FeatherCompositor {
     /// Индекс открытого окна; 0 — верхнее видимое (активное)
     fn api_window(&self, id: u64) -> Result<usize, Error> {
         if id == 0 {
-            return self.windows.iter().rposition(|w| w.is_visible()).ok_or_else(|| not_found("Нет активного окна"));
+            return self.windows.iter().rposition(|w| w.is_visible() && !w.larvis).ok_or_else(|| not_found("Нет активного окна"));
         }
-        self.windows.iter().position(|w| w.id == id && w.mapped).ok_or_else(|| not_found(format!("Нет окна {id}")))
+        self.windows.iter().position(|w| w.id == id && w.mapped && !w.larvis).ok_or_else(|| not_found(format!("Нет окна {id}")))
     }
 
     fn api_app(&self, query: &str) -> Result<usize, Error> {
@@ -260,12 +267,25 @@ impl FeatherCompositor {
     fn api_call(&mut self, call: Call) -> Result<Reply, Error> {
         use crate::controls::Control;
         match call {
+            Call::StopLarvisDesktop if self.larvis_desktop => self.loop_signal.stop(),
+            Call::StopLarvisDesktop => return Err(unavailable("Это основной сеанс Feather")),
+            Call::GetLarvisDesktop => {
+                return Ok(Reply::LarvisDesktop(self.larvis_window().is_some(), self.larvis_shown));
+            }
+            Call::ShowLarvisDesktop(_) if self.larvis_desktop => {
+                return Err(unavailable("Это сам стол Ларвиса"));
+            }
+            Call::ShowLarvisDesktop(show) => {
+                if !self.set_larvis_shown(show) && show {
+                    return Err(unavailable("Стол Ларвиса не запущен"));
+                }
+            }
             Call::ListWindows => {
                 let list = self
                     .windows
                     .iter()
                     .rev()
-                    .filter(|w| w.mapped)
+                    .filter(|w| w.mapped && !w.larvis)
                     .map(|w| WindowInfo {
                         id: w.id,
                         app_id: w.app_id.clone(),

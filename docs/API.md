@@ -96,6 +96,29 @@
 | `ShowMissionControl` | `b show` | открывает или закрывает Mission Control |
 | `ShowLaunchpad` | `b show` | открывает или закрывает Launchpad |
 
+### Стол Ларвиса
+
+Ларвис выполняет задачи с окнами на своём столе: это вложенное Пёрышко
+(`feather-de --larvis-desktop`) со своими окнами, клавиатурой и указателем. В основном
+сеансе его окно с `app_id` `org.feather.LarvisDesktop` — не задача пользователя, а отдельный
+стол. Его нет в Dock, Alt+Tab, Mission Control, `ListWindows`, `ListSpaces` и сигналах окон.
+Пока стол запущен, в меню-баре рядом с треем стоит значок Ларвиса (экран с точкой).
+Щелчок по значку или Cmd + U показывает стол Ларвиса вместо столов пользователя:
+окна пользователя скрываются, как при смене стола, а меню-бар остаётся на месте
+(вложенный стол свой меню-бар не рисует).
+Значок на столе Ларвиса залит. Повторный щелчок, Cmd + U, Cmd + W или Cmd + M возвращают
+на стол, где был пользователь. Туда же ведут Ctrl + Alt + ←/→, Mission Control, Dock,
+Alt+Tab и новое окно пользователя. Cmd + Shift + U на открытом столе Ларвиса передаёт
+пользователю ручное управление.
+
+| Метод | Аргументы → ответ | Что делает |
+|---|---|---|
+| `GetLarvisDesktop` | → `b running, b shown` | запущен ли стол Ларвиса и показан ли он сейчас |
+| `ShowLarvisDesktop` | `b show` | показывает стол Ларвиса или возвращает на стол пользователя, как значок в меню-баре. Если стол не запущен, `true` возвращает `Unavailable`. На самом столе Ларвиса метод недоступен |
+| `StopLarvisDesktop` | | завершает вложенный стол Ларвиса. Вызывается на его собственной шине; в основном сеансе возвращает `Unavailable` |
+
+Свойство `LarvisDesktopSupported` (`b`) говорит Ларвису, что этот Feather умеет запускать его стол.
+
 ### Приложения
 
 | Метод | Аргументы → ответ | Что делает |
@@ -191,6 +214,8 @@ touch "${XDG_CONFIG_HOME:-$HOME/.config}/feather-de/enable-automation"
 |---|---|---|
 | `Version` | `u` | версия интерфейса, сейчас `1` |
 | `CompositorVersion` | `s` | версия Пёрышка, например `0.9.1` |
+| `AutomationEnabled` | `b` | включено ли управление интерфейсом приложений |
+| `LarvisDesktopSupported` | `b` | этот Feather умеет запускать стол Ларвиса |
 
 ### Сигналы
 
@@ -217,6 +242,7 @@ featherctl [--json] КОМАНДА
 | `featherctl window move 12 2` | `MoveWindowToSpace(12, 2)` |
 | `featherctl space` / `featherctl space 2` | `ListSpaces` / `SwitchSpace(2)` |
 | `featherctl mission [on\|off]`, `featherctl launchpad [on\|off]` | `ShowMissionControl`, `ShowLaunchpad` |
+| `featherctl larvis [status]` / `featherctl larvis on\|off\|toggle` | `GetLarvisDesktop` / `ShowLarvisDesktop` |
 | `featherctl app list` / `app launch firefox` / `app open firefox` | `ListApps` / `LaunchApp` / `ActivateApp` |
 | `featherctl volume` / `volume 40` / `volume +5` / `volume -5` | `GetAudio` / `SetVolume` / `ChangeVolume` |
 | `featherctl volume mute\|unmute\|toggle`, `featherctl mic mute\|unmute\|toggle` | `SetMute`, `SetMicMute` |
