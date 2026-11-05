@@ -229,6 +229,8 @@ impl Server {
     async fn window_closed(emitter: &SignalEmitter<'_>, id: u64) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn focus_changed(emitter: &SignalEmitter<'_>, id: u64) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn space_changed(emitter: &SignalEmitter<'_>, number: u32, count: u32, larvis: bool) -> zbus::Result<()>;
 }
 
 pub async fn run(requests: channel::SyncSender<Request>, events: async_channel::Receiver<Event>, name: String, replace: bool, automation_enabled: bool) -> zbus::Result<()> {
@@ -257,6 +259,7 @@ async fn serve(conn: &Connection, requests: channel::SyncSender<Request>, events
             Event::Opened { id, app_id, title } => Server::window_opened(&emitter, id, &app_id, &title).await,
             Event::Closed(id) => Server::window_closed(&emitter, id).await,
             Event::Focus(id) => Server::focus_changed(&emitter, id).await,
+            Event::Space { number, count, larvis } => Server::space_changed(&emitter, number, count, larvis).await,
         };
     }
     Ok(())

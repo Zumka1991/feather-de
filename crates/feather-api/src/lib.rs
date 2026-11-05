@@ -184,6 +184,10 @@ mod client {
         /// 0 — фокуса нет ни у одного окна
         #[zbus(signal)]
         fn focus_changed(&self, id: u64) -> zbus::Result<()>;
+        /// Стол пользователя (с 1; под столом Ларвиса — тот, что под ним), число его столов,
+        /// показан ли стол Ларвиса
+        #[zbus(signal)]
+        fn space_changed(&self, number: u32, count: u32, larvis: bool) -> zbus::Result<()>;
     }
 
     /// Подключение к сессионной шине и прокси на `bus_name()`

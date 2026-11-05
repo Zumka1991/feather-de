@@ -95,6 +95,8 @@ pub enum Event {
     Opened { id: u64, app_id: String, title: String },
     Closed(u64),
     Focus(u64),
+    /// Стол пользователя (с 1), число его столов, показан ли стол Ларвиса
+    Space { number: u32, count: u32, larvis: bool },
 }
 
 /// Номер стола из API (с 1) → индекс
@@ -156,6 +158,8 @@ pub struct Api {
     /// Открытые (mapped) окна, о которых уже сообщили, по возрастанию id
     known: Vec<u64>,
     focus: u64,
+    /// Последний сообщённый `SpaceChanged`: стол с 1, число столов, стол Ларвиса
+    space: (u32, u32, bool),
     view: Option<automation::View>,
     next_view: u64,
     last_observation: Option<std::time::Instant>,
@@ -187,7 +191,7 @@ impl Api {
         let next_view = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default().as_nanos() as u64;
         Ok(Self {
-            events, known: Vec::new(), focus: 0, view: None, next_view,
+            events, known: Vec::new(), focus: 0, space: (1, 1, false), view: None, next_view,
             last_observation: None, automation_enabled,
         })
     }
@@ -222,6 +226,11 @@ impl FeatherCompositor {
                 let _ = api.events.try_send(Event::Opened { id: w.id, app_id: w.app_id.clone(), title: w.title.clone() });
             }
             api.known = now;
+        }
+        let space = (self.spaces.current + 1, self.spaces.count, self.larvis_shown);
+        if space != api.space {
+            api.space = space;
+            let _ = api.events.try_send(Event::Space { number: space.0, count: space.1, larvis: space.2 });
         }
         let focus = self.windows.iter().rfind(|w| w.activated && !w.larvis).map_or(0, |w| w.id);
         if focus != api.focus {

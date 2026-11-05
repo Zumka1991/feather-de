@@ -620,11 +620,13 @@ fn push_space_thumbnails(
     let Some(m) = shell.mission.as_ref() else { return };
     let (sw, sh) = (shell.screen_w as f64, shell.screen_h as f64);
     for tile in m.tiles.iter().filter(|t| !t.current) {
-        let Some(space) = tile.space.filter(|s| !animations.in_slide(*s)) else { continue };
+        let space = tile.space.filter(|s| !animations.in_slide(*s));
+        if space.is_none() && !tile.larvis { continue }
         let r = tile.rect;
         let k = ((r.w as f64 - 8.0) / sw).min((r.h as f64 - 8.0) / sh);
         let (ox, oy) = (r.x as f64 + (r.w as f64 - sw * k) * 0.5, r.y as f64 + (r.h as f64 - sh * k) * 0.5);
-        for win in windows.iter().rev().filter(|w| w.mapped && !w.minimized && w.space == space) {
+        let on_tile = |w: &&ManagedWindow| if tile.larvis { w.larvis } else { Some(w.space) == space };
+        for win in windows.iter().rev().filter(|w| w.mapped && !w.minimized).filter(on_tile) {
             let center = (win.x as f64 + win.width as f64 * 0.5, win.y as f64 + win.total_height() as f64 * 0.5);
             let visual = crate::animation::Visual {
                 scale: k,

@@ -261,6 +261,11 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
                             println!("focus {id}");
                         }
                     }
+                    Some("SpaceChanged") => {
+                        if let Ok((number, count, larvis)) = body.deserialize::<(u32, u32, bool)>() {
+                            println!("space {number}/{count}{}", if larvis { " larvis" } else { "" });
+                        }
+                    }
                     _ => continue,
                 }
                 use std::io::Write;

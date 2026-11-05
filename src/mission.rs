@@ -19,6 +19,8 @@ const DRAG_START: f64 = 6.0;
 pub enum Hit {
     Window(u64),
     Space(u32),
+    /// Larvis's desktop, after the user's desktops
+    Larvis,
     /// Close button of a desktop tile
     Remove(u32),
     Add,
@@ -72,9 +74,10 @@ pub fn layout(windows: &[(u64, f32, f32)], area: R) -> Vec<(u64, R)> {
         .collect()
 }
 
-/// Desktop tiles and the «+» tile, centred under the menu bar
-pub fn strip(count: u32, screen_w: f32) -> Vec<(Hit, R)> {
-    let total = count as f32 * (TILE_W + GAP) + ADD_W;
+/// Desktop tiles, Larvis's desktop when it runs, and the «+» tile, centred under the menu bar
+pub fn strip(count: u32, larvis: bool, screen_w: f32) -> Vec<(Hit, R)> {
+    let tiles = count + larvis as u32;
+    let total = tiles as f32 * (TILE_W + GAP) + ADD_W;
     let mut x = (screen_w - total) * 0.5;
     let y = crate::theme::TOP_BAR_HEIGHT as f32 + STRIP_TOP - 20.0;
     let mut out: Vec<_> = (0..count)
@@ -84,6 +87,10 @@ pub fn strip(count: u32, screen_w: f32) -> Vec<(Hit, R)> {
             (Hit::Space(i), r)
         })
         .collect();
+    if larvis {
+        out.push((Hit::Larvis, R::new(x, y, TILE_W, TILE_H)));
+        x += TILE_W + GAP;
+    }
     if count < crate::spaces::MAX_SPACES {
         out.push((Hit::Add, R::new(x, y + (TILE_H - ADD_W) * 0.5, ADD_W, ADD_W)));
     }
@@ -113,8 +120,6 @@ impl FeatherCompositor {
         if self.lock.active {
             return;
         }
-        // The overview shows the user's desktops, so it opens from the user's desktop
-        self.leave_larvis_desktop();
         self.shell.close_menus();
         self.shell.switcher = None;
         self.shell.launchpad = None;
@@ -176,13 +181,13 @@ impl FeatherCompositor {
         let (fx, fy) = (x as f32, y as f32);
         // The close button of the hovered tile, which sticks out of its corner
         if let Some(s) = m.hover.and_then(|h| match h { Hit::Space(s) | Hit::Remove(s) => Some(s), _ => None }).filter(|_| self.spaces.count > 1) {
-            if let Some((_, r)) = strip(self.spaces.count, self.shell.screen_w as f32).into_iter().find(|(h, _)| *h == Hit::Space(s)) {
+            if let Some((_, r)) = self.mission_strip().into_iter().find(|(h, _)| *h == Hit::Space(s)) {
                 if R::new(r.x - 7.0, r.y - 7.0, 22.0, 22.0).contains(fx, fy) {
                     return Some(Hit::Remove(s));
                 }
             }
         }
-        for (hit, r) in strip(self.spaces.count, self.shell.screen_w as f32) {
+        for (hit, r) in self.mission_strip() {
             if r.contains(fx, fy) {
                 return Some(hit);
             }
@@ -240,13 +245,15 @@ impl FeatherCompositor {
         let press = m.press.take();
         if let Some((id, _)) = m.drag.take() {
             // Dropped on a desktop tile: the window moves there; anywhere else it returns
-            let target_space = strip(self.spaces.count, self.shell.screen_w as f32)
+            // Larvis's desktop neither takes windows of the user nor gives its own away
+            let larvis = self.windows.iter().any(|w| w.id == id && w.larvis);
+            let target_space = self.mission_strip()
                 .into_iter()
-                .find(|(_, r)| r.contains(x as f32, y as f32))
+                .find(|(_, r)| r.contains(x as f32, y as f32) && !larvis)
                 .and_then(|(h, _)| match h {
                     Hit::Space(s) => Some(s),
                     Hit::Add => Some(self.spaces.count),
-                    Hit::Window(_) | Hit::Remove(_) => None,
+                    Hit::Window(_) | Hit::Remove(_) | Hit::Larvis => None,
                 });
             if let Some(space) = target_space.filter(|s| *s != self.spaces.current) {
                 if space >= self.spaces.count {
@@ -268,9 +275,14 @@ impl FeatherCompositor {
                 self.switch_space(s);
                 self.close_mission(None);
             }
+            Some(Hit::Larvis) => {
+                self.close_mission(None);
+                self.set_larvis_shown(true);
+            }
             Some(Hit::Add) => {
                 self.spaces.count = (self.spaces.count + 1).min(crate::spaces::MAX_SPACES);
                 self.sync_mission_overlay();
+                self.api_sync();
             }
             Some(Hit::Remove(s)) => {
                 self.remove_space(s);
@@ -282,17 +294,22 @@ impl FeatherCompositor {
         self.needs_redraw = true;
     }
 
+    fn mission_strip(&self) -> Vec<(Hit, R)> {
+        strip(self.spaces.count, self.larvis_window().is_some(), self.shell.screen_w as f32)
+    }
+
     /// Strip tiles and the hovered window's title, drawn by the shell overlay
     pub fn sync_mission_overlay(&mut self) {
         let Some(m) = self.mission.as_ref().filter(|m| !m.closing) else {
             self.shell.mission = None;
             return;
         };
-        let tiles = strip(self.spaces.count, self.shell.screen_w as f32)
+        let tiles = self.mission_strip()
             .into_iter()
             .map(|(hit, r)| {
                 let label = match hit {
                     Hit::Space(s) => format!("Рабочий стол {}", s + 1),
+                    Hit::Larvis => "Ларвис".into(),
                     _ => "+".into(),
                 };
                 let space = match hit { Hit::Space(s) => Some(s), _ => None };
@@ -308,9 +325,10 @@ impl FeatherCompositor {
                     space,
                     removable,
                     remove_hover: space.is_some_and(|s| m.hover == Some(Hit::Remove(s))),
-                    current: hit == Hit::Space(self.spaces.current),
+                    current: if self.larvis_shown { hit == Hit::Larvis } else { hit == Hit::Space(self.spaces.current) },
                     hover: m.hover == Some(hit),
                     add: hit == Hit::Add,
+                    larvis: hit == Hit::Larvis,
                     windows: count,
                 }
             })
@@ -357,10 +375,13 @@ mod tests {
 
     #[test]
     fn strip_has_one_tile_per_desktop_and_an_add_tile_until_full() {
-        let s = strip(3, 1440.0);
+        let s = strip(3, false, 1440.0);
         assert_eq!(s.len(), 4);
         assert_eq!(s[3].0, Hit::Add);
+        let with_larvis = strip(3, true, 1440.0);
+        assert_eq!(with_larvis.iter().map(|(h, _)| *h).collect::<Vec<_>>(),
+            [Hit::Space(0), Hit::Space(1), Hit::Space(2), Hit::Larvis, Hit::Add], "Larvis after the user's desktops");
         assert!(s.windows(2).all(|p| p[0].1.x + p[0].1.w < p[1].1.x), "left to right, apart");
-        assert!(strip(crate::spaces::MAX_SPACES, 4000.0).iter().all(|(h, _)| *h != Hit::Add));
+        assert!(strip(crate::spaces::MAX_SPACES, false, 4000.0).iter().all(|(h, _)| *h != Hit::Add));
     }
 }

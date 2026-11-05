@@ -184,6 +184,8 @@ pub struct MissionTile {
     pub current: bool,
     pub hover: bool,
     pub add: bool,
+    /// Larvis's desktop: its live picture instead of window thumbnails
+    pub larvis: bool,
     pub windows: usize,
 }
 
@@ -3600,6 +3602,10 @@ impl MacShell {
                         let c = R::new(r.x - 7.0, r.y - 7.0, 22.0, 22.0);
                         draw_glass_panel(&mut pm, c.x, c.y, c.w, c.h, c.w * 0.5, true);
                         fonts.draw_text_centered(&mut pm, "×", c.x + c.w * 0.5, c.y + 2.0, 14.0, if t.remove_hover { p.text } else { p.text_secondary }, true);
+                    }
+                    // Larvis's desktop in front is large below: its tile keeps his sign
+                    if t.larvis && t.current {
+                        draw_larvis_desktop_icon(&mut pm, r.x + r.w * 0.5, r.y + r.h * 0.5, Color::WHITE, rgba(0, 0, 0, 255), false);
                     }
                     // The current desktop's windows are large below; others get thumbnails
                     if t.current && t.windows > 0 {

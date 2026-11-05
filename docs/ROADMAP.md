@@ -191,5 +191,6 @@
 - [x] Стол Ларвиса — рабочий стол Пёрышка, а не задача: нет в Dock, Alt+Tab, Mission Control
   и `ListWindows`; значок в меню-баре рядом с треем и Cmd + U переключают туда и обратно
   (`GetLarvisDesktop`, `ShowLarvisDesktop`, `featherctl larvis`).
+- [x] Стол Ларвиса среди столов: Ctrl + Alt + ←/→, плитка в Mission Control, сигнал `SpaceChanged`.
 - [ ] Проверить отдельный сеанс, переключение и ручной режим на реальном DRM-выводе,
   включая бюджеты из SPEC.md.

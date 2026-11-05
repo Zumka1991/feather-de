@@ -886,7 +886,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
         at(state, 3000, |s| {
             let (id, r) = s.mission.as_ref().unwrap().targets[0];
-            let add = crate::mission::strip(s.spaces.count, s.shell.screen_w as f32).into_iter().find(|(h, _)| *h == crate::mission::Hit::Add).unwrap().1;
+            let add = crate::mission::strip(s.spaces.count, false, s.shell.screen_w as f32).into_iter().find(|(h, _)| *h == crate::mission::Hit::Add).unwrap().1;
             let (x, y) = ((r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64);
             s.mission_button(true, x, y);
             s.mission_motion(x + 30.0, y - 30.0);
@@ -901,7 +901,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
         at(state, 3600, |s| {
             // × of the new desktop: its window comes back to the first one
-            let tile = crate::mission::strip(s.spaces.count, s.shell.screen_w as f32)[1].1;
+            let tile = crate::mission::strip(s.spaces.count, false, s.shell.screen_w as f32)[1].1;
             s.mission_motion((tile.x + tile.w * 0.5) as f64, (tile.y + tile.h * 0.5) as f64);
             let (x, y) = ((tile.x + 4.0) as f64, (tile.y + 4.0) as f64);
             s.mission_motion(x, y);
@@ -1659,14 +1659,36 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             assert!(larvis_front(s), "Cmd+U did not show Larvis's desktop");
             chord(s, 125, 17);
             assert!(!s.larvis_shown && s.larvis_window().is_some(), "Cmd+W must return, not close the desktop");
-            chord(s, 125, 22);
+            // Larvis's desktop sits after the user's last desktop
             s.space_step(1, false);
-            assert!(!s.larvis_shown && user_visible(s) && s.spaces.count == 1, "a desktop step must lead back");
-            chord(s, 125, 22);
+            assert!(larvis_front(s), "Ctrl+Alt+→ from the last desktop must lead to Larvis's desktop");
+            s.space_step(1, false);
+            assert!(larvis_front(s), "nothing lies right of Larvis's desktop");
+            s.space_step(-1, false);
+            assert!(!s.larvis_shown && user_visible(s) && s.spaces.count == 1, "Ctrl+Alt+← must lead back");
+            // Mission Control: a Larvis tile after the user's desktops; it keeps Larvis's desktop
             s.open_mission();
-            assert!(!s.larvis_shown, "Mission Control must open from the user's desktop");
+            let tiles = s.shell.mission.as_ref().unwrap().tiles.iter().map(|t| (t.larvis, t.space, t.add)).collect::<Vec<_>>();
+            assert_eq!(tiles, [(false, Some(0), false), (true, None, false), (false, None, true)]);
+            let tile = s.shell.mission.as_ref().unwrap().tiles[1].rect;
+            let (x, y) = ((tile.x + tile.w * 0.5) as f64, (tile.y + tile.h * 0.5) as f64);
+            s.mission_button(true, x, y);
+            s.mission_button(false, x, y);
+            assert!(larvis_front(s), "the Larvis tile must show Larvis's desktop");
+        })?;
+        let fourth = dir.join("4-mission.png");
+        at(state, 10600, move |s| {
+            s.open_mission();
+            assert!(s.larvis_shown, "Mission Control opens over Larvis's desktop");
+            assert!(s.shell.mission.as_ref().unwrap().tiles.iter().any(|t| t.larvis && t.current));
+        })?;
+        at(state, 11300, move |s| snap(s, fourth.clone()))?;
+        at(state, 11900, |s| {
             s.close_mission(None);
-            eprintln!("[feather-larvis-check] hidden from Dock/Alt+Tab/desktops, menu bar toggle, Cmd+U, Cmd+W, desktop step: ok");
+            assert!(s.larvis_shown);
+            chord(s, 125, 22);
+            assert!(!s.larvis_shown && user_visible(s));
+            eprintln!("[feather-larvis-check] hidden from Dock/Alt+Tab/desktops, menu bar toggle, Cmd+U, Cmd+W, desktop steps, Mission Control tile: ok");
         })?;
     }
     if std::env::var_os("FEATHER_DEBUG_TRAY_CHECK").is_some() {

@@ -84,9 +84,18 @@ impl FeatherCompositor {
 
     /// Ctrl+Alt+←/→; with `carry` (Shift) the front window comes along
     pub fn space_step(&mut self, delta: i32, carry: bool) {
-        // From Larvis's desktop any step leads back to the user's desktop
+        // Larvis's desktop comes after the user's last desktop: left from it leads there,
+        // and right from the last desktop leads to it instead of adding a desktop
         if self.larvis_shown {
-            self.leave_larvis_desktop();
+            if delta < 0 {
+                let last = self.spaces.count - 1;
+                self.leave_larvis_desktop();
+                self.switch_space(last);
+            }
+            return;
+        }
+        if delta > 0 && !carry && self.spaces.current + 1 == self.spaces.count && self.larvis_window().is_some() {
+            self.set_larvis_shown(true);
             return;
         }
         let front = self.windows.iter().rposition(|w| w.is_visible());
