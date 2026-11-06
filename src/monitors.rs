@@ -355,6 +355,7 @@ impl crate::FeatherCompositor {
             .retain(|(n, _)| self.monitors.iter().any(|m| m.info.name == *n));
         self.refit_monitor_windows();
         self.refresh_output_membership();
+        self.sync_layers();
         self.refresh_display_choices();
         self.lock_resized();
         self.lock.display_protected = false;
@@ -414,6 +415,8 @@ impl crate::FeatherCompositor {
                 w.x = r.x + x;
                 w.y = r.y + y;
                 w.resize_client(ww, hh - w.titlebar_h());
+            } else if let Some(tile) = w.tiled {
+                w.fit_tile_frame(tile.frame(crate::tiling::work_area(r)));
             } else {
                 // Keep the titlebar reachable after a smaller mode or a disconnected screen.
                 w.x = w.x.clamp(r.x - w.width + 80, r.x + r.w - 80);

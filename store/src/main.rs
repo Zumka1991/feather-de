@@ -57,6 +57,8 @@ enum Msg {
     Installed(std::collections::HashSet<String>),
     Icons(Vec<(usize, Option<tiny_skia::Pixmap>)>),
     Task(packagekit::Event),
+    Updates(Result<Vec<packagekit::Update>, String>),
+    UpdateProgress(packagekit::Event),
 }
 
 struct Store {
@@ -141,6 +143,11 @@ fn main() {
                     Msg::Installed(installed) => store.app.installed_changed(installed),
                     Msg::Icons(icons) => store.app.icons_loaded(icons),
                     Msg::Task(event) => store.app.task_event(event),
+                    Msg::Updates(result) => store.app.updates_listed(result),
+                    Msg::UpdateProgress(event) => {
+                        let effects = store.app.update_event(event);
+                        store.apply(effects);
+                    }
                 }
             }
         })
@@ -189,6 +196,8 @@ fn main() {
 
     let profile = std::env::var_os("FEATHER_PROFILE").is_some();
     let mut first_frame = true;
+    let effects = store.app.initial_effects();
+    store.apply(effects);
     while !store.exit {
         if event_loop.dispatch(None, &mut store).is_err() {
             break;
@@ -246,6 +255,18 @@ impl Store {
                     let tx = self.tx.clone();
                     packagekit::run(op, package, confirmed, move |event| {
                         let _ = tx.send(Msg::Task(event));
+                    });
+                }
+                Effect::CheckUpdates(refresh) => {
+                    let tx = self.tx.clone();
+                    packagekit::check_updates(refresh, move |result| {
+                        let _ = tx.send(Msg::Updates(result));
+                    });
+                }
+                Effect::RunUpdates(ids) => {
+                    let tx = self.tx.clone();
+                    packagekit::run_updates(ids, move |event| {
+                        let _ = tx.send(Msg::UpdateProgress(event));
                     });
                 }
                 Effect::Launch(command) => catalog::launch(&command),

@@ -200,6 +200,8 @@ pub enum Action {
     AutostartSearchFocus,
     AutostartSearchSubmit,
     AddAutostart(String),
+    RestoreSession,
+    ClipboardHistory,
     ToggleAutostart { id: String, enabled: bool },
     RemoveAutostart(String),
     RefreshSystem,
@@ -299,6 +301,9 @@ pub struct Context<'a> {
     pub active: usize,
     pub animations: bool,
     pub dock_zoom: bool,
+    pub restore_session: bool,
+    pub battery: Option<crate::battery::Battery>,
+    pub clipboard_history: bool,
     pub scale: f64,
     pub xwayland_hidpi: bool,
     pub display_name: &'a str,
@@ -339,6 +344,9 @@ pub struct FrameJob {
     pub active: usize,
     pub animations: bool,
     pub dock_zoom: bool,
+    pub restore_session: bool,
+    pub battery: Option<crate::battery::Battery>,
+    pub clipboard_history: bool,
     pub scale: f64,
     pub xwayland_hidpi: bool,
     pub display_name: String,
@@ -388,6 +396,9 @@ impl FrameJob {
             active: c.active,
             animations: c.animations,
             dock_zoom: c.dock_zoom,
+            restore_session: c.restore_session,
+            battery: c.battery,
+            clipboard_history: c.clipboard_history,
             scale: c.scale,
             xwayland_hidpi: c.xwayland_hidpi,
             display_name: c.display_name.into(),
@@ -428,6 +439,9 @@ impl FrameJob {
             active: self.active,
             animations: self.animations,
             dock_zoom: self.dock_zoom,
+            restore_session: self.restore_session,
+            battery: self.battery,
+            clipboard_history: self.clipboard_history,
             scale: self.scale,
             xwayland_hidpi: self.xwayland_hidpi,
             display_name: &self.display_name,
@@ -1489,6 +1503,11 @@ impl Panel {
             }
             Page::Power => {
                 l.hero(Page::Power);
+                if let Some(battery) = c.battery {
+                    l.begin();
+                    l.row(52.0, "Батарея", battery.describe(), Style::Row, None);
+                    l.end();
+                }
                 l.begin();
                 l.row(52.0,"Заблокировать сейчас","Super + L · пароль учётной записи".into(),Style::Row,Some(Action::LockNow));
                 l.end();
@@ -2063,6 +2082,16 @@ impl Panel {
                 l.end();
                 l.footer("Записи сохраняются в стандарте XDG Autostart (~/.config/autostart/*.desktop) и запускаются при входе в сессию Пёрышка.");
 
+                l.begin();
+                l.row(
+                    52.0,
+                    "Открывать программы прошлого сеанса",
+                    "При входе программы вернутся на свои столы и места".into(),
+                    Style::Toggle(c.restore_session),
+                    Some(Action::RestoreSession),
+                );
+                l.end();
+
                 if let Some(kind) = self.apps_picker {
                     let anchor = anchors[KINDS.iter().position(|k| *k == kind).unwrap_or(0)];
                     let apps: Vec<_> = state.apps.iter().filter(|a| kind.accepts(a)).collect();
@@ -2145,6 +2174,16 @@ impl Panel {
             Page::Privacy => {
                 let state = &c.system;
                 l.hero(Page::Privacy);
+                l.header("Буфер обмена");
+                l.begin();
+                l.row(
+                    52.0,
+                    "История буфера обмена",
+                    "Только в памяти, без картинок и паролей. Открывается по Super + Shift + V".into(),
+                    Style::Toggle(c.clipboard_history),
+                    Some(Action::ClipboardHistory),
+                );
+                l.end();
                 l.header("Запись экрана и снимки (портал)");
                 l.begin();
                 let r = l.row(
@@ -3314,6 +3353,9 @@ impl crate::FeatherCompositor {
             active: self.active_layout_index,
             animations: self.animations.enabled(),
             dock_zoom: self.shell.dock_zoom_enabled,
+            restore_session: self.restore_session,
+            battery: self.shell.battery,
+            clipboard_history: self.clip_history.enabled,
             scale: self.scale_factor,
             xwayland_hidpi: self.xwayland_hidpi,
             display_name: &self.display_name,
@@ -3386,6 +3428,13 @@ impl crate::FeatherCompositor {
             let (ax, _, aw, ah) = crate::theme::maximized_area(sw, sh);
             w.x = ax;
             w.resize_client(aw, ah - w.titlebar_h());
+        }
+        let rects = self.monitor_rects();
+        for w in self.windows.iter_mut().filter(|w| !w.maximized && !w.fullscreen) {
+            let Some(tile) = w.tiled else { continue };
+            let center = (w.x + w.width / 2, w.y);
+            let r = rects.iter().find(|r| r.contains(center.0 as f64, center.1 as f64)).copied().unwrap_or(crate::monitors::Rect { x: 0, y: 0, w: sw, h: sh });
+            w.fit_tile_frame(tile.frame(crate::tiling::work_area(r)));
         }
         self.dock_model_dirty = true;
         self.needs_redraw = true;
@@ -3835,6 +3884,19 @@ impl crate::FeatherCompositor {
                 self.system_settings.autostart_picker = false;
                 self.system_settings.autostart_query.clear();
                 self.system_settings.scroll = 0.0;
+            }
+            Action::ClipboardHistory => {
+                let on = !self.clip_history.enabled;
+                self.clip_history.set_enabled(on);
+                self.mark_builtin_windows_dirty();
+                self.needs_redraw = true;
+                self.save_settings();
+            }
+            Action::RestoreSession => {
+                self.restore_session = !self.restore_session;
+                self.mark_builtin_windows_dirty();
+                self.needs_redraw = true;
+                self.save_settings();
             }
             Action::ToggleAutostart { id, enabled } => {
                 self.request_system_preference(
@@ -4453,6 +4515,9 @@ mod tests {
             active: 1,
             animations: true,
             dock_zoom: true,
+            restore_session: true,
+            battery: None,
+            clipboard_history: true,
             scale: 2.0,
             xwayland_hidpi: true,
             display_name: "DP-1",
@@ -4924,6 +4989,9 @@ mod tests {
             active: 0,
             animations: false,
             dock_zoom: false,
+            restore_session: true,
+            battery: None,
+            clipboard_history: true,
             scale: 1.0,
             xwayland_hidpi: true,
             display_name: "Window",

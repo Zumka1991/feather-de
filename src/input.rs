@@ -137,6 +137,10 @@ pub(crate) enum KeyAction {
     CloseTop,
     MinimizeTop,
     ToggleMaximizeTop,
+    /// Ctrl+Super+arrow: the front window to a half or quarter of the screen
+    Tile(crate::tiling::Dir),
+    /// Clipboard history or the emoji panel
+    Picker(crate::shell::SpotlightMode),
     /// Alt/Super+Tab: open the app switcher or move the selection
     SwitcherStep { reverse: bool },
     SwitcherCommit,
@@ -885,7 +889,9 @@ impl FeatherCompositor {
             Some(KeyAction::LarvisDesktop) => self.toggle_larvis_desktop(),
             // Larvis's desktop is not a window of the user: Cmd+W and Cmd+M leave it
             Some(KeyAction::CloseTop | KeyAction::MinimizeTop) if self.larvis_shown => self.leave_larvis_desktop(),
-            Some(KeyAction::ToggleMaximizeTop) if self.larvis_shown => {}
+            Some(KeyAction::ToggleMaximizeTop | KeyAction::Tile(_)) if self.larvis_shown => {}
+            Some(KeyAction::Tile(dir)) => self.tile_front_step(dir),
+            Some(KeyAction::Picker(mode)) => self.open_picker(mode),
             Some(KeyAction::CloseTop) => self.close_top_window(),
             Some(KeyAction::MinimizeTop) => {
                 if let Some(top) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
@@ -944,31 +950,44 @@ impl FeatherCompositor {
                 match sym.raw() {
                     keysyms::KEY_Escape => {
                         self.shell.spotlight_open = false;
+                        self.shell.leave_picker();
                         self.shell.overlay_dirty = true;
                         self.shell.topbar_dirty = true;
+                    }
+                    keysyms::KEY_Up | keysyms::KEY_Down | keysyms::KEY_Left | keysyms::KEY_Right
+                        if self.shell.spotlight_mode == crate::shell::SpotlightMode::Emoji =>
+                    {
+                        let last = self.shell.spotlight_hits.len().saturating_sub(1);
+                        let at = self.shell.spotlight_selected.min(last);
+                        let cols = crate::clipboard::EMOJI_COLUMNS;
+                        self.shell.spotlight_selected = match sym.raw() {
+                            keysyms::KEY_Left => at.saturating_sub(1),
+                            keysyms::KEY_Right => (at + 1).min(last),
+                            keysyms::KEY_Up => at.saturating_sub(cols),
+                            _ => (at + cols).min(last),
+                        };
+                        self.shell.overlay_dirty = true;
                     }
                     keysyms::KEY_Up => {
                         self.shell.spotlight_selected = self.shell.spotlight_selected.saturating_sub(1);
                         self.shell.overlay_dirty = true;
                     }
                     keysyms::KEY_Down => {
-                        let count = self.app_registry.search(&self.shell.spotlight_query).len();
+                        let count = self.shell.spotlight_hits.len();
                         if count > 0 {
                             self.shell.spotlight_selected = (self.shell.spotlight_selected + 1).min(count - 1);
                         }
                         self.shell.overlay_dirty = true;
                     }
                     keysyms::KEY_Return => {
-                        let results = self.app_registry.search(&self.shell.spotlight_query);
+                        let results = &self.shell.spotlight_hits;
                         let sel = self.shell.spotlight_selected.min(results.len().saturating_sub(1));
-                        if let Some(app) = results.get(sel) {
-                            *deferred = Some(KeyAction::Shell(ShellClickAction::LaunchApp(
-                                app.action.clone(),
-                                app.name.clone(),
-                            )));
+                        if let Some(hit) = results.get(sel) {
+                            *deferred = Some(KeyAction::Shell(hit.action.clone()));
                         }
                         self.shell.spotlight_open = false;
                         self.shell.spotlight_query.clear();
+                        self.shell.leave_picker();
                         self.shell.overlay_dirty = true;
                         self.shell.topbar_dirty = true;
                     }
@@ -985,6 +1004,7 @@ impl FeatherCompositor {
                                 sh.spotlight_query = sh.spotlight_input.text().to_owned();
                                 sh.spotlight_selected = 0;
                                 sh.overlay_dirty = true;
+                                self.spotlight_query_changed();
                             }
                             feather_ui::input::Edit::Moved => sh.overlay_dirty = true,
                             feather_ui::input::Edit::Ignored => {}
@@ -1226,6 +1246,7 @@ impl FeatherCompositor {
                 win.update_hover(pos.x, pos.y);
             }
         }
+        self.green_button_motion(pos.x, pos.y);
         self.settings_pointer_moved(pos.x, pos.y);
         if self.auth.motion((pos.x, pos.y), (self.shell.screen_w, self.shell.screen_h)) {
             self.needs_redraw = true;
@@ -1269,6 +1290,25 @@ impl FeatherCompositor {
             } => {
                 let dx = (pos.x - start_cursor.0).round() as i32;
                 let dy = (pos.y - start_cursor.1).round() as i32;
+                // A maximized or tiled window lets go only once it is really dragged: a click
+                // on its titlebar and the first half of a double click must not resize it
+                if let Some(i) = self.windows.iter().position(|w| w.id == win_id && (w.maximized || w.tiled.is_some()) && !w.fullscreen) {
+                    if dx.abs().max(dy.abs()) < crate::tiling::DETACH_DISTANCE {
+                        return;
+                    }
+                    let r = self.window_monitor(i);
+                    let win = &mut self.windows[i];
+                    if win.maximized {
+                        win.unmaximize_on((pos.x, pos.y), r);
+                    }
+                    if win.tiled.is_some() {
+                        win.untile_under((pos.x, pos.y), r);
+                    }
+                    self.active_drag = Some(DragOperation::MoveWindow { win_id, start_cursor: (pos.x, pos.y), start_pos: (win.x, win.y) });
+                    self.tile_drag_motion(win_id, pos.x, pos.y);
+                    return;
+                }
+                self.tile_drag_motion(win_id, pos.x, pos.y);
                 let r=self.monitor_at(pos.x,pos.y);let top=r.y+if r.x==0&&r.y==0{TOP_BAR_HEIGHT}else{0};
                 if let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) {
                     win.x = start_pos.0 + dx;
@@ -1343,6 +1383,7 @@ impl FeatherCompositor {
     fn start_resize(&mut self, idx: usize, edges: Edges) {
         let pos = self.pointer_location;
         let win = &mut self.windows[idx];
+        win.forget_tile();
         win.set_resizing(true);
         win.resize_anchor = Some(ResizeAnchor {
             edges,
@@ -1359,9 +1400,7 @@ impl FeatherCompositor {
 
     fn start_move(&mut self, idx: usize) {
         let pos = self.pointer_location;
-        let r=self.window_monitor(idx);
         let win = &mut self.windows[idx];
-        win.unmaximize_on((pos.x,pos.y),r);
         win.resize_anchor = None;
         self.active_drag = Some(DragOperation::MoveWindow {
             win_id: win.id,
@@ -1372,6 +1411,7 @@ impl FeatherCompositor {
 
     pub(crate) fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
         self.cancel_key_repeat();
+        self.cancel_green_hover();
         if self.mission_open() && !self.lock.active {
             let (x, y) = (self.pointer_location.x, self.pointer_location.y);
             if btn_state == ButtonState::Pressed && self.shell.dock_contains(x, y) {
@@ -1417,6 +1457,20 @@ impl FeatherCompositor {
             time,
         };
 
+        // A panel or launcher of another desktop in front of everything: the press is its own
+        if btn_state == ButtonState::Pressed && !self.shell.layers.is_empty() {
+            let target = self.layer_button(pos.x, pos.y);
+            self.layer_focus_on_press(target.clone());
+            if target.is_some() {
+                if !self.pressed_buttons.contains(&button) {
+                    self.pressed_buttons.push(button);
+                }
+                self.refresh_pointer_focus();
+                pointer.button(self, &event);
+                pointer.frame(self);
+                return;
+            }
+        }
         // Modal password dialog: every press is swallowed; its release is consumed below.
         if btn_state == ButtonState::Pressed && self.auth.is_open() {
             if button == BTN_LEFT {
@@ -1439,7 +1493,13 @@ impl FeatherCompositor {
             if let Some(DragOperation::ResizeWindow { win_id, .. }) = drag {
                 if let Some(win) = self.windows.iter().find(|w| w.id == win_id) { win.set_resizing(false); }
             }
+            if let Some(DragOperation::MoveWindow { win_id, .. }) = drag {
+                self.tile_drag_finish(win_id);
+            }
             let was_dragging = drag.is_some();
+            if was_dragging {
+                self.window_memory_changed();
+            }
             // Don't send a release for a press the client never saw
             if let Some(i) = self.consumed_buttons.iter().position(|&b| b == button) {
                 self.consumed_buttons.swap_remove(i);
@@ -1801,6 +1861,8 @@ impl FeatherCompositor {
         if let Some(DragOperation::ResizeWindow { win_id, .. }) = self.active_drag.take() {
             if let Some(win) = self.windows.iter().find(|w| w.id == win_id) { win.set_resizing(false); }
         }
+        self.shell.tile_preview.clear();
+        self.cancel_green_hover();
         let was_switching = self.shell.switcher.take().is_some();
         if was_switching {
             self.consume_held_switcher_modifiers();

@@ -13,6 +13,16 @@ pub enum Op {
     Remove,
 }
 
+/// A package with a newer version waiting
+#[derive(Debug, Clone, PartialEq)]
+pub struct Update {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub summary: String,
+    pub security: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// Overall fraction (None while PackageKit does not know) and what is happening
@@ -34,6 +44,8 @@ const FILTER_NEWEST: u64 = 1 << 16;
 const FILTER_ARCH: u64 = 1 << 18;
 const FLAG_ONLY_TRUSTED: u64 = 1 << 1;
 const FLAG_SIMULATE: u64 = 1 << 2;
+const INFO_SECURITY: u32 = 8;
+const INFO_BLOCKED: u32 = 9;
 const INFO_REMOVING: u32 = 13;
 const EXIT_SUCCESS: u32 = 1;
 const EXIT_CANCELLED: u32 = 3;
@@ -57,6 +69,8 @@ enum Call {
     /// flags, ids, allow_deps, autoremove
     Remove(u64, Vec<String>, bool, bool),
     RefreshCache,
+    GetUpdates,
+    Update(u64, Vec<String>),
 }
 
 #[derive(Default)]
@@ -65,6 +79,8 @@ struct Outcome {
     error: Option<(u32, String)>,
     /// (info, package id) of every Package signal
     packages: Vec<(u32, String)>,
+    /// Their summaries, in the same order
+    summaries: Vec<String>,
 }
 
 /// "gimp;3.0.4-1;amd64;ubuntu" → "gimp"
@@ -140,6 +156,67 @@ async fn work(op: Op, package: &str, confirmed: bool, send: &(impl Fn(Event) + S
     }
 }
 
+/// What can be updated. `refresh`: ask the mirrors first, otherwise only apt's current lists
+pub fn check_updates(refresh: bool, send: impl Fn(Result<Vec<Update>, String>) + Send + 'static) {
+    std::thread::spawn(move || {
+        let result = futures_lite::future::block_on(async {
+            let conn = Connection::system().await?;
+            if refresh {
+                // Stale lists still say something: a failed refresh (offline) is not fatal
+                let _ = transaction(&conn, Call::RefreshCache, &|_, _| {}).await?;
+            }
+            transaction(&conn, Call::GetUpdates, &|_, _| {}).await
+        });
+        send(match result {
+            Ok(out) => match failure(&out) {
+                None => Ok(updates_of(&out)),
+                Some(Event::Failed(text)) => Err(text),
+                Some(_) => Err("Операция не удалась".into()),
+            },
+            Err(zbus::Error::MethodError(name, ..)) if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" => {
+                Err("Служба PackageKit недоступна (пакет packagekit)".into())
+            }
+            Err(e) => Err(format!("PackageKit: {e}")),
+        });
+    });
+}
+
+fn updates_of(out: &Outcome) -> Vec<Update> {
+    let mut list: Vec<Update> = out
+        .packages
+        .iter()
+        .zip(&out.summaries)
+        .filter(|((info, _), _)| *info != INFO_BLOCKED)
+        .map(|((info, id), summary)| Update {
+            id: id.clone(),
+            name: name_of(id).to_string(),
+            version: id.split(';').nth(1).unwrap_or("").to_string(),
+            summary: summary.clone(),
+            security: *info == INFO_SECURITY,
+        })
+        .collect();
+    list.sort_by(|a, b| b.security.cmp(&a.security).then_with(|| a.name.cmp(&b.name)));
+    list
+}
+
+/// Installs all these updates; `send` gets progress and then one final event
+pub fn run_updates(ids: Vec<String>, send: impl Fn(Event) + Send + 'static) {
+    std::thread::spawn(move || {
+        let event = futures_lite::future::block_on(async {
+            let conn = Connection::system().await?;
+            let progress = |fraction: Option<f32>, status: u32| {
+                if let Some(text) = status_text(Op::Install, status) {
+                    send(Event::Progress(fraction, text.into()));
+                }
+            };
+            let done = transaction(&conn, Call::Update(FLAG_ONLY_TRUSTED, ids), &progress).await?;
+            Ok::<_, zbus::Error>(failure(&done).unwrap_or(Event::Done))
+        })
+        .unwrap_or_else(|e| Event::Failed(format!("PackageKit: {e}")));
+        send(event);
+    });
+}
+
 /// The package id PackageKit knows for this name: the newest installable one, or the
 /// installed one for a removal
 async fn resolve(conn: &Connection, op: Op, package: &str) -> zbus::Result<Option<String>> {
@@ -178,6 +255,8 @@ async fn transaction(conn: &Connection, call: Call, progress: &dyn Fn(Option<f32
         Call::Install(flags, ids) => tx.call_method("InstallPackages", &(flags, ids)).await?,
         Call::Remove(flags, ids, allow_deps, autoremove) => tx.call_method("RemovePackages", &(flags, ids, allow_deps, autoremove)).await?,
         Call::RefreshCache => tx.call_method("RefreshCache", &(false,)).await?,
+        Call::GetUpdates => tx.call_method("GetUpdates", &(0u64,)).await?,
+        Call::Update(flags, ids) => tx.call_method("UpdatePackages", &(flags, ids)).await?,
     };
     let mut out = Outcome::default();
     let (mut percentage, mut status) = (None::<u32>, 0u32);
@@ -187,8 +266,9 @@ async fn transaction(conn: &Connection, call: Call, progress: &dyn Fn(Option<f32
         let Some(member) = header.member() else { continue };
         match member.as_str() {
             "Package" => {
-                if let Ok((info, id, _summary)) = msg.body().deserialize::<(u32, String, String)>() {
+                if let Ok((info, id, summary)) = msg.body().deserialize::<(u32, String, String)>() {
                     out.packages.push((info, id));
+                    out.summaries.push(summary);
                 }
             }
             "ErrorCode" => {
@@ -285,6 +365,37 @@ mod tests {
         ];
         assert_eq!(also_removed(&packages, "gimp"), ["gimp-plugin-registry"]);
         assert_eq!(name_of("vlc;3.0.21;amd64;ubuntu-resolute-universe"), "vlc");
+    }
+
+    #[test]
+    fn updates_put_security_first_and_skip_blocked() {
+        let out = Outcome {
+            exit: EXIT_SUCCESS,
+            packages: vec![
+                (5, "zlib;1.3;amd64;main".to_string()),
+                (INFO_BLOCKED, "kernel;6;amd64;main".to_string()),
+                (INFO_SECURITY, "openssl;3.5;amd64;security".to_string()),
+                (5, "bash;5.3;amd64;main".to_string()),
+            ],
+            summaries: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            ..Default::default()
+        };
+        let list = updates_of(&out);
+        let names: Vec<_> = list.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, ["openssl", "bash", "zlib"]);
+        assert_eq!((list[0].version.as_str(), list[0].summary.as_str(), list[0].security), ("3.5", "c", true));
+    }
+
+    /// Read-only, against the real PackageKit: cargo test -p feather-store -- --ignored pk_updates
+    #[test]
+    #[ignore]
+    fn pk_updates() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        check_updates(false, move |result| {
+            let _ = tx.send(result);
+        });
+        let list = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("answer").expect("updates");
+        eprintln!("updates: {} {:?}", list.len(), list.iter().take(5).map(|u| (&u.name, &u.version, u.security)).collect::<Vec<_>>());
     }
 
     /// Talks to the real PackageKit without changing anything (resolve + simulated removal):

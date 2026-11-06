@@ -670,3 +670,45 @@ apt не может установить этот пакет	apt cannot install 
 {} КБ/с	{} KB/s	{} KB/s	{} KB/s	{} Ko/s	{} KB/s
 {} МБ/с	{} MB/s	{} MB/s	{} MB/s	{} Mo/s	{} MB/s
 {} ГБ/с	{} GB/s	{} GB/s	{} GB/s	{} Go/s	{} GB/s
+Окно влево	Tile Window Left	Ventana a la izquierda	Fenster nach links	Fenêtre à gauche	窗口靠左
+Окно вправо	Tile Window Right	Ventana a la derecha	Fenster nach rechts	Fenêtre à droite	窗口靠右
+Окно вверх	Tile Window Up	Ventana arriba	Fenster nach oben	Fenêtre en haut	窗口靠上
+Окно вниз	Tile Window Down	Ventana abajo	Fenster nach unten	Fenêtre en bas	窗口靠下
+Заполнить экран	Fill	Rellenar	Füllen	Remplir	填充
+Левая половина	Left	Izquierda	Links	Gauche	左半屏
+Правая половина	Right	Derecha	Rechts	Droite	右半屏
+Верхняя половина	Top	Arriba	Oben	Haut	上半屏
+Нижняя половина	Bottom	Abajo	Unten	Bas	下半屏
+Левая верхняя четверть	Top Left	Arriba a la izquierda	Oben links	En haut à gauche	左上角
+Правая верхняя четверть	Top Right	Arriba a la derecha	Oben rechts	En haut à droite	右上角
+Левая нижняя четверть	Bottom Left	Abajo a la izquierda	Unten links	En bas à gauche	左下角
+Правая нижняя четверть	Bottom Right	Abajo a la derecha	Unten rechts	En bas à droite	右下角
+Вернуть прежний размер	Return to Previous Size	Volver al tamaño anterior	Vorherige Größe	Taille précédente	恢复之前大小
+Открывать программы прошлого сеанса	Reopen Programs from Last Session	Reabrir programas de la última sesión	Programme der letzten Sitzung öffnen	Rouvrir les programmes de la session précédente	重新打开上次会话的程序
+При входе программы вернутся на свои столы и места	At login, programs return to their desktops and places	Al iniciar sesión, los programas vuelven a sus escritorios	Beim Anmelden kehren Programme an ihre Plätze zurück	À la connexion, les programmes reprennent leur place	登录时程序回到原来的桌面和位置
+Открытое окно	Open Window	Ventana abierta	Geöffnetes Fenster	Fenêtre ouverte	已打开的窗口
+Заметка	Note	Nota	Notiz	Note	备忘录
+История буфера обмена	Clipboard History	Historial del portapapeles	Zwischenablage-Verlauf	Historique du presse-papiers	剪贴板历史
+История буфера обмена пуста	Clipboard history is empty	El historial está vacío	Verlauf ist leer	Historique vide	剪贴板历史为空
+Поиск в истории буфера обмена	Search clipboard history	Buscar en el historial	Verlauf durchsuchen	Rechercher dans l'historique	搜索剪贴板历史
+Панель эмодзи	Emoji Panel	Panel de emojis	Emoji-Auswahl	Panneau d'emojis	表情面板
+Поиск эмодзи	Search emoji	Buscar emoji	Emoji suchen	Rechercher un emoji	搜索表情
+Буфер обмена	Clipboard	Portapapeles	Zwischenablage	Presse-papiers	剪贴板
+Только в памяти, без картинок и паролей. Открывается по Super + Shift + V	In memory only, no images or passwords. Opens with Super + Shift + V	Solo en memoria, sin imágenes ni contraseñas. Se abre con Super + Mayús + V	Nur im Speicher, ohne Bilder und Passwörter. Öffnen mit Super + Umschalt + V	En mémoire seulement, sans images ni mots de passe. S'ouvre avec Super + Maj + V	仅保存在内存中,不含图片和密码。按 Super + Shift + V 打开
+симв.	chars	car.	Zeichen	car.	字符
+заряжена	charged	cargada	geladen	chargée	已充满
+заряжается	charging	cargando	wird geladen	en charge	正在充电
+от батареи	on battery	con batería	im Akkubetrieb	sur batterie	使用电池
+осталось	left	restante	übrig	restant	剩余
+Батарея почти разряжена	Battery Is Low	Batería baja	Akku fast leer	Batterie faible	电池电量低
+Батарея	Battery	Batería	Akku	Batterie	电池
+Обновления	Updates	Actualizaciones	Updates	Mises à jour	更新
+Проверка обновлений…	Checking for updates…	Buscando actualizaciones…	Suche nach Updates…	Recherche de mises à jour…	正在检查更新…
+Не удалось проверить обновления	Couldn’t check for updates	No se pudieron buscar actualizaciones	Updates konnten nicht geprüft werden	Impossible de vérifier les mises à jour	无法检查更新
+Всё обновлено	Everything is up to date	Todo está actualizado	Alles ist aktuell	Tout est à jour	已是最新
+Доступно обновлений:	Updates available:	Actualizaciones disponibles:	Verfügbare Updates:	Mises à jour disponibles :	可用更新：
+Проверить	Check	Buscar	Prüfen	Vérifier	检查
+Обновить всё	Update All	Actualizar todo	Alle aktualisieren	Tout mettre à jour	全部更新
+безопасность	security	seguridad	Sicherheit	sécurité	安全
+Обновления установлены	Updates installed	Actualizaciones instaladas	Updates installiert	Mises à jour installées	更新已安装
+Не удалось обновить	Couldn’t update	No se pudo actualizar	Aktualisierung fehlgeschlagen	Échec de la mise à jour	更新失败

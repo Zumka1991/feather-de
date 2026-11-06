@@ -3,7 +3,7 @@
 //! matches what is on screen.
 
 use crate::catalog::{self, AppInfo, Catalog};
-use crate::packagekit::{Event, Op};
+use crate::packagekit::{self, Event, Op};
 use feather_ui::appearance::colors;
 use feather_ui::draw::*;
 use feather_ui::i18n::tr;
@@ -94,6 +94,9 @@ pub enum Effect {
     Run(Op, String, bool),
     Launch(String),
     OpenUrl(String),
+    /// List available updates; true: refresh the package lists first
+    CheckUpdates(bool),
+    RunUpdates(Vec<String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -108,6 +111,7 @@ pub enum Page {
     Home,
     Category(usize),
     Installed,
+    Updates,
     Search,
 }
 
@@ -117,13 +121,14 @@ impl Page {
             Page::Home => "Главная",
             Page::Category(i) => CATEGORIES[i].0,
             Page::Installed => "Установленные",
+            Page::Updates => "Обновления",
             Page::Search => "Поиск",
         }
     }
 }
 
 fn nav_pages() -> impl Iterator<Item = Page> {
-    std::iter::once(Page::Home).chain((0..CATEGORIES.len()).map(Page::Category)).chain(std::iter::once(Page::Installed))
+    std::iter::once(Page::Home).chain((0..CATEGORIES.len()).map(Page::Category)).chain([Page::Installed, Page::Updates])
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -146,6 +151,19 @@ enum Hit {
     Homepage,
     NoticeClose,
     Content,
+    UpdateAll,
+    CheckUpdates,
+}
+
+/// The «Обновления» page
+#[derive(Clone, Debug, Default, PartialEq)]
+enum Updates {
+    /// Not asked yet
+    #[default]
+    Unknown,
+    Checking,
+    Listed(Vec<packagekit::Update>),
+    Failed(String),
 }
 
 /// An operation in progress
@@ -184,6 +202,11 @@ pub struct App {
     requested: HashSet<usize>,
     icon_queue: Vec<(usize, PathBuf)>,
     task: Option<Task>,
+    updates: Updates,
+    /// The mirrors were asked in this run
+    updates_refreshed: bool,
+    /// Installing updates: fraction and what is happening
+    updating: Option<(Option<f32>, String)>,
     confirm: Option<(usize, Vec<String>)>,
     /// Text and whether it is an error
     notice: Option<(String, bool)>,
@@ -218,6 +241,9 @@ impl App {
             requested: HashSet::new(),
             icon_queue: Vec::new(),
             task: None,
+            updates: Updates::Unknown,
+            updates_refreshed: false,
+            updating: None,
             confirm: None,
             notice: None,
             zones: Vec::new(),
@@ -260,7 +286,7 @@ impl App {
     }
 
     pub fn busy(&self) -> bool {
-        self.task.is_some()
+        self.task.is_some() || self.updating.is_some()
     }
 
     pub fn icons_loaded(&mut self, icons: Vec<(usize, Option<Pixmap>)>) {
@@ -294,7 +320,7 @@ impl App {
         let Some(catalog) = &self.catalog else { return };
         let picked: HashSet<usize> = self.picks(&EDITORS_CHOICE).into_iter().chain(self.picks(&GAMES)).collect();
         self.results = match self.page {
-            Page::Home => Vec::new(),
+            Page::Home | Page::Updates => Vec::new(),
             Page::Search => search(&catalog.apps, self.search.text()),
             Page::Installed => (0..catalog.apps.len()).filter(|i| catalog.installed.contains(&catalog.apps[*i].package)).collect(),
             Page::Category(c) => {
@@ -355,8 +381,75 @@ impl App {
 
     // ---------- operations ----------
 
+    /// At start: the badge in the sidebar, from the package lists as they are
+    pub fn initial_effects(&mut self) -> Vec<Effect> {
+        self.updates = Updates::Checking;
+        vec![Effect::CheckUpdates(false)]
+    }
+
+    pub fn updates_listed(&mut self, result: Result<Vec<packagekit::Update>, String>) {
+        self.updates = match result {
+            Ok(list) => Updates::Listed(list),
+            Err(text) => Updates::Failed(text),
+        };
+        self.dirty = true;
+    }
+
+    fn update_count(&self) -> usize {
+        match &self.updates {
+            Updates::Listed(list) => list.len(),
+            _ => 0,
+        }
+    }
+
+    fn check_updates(&mut self, refresh: bool) -> Vec<Effect> {
+        if self.updates == Updates::Checking || self.updating.is_some() {
+            return Vec::new();
+        }
+        self.updates = Updates::Checking;
+        self.updates_refreshed |= refresh;
+        self.dirty = true;
+        vec![Effect::CheckUpdates(refresh)]
+    }
+
+    fn update_all(&mut self) -> Vec<Effect> {
+        let Updates::Listed(list) = &self.updates else { return Vec::new() };
+        if list.is_empty() || self.updating.is_some() || self.task.is_some() {
+            return Vec::new();
+        }
+        let ids = list.iter().map(|u| u.id.clone()).collect();
+        self.notice = None;
+        self.updating = Some((None, tr("Подготовка…").into_owned()));
+        self.dirty = true;
+        vec![Effect::RunUpdates(ids)]
+    }
+
+    pub fn update_event(&mut self, event: Event) -> Vec<Effect> {
+        self.dirty = true;
+        match event {
+            Event::Progress(fraction, message) => {
+                self.updating = Some((fraction, tr(&message).into_owned()));
+                Vec::new()
+            }
+            Event::Done => {
+                self.updating = None;
+                self.notice = Some((tr("Обновления установлены").into_owned(), false));
+                self.check_updates(false)
+            }
+            Event::Cancelled | Event::Confirm(_) => {
+                self.updating = None;
+                Vec::new()
+            }
+            Event::Failed(text) => {
+                self.updating = None;
+                self.notice = Some((format!("{}: {}", tr("Не удалось обновить"), tr(&text)), true));
+                Vec::new()
+            }
+        }
+    }
+
     fn start(&mut self, op: Op, app: usize, confirmed: Vec<String>) -> Vec<Effect> {
-        if self.task.is_some() {
+        if self.task.is_some() || self.updating.is_some() {
             return Vec::new();
         }
         let Some(package) = self.app(app).map(|a| a.package.clone()) else { return Vec::new() };
@@ -559,8 +652,15 @@ impl App {
             }
             Hit::Nav(page) => {
                 self.go(page);
-                Vec::new()
+                // The first visit asks the mirrors; later ones show what is known
+                if page == Page::Updates && !self.updates_refreshed {
+                    self.check_updates(true)
+                } else {
+                    Vec::new()
+                }
             }
+            Hit::UpdateAll => self.update_all(),
+            Hit::CheckUpdates => self.check_updates(true),
             Hit::Back => {
                 self.back();
                 Vec::new()
@@ -725,6 +825,10 @@ impl App {
         let title = self.fonts.ellipsize_raw(&title, inner_w, 26.0, true);
         self.fonts.draw_raw(pm, &title, x0, y, 26.0, colors::text(), true);
         y += 50.0;
+        if self.page == Page::Updates {
+            self.paint_updates(pm, x0, y, inner_w);
+            return;
+        }
         let Some(catalog) = &self.catalog else {
             self.content_h = 0.0;
             self.centered_message(pm, "Загрузка каталога…", None);
@@ -759,6 +863,55 @@ impl App {
         } else {
             let list = self.results.clone();
             y = self.paint_grid(pm, &list, x0, y, inner_w);
+        }
+        self.content_h = y + self.scroll + PAD;
+    }
+
+    fn paint_updates(&mut self, pm: &mut PixmapMut, x: f32, mut y: f32, w: f32) {
+        let updates = self.updates.clone();
+        let (button_w, button_h) = (150.0, 30.0);
+        let busy = self.updating.is_some() || updates == Updates::Checking;
+        let count = self.update_count();
+        let headline = match &updates {
+            Updates::Unknown | Updates::Checking => tr("Проверка обновлений…").into_owned(),
+            Updates::Failed(_) => tr("Не удалось проверить обновления").into_owned(),
+            Updates::Listed(list) if list.is_empty() => tr("Всё обновлено").into_owned(),
+            Updates::Listed(_) => format!("{} {count}", tr("Доступно обновлений:")),
+        };
+        self.fonts.draw_raw(pm, &headline, x, y + 6.0, 15.0, colors::text(), true);
+        self.paint_button(pm, Hit::CheckUpdates, "Проверить", x + w - button_w, y, button_w, false, busy);
+        if count > 0 {
+            self.paint_button(pm, Hit::UpdateAll, "Обновить всё", x + w - 2.0 * button_w - 10.0, y, button_w, true, busy);
+        }
+        y += button_h + 16.0;
+        if let Some((fraction, message)) = self.updating.clone() {
+            self.fonts.draw_raw(pm, &message, x, y, 13.0, colors::secondary(), false);
+            y += 22.0;
+            fill_rrect(pm, x, y, w, 6.0, 3.0, colors::control());
+            fill_rrect(pm, x, y, (w * fraction.unwrap_or(0.05)).max(6.0), 6.0, 3.0, colors::accent());
+            y += 22.0;
+        }
+        match updates {
+            Updates::Failed(text) => {
+                for line in wrap(&mut self.fonts, &tr(&text), w, 13.0, 4) {
+                    self.fonts.draw_raw(pm, &line, x, y, 13.0, colors::secondary(), false);
+                    y += 19.0;
+                }
+            }
+            Updates::Listed(list) => {
+                for update in &list {
+                    let title = if update.security { format!("{} · {}", update.name, tr("безопасность")) } else { update.name.clone() };
+                    let version = self.fonts.ellipsize_raw(&update.version, 180.0, 12.0, false);
+                    let version_w = self.fonts.measure_raw(&version, 12.0, false);
+                    self.fonts.draw_raw(pm, &version, x + w - version_w, y + 4.0, 12.0, colors::tertiary(), false);
+                    let title = self.fonts.ellipsize_raw(&title, w - version_w - 16.0, 13.0, true);
+                    self.fonts.draw_raw(pm, &title, x, y + 2.0, 13.0, colors::text(), true);
+                    let summary = self.fonts.ellipsize_raw(&update.summary, w, 12.0, false);
+                    self.fonts.draw_raw(pm, &summary, x, y + 22.0, 12.0, colors::secondary(), false);
+                    y += 48.0;
+                }
+            }
+            _ => {}
         }
         self.content_h = y + self.scroll + PAD;
     }
@@ -1177,6 +1330,12 @@ impl App {
             let color = if selected { colors::accent() } else { colors::secondary() };
             draw_nav_glyph(pm, page, rx + 20.0, y + NAV_ROW / 2.0, color);
             self.fonts.draw_text(pm, page.title(), rx + 40.0, y + 8.0, 13.0, colors::text(), selected);
+            if page == Page::Updates && self.update_count() > 0 {
+                let label = self.update_count().to_string();
+                let lw = self.fonts.measure_raw(&label, 11.0, true).max(8.0) + 10.0;
+                fill_rrect(pm, rx + rw - lw - 8.0, y + 7.0, lw, 18.0, 9.0, colors::accent());
+                self.fonts.draw_raw(pm, &label, rx + rw - lw - 3.0, y + 9.5, 11.0, Color::WHITE, true);
+            }
             self.zone(Hit::Nav(page), rx, y, rw, NAV_ROW);
             y += NAV_ROW;
         }
@@ -1317,6 +1476,11 @@ pub fn draw_bag(pm: &mut PixmapMut, x: f32, y: f32, s: f32) {
 fn draw_nav_glyph(pm: &mut PixmapMut, page: Page, cx: f32, cy: f32, c: Color) {
     let w = 1.4;
     match page {
+        Page::Updates => {
+            stroke_circle(pm, cx, cy, 7.0, w, c);
+            line(pm, cx, cy - 3.5, cx, cy + 3.5, w, c);
+            polyline(pm, &[(cx - 3.0, cy + 0.5), (cx, cy + 3.5), (cx + 3.0, cy + 0.5)], w, c);
+        }
         Page::Home | Page::Search => {
             let pts: Vec<(f32, f32)> = (0..=10)
                 .map(|k| {
@@ -1452,6 +1616,35 @@ mod tests {
         painted(&mut app);
         app.click(Hit::Nav(Page::Installed));
         assert_eq!(app.results, [2]);
+    }
+
+    #[test]
+    fn updates_page_lists_runs_and_checks_again() {
+        let update = |name: &str| packagekit::Update { id: format!("{name};1;amd64;main"), name: name.into(), version: "1".into(), summary: String::new(), security: false };
+        let mut app = sample();
+        assert_eq!(app.initial_effects(), [Effect::CheckUpdates(false)]);
+        app.updates_listed(Ok(vec![update("bash"), update("vim")]));
+        assert_eq!(app.update_count(), 2);
+        painted(&mut app);
+        assert_eq!(app.click(Hit::Nav(Page::Updates)), [Effect::CheckUpdates(true)], "the first visit asks the mirrors");
+        app.updates_listed(Ok(vec![update("bash"), update("vim")]));
+        painted(&mut app);
+        assert!(app.click(Hit::Nav(Page::Home)).is_empty());
+        assert!(app.click(Hit::Nav(Page::Updates)).is_empty(), "and only the first");
+        painted(&mut app);
+        assert_eq!(app.click(Hit::UpdateAll), [Effect::RunUpdates(vec!["bash;1;amd64;main".into(), "vim;1;amd64;main".into()])]);
+        assert!(app.busy());
+        app.go(Page::Home);
+        painted(&mut app);
+        assert!(app.click(Hit::CardButton(0)).is_empty(), "one operation at a time");
+        app.go(Page::Updates);
+        assert!(app.update_event(Event::Progress(Some(0.5), "Загрузка…".into())).is_empty());
+        painted(&mut app);
+        assert_eq!(app.update_event(Event::Done), [Effect::CheckUpdates(false)]);
+        assert!(!app.busy());
+        app.updates_listed(Err("Служба PackageKit недоступна (пакет packagekit)".into()));
+        painted(&mut app);
+        assert_eq!(app.update_count(), 0);
     }
 
     #[test]

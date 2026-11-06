@@ -107,6 +107,12 @@ actions! {
     NextSpace, "next-space", "Следующий стол", CTRL | ALT, k::KEY_Right;
     MovePrevious, "move-previous", "Окно на предыдущий стол", CTRL | ALT | SHIFT, k::KEY_Left;
     MoveNext, "move-next", "Окно на следующий стол", CTRL | ALT | SHIFT, k::KEY_Right;
+    ClipboardHistory, "clipboard-history", "История буфера обмена", SUPER | SHIFT, k::KEY_v;
+    Emoji, "emoji", "Панель эмодзи", SUPER, k::KEY_period;
+    TileLeft, "tile-left", "Окно влево", CTRL | SUPER, k::KEY_Left;
+    TileRight, "tile-right", "Окно вправо", CTRL | SUPER, k::KEY_Right;
+    TileUp, "tile-up", "Окно вверх", CTRL | SUPER, k::KEY_Up;
+    TileDown, "tile-down", "Окно вниз", CTRL | SUPER, k::KEY_Down;
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -383,6 +389,12 @@ impl crate::FeatherCompositor {
             Action::Quit => A::Shell(S::QuitFocusedApp),
             Action::Minimize => A::MinimizeTop,
             Action::Maximize => A::ToggleMaximizeTop,
+            Action::ClipboardHistory => A::Picker(crate::shell::SpotlightMode::Clipboard),
+            Action::Emoji => A::Picker(crate::shell::SpotlightMode::Emoji),
+            Action::TileLeft => A::Tile(crate::tiling::Dir::Left),
+            Action::TileRight => A::Tile(crate::tiling::Dir::Right),
+            Action::TileUp => A::Tile(crate::tiling::Dir::Up),
+            Action::TileDown => A::Tile(crate::tiling::Dir::Down),
             Action::Hide => A::Shell(S::HideApp),
             Action::HideOthers => A::Shell(S::HideOthers),
             Action::Mission => A::Mission {

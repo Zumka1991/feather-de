@@ -55,7 +55,15 @@ mod trash;
 mod labwc;
 mod shell;
 use feather_ui::text;
+mod battery;
+mod clipboard;
+mod foreign_toplevel;
+mod layer_shell;
+mod emoji;
+mod spotlight;
 mod theme;
+mod tiling;
+mod window_memory;
 mod ui_raster;
 mod window;
 mod controls;
@@ -251,6 +259,11 @@ pub struct FeatherCompositor {
     /// Clipboard managers and wl-copy/wl-paste/arboard work without a focused window
     pub ext_data_control_state: smithay::wayland::selection::ext_data_control::DataControlState,
     pub wlr_data_control_state: smithay::wayland::selection::wlr_data_control::DataControlState,
+    pub layer_shell_state: smithay::wayland::shell::wlr_layer::WlrLayerShellState,
+    /// On-demand layer surface that got the keyboard by a click
+    pub layer_focus: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    pub foreign_list_state: smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
+    pub foreign: crate::foreign_toplevel::ForeignToplevels,
     pub output_manager_state: OutputManagerState,
     pub viewporter_state: ViewporterState,
     /// wp_presentation: clients learn when (and on which vblank) their frame was shown
@@ -287,6 +300,13 @@ pub struct FeatherCompositor {
     pub next_win_id: u64,
     pub pointer_location: Point<f64, Logical>,
     pub active_drag: Option<DragOperation>,
+    /// The pointer rests on this window's green button: its menu opens when the timer fires
+    pub green_hover: Option<(u64, smithay::reexports::calloop::RegistrationToken)>,
+    pub window_memory: crate::window_memory::WindowMemory,
+    pub disk_search: crate::spotlight::DiskSearch,
+    pub clip_history: crate::clipboard::ClipHistory,
+    /// At login, start again the programs that were open at the end of the last session
+    pub restore_session: bool,
     pub last_titlebar_click: Option<(Instant, u64)>,
     /// Buttons currently held (by evdev code), whether or not a client saw the press
     pub pressed_buttons: Vec<u32>,
@@ -363,7 +383,7 @@ impl FeatherCompositor {
             w.set_activated(!self.lock.active && !desktop && Some(i) == top);
         }
         let password = self.auth.is_open() || (self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password);
-        let target = if self.lock.active {self.lock_focus()} else if password || desktop || self.shell.switcher.is_some() {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
+        let target = if self.lock.active {self.lock_focus()} else if password || self.shell.switcher.is_some() {None} else if let Some(layer) = self.layer_keyboard_target() {Some(layer)} else if desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus() != target {
             self.clear_all_forwarded_pressed_keys();
@@ -376,6 +396,7 @@ impl FeatherCompositor {
         self.needs_redraw = true;
         self.sync_appmenu_focus();
         self.api_sync();
+        self.foreign_sync();
     }
 
     pub fn mark_builtin_windows_dirty(&mut self) {
@@ -401,9 +422,12 @@ impl FeatherCompositor {
             && (self.own_session || std::env::var_os("FEATHER_AUTOSTART").is_some())
         {
             self.autostart_launched = true;
+            let mut started = Vec::new();
             for item in self.system_preferences.autostart.iter().filter(|i| i.enabled) {
                 crate::apps::spawn_wayland_command(&item.exec, &self.wayland_socket_name);
+                started.push(item.exec.clone());
             }
+            self.reopen_previous_session(&started);
         }
     }
 
@@ -788,6 +812,9 @@ impl FeatherCompositor {
     pub fn save_settings(&self) {
         let settings=crate::settings::Settings {
             show_about: self.show_about,
+            restore_session: self.restore_session,
+            caffeine: self.shell.caffeine,
+            clipboard_history: self.clip_history.enabled,
             first_run_completed: self.first_run_completed,
             power: self.power.preferences,
             pointer: self.pointer_config.clone(),
@@ -1202,7 +1229,7 @@ impl FeatherCompositor {
         if self.larvis_shown {
             match action {
                 ShellClickAction::CloseFocused | ShellClickAction::MinimizeFocused => return self.leave_larvis_desktop(),
-                ShellClickAction::QuitFocusedApp | ShellClickAction::ZoomFocused | ShellClickAction::FullscreenFocused
+                ShellClickAction::QuitFocusedApp | ShellClickAction::ZoomFocused | ShellClickAction::FullscreenFocused | ShellClickAction::TileFocused(_)
                 | ShellClickAction::TogglePinFocused => return,
                 _ => {}
             }
@@ -1307,6 +1334,7 @@ impl FeatherCompositor {
                 self.execute_shell_action(action);
             }
             ShellClickAction::DockMenu(DockMenuAction::Desktop(action), _) => self.desktop_menu_action(action),
+            ShellClickAction::DockMenu(DockMenuAction::Tile(id, step), _) => self.tile_window_id(id, step),
             ShellClickAction::DockMenu(action, target) => match action {
                 DockMenuAction::Tray(index) => {
                     if let Some(item)=self.shell.tray_items.get(index){
@@ -1353,7 +1381,7 @@ impl FeatherCompositor {
                         self.launch_app_instance(i);
                     }
                 }
-                DockMenuAction::Desktop(_) => {}
+                DockMenuAction::Desktop(_) | DockMenuAction::Tile(..) => {}
             },
             ShellClickAction::ActivateApp(idx) => self.activate_app(AppKey::App(idx)),
             ShellClickAction::TaskManager => {
@@ -1429,7 +1457,10 @@ impl FeatherCompositor {
             ShellClickAction::ConfirmRestart => self.confirm_restart(),
             ShellClickAction::ConfirmPowerOff => self.confirm_power_off(),
             ShellClickAction::LockScreen => self.lock_session(),
-            ShellClickAction::QuitCompositor => self.loop_signal.stop(),
+            ShellClickAction::QuitCompositor => {
+                self.freeze_window_memory();
+                self.loop_signal.stop();
+            }
             ShellClickAction::HideApp => {
                 if let Some(key) = self.focused_app() {
                     self.set_app_minimized(|k| k == key);
@@ -1456,6 +1487,27 @@ impl FeatherCompositor {
                     w.minimized = true;
                 }
                 self.refresh_focus();
+            }
+            ShellClickAction::TileFocused(step) => self.tile_focused(step),
+            ShellClickAction::PasteClip(clip) => {
+                self.clip_history.push(clip.clone());
+                self.paste_clip(clip);
+            }
+            ShellClickAction::PasteEmoji(ch) => {
+                let recent = &mut self.clip_history.recent_emoji;
+                recent.retain(|c| *c != ch);
+                recent.insert(0, ch);
+                recent.truncate(crate::clipboard::EMOJI_COLUMNS);
+                self.paste_clip(crate::clipboard::Clip { mime: "text/plain;charset=utf-8".into(), data: ch.to_string() });
+            }
+            ShellClickAction::ToggleCaffeine => self.set_caffeine(!self.shell.caffeine),
+            ShellClickAction::OpenSettingsPage(page) => {
+                self.open_or_focus_builtin(BuiltinWindowKind::SystemSettings);
+                self.apply_system_setting(crate::system_settings::Action::Page(page));
+            }
+            ShellClickAction::OpenPath(path) => {
+                let quoted = path.to_string_lossy().replace('\'', "'\\''");
+                crate::apps::spawn_wayland_command(&format!("xdg-open '{quoted}'"), &self.wayland_socket_name);
             }
             ShellClickAction::ZoomFocused => {
                 if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);}
@@ -1883,7 +1935,29 @@ fn arm_housekeeping(state: &mut FeatherCompositor, after: Duration) {
     }
 }
 
+/// glibc keeps what it frees unless told otherwise: an arena per thread (and we have dozens of
+/// mostly sleeping threads), and big buffers served from the heap once one has been freed.
+/// With these limits a panel's big buffers go back to the system when it closes: a stress run of
+/// all panels settles at 30 MiB instead of 50. Thresholds of 4 and 8 MiB leave frame times as they
+/// were; at 256 KiB page faults on small buffers cost more than the budget. Must run before any
+/// thread starts.
+fn tune_malloc() {
+    #[cfg(target_env = "gnu")]
+    {
+        const M_TRIM_THRESHOLD: libc::c_int = -1;
+        const M_MMAP_THRESHOLD: libc::c_int = -3;
+        const M_ARENA_MAX: libc::c_int = -8;
+        // SAFETY: called first thing in main, with documented parameters only
+        unsafe {
+            libc::mallopt(M_ARENA_MAX, 2);
+            libc::mallopt(M_MMAP_THRESHOLD, 4 * 1024 * 1024);
+            libc::mallopt(M_TRIM_THRESHOLD, 8 * 1024 * 1024);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tune_malloc();
     let args_os:Vec<_>=std::env::args_os().collect();
     if args_os.get(1).is_some_and(|a|a=="--file-portal"){return file_portal::run();}
     if args_os.get(1).is_some_and(|a|a=="--open-terminal"){return system_preferences::launch_terminal(std::path::Path::new(args_os.get(2).ok_or("missing directory")?));}
@@ -1916,6 +1990,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let primary_selection_state = PrimarySelectionState::new::<FeatherCompositor>(&dh);
     let ext_data_control_state = smithay::wayland::selection::ext_data_control::DataControlState::new::<FeatherCompositor, _>(&dh, Some(&primary_selection_state), |_| true);
     let wlr_data_control_state = smithay::wayland::selection::wlr_data_control::DataControlState::new::<FeatherCompositor, _>(&dh, Some(&primary_selection_state), |_| true);
+    let layer_shell_state = smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<FeatherCompositor>(&dh);
+    let foreign_list_state = smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<FeatherCompositor>(&dh);
+    dh.create_global::<FeatherCompositor, smithay::reexports::wayland_protocols_wlr::foreign_toplevel::v1::server::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, _>(3, ());
+    // Input methods (fcitx5, ibus): text-input for programs, input-method and a virtual keyboard
+    // for the engine. Idle globals until such a client binds.
+    smithay::wayland::text_input::TextInputManagerState::new::<FeatherCompositor>(&dh);
+    smithay::wayland::input_method::InputMethodManagerState::new::<FeatherCompositor, _>(&dh, |_| true);
+    smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState::new::<FeatherCompositor, _>(&dh, |_| true);
     let output_manager_state = OutputManagerState::new_with_xdg_output::<FeatherCompositor>(&dh);
     let viewporter_state = ViewporterState::new::<FeatherCompositor>(&dh);
     let presentation_state = smithay::wayland::presentation::PresentationState::new::<FeatherCompositor>(&dh, libc::CLOCK_MONOTONIC as u32);
@@ -2208,6 +2290,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         primary_selection_state,
         ext_data_control_state,
         wlr_data_control_state,
+        layer_shell_state,
+        layer_focus: None,
+        foreign_list_state,
+        foreign: Default::default(),
         output_manager_state,
         viewporter_state,
         presentation_state,
@@ -2249,6 +2335,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         next_win_id: 1,
         pointer_location: Point::from((logical_w as f64 * 0.5, logical_h as f64 * 0.5)),
         active_drag: None,
+        green_hover: None,
+        window_memory: crate::window_memory::WindowMemory::load(),
+        disk_search: crate::spotlight::DiskSearch::new(&event_loop.handle())?,
+        clip_history: crate::clipboard::ClipHistory::new(saved.clipboard_history, &event_loop.handle())?,
+        restore_session: saved.restore_session,
         last_titlebar_click: None,
         pressed_buttons: Vec::new(),
         pointer_focus_dirty: false,
@@ -2338,6 +2429,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Real hardware: only our own session (a nested run must not dim the host's monitor)
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_BRIGHTNESS").is_some() {
         state.brightness = crate::brightness::Brightness::new(&state.loop_handle).ok();
+        crate::battery::start(&state.loop_handle);
     }
     // Nested runs share the host's session bus: they never serve its notifications.
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_NOTIFY").is_some() {
@@ -2387,6 +2479,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     state.pointer_managed = state.backend.is_drm() || crate::labwc::host_pid().is_some();
+    if saved.caffeine && !state.larvis_desktop {
+        state.shell.caffeine = true;
+        state.sync_idle_inhibit();
+    }
     if state.show_about {
         state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather);
     }

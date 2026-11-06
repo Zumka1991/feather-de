@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1330"/>
+      <stop offset="0.55" stop-color="#1b2f6b"/>
+      <stop offset="1" stop-color="#2a8a9c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="760" cy="780" r="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34e0c4" stop-opacity="0.5"/>
+      <stop offset="0.6" stop-color="#a78bfa" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="vane" x1="0" y1="-410" x2="0" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.6" stop-color="#d9f6fb"/>
+      <stop offset="1" stop-color="#a9dcf0"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <clipPath id="vaneClip"><path d="M0 -410 C 120 -330 235 -150 215 60 C 200 210 110 330 0 400 C -95 340 -190 220 -205 70 C -225 -140 -125 -330 0 -410 Z"/></clipPath>
+  </defs>
+  <rect x="24" y="24" width="976" height="976" rx="224" fill="url(#sky)"/>
+  <rect x="24" y="24" width="976" height="976" rx="224" fill="url(#glow)"/>
+  <rect x="24" y="24" width="976" height="976" rx="224" fill="url(#shine)"/>
+  <rect x="25" y="25" width="974" height="974" rx="223" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="2"/>
+  <g fill="#ffffff" opacity="0.7">
+    <circle cx="190" cy="214" r="6"/><circle cx="318" cy="130" r="4"/><circle cx="832" cy="190" r="5"/>
+    <circle cx="905" cy="330" r="3.5"/><circle cx="150" cy="420" r="3.5"/>
+  </g>
+  <g transform="translate(500 500) rotate(40) scale(0.92)">
+    <path d="M0 -410 C 120 -330 235 -150 215 60 C 200 210 110 330 0 400 C -95 340 -190 220 -205 70 C -225 -140 -125 -330 0 -410 Z" transform="translate(10 18)" fill="#050a1c" opacity="0.18"/>
+    <path d="M0 -410 C 120 -330 235 -150 215 60 C 200 210 110 330 0 400 C -95 340 -190 220 -205 70 C -225 -140 -125 -330 0 -410 Z" fill="url(#vane)"/>
+    <g clip-path="url(#vaneClip)" fill="none" stroke="#5fbfd6" stroke-width="4" stroke-linecap="round" opacity="0.6">
+      <path d="M0 -330 L -250 -517 M0 -330 L 250 -517 M0 -298 L -250 -485 M0 -298 L 250 -485 M0 -266 L -250 -453 M0 -266 L 250 -453 M0 -234 L -250 -421 M0 -234 L 250 -421 M0 -202 L -250 -389 M0 -202 L 250 -389 M0 -170 L -250 -357 M0 -170 L 250 -357 M0 -138 L -250 -325 M0 -138 L 250 -325 M0 -106 L -250 -293 M0 -106 L 250 -293 M0 -74 L -250 -261 M0 -74 L 250 -261 M0 -42 L -250 -229 M0 -42 L 250 -229 M0 -10 L -250 -197 M0 -10 L 250 -197 M0 22 L -250 -165 M0 22 L 250 -165 M0 54 L -250 -133 M0 54 L 250 -133 M0 86 L -250 -101 M0 86 L 250 -101 M0 118 L -250 -69 M0 118 L 250 -69 M0 150 L -250 -37 M0 150 L 250 -37 M0 182 L -250 -5 M0 182 L 250 -5 M0 214 L -250 27 M0 214 L 250 27 M0 246 L -250 59 M0 246 L 250 59 M0 278 L -250 91 M0 278 L 250 91 M0 310 L -250 123 M0 310 L 250 123 M0 342 L -250 155 M0 342 L 250 155"/>
+    </g>
+    <path d="M0 -380 L0 600" stroke="#6fcfe0" stroke-width="18" stroke-linecap="round"/>
+    <path d="M0 -380 L0 600" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.9"/>
+  </g>
+</svg>

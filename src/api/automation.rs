@@ -175,7 +175,7 @@ impl FeatherCompositor {
         Ok(())
     }
 
-    fn automation_keys(&mut self, keys: &[u32], time: u32) {
+    pub(crate) fn automation_keys(&mut self, keys: &[u32], time: u32) {
         let keyboard = self.keyboard.clone();
         for (state, codes) in [(KeyState::Pressed, keys.to_vec()), (KeyState::Released, keys.iter().rev().copied().collect())] {
             for code in codes {

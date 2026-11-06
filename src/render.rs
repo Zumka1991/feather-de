@@ -353,6 +353,14 @@ pub(crate) fn build_scene(
     let mut out: Vec<FeatherElement> = Vec::with_capacity(64);
     let primary=view.x==0&&view.y==0;
     if primary {push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations, drawn);}
+    if !shell.layers.is_empty() {
+        use smithay::wayland::shell::wlr_layer::Layer;
+        push_layers(&mut out, renderer, shell, Layer::Overlay, view, scale);
+        let covered = windows.iter().rev().find(|w| w.is_visible() && crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(view)>0).is_some_and(|w| w.fullscreen);
+        if !covered {
+            push_layers(&mut out, renderer, shell, Layer::Top, view, scale);
+        }
+    }
     let mut mem = |out: &mut Vec<FeatherElement>, loc: (f64, f64), buf, src, visual: crate::animation::Visual| {
         if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
@@ -483,12 +491,19 @@ pub(crate) fn build_scene(
         let visual = animations.window(win);
         push_window(&mut out, renderer, win, visual, scale, rounded, true);
         drawn.push(win.id);
+        if let Some((id, frame, _)) = shell.tile_preview.target {
+            if id == win.id && frame.intersection(view) > 0 {
+                out.extend(shell.tile_preview.elements(renderer, frame, scale).into_iter().map(|e| FeatherElement::from(SceneElement::Memory(e))));
+            }
+        }
 
         if win.fullscreen && !win.minimized && visual.identity() && win.x<=view.x && win.y<=view.y && win.x+win.width>=view.x+view.w && win.y+win.total_height()>=view.y+view.h {
             // Nothing below a fullscreen window is visible
             return out;
         }
     }
+
+    push_layers(&mut out, renderer, shell, smithay::wayland::shell::wlr_layer::Layer::Bottom, view, scale);
 
     // Mission Control dims the desktop behind the spread windows
     let dim = if primary {animations.mission_progress()}else{0.0};
@@ -502,6 +517,7 @@ pub(crate) fn build_scene(
         }
     }
     if primary {out.extend(shell.desktop.elements(renderer, (shell.screen_w, shell.screen_h), scale));}
+    push_layers(&mut out, renderer, shell, smithay::wayland::shell::wlr_layer::Layer::Background, view, scale);
     let wp_size = ((view.w as f64*scale).round() as i32,(view.h as f64*scale).round() as i32);
     // The source rect must be the (low-res) buffer itself; by default Smithay would use the
     // destination size and sample outside the texture
@@ -510,6 +526,17 @@ pub(crate) fn build_scene(
         out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer((view.x as f64*scale,view.y as f64*scale),texture,None,Some(smithay::utils::Rectangle::from_size((w as f64,h as f64).into())),Some(wp_size.into()),Kind::Unspecified)).into());
     }
     out
+}
+
+/// The surfaces of one layer on this monitor, front first
+fn push_layers(out: &mut Vec<FeatherElement>, renderer: &mut GlesRenderer, shell: &MacShell, layer: smithay::wayland::shell::wlr_layer::Layer, view: crate::monitors::Rect, scale: f64) {
+    for item in shell.layers.iter().filter(|l| l.layer == layer && l.monitor == view) {
+        for (popup, offset) in PopupManager::popups_for_surface(&item.surface) {
+            let loc = Point::<i32, smithay::utils::Logical>::from(item.loc) + offset - popup.geometry().loc;
+            push_surface_tree(out, renderer, popup.wl_surface(), to_phys_point(loc.x, loc.y, scale), scale, crate::animation::Visual::default());
+        }
+        push_surface_tree(out, renderer, &item.surface, to_phys_point(item.loc.0, item.loc.1, scale), scale, crate::animation::Visual::default());
+    }
 }
 
 /// One window: popups, surfaces (rounded corners), our titlebar and, optionally, shadow
@@ -785,7 +812,7 @@ impl FeatherCompositor {
             let ctx = BuiltinContext {
                 settings: &self.system_settings,
                 first_run: &self.first_run,
-                settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,scale:self.scale_factor,xwayland_hidpi:self.xwayland_hidpi,display_name:&self.display_name,monitors:self.monitors.iter().map(|m|m.info.clone()).collect(),modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref(),dnd:self.shell.dnd_active(),dnd_schedule:self.shell.dnd_schedule,notify_sounds:self.shell.notify_sounds,sounds:self.sound_preferences,audio:self.shell.cc.audio.clone(),wifi:self.shell.cc.wifi.clone(),bluetooth:self.shell.cc.bluetooth.clone(),hot_corners:self.hot_corners.actions,night:self.night.prefs,night_active:self.night.active(),notify_apps:&self.shell.notify_apps,screen_capture_policy:self.screen_capture_policy,screen_capture_cursor:self.screen_capture_cursor,screen_capture_apps:&self.screen_capture_apps,sticky_keys:self.sticky_keys},
+                settings_context: crate::system_settings::Context {power:self.power.preferences,power_ready:self.power.ready,system:self.system_preferences.clone(),pointer:self.pointer_config.clone(),pointer_managed:self.pointer_managed,keyboard:&self.keyboard_config,active:self.active_layout_index,animations:self.animations.enabled(),dock_zoom:self.shell.dock_zoom_enabled,restore_session:self.restore_session,battery:self.shell.battery,clipboard_history:self.clip_history.enabled,scale:self.scale_factor,xwayland_hidpi:self.xwayland_hidpi,display_name:&self.display_name,monitors:self.monitors.iter().map(|m|m.info.clone()).collect(),modes:&self.display_modes,current:crate::system_settings::Mode{width:self.phys_w,height:self.phys_h,refresh:self.refresh_mhz},direct:self.backend.is_drm(),wallpaper:self.shell.theme,wallpaper_image:self.shell.wallpaper_image.as_ref(),dnd:self.shell.dnd_active(),dnd_schedule:self.shell.dnd_schedule,notify_sounds:self.shell.notify_sounds,sounds:self.sound_preferences,audio:self.shell.cc.audio.clone(),wifi:self.shell.cc.wifi.clone(),bluetooth:self.shell.cc.bluetooth.clone(),hot_corners:self.hot_corners.actions,night:self.night.prefs,night_active:self.night.active(),notify_apps:&self.shell.notify_apps,screen_capture_policy:self.screen_capture_policy,screen_capture_cursor:self.screen_capture_cursor,screen_capture_apps:&self.screen_capture_apps,sticky_keys:self.sticky_keys},
                 notes_text: &self.notes_buffer,
                 rss_mb: self.shell.last_rss_mb,
                 window_count: visible_count,
@@ -859,6 +886,11 @@ impl FeatherCompositor {
         let t_cpu = Instant::now();
         self.shell.release_closed_launchpad();
         self.update_cpu_buffers();
+        if self.shell.emoji.incomplete {
+            // Emoji are decoded a few per frame: the rest come with the next ones
+            self.shell.overlay_dirty = true;
+            self.needs_redraw = true;
+        }
         // The wallpaper is the lock screen's background too
         self.shell.upload_wallpaper(self.backend.renderer());
         self.shell.upload_dock_icons(self.backend.renderer());
@@ -1233,6 +1265,12 @@ impl FeatherCompositor {
         if let smithay::input::pointer::CursorImageStatus::Surface(ref s) = self.cursor.status {
             send_frames_surface_tree(s, time);
         }
+        for item in &self.shell.layers {
+            send_frames_surface_tree(&item.surface, time);
+            for (popup, _) in PopupManager::popups_for_surface(&item.surface) {
+                send_frames_surface_tree(popup.wl_surface(), time);
+            }
+        }
         let mut hidden_waiting = false;
         for win in &self.windows {
             if self.window_shown_on(win, heads) {
@@ -1339,6 +1377,12 @@ impl FeatherCompositor {
             // Launchpad covers all windows; while dragging an app nothing below gets the pointer
             return None;
         }
+        use smithay::wayland::shell::wlr_layer::Layer;
+        if !self.shell.layers.is_empty() {
+            if let Some(hit) = self.layer_under(&[Layer::Overlay, Layer::Top], px, py) {
+                return Some(hit);
+            }
+        }
         let pos = Point::<f64, smithay::utils::Logical>::from((px, py));
         for win in self.windows.iter().rev() {
             if !win.is_visible() {
@@ -1380,6 +1424,9 @@ impl FeatherCompositor {
                 return None;
             }
         }
-        None
+        if self.shell.layers.is_empty() {
+            return None;
+        }
+        self.layer_under(&[Layer::Bottom, Layer::Background], px, py)
     }
 }

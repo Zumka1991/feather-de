@@ -50,7 +50,7 @@ pub struct Power {
     blank_attempted: bool,
     last_activity: Instant,
     suspended: bool,
-    timer: Option<RegistrationToken>,
+    pub timer: Option<RegistrationToken>,
     inhibitors: Vec<WlSurface>,
     inhibited: bool,
     bus: Option<async_channel::Sender<Command>>,
@@ -135,16 +135,18 @@ impl FeatherCompositor {
         self.power
             .inhibitors
             .retain(|s| smithay::reexports::wayland_server::Resource::is_alive(s));
-        let inhibited = !self.lock.active
-            && self.power.inhibitors.iter().any(|s| {
-                let mut root = s.clone();
-                while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
-                    root = parent;
-                }
-                self.windows
-                    .iter()
-                    .any(|w| w.is_visible() && w.wl_surface() == Some(&root))
-            });
+        // Caffeine holds even on the lock screen: "never" means never
+        let inhibited = self.shell.caffeine
+            || !self.lock.active
+                && self.power.inhibitors.iter().any(|s| {
+                    let mut root = s.clone();
+                    while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+                        root = parent;
+                    }
+                    self.windows
+                        .iter()
+                        .any(|w| w.is_visible() && w.wl_surface() == Some(&root))
+                });
         self.idle_notifier.set_is_inhibited(inhibited);
         if self.power.inhibited != inhibited {
             self.power.inhibited = inhibited;
@@ -152,6 +154,18 @@ impl FeatherCompositor {
             self.power.last_activity = Instant::now();
             self.rearm_idle();
         }
+    }
+    /// The cup in the menu bar: no sleep, no blanking and no idle lock while it is on
+    pub fn set_caffeine(&mut self, on: bool) {
+        self.shell.caffeine = on;
+        self.shell.topbar_dirty = true;
+        self.needs_redraw = true;
+        if on && self.power.idle_hint {
+            self.power.idle_hint = false;
+            self.power.send(Command::Idle(false));
+        }
+        self.sync_idle_inhibit();
+        self.save_settings();
     }
     pub fn activity(&mut self) -> bool {
         self.idle_notifier.notify_activity(&self.seat);

@@ -23,6 +23,7 @@ depends=(
     'dbus'
 )
 optdepends=(
+    'noto-fonts-emoji: значки панели эмодзи и эмодзи в программах'
     'labwc: запуск в режиме совместимости (nested/kiosk)'
     'xwayland-satellite: поддержка X11-программ без корневого Xwayland'
     'xdg-desktop-portal: системные диалоги выбора файлов и захвата экрана'

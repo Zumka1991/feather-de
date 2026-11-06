@@ -247,6 +247,12 @@ pub struct ManagedWindow {
     pub maximized: bool,
     pub fullscreen: bool,
     pub saved_rect: Option<(i32, i32, i32, i32)>,
+    /// Tiled to a part of the screen, and the place to come back to
+    pub tiled: Option<crate::tiling::Tile>,
+    pub tile_free: Option<(i32, i32, i32, i32)>,
+    /// From the window memory, used when the window first shows
+    pub remembered_place: Option<(i32, i32)>,
+    pub remembered_space: Option<u32>,
     pub resize_anchor: Option<ResizeAnchor>,
     pub hovered_traffic: Option<TrafficButton>,
     pub traffic_group_hovered: bool,
@@ -409,6 +415,10 @@ impl ManagedWindow {
             fullscreen: false,
             saved_rect: None,
             resize_anchor: None,
+            tiled: None,
+            tile_free: None,
+            remembered_place: None,
+            remembered_space: None,
             hovered_traffic: None,
             traffic_group_hovered: false,
             backend: WindowBackend::Wayland(surface),
@@ -462,6 +472,10 @@ impl ManagedWindow {
             fullscreen: false,
             saved_rect: None,
             resize_anchor: None,
+            tiled: None,
+            tile_free: None,
+            remembered_place: None,
+            remembered_space: None,
             hovered_traffic: None,
             traffic_group_hovered: false,
             backend: WindowBackend::Builtin(kind),
@@ -624,6 +638,94 @@ impl ManagedWindow {
         self.x+=dx;self.y+=dy;
         if let Some((x,y,_,_))=&mut self.saved_rect{*x+=dx;*y+=dy;}
     }
+    /// The id a client has set so far: known before its first commit is processed
+    pub fn sync_app_id(&mut self) {
+        let Some(surface) = self.wl_surface().cloned() else { return };
+        let id = with_states(&surface, |states| {
+            states.data_map.get::<XdgToplevelSurfaceData>().and_then(|data| data.lock().unwrap().app_id.clone())
+        });
+        if let Some(id) = id.filter(|id| !id.is_empty()) {
+            self.app_id = id;
+        }
+    }
+
+    /// Takes a part of the screen. The first tile remembers the free size and place.
+    pub fn tile_to(&mut self, tile: crate::tiling::Tile, frame: crate::monitors::Rect) {
+        if self.tiled.is_none() {
+            self.tile_free = if self.maximized {
+                self.saved_rect
+            } else {
+                (self.width > 0 && self.height > 0).then_some((self.x, self.y, self.width, self.height))
+            };
+        }
+        if self.maximized {
+            self.maximized = false;
+            self.saved_rect = None;
+            self.set_xdg_state(xdg_toplevel::State::Maximized, false);
+        }
+        self.tiled = Some(tile);
+        self.set_tile_states(Some(tile));
+        self.fit_tile_frame(frame);
+    }
+
+    /// Follows a new work area (Dock size, screen mode)
+    pub fn fit_tile_frame(&mut self, frame: crate::monitors::Rect) {
+        self.x = frame.x;
+        self.y = frame.y;
+        self.resize_client(frame.w, frame.h - self.titlebar_h());
+        self.dirty = true;
+    }
+
+    fn set_tile_states(&self, tile: Option<crate::tiling::Tile>) {
+        let (l, r, t, b) = tile.map_or((false, false, false, false), |t| t.edges());
+        self.set_xdg_state(xdg_toplevel::State::TiledLeft, l);
+        self.set_xdg_state(xdg_toplevel::State::TiledRight, r);
+        self.set_xdg_state(xdg_toplevel::State::TiledTop, t);
+        self.set_xdg_state(xdg_toplevel::State::TiledBottom, b);
+    }
+
+    /// No longer tiled, staying where it is: its edges were dragged by hand
+    pub fn forget_tile(&mut self) {
+        if self.tiled.take().is_some() {
+            self.tile_free = None;
+            self.set_tile_states(None);
+        }
+    }
+
+    /// Back to the free size and place
+    pub fn untile_on(&mut self, r: crate::monitors::Rect) {
+        if self.tiled.take().is_none() {
+            return;
+        }
+        self.set_tile_states(None);
+        let (x, y, w, h) = self.tile_free.take().unwrap_or_else(|| {
+            let (w, h) = Self::fallback_size(r.w, r.h);
+            (r.x + (r.w - w) / 2, r.y + TOP_BAR_HEIGHT + 40, w, h)
+        });
+        self.x = x;
+        self.y = y;
+        self.resize_client(w, h);
+        self.dirty = true;
+    }
+
+    /// Dragged off its tile: the free size comes back under the pointer, keeping the grab at
+    /// the same relative spot of the titlebar, like a maximized window
+    pub fn untile_under(&mut self, pointer: (f64, f64), r: crate::monitors::Rect) {
+        let rel = if self.width > 0 { ((pointer.0 - self.x as f64) / self.width as f64).clamp(0.0, 1.0) } else { 0.5 };
+        self.untile_on(r);
+        let width = self.tile_width_after_untile(r);
+        self.x = (pointer.0 - rel * width as f64) as i32;
+        self.y = (pointer.1 as i32 - 10).max(r.y + if r.x == 0 && r.y == 0 { TOP_BAR_HEIGHT } else { 0 });
+    }
+
+    /// The size just requested from `untile_on`: a client applies it only on its next commit
+    fn tile_width_after_untile(&self, r: crate::monitors::Rect) -> i32 {
+        match self.toplevel() {
+            Some(t) => t.with_pending_state(|s| s.size.map(|size| size.w)).unwrap_or_else(|| Self::fallback_size(r.w, r.h).0),
+            None => self.width,
+        }
+    }
+
     pub fn toggle_maximize_on(&mut self,r:crate::monitors::Rect){self.maximize_on(!self.maximized,r);}
     pub fn maximize_on(&mut self,on:bool,r:crate::monitors::Rect){
         self.translate_monitor(-r.x,-r.y);self.set_maximized(on,r.w,r.h);self.translate_monitor(r.x,r.y);
@@ -1410,6 +1512,9 @@ mod settings_tests {
                 active: 0,
                 animations: true,
                 dock_zoom: true,
+                restore_session: true,
+                battery: None,
+                clipboard_history: true,
                 scale: 1.25,
                 xwayland_hidpi: true,
                 display_name: "Window",
@@ -1513,6 +1618,9 @@ mod settings_tests {
                             active: 0,
                             animations: true,
                             dock_zoom: true,
+                            restore_session: true,
+                            battery: None,
+                            clipboard_history: true,
                             scale: 2.0,
                             xwayland_hidpi: true,
                             display_name: "DP-1",

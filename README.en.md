@@ -59,6 +59,7 @@ into the compositor. System integrations become available when their services ex
 
 ### Menu bar and global menus
 
+- Caffeine: a cup next to the clock prevents sleep and screen blanking. Battery with percentage on laptops.
 - Active application, Window, and Help menus, a clock, and input-source switching.
 - Qt/KDE global menus through KDE Wayland AppMenu and DBusMenu.
 - GTK global menus through `gtk_shell1`, `org.gtk.Menus`, and `org.gtk.Actions`.
@@ -82,12 +83,16 @@ on top of an application's own decorations.
   restores it, while a background application is brought forward.
 - Trash with empty/full states, file drops, and confirmation before emptying.
 - Launchpad application grid with search, pages, scrolling, and dragging into the Dock.
-- Spotlight search for launching applications and evaluating simple expressions.
+- Spotlight search: programs, open windows, settings sections, notes, files in the home folder and
+  simple expressions, with no index and no background work.
+- In-memory clipboard history and an emoji panel. Details (in Russian): [Spotlight](docs/SPOTLIGHT.md).
 - `.desktop` discovery, window matching through `app_id`, `StartupWMClass`, and known
   identifiers, with icons loaded from system themes.
 
 ### Windows, workspaces, and gestures
 
+- Tiling: halves and quarters at screen edges, in the green button's menu and with Ctrl+Super+arrows.
+- Window memory: programs reopen where they were, and the previous session returns at login.
 - Move, resize, minimize, maximize, and fullscreen operations.
 - Alt+Tab / Super+Tab with most-recently-used ordering, mouse selection, and cancellation.
 - Cycling windows of the active application with Alt+` / Super+`.
@@ -297,8 +302,9 @@ X11 applications are supported through on-demand **xwayland-satellite**.
 
 Session GTK styling helps align GTK 3/4 and some client-decorated applications.
 Menu and theme integration depend on the application. Protocol coverage is still
-growing: text-input/IME, layer-shell, presentation-time, and other extensions
-remain separate development work.
+growing. Layer-shell, foreign-toplevel, text-input, input-method and virtual-keyboard exist for third-party
+panels and input methods, but waybar, rofi, fcitx5 and ibus are still untested, and `security-context` for
+sandboxes is not implemented: [protocols (in Russian)](docs/PROTOCOLS.md).
 
 **Portals:** `FileChooser` uses real Files dialogs for OpenFile/SaveFile/SaveFiles.
 `Screenshot`, `ScreenCast`, and `Access` interfaces exist but are experimental:
@@ -498,6 +504,9 @@ many shell actions can be reassigned in System Settings.
 | Shortcut | Action |
 |---|---|
 | Super+Space | Spotlight search |
+| Ctrl+Super+arrows | Tile the window to a half or quarter of the screen |
+| Super+Shift+V | Clipboard history |
+| Super+. | Emoji panel |
 | Super+A | Application grid |
 | Super+Enter / Super+T | Terminal |
 | Super+E | Files |

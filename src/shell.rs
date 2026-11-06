@@ -465,6 +465,8 @@ pub enum DockMenuAction {
     EmptyTrash,
     /// Desktop context menu (the menu's Dock target is unused)
     Desktop(crate::desktop::MenuAction),
+    /// The green button's menu: window and where it goes
+    Tile(u64, crate::tiling::Step),
 }
 
 #[derive(Debug, Clone)]
@@ -489,6 +491,10 @@ pub struct Bounce {
     pub buffer: MemoryRenderBuffer,
     pub px: i32,
 }
+
+/// Emoji panel: height of a grid cell and of the line with the selected emoji's name
+const EMOJI_CELL: f32 = 44.0;
+const EMOJI_FOOTER: f32 = 24.0;
 
 pub const BOUNCE_PERIOD: f32 = 0.55;
 pub const BOUNCE_HEIGHT: f32 = 22.0;
@@ -565,6 +571,8 @@ enum TopbarItem {
     Spotlight,
     ControlCenter,
     Clock,
+    Caffeine,
+    Battery,
     Tray(usize),
     TrayOverflow,
     StopRecording,
@@ -586,9 +594,20 @@ enum CcItem {
     Layout,
 }
 
+/// What Spotlight's panel is showing
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpotlightMode {
+    #[default]
+    Search,
+    Clipboard,
+    Emoji,
+}
+
 #[derive(Debug, Clone)]
 pub enum ShellClickAction {
     None,
+    PasteClip(crate::clipboard::Clip),
+    PasteEmoji(char),
     /// «Об этом компьютере»: show it at login or not
     ToggleShowAbout,
     SystemSettings(crate::system_settings::Action),
@@ -626,6 +645,11 @@ pub enum ShellClickAction {
     QuitFocusedApp,
     MinimizeFocused,
     ZoomFocused,
+    TileFocused(crate::tiling::Step),
+    ToggleCaffeine,
+    OpenSettingsPage(crate::system_settings::Page),
+    /// A file or folder, in the program it opens with
+    OpenPath(std::path::PathBuf),
     FullscreenFocused,
     CloseFocused,
     FocusWindow(u64),
@@ -761,7 +785,11 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
                     "",
                     on(has_window && ctx.focused_is_wayland, ShellClickAction::FullscreenFocused),
                 ),
+                Separator,
             ];
+            for (label, step) in crate::tiling::menu_steps().into_iter().skip(1) {
+                rows.push(item(label, "", on(has_window, ShellClickAction::TileFocused(step))));
+            }
             if !ctx.windows.is_empty() {
                 rows.push(Separator);
                 for (id, title, focused, minimized) in &ctx.windows {
@@ -842,11 +870,20 @@ pub struct MacShell {
     /// A texture upload failed: magnified icons are resampled on the CPU from then on
     dock_gpu_failed: bool,
 
+    /// Keeps the computer awake (`power.rs`)
+    pub caffeine: bool,
+    /// Layer surfaces of other programs, front first (`layer_shell.rs`)
+    pub layers: Vec<crate::layer_shell::LayerItem>,
+    /// None on a machine without a battery
+    pub battery: Option<crate::battery::Battery>,
     pub spotlight_open: bool,
     pub spotlight_query: String,
     /// Caret/selection of the Spotlight field; `spotlight_query` mirrors its text
     pub spotlight_input: feather_ui::input::TextInput,
     pub spotlight_selected: usize,
+    pub spotlight_hits: Vec<crate::spotlight::Hit>,
+    pub spotlight_mode: SpotlightMode,
+    pub emoji: crate::emoji::EmojiCache,
 
     pub control_center_open: bool,
     pub cc: crate::control_panel::Panel,
@@ -900,6 +937,8 @@ pub struct MacShell {
     pub dock_gap: Option<usize>,
     pub dock_dragging: bool,
     pub dock_menu: Option<DockMenu>,
+    /// Where a dragged window would land
+    pub tile_preview: crate::tiling::Preview,
     pub ghost: Option<Ghost>,
     pub ghost_buffer: MemoryRenderBuffer,
     ghost_dirty: bool,
@@ -969,10 +1008,16 @@ impl MacShell {
             dock_icon_textures: Default::default(),
             dock_icon_uploads: Vec::new(),
             dock_gpu_failed: false,
+            caffeine: false,
+            layers: Vec::new(),
+            battery: None,
             spotlight_open: false,
             spotlight_query: String::new(),
             spotlight_input: Default::default(),
             spotlight_selected: 0,
+            spotlight_hits: Vec::new(),
+            spotlight_mode: SpotlightMode::Search,
+            emoji: Default::default(),
             control_center_open: false,
             cc: crate::control_panel::Panel::default(),
             wifi_enabled: false,
@@ -1012,6 +1057,7 @@ impl MacShell {
             dock_gap: None,
             dock_dragging: false,
             dock_menu: None,
+            tile_preview: Default::default(),
             ghost: None,
             ghost_buffer: new_buffer(1, 1),
             ghost_dirty: false,
@@ -1520,6 +1566,28 @@ impl MacShell {
         BarColors::for_background(dark)
     }
 
+    /// Middle of the menu bar's cup, for end-to-end checks
+    pub fn caffeine_center(&self) -> (f32, f32) {
+        let (a, b) = self.topbar_hits.iter().find(|(_, _, h)| *h == TopbarItem::Caffeine).map_or((0.0, 0.0), |(a, b, _)| (*a, *b));
+        ((a + b) * 0.5, TOP_BAR_HEIGHT as f32 * 0.5)
+    }
+
+    /// Spotlight's panel closed: the next time it opens as itself. A picker leaves no query.
+    pub fn leave_picker(&mut self) {
+        if self.spotlight_mode != SpotlightMode::Search {
+            self.spotlight_mode = SpotlightMode::Search;
+            self.spotlight_query.clear();
+            self.spotlight_input.clear();
+            self.spotlight_hits = Vec::new();
+            self.spotlight_selected = 0;
+            self.emoji.release();
+        }
+    }
+
+    pub fn any_menu_open(&self) -> bool {
+        self.open_menu.is_some() || self.dock_menu.is_some()
+    }
+
     pub fn has_visible_overlay(&self) -> bool {
         self.spotlight_open
             || self.control_center_open
@@ -1548,6 +1616,7 @@ impl MacShell {
             self.client_hovered = None;
             self.control_center_open = false;
             self.spotlight_open = false;
+            self.leave_picker();
             self.overlay_dirty = true;
             self.topbar_dirty = true;
         }
@@ -2417,15 +2486,17 @@ impl MacShell {
     }
 
     /// (search bar, results panel, app result count, has calculator row)
-    fn spotlight_layout(&self, registry: &AppRegistry) -> (R, Option<R>, usize, bool) {
+    fn spotlight_layout(&self, _registry: &AppRegistry) -> (R, Option<R>, usize, bool) {
         let bar = self.spotlight_bar_rect();
         let (x, y, w) = (bar.x, bar.y, bar.w);
-        let n = if self.spotlight_query.trim().is_empty() {
-            0
-        } else {
-            registry.search(&self.spotlight_query).len()
-        };
-        let math = eval_spotlight_math(&self.spotlight_query).is_some();
+        let search = self.spotlight_mode == SpotlightMode::Search;
+        let n = if search && self.spotlight_query.trim().is_empty() { 0 } else { self.spotlight_hits.len() };
+        if self.spotlight_mode == SpotlightMode::Emoji {
+            let rows = n.div_ceil(crate::clipboard::EMOJI_COLUMNS);
+            let list = (n > 0).then(|| R::new(x, y + 52.0 + 8.0, w, 12.0 + rows as f32 * EMOJI_CELL + EMOJI_FOOTER));
+            return (bar, list, n, false);
+        }
+        let math = search && eval_spotlight_math(&self.spotlight_query).is_some();
         let rows = n + usize::from(math);
         let list = (rows > 0).then(|| R::new(x, y + 52.0 + 8.0, w, 12.0 + rows as f32 * 40.0));
         (bar, list, n, math)
@@ -2660,6 +2731,8 @@ impl MacShell {
                     }
                 }
                 Some(TopbarItem::Clock)=>{ if !was.3 { self.toggle_center(); } }
+                Some(TopbarItem::Caffeine) => return Some(ShellClickAction::ToggleCaffeine),
+                Some(TopbarItem::Battery) => return Some(ShellClickAction::OpenSettingsPage(crate::system_settings::Page::Power)),
                 Some(TopbarItem::ControlCenter) | Some(TopbarItem::Wifi) => {
                     // From the speaker's panel straight to the whole Control Center
                     self.control_center_open = !was.1 || sound_open;
@@ -2765,13 +2838,22 @@ impl MacShell {
         if self.spotlight_open {
             let (bar, list, n, math) = self.spotlight_layout(registry);
             if let Some(list) = list.filter(|l| l.contains(mx, my)) {
+                if self.spotlight_mode == SpotlightMode::Emoji {
+                    let cols = crate::clipboard::EMOJI_COLUMNS;
+                    let cell_w = (list.w - 12.0) / cols as f32;
+                    let col = (((mx - list.x - 6.0) / cell_w).floor().max(0.0) as usize).min(cols - 1);
+                    let row = ((my - list.y - 6.0) / EMOJI_CELL).floor().max(0.0) as usize;
+                    if let Some(hit) = self.spotlight_hits.get(row * cols + col) {
+                        let action = hit.action.clone();
+                        self.close_menus();
+                        return Some(action);
+                    }
+                    return Some(ShellClickAction::None);
+                }
                 let row = ((my - list.y - 6.0) / 40.0).floor().max(0.0) as usize;
                 let app_row = row.checked_sub(usize::from(math));
-                if let Some(app) = app_row
-                    .filter(|r| *r < n)
-                    .and_then(|r| registry.search(&self.spotlight_query).get(r).copied())
-                {
-                    let action = ShellClickAction::LaunchApp(app.action.clone(), app.name.clone());
+                if let Some(hit) = app_row.filter(|r| *r < n).and_then(|r| self.spotlight_hits.get(r)) {
+                    let action = hit.action.clone();
                     self.spotlight_query.clear();
                     self.close_menus();
                     return Some(action);
@@ -2913,7 +2995,7 @@ impl MacShell {
         let tray_width=visible_tray as f32*28.0+if tray.len()>visible_tray{30.0}else{0.0} + rec_width + larvis_width;
         let input=self.input_sources.get(self.input_selected).copied().unwrap_or(crate::settings::SOURCES[0]);
         let hover=self.status_hover;
-        let (center_open,dnd)=(self.center_open,self.dnd_active());
+        let (center_open,dnd,caffeine,battery)=(self.center_open,self.dnd_active(),self.caffeine,self.battery);
         let mut menus = vec![(active_app_title.to_string(), TopMenu::App, true, true)];
         if let Some(root) = self.client_menu.as_ref().filter(|root| root.children.iter().any(|n| n.visible)) {
             menus.extend(root.children.iter().filter(|n| n.visible && !n.separator).map(|n| (n.label.clone(), TopMenu::Client(n.id), false, n.enabled)));
@@ -2944,7 +3026,7 @@ impl MacShell {
                 draw_feather_logo(&mut pm, 22.0, lh * 0.5, 0.95, bar.text);
                 hits.push((0.0, 38.0, TopbarItem::Menu(TopMenu::Feather)));
                 let mut x = 46.0;
-                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 192.0+tray_width;
+                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 222.0+tray_width+if battery.is_some(){72.0}else{0.0};
                 for (label, menu, bold, enabled) in &menus {
                     let available = lw - right_reserved - x - 12.0;
                     if available < 24.0 { break; }
@@ -2966,6 +3048,18 @@ impl MacShell {
                 fonts.draw_text(&mut pm,&clock,rx-cw,text_y,13.0,bar.text,false);
                 if dnd {crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Moon,rx-cw-12.0,lh*0.5,bar.text,false);}
                 hits.push((rx-clock_width-4.0,lw,TopbarItem::Clock));rx-=clock_width+14.0;
+                if hover==Some(TopbarItem::Caffeine){highlight(&mut pm,rx-29.0,rx-1.0);}
+                crate::theme::draw_caffeine_icon(&mut pm,rx-15.0,lh*0.5,bar.text,caffeine);
+                hits.push((rx-30.0,rx,TopbarItem::Caffeine));rx-=30.0;
+                if let Some(b)=battery {
+                    let label=format!("{}%",b.percent);
+                    let tw=fonts.measure_text(&label,12.0,false);
+                    let width=tw+42.0;
+                    if hover==Some(TopbarItem::Battery){highlight(&mut pm,rx-width+1.0,rx-1.0);}
+                    crate::theme::draw_battery_icon(&mut pm,rx-17.0,lh*0.5,bar.text,b.percent,b.charging||b.full,b.low());
+                    fonts.draw_text(&mut pm,&label,rx-width+7.0,text_y+0.5,12.0,bar.text,false);
+                    hits.push((rx-width,rx,TopbarItem::Battery));rx-=width;
+                }
                 for (hit,opened) in [(TopbarItem::ControlCenter,cc_open&&!sound_open),(TopbarItem::Spotlight,sp_open),(TopbarItem::Wifi,cc_open&&!sound_open),(TopbarItem::Sound,sound_open)]{
                     if hit==TopbarItem::Wifi&&!has_wifi {continue;}
                     if opened||hover==Some(hit){highlight(&mut pm,rx-29.0,rx-1.0);}
@@ -3372,12 +3466,11 @@ impl MacShell {
         let theme_name = self.theme.name();
         let dark = appearance() == Appearance::Dark;
         let scale_pct = format!("{}%", (ui_scale() * 100.0).round() as i32);
-        let results: Vec<(String, String, AppIcon)> = if sp_open && !query.trim().is_empty() {
-            registry
-                .search(&query)
-                .iter()
-                .map(|a| (a.name.clone(), a.subtitle.clone(), AppIcon::of(a)))
-                .collect()
+        let mode = self.spotlight_mode;
+        let emoji_hits: Vec<(char, String)> = self.spotlight_hits.iter().filter_map(|h| h.emoji.map(|e| (e, h.name.clone()))).collect();
+        self.emoji.begin_frame();
+        let results: Vec<(String, String, AppIcon)> = if sp_open && mode != SpotlightMode::Emoji && (mode != SpotlightMode::Search || !query.trim().is_empty()) {
+            self.spotlight_hits.iter().map(|h| (h.name.clone(), h.sub.clone(), h.icon.clone())).collect()
         } else {
             Vec::new()
         };
@@ -3385,6 +3478,7 @@ impl MacShell {
         if let Some(m) = dock_menu.as_mut() { m.rect = local(m.rect); }
         let cc_backdrop = self.cc_backdrop.as_ref().filter(|_| menu_panels.is_empty() && !sp_open && dock_menu.is_none());
         let icons = &mut self.icons;
+        let emoji_cache = &mut self.emoji;
         let controls = &self.cc;
         crate::theme::set_glass_origin(ox, oy);
 
@@ -3529,7 +3623,13 @@ impl MacShell {
                 draw_glass_panel(&mut pm, bar.x, bar.y, bar.w, bar.h, bar.h * 0.5, true);
                 draw_search_icon(&mut pm, bar.x + 26.0, bar.y + bar.h * 0.5, 7.5, p.text_secondary);
                 if query.is_empty() {
-                    fonts.draw_text(&mut pm, "Поиск Spotlight", bar.x + 50.0, bar.y + 14.0, 20.0, p.text_tertiary, false);
+                    let placeholder = match mode {
+                        SpotlightMode::Search => "Поиск Spotlight",
+                        SpotlightMode::Clipboard if results.is_empty() => "История буфера обмена пуста",
+                        SpotlightMode::Clipboard => "Поиск в истории буфера обмена",
+                        SpotlightMode::Emoji => "Поиск эмодзи",
+                    };
+                    fonts.draw_text(&mut pm, placeholder, bar.x + 50.0, bar.y + 14.0, 20.0, p.text_tertiary, false);
                 } else {
                     let mut field = spotlight_input.clone();
                     if field.text() != query {
@@ -3537,7 +3637,27 @@ impl MacShell {
                     }
                     field.draw(&mut pm, fonts, bar.x + 50.0, bar.y + 14.0, bar.w - 70.0, 20.0, false, p.text, true, p.accent);
                 }
-                if let Some(list) = list {
+                if let Some(list) = list.filter(|_| mode == SpotlightMode::Emoji) {
+                    draw_glass_panel(&mut pm, list.x, list.y, list.w, list.h, 18.0, true);
+                    let cols = crate::clipboard::EMOJI_COLUMNS;
+                    let cell_w = (list.w - 12.0) / cols as f32;
+                    let scale = ui_scale();
+                    let glyph = 30.0f32;
+                    let sel = selected.min(emoji_hits.len().saturating_sub(1));
+                    for (i, (ch, _)) in emoji_hits.iter().enumerate() {
+                        let cx = list.x + 6.0 + (i % cols) as f32 * cell_w;
+                        let cy = list.y + 6.0 + (i / cols) as f32 * EMOJI_CELL;
+                        if i == sel {
+                            fill_rounded_rect(&mut pm, cx + 2.0, cy + 2.0, cell_w - 4.0, EMOJI_CELL - 4.0, 10.0, with_alpha(p.accent, 0.3));
+                        }
+                        let ex = ((cx + (cell_w - glyph) * 0.5) * scale).round() as i32;
+                        let ey = ((cy + (EMOJI_CELL - glyph) * 0.5) * scale).round() as i32;
+                        emoji_cache.draw(&mut pm, *ch, ex, ey, (glyph * scale).round() as u32);
+                    }
+                    if let Some((_, name)) = emoji_hits.get(sel) {
+                        fonts.draw_text(&mut pm, name, list.x + 20.0, list.y + list.h - EMOJI_FOOTER + 2.0, 12.0, p.text_secondary, false);
+                    }
+                } else if let Some(list) = list {
                     draw_glass_panel(&mut pm, list.x, list.y, list.w, list.h, 18.0, true);
                     let mut y = list.y + 6.0;
                     if *math {

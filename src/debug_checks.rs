@@ -785,6 +785,316 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             })?;
         }
     }
+    if let Ok(mode) = std::env::var("FEATHER_DEBUG_PICKER") {
+        // Clipboard history with a real wl-copy client, its paste into a real terminal, and the
+        // emoji panel for a snapshot
+        const LOG: &str = "[feather-picker-check]";
+        use crate::shell::SpotlightMode as M;
+        if mode == "emoji" {
+            at(state, 1500, |s| s.open_picker(M::Emoji))?;
+            at(state, 2300, |s| {
+                assert!(s.shell.spotlight_open && s.shell.spotlight_hits.len() == 60, "{LOG} grid: {}", s.shell.spotlight_hits.len());
+                assert!(!s.shell.emoji.incomplete, "{LOG} all decoded by now");
+                s.shell.spotlight_selected = 3;
+                s.shell.overlay_dirty = true;
+                s.needs_redraw = true;
+                eprintln!("{LOG} emoji ok");
+            })?;
+        } else {
+            at(state, 2500, |s| {
+                let clips: Vec<_> = s.clip_history.entries.iter().map(|c| c.data.as_str()).collect();
+                eprintln!("{LOG} history: {clips:?}");
+                assert!(clips.iter().any(|c| c.contains("hello-feather")), "{LOG} copied text is in the history");
+                s.open_picker(M::Clipboard);
+                assert_eq!(s.shell.spotlight_hits.len(), s.clip_history.entries.len());
+            })?;
+            at(state, 3000, |s| {
+                let action = s.shell.spotlight_hits[0].action.clone();
+                s.shell.close_menus();
+                assert_eq!(s.shell.spotlight_mode, M::Search, "{LOG} closes back to Spotlight");
+                s.execute_shell_action(action);
+            })?;
+            at(state, 3800, |s| {
+                assert_eq!(s.clip_history.entries.len(), 1, "{LOG} our own paste is not a second entry");
+                eprintln!("{LOG} pasted");
+            })?;
+        }
+    }
+    if let Ok(mode) = std::env::var("FEATHER_DEBUG_BATTERY") {
+        // The menu bar and the settings page with a battery this machine may not have
+        at(state, 1200, move |s| {
+            let charging = mode == "charging";
+            s.battery_changed(Some(crate::battery::Battery { percent: if mode == "low" { 8 } else { 64 }, charging, full: false, seconds: 5400 }));
+            s.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Power));
+            s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+            eprintln!("[feather-battery-check] {:?}", s.shell.battery);
+        })?;
+    }
+    if let Some(rounds) = std::env::var("FEATHER_DEBUG_MEMORY_STRESS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        // Every panel again and again, the way a long session does: is memory given back?
+        const LOG: &str = "[feather-memory-stress]";
+        fn rss() -> u64 {
+            std::fs::read_to_string("/proc/self/status").ok().and_then(|t| t.lines().find(|l| l.starts_with("RssAnon")).and_then(|l| l.split_whitespace().nth(1)?.parse().ok())).unwrap_or(0)
+        }
+        use crate::system_settings::{Action as A, Page};
+        for round in 0..rounds {
+            let base = 1500 + round * 2200;
+            at(state, base, |s| s.toggle_launchpad())?;
+            at(state, base + 300, |s| {
+                s.toggle_launchpad();
+                s.shell.control_center_open = true;
+                s.shell.overlay_dirty = true;
+                s.needs_redraw = true;
+            })?;
+            at(state, base + 600, |s| {
+                s.shell.close_menus();
+                s.shell.spotlight_open = true;
+                s.shell.spotlight_query = "настр".into();
+                s.spotlight_query_changed();
+                s.needs_redraw = true;
+            })?;
+            at(state, base + 900, |s| {
+                s.shell.close_menus();
+                s.open_picker(crate::shell::SpotlightMode::Emoji);
+            })?;
+            at(state, base + 1200, move |s| {
+                s.shell.close_menus();
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+                s.apply_system_setting(A::Page(Page::ALL[round as usize % Page::ALL.len()]));
+                s.needs_redraw = true;
+            })?;
+            at(state, base + 1600, move |s| {
+                s.windows.retain(|w| !w.is_builtin());
+                s.refresh_focus();
+                if round % 5 == 0 {
+                    eprintln!("{LOG} round {round}: RssAnon {} KiB", rss());
+                }
+            })?;
+        }
+        at(state, 1500 + rounds * 2200 + 4000, |_| eprintln!("{LOG} settled: RssAnon {} KiB", rss()))?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_LAYERS").is_some() {
+        // A real layer-shell panel (proto-client): exclusive zone, input, keyboard on demand,
+        // and a foot window it closes over wlr-foreign-toplevel-management
+        const LOG: &str = "[feather-layers-check]";
+        at(state, 1500, |s| {
+            let panel = s.shell.layers.first().expect("the panel is mapped").clone();
+            assert_eq!(panel.loc, (0, 0));
+            let area = crate::theme::maximized_area(s.shell.screen_w, s.shell.screen_h);
+            assert_eq!(area.1, 60, "{LOG} windows keep clear of the panel");
+            s.debug_pointer_motion(300.0, 20.0);
+            assert_eq!(s.pointer.current_focus().as_ref(), Some(&panel.surface), "{LOG} pointer on the panel");
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+            assert_eq!(s.keyboard.current_focus().as_ref(), Some(&panel.surface), "{LOG} on-demand keyboard");
+            assert!(s.shell.open_menu.is_none(), "{LOG} the click is not our menu bar's");
+            s.debug_pointer_motion(300.0, 500.0);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+            assert_ne!(s.keyboard.current_focus().as_ref(), Some(&panel.surface), "{LOG} a click elsewhere takes it back");
+            eprintln!("{LOG} panel ok");
+        })?;
+        at(state, 3500, |s| {
+            assert!(!s.windows.iter().any(|w| w.app_id == "foot" && w.mapped), "{LOG} foot was closed through the protocol");
+            eprintln!("{LOG} toplevel close ok");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_CAFFEINE").is_some() {
+        const LOG: &str = "[feather-caffeine-check]";
+        at(state, 1200, |s| {
+            s.power.preferences.blank = 1;
+            s.power.preferences.suspend = 2;
+            s.rearm_idle();
+            assert!(s.power.timer.is_some(), "{LOG} idle timer without caffeine");
+            let (x, y) = s.shell.caffeine_center();
+            s.debug_pointer_motion(x as f64, y as f64);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+            assert!(s.shell.caffeine, "{LOG} the click turned it on");
+            assert!(s.power.timer.is_none(), "{LOG} no idle timer at all");
+            s.lock_session();
+            s.sync_idle_inhibit();
+            assert!(s.power.timer.is_none(), "{LOG} none on the lock screen either");
+            eprintln!("{LOG} on: no idle deadlines");
+        })?;
+        at(state, 1800, |s| {
+            s.lock.active = false;
+            s.set_caffeine(false);
+            assert!(s.power.timer.is_some(), "{LOG} deadlines are back");
+            s.set_caffeine(true);
+            eprintln!("{LOG} off: deadlines are back");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_SPOTLIGHT").is_some() {
+        // HOME is a test folder; the query finds a program-independent file, a note and a setting
+        const LOG: &str = "[feather-spotlight-check]";
+        let home = std::env::var("HOME").unwrap();
+        assert!(home.contains("spotlight-home"), "{LOG} needs a test HOME");
+        at(state, 1500, |s| {
+            s.shell.spotlight_open = true;
+            s.shell.spotlight_query = "звук".into();
+            s.spotlight_query_changed();
+            assert!(s.shell.spotlight_hits.iter().any(|h| matches!(h.action, crate::shell::ShellClickAction::OpenSettingsPage(_))), "{LOG} settings at once");
+        })?;
+        at(state, 2600, |s| {
+            let names: Vec<_> = s.shell.spotlight_hits.iter().map(|h| h.name.as_str()).collect();
+            eprintln!("{LOG} rows: {names:?}");
+            assert!(s.shell.spotlight_hits.iter().any(|h| matches!(h.action, crate::shell::ShellClickAction::OpenPath(_))), "{LOG} file found");
+            assert!(s.shell.spotlight_hits.iter().any(|h| h.name == "Покупки"), "{LOG} note found");
+            s.shell.spotlight_selected = 0;
+            eprintln!("{LOG} ok");
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_WINDOW_MEMORY").is_some() {
+        // First run: a client is moved and resized, then closed. A second run (same config)
+        // starts it again and looks at where it opens.
+        const LOG: &str = "[feather-memory-check]";
+        fn term(s: &FeatherCompositor) -> Option<usize> {
+            s.windows.iter().position(|w| w.app_id == "feather-terminal" && w.mapped)
+        }
+        let second = std::env::var("FEATHER_DEBUG_WINDOW_MEMORY").as_deref() == Ok("second");
+        at(state, 2500, move |s| {
+            let i = term(s).expect("terminal");
+            if second {
+                let w = &s.windows[i];
+                eprintln!("{LOG} opened at {},{} {}x{}", w.x, w.y, w.width, w.height);
+                assert_eq!((w.x, w.y, w.width, w.height), (211, 123, 640, 400), "{LOG} remembered place");
+            } else {
+                s.windows[i].x = 211;
+                s.windows[i].y = 123;
+                s.windows[i].resize_client(640, 400);
+            }
+        })?;
+        if !second {
+            at(state, 3200, |s| {
+                let i = term(s).expect("terminal");
+                assert_eq!((s.windows[i].width, s.windows[i].height), (640, 400), "{LOG} client took the size");
+                s.windows[i].toplevel().unwrap().send_close();
+            })?;
+            at(state, 7500, |s| {
+                assert!(term(s).is_none());
+                let file = std::env::var("XDG_CONFIG_HOME").unwrap() + "/feather-de/windows.conf";
+                let text = std::fs::read_to_string(file).expect("saved");
+                assert!(text.contains("window\tfeather-terminal\t211\t123\t640\t400\t"), "{LOG} file: {text}");
+                eprintln!("{LOG} saved");
+            })?;
+        }
+    }
+    if let Ok(mode) = std::env::var("FEATHER_DEBUG_TILING") {
+        // A real client, the real drag path and the real shortcuts (Super+drag: the terminal
+        // draws its own titlebar). "hold" stops with the preview on screen for a snapshot.
+        use crate::tiling::{work_area, Step, Tile};
+        const LOG: &str = "[feather-tiling-check]";
+        fn term(s: &FeatherCompositor) -> usize {
+            s.windows.iter().position(|w| w.app_id == "feather-terminal" && w.mapped).expect("terminal mapped")
+        }
+        fn chord(s: &mut FeatherCompositor, arrow: u32) {
+            for (key, down) in [(29, true), (125, true), (arrow, true), (arrow, false), (125, false), (29, false)] {
+                s.debug_keyboard_key(key, down);
+            }
+        }
+        fn expect(s: &FeatherCompositor, tile: Tile) {
+            let i = term(s);
+            let frame = tile.frame(work_area(s.window_monitor(i)));
+            let w = &s.windows[i];
+            assert_eq!((w.tiled, w.x, w.y, w.width, w.total_height()), (Some(tile), frame.x, frame.y, frame.w, frame.h), "{LOG} {tile:?}");
+            eprintln!("{LOG} {tile:?} ok {frame:?}");
+        }
+        if mode == "green" {
+            // A window with our titlebar: resting on the green button opens the menu
+            at(state, 1500, |s| {
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+            })?;
+            at(state, 2200, |s| {
+                let w = s.windows.iter().rev().find(|w| w.is_visible() && w.is_builtin()).expect("settings window");
+                let (dx, dy) = w.traffic_shift();
+                let (x, y) = (w.x as f32 + dx + crate::theme::TRAFFIC_CENTERS[2], w.y as f32 + dy + crate::theme::TITLEBAR_HEIGHT as f32 * 0.5);
+                s.debug_pointer_motion(x as f64, y as f64);
+                assert!(s.green_hover.is_some(), "{LOG} timer armed on the green button");
+            })?;
+            at(state, 3000, |s| {
+                assert!(s.shell.dock_menu.is_some(), "{LOG} menu opened");
+                eprintln!("{LOG} green menu ok: {:?}", s.shell.dock_menu.as_ref().unwrap().items.iter().map(|i| i.0.as_str()).collect::<Vec<_>>());
+            })?;
+            return Ok(());
+        }
+        let hold = mode == "hold";
+        at(state, 1500, move |s| {
+            let i = term(s);
+            let (x, y) = (s.windows[i].x + 120, s.windows[i].y + 80);
+            s.debug_pointer_motion(x as f64, y as f64);
+            s.debug_keyboard_key(125, true);
+            s.debug_pointer_button(0x110, true);
+            assert!(s.active_drag.is_some());
+            s.debug_pointer_motion(300.0, 300.0);
+            assert_eq!(s.shell.tile_preview.target, None, "no zone in the middle of the screen");
+            s.debug_pointer_motion(0.0, 500.0);
+            assert!(matches!(s.shell.tile_preview.target, Some((_, _, Step::Tile(Tile::Left)))));
+            eprintln!("{LOG} preview shown");
+            if !hold {
+                s.debug_pointer_button(0x110, false);
+                s.debug_keyboard_key(125, false);
+                assert_eq!(s.shell.tile_preview.target, None);
+            }
+        })?;
+        if !hold {
+            at(state, 2300, |s| {
+                expect(s, Tile::Left);
+                // A click with no travel leaves the tile alone
+                let i = term(s);
+                let (x, y) = (s.windows[i].x + 120, s.windows[i].y + 80);
+                s.debug_pointer_motion(x as f64, y as f64);
+                s.debug_keyboard_key(125, true);
+                s.debug_pointer_button(0x110, true);
+                s.debug_pointer_motion(x as f64 + 2.0, y as f64);
+                s.debug_pointer_button(0x110, false);
+                s.debug_keyboard_key(125, false);
+                assert_eq!(s.windows[term(s)].tiled, Some(Tile::Left), "{LOG} click kept the tile");
+                // A real drag gives the free size back
+                s.debug_pointer_motion(x as f64, y as f64);
+                s.debug_keyboard_key(125, true);
+                s.debug_pointer_button(0x110, true);
+                s.debug_pointer_motion(x as f64 + 200.0, y as f64 + 60.0);
+                s.debug_pointer_button(0x110, false);
+                s.debug_keyboard_key(125, false);
+                assert_eq!(s.windows[term(s)].tiled, None, "{LOG} drag left the tile");
+            })?;
+            at(state, 3000, |s| {
+                let w = &s.windows[term(s)];
+                eprintln!("{LOG} free again {}x{} at {},{}", w.width, w.height, w.x, w.y);
+                assert!(w.width < s.shell.screen_w / 2 + 200, "{LOG} free width came back");
+                chord(s, 105); // ←
+            })?;
+            at(state, 3600, |s| { expect(s, Tile::Left); chord(s, 103); })?; // ↑
+            at(state, 4200, |s| { expect(s, Tile::TopLeft); chord(s, 106); })?; // →
+            at(state, 4800, |s| { expect(s, Tile::TopRight); chord(s, 108); })?; // ↓
+            at(state, 5400, |s| {
+                expect(s, Tile::Right);
+                // A Dock change refits tiled windows
+                s.refit_maximized_windows();
+                chord(s, 103); // ↑
+            })?;
+            at(state, 6000, |s| {
+                expect(s, Tile::TopRight);
+                chord(s, 103); // ↑ to fill
+            })?;
+            at(state, 6600, |s| {
+                assert!(s.windows[term(s)].maximized, "{LOG} filled");
+                chord(s, 108); // ↓ back to the tile it came from
+            })?;
+            at(state, 7200, |s| {
+                expect(s, Tile::TopRight);
+                let i = term(s);
+                s.apply_tile(i, Step::Free);
+            })?;
+            at(state, 7800, |s| {
+                let w = &s.windows[term(s)];
+                assert_eq!(w.tiled, None);
+                assert!(!w.maximized);
+                eprintln!("{LOG} done {}x{}", w.width, w.height);
+            })?;
+        }
+    }
     if std::env::var_os("FEATHER_DEBUG_MINIMIZE").is_some() {
         // A Tauri-like client (bench/tauri-like.py): its own HTML titlebar buttons must keep
         // working after it minimizes itself and comes back from the Dock.

@@ -95,7 +95,12 @@ impl FeatherCompositor {
             win.height = h;
             win.resize_client(w, h);
         }
-        if win.maximized || win.fullscreen {
+        if win.maximized || win.fullscreen || win.tiled.is_some() {
+            return;
+        }
+        if let Some((x, y)) = win.remembered_place.take() {
+            win.x = x;
+            win.y = y;
             return;
         }
         // Cascade, but never push the window past the screen edges
@@ -159,6 +164,9 @@ impl FeatherCompositor {
         let Some(idx) = self.window_index_for_toplevel(surface) else {
             return;
         };
+        if self.windows[idx].toplevel().is_some_and(|t| !t.is_initial_configure_sent()) {
+            self.restore_window_place(idx);
+        }
         let changes = {
             let win = &mut self.windows[idx];
             if let Some(toplevel) = win.toplevel() {
@@ -177,15 +185,20 @@ impl FeatherCompositor {
         if changes.newly_mapped && !self.adopt_larvis_window(idx) {
             // A new window opens on the user's desktop in front
             self.leave_larvis_desktop();
-            self.windows[idx].space = self.spaces.current;
-            self.windows[idx].off_space = false;
+            // A program of the previous session goes back to its desktop
+            let space = self.windows[idx].remembered_space.take().unwrap_or(self.spaces.current).min(crate::spaces::MAX_SPACES - 1);
+            self.spaces.count = self.spaces.count.max(space + 1);
+            self.windows[idx].space = space;
+            self.windows[idx].off_space = space != self.spaces.current;
             self.place_new_window(idx);
+            self.window_memory_changed();
             // New windows go to the top of the stack and get keyboard focus
             let win = self.windows.remove(idx);
             self.windows.push(win);
             self.refresh_focus();
         }
         if changes.unmapped {
+            self.remember_closing_window(idx);
             self.drop_keyboard_focus_if(surface);
             self.refresh_focus();
             self.sync_larvis_desktop();
@@ -198,6 +211,7 @@ impl FeatherCompositor {
             if let Some(i) = self.window_index_for_toplevel(surface) {
                 self.sync_window_scale(i);
             }
+            self.foreign_sync();
         }
     }
 
@@ -244,13 +258,7 @@ impl FeatherCompositor {
         let win_id = self.windows[idx].id;
         let op = match edges {
             None => {
-                if self.windows[idx].maximized {
-                    // Dragging a maximized window restores it under the cursor, like macOS
-                    let r=self.window_monitor(idx);
-                    if let Some(w) = self.windows.iter_mut().find(|w| w.id == win_id) {
-                        w.unmaximize_on((pos.x,pos.y),r);
-                    }
-                }
+                // A maximized or tiled window lets go when it is really dragged (`apply_drag`)
                 let win = self.windows.iter_mut().find(|w| w.id == win_id).unwrap();
                 win.resize_anchor = None;
                 DragOperation::MoveWindow {
@@ -261,6 +269,7 @@ impl FeatherCompositor {
             }
             Some(edges) => {
                 let win = &mut self.windows[idx];
+                win.forget_tile();
                 win.set_resizing(true);
                 win.resize_anchor = Some(ResizeAnchor {
                     edges,
@@ -349,10 +358,12 @@ impl XdgShellHandler for FeatherCompositor {
         if let Some(idx) = self.window_index_for_toplevel(surface.wl_surface()) {
             let id = self.windows[idx].id;
             tracing::debug!(id, "toplevel destroyed");
+            self.remember_closing_window(idx);
             self.windows.remove(idx);
             if matches!(self.active_drag, Some(DragOperation::MoveWindow { win_id, .. }) | Some(DragOperation::ResizeWindow { win_id, .. }) if win_id == id)
             {
                 self.active_drag = None;
+                self.shell.tile_preview.clear();
             }
             self.shell.topbar_dirty = true;
             self.shell.dock_dirty = true;
@@ -498,6 +509,9 @@ impl SelectionHandler for FeatherCompositor {
     fn new_selection(&mut self, ty: smithay::wayland::selection::SelectionTarget, source: Option<smithay::wayland::selection::SelectionSource>, _seat: Seat<Self>) {
         if ty == smithay::wayland::selection::SelectionTarget::Clipboard {
             self.client_clipboard_mimes = source.map(|s| s.mime_types()).unwrap_or_default();
+            if !self.client_clipboard_mimes.is_empty() {
+                self.clipboard_changed(self.client_clipboard_mimes.clone());
+            }
         }
     }
 }
@@ -597,7 +611,7 @@ impl CompositorHandler for FeatherCompositor {
         while let Some(parent) = get_parent(&root) {
             root = parent;
         }
-        if &root == surface {
+        if &root == surface && !self.layer_commit(surface) {
             self.handle_toplevel_commit(surface);
         }
 
@@ -609,6 +623,33 @@ impl CompositorHandler for FeatherCompositor {
         }
     }
 }
+
+/// Candidate windows of an input method, placed by its program next to the text cursor
+impl smithay::wayland::input_method::InputMethodHandler for FeatherCompositor {
+    fn new_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        let _ = self.popups.track_popup(PopupKind::from(surface));
+    }
+
+    fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+        if let Some(parent) = surface.get_parent().map(|p| p.surface.clone()) {
+            let _ = smithay::desktop::PopupManager::dismiss_popup(&parent, &PopupKind::from(surface));
+        }
+    }
+
+    fn popup_repositioned(&mut self, _: smithay::wayland::input_method::PopupSurface) {
+        self.needs_redraw = true;
+    }
+
+    fn parent_geometry(&self, parent: &WlSurface) -> Rectangle<i32, Logical> {
+        self.windows
+            .iter()
+            .find(|w| w.wl_surface() == Some(parent))
+            .map_or_else(Rectangle::default, |w| Rectangle::new((0, 0).into(), (w.width, w.height).into()))
+    }
+}
+smithay::delegate_input_method_manager!(FeatherCompositor);
+smithay::delegate_text_input_manager!(FeatherCompositor);
+smithay::delegate_virtual_keyboard_manager!(FeatherCompositor);
 
 impl DrmSyncobjHandler for FeatherCompositor {
     fn drm_syncobj_state(&mut self) -> Option<&mut DrmSyncobjState> {

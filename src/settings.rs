@@ -276,6 +276,10 @@ pub struct Settings {
     pub first_run_completed: bool,
     /// Open «Об этом компьютере» at login
     pub show_about: bool,
+    pub restore_session: bool,
+    /// Never sleep or blank the screen
+    pub caffeine: bool,
+    pub clipboard_history: bool,
     pub power: crate::power::Preferences,
     pub pointer: Pointer,
     pub appearance: Appearance,
@@ -327,6 +331,9 @@ impl Default for Settings {
         Self {
             first_run_completed: false,
             show_about: true,
+            restore_session: true,
+            caffeine: false,
+            clipboard_history: true,
             power: Default::default(),
             pointer: Pointer::default(),
             appearance: Appearance::Light,
@@ -499,6 +506,21 @@ impl Settings {
                 "first_run_completed" => {
                     if let Ok(b) = v.parse() {
                         s.first_run_completed = b;
+                    }
+                }
+                "clipboard_history" => {
+                    if let Ok(b) = v.parse() {
+                        s.clipboard_history = b;
+                    }
+                }
+                "caffeine" => {
+                    if let Ok(b) = v.parse() {
+                        s.caffeine = b;
+                    }
+                }
+                "restore_session" => {
+                    if let Ok(b) = v.parse() {
+                        s.restore_session = b;
                     }
                 }
                 "show_about" => {
@@ -721,6 +743,9 @@ impl Settings {
         text.push_str(&format!("keyboard_caps={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\n", self.keyboard.caps.id(), self.keyboard.repeat_delay, self.keyboard.repeat_rate));
         for line in self.keybindings.lines() { text.push_str(&line); }
         text.push_str(&format!("show_about={}\n", self.show_about));
+        text.push_str(&format!("restore_session={}\n", self.restore_session));
+        text.push_str(&format!("caffeine={}\n", self.caffeine));
+        text.push_str(&format!("clipboard_history={}\n", self.clipboard_history));
         text.push_str(&format!("first_run_completed={}\n", self.first_run_completed));
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));

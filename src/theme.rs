@@ -85,7 +85,30 @@ pub fn dock_side_reserved() -> (i32, i32) {
 /// The area a maximized window fills (x, y, width, height of its frame)
 pub fn maximized_area(screen_w: i32, screen_h: i32) -> (i32, i32, i32, i32) {
     let (left, right) = dock_side_reserved();
-    (left, TOP_BAR_HEIGHT, screen_w - left - right, screen_h - TOP_BAR_HEIGHT - dock_reserved())
+    let (il, ir, it, ib) = layer_insets();
+    let (left, right) = (left.max(il), right.max(ir));
+    let top = TOP_BAR_HEIGHT.max(it);
+    (left, top, screen_w - left - right, screen_h - top - dock_reserved().max(ib))
+}
+
+/// Room panels of other programs keep for themselves on the primary monitor (left, right, top, bottom)
+static LAYER_INSETS: [std::sync::atomic::AtomicI32; 4] = [const { std::sync::atomic::AtomicI32::new(0) }; 4];
+
+fn layer_insets() -> (i32, i32, i32, i32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (LAYER_INSETS[0].load(Relaxed), LAYER_INSETS[1].load(Relaxed), LAYER_INSETS[2].load(Relaxed), LAYER_INSETS[3].load(Relaxed))
+}
+
+/// True when something changed
+pub fn set_layer_insets(insets: (i32, i32, i32, i32)) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if layer_insets() == insets {
+        return false;
+    }
+    for (slot, value) in LAYER_INSETS.iter().zip([insets.0, insets.1, insets.2, insets.3]) {
+        slot.store(value, Relaxed);
+    }
+    true
 }
 pub fn reserved_for(icon: f32, autohide: bool) -> i32 {
     if autohide { 4 } else { (icon + DOCK_PAD_Y * 2.0) as i32 + DOCK_BOTTOM_MARGIN + 4 }
@@ -752,6 +775,80 @@ pub fn draw_search_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, r: f32, color:
         (r * 0.3).max(1.4),
         color,
     );
+}
+
+/// A cup for the menu bar: an empty outline, or full and steaming while it keeps the computer awake
+pub fn draw_caffeine_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, color: Color, on: bool) {
+    let cy = cy - 1.0;
+    let (left, right, top, bottom) = (cx - 6.5, cx + 3.0, cy - 1.5, cy + 5.5);
+    let mut body = PathBuilder::new();
+    body.move_to(left, top);
+    body.line_to(right, top);
+    body.line_to(right, bottom - 3.0);
+    body.quad_to(right, bottom, right - 3.0, bottom);
+    body.line_to(left + 3.0, bottom);
+    body.quad_to(left, bottom, left, bottom - 3.0);
+    body.close();
+    let Some(body) = body.finish() else { return };
+    if on {
+        crate::ui_raster::solid(pixmap, &body, ui_scale(), color);
+    }
+    let scale = ui_scale();
+    let mut paint = Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    let stroke = Stroke { width: 1.25, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+    let transform = Transform::from_scale(scale, scale);
+    pixmap.stroke_path(&body, &paint, &stroke, transform, None);
+    // The handle
+    let mut handle = PathBuilder::new();
+    handle.move_to(right, top + 1.2);
+    handle.cubic_to(right + 4.2, top + 0.6, right + 4.2, top + 4.8, right, top + 4.4);
+    if let Some(handle) = handle.finish() {
+        pixmap.stroke_path(&handle, &paint, &stroke, transform, None);
+    }
+    if on {
+        for x in [cx - 3.9, cx - 0.5] {
+            let mut steam = PathBuilder::new();
+            steam.move_to(x, cy - 3.2);
+            steam.cubic_to(x - 1.3, cy - 4.4, x + 1.3, cy - 5.4, x, cy - 6.8);
+            if let Some(steam) = steam.finish() {
+                pixmap.stroke_path(&steam, &paint, &Stroke { width: 1.1, line_cap: tiny_skia::LineCap::Round, ..Default::default() }, transform, None);
+            }
+        }
+    }
+}
+
+/// The battery of the menu bar: `cx` is the middle of its body
+pub fn draw_battery_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, color: Color, percent: u8, plugged: bool, low: bool) {
+    let (w, h) = (21.0f32, 10.5f32);
+    let (x, y) = (cx - w * 0.5, cy - h * 0.5);
+    stroke_rounded_rect(pixmap, x, y, w, h, 3.2, 1.0, with_alpha(color, 0.55));
+    fill_rounded_rect(pixmap, x + w + 1.0, cy - 1.9, 1.4, 3.8, 0.7, with_alpha(color, 0.55));
+    let inner = w - 3.0;
+    let level = (inner * percent as f32 / 100.0).max(1.6);
+    let fill = if low {
+        rgba(255, 69, 58, 255)
+    } else if plugged {
+        rgba(48, 209, 88, 255)
+    } else {
+        color
+    };
+    fill_rounded_rect(pixmap, x + 1.5, y + 1.5, level, h - 3.0, 1.8, fill);
+    if plugged {
+        // A bolt in the bar's own colour, over whatever level is below it
+        let mut bolt = PathBuilder::new();
+        bolt.move_to(cx + 1.0, y - 0.8);
+        bolt.line_to(cx - 3.0, cy + 0.7);
+        bolt.line_to(cx - 0.3, cy + 0.7);
+        bolt.line_to(cx - 1.0, y + h + 0.8);
+        bolt.line_to(cx + 3.0, cy - 0.7);
+        bolt.line_to(cx + 0.3, cy - 0.7);
+        bolt.close();
+        if let Some(bolt) = bolt.finish() {
+            crate::ui_raster::solid(pixmap, &bolt, ui_scale(), color);
+        }
+    }
 }
 
 /// Control Center "two toggles" glyph

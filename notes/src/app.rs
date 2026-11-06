@@ -86,6 +86,8 @@ pub struct App {
     pub focused: bool,
     notes: Vec<Note>,
     selected: Option<u64>,
+    /// Note to open first, from the command line
+    pub wanted: Option<u64>,
     loaded: bool,
     search: feather_ui::input::TextInput,
     search_focus: bool,
@@ -173,6 +175,7 @@ impl App {
             focused: true,
             notes: Vec::new(),
             selected: None,
+            wanted: None,
             loaded: false,
             search: Default::default(),
             search_focus: false,
@@ -196,7 +199,9 @@ impl App {
     pub fn loaded(&mut self, notes: Vec<Note>) {
         self.notes = notes;
         self.loaded = true;
-        if let Some(first) = self.visible().first().map(|n| n.id) {
+        // `--note <id>` (a Spotlight result): that note, if it is still there
+        let wanted = self.wanted.take().filter(|id| self.notes.iter().any(|n| n.id == *id));
+        if let Some(first) = wanted.or_else(|| self.visible().first().map(|n| n.id)) {
             self.open(first);
         }
         self.dirty = true;

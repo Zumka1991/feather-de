@@ -179,7 +179,12 @@ fn main() {
         configured: false,
         frame_pending: false,
         exit: false,
-        app: App::new(text::FontSystem::new()),
+        app: {
+            let mut app = App::new(text::FontSystem::new());
+            let args: Vec<String> = std::env::args().collect();
+            app.wanted = args.iter().position(|a| a == "--note").and_then(|i| args.get(i + 1)).and_then(|id| id.parse().ok());
+            app
+        },
         seat: None,
         keyboard: None,
         pointer: None,
