@@ -87,6 +87,8 @@ pub struct App {
     pub h: f32,
     pub focused: bool,
     pub maximized: bool,
+    /// Tiled on all sides: on the Подложка, where windows go without their buttons
+    pub no_buttons: bool,
     pub dirty: bool,
 
     pub doc: Option<Document>,
@@ -115,6 +117,7 @@ impl App {
             h: 660.0,
             focused: true,
             maximized: false,
+            no_buttons: false,
             dirty: true,
             doc: None,
             loading: false,
@@ -405,7 +408,7 @@ impl App {
 
     fn hit_test(&self, x: f32, y: f32) -> Option<Hit> {
         if y < TOOLBAR_H {
-            for (i, cx) in [18.0f32, 38.0, 58.0].into_iter().enumerate() {
+            for (i, cx) in [18.0f32, 38.0, 58.0].into_iter().enumerate().filter(|_| !self.no_buttons) {
                 if (x - cx).hypot(y - 24.0) <= 8.0 {
                     return Some(Hit::Traffic(i));
                 }
@@ -492,7 +495,7 @@ impl App {
             self.dirty = true;
             return;
         }
-        let th = (8.0..=68.0).contains(&x) && (12.0..=36.0).contains(&y);
+        let th = !self.no_buttons && (8.0..=68.0).contains(&x) && (12.0..=36.0).contains(&y);
         let h = self.hit_test(x, y);
         if th != self.traffic_hover || h != self.hover {
             self.traffic_hover = th;
@@ -830,7 +833,8 @@ impl App {
             (38.0, rgba(255, 189, 46, 255)),
             (58.0, rgba(39, 201, 63, 255)),
         ];
-        for (cx, col) in lights {
+        let show = !self.no_buttons;
+        for (cx, col) in lights.into_iter().filter(|_| show) {
             let c = if self.focused || self.traffic_hover { col } else { colors::traffic_inactive() };
             fill_circle(pm, cx, 24.0, 6.0, c);
         }

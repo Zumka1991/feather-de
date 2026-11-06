@@ -777,46 +777,57 @@ pub fn draw_search_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, r: f32, color:
     );
 }
 
-/// A cup for the menu bar: an empty outline, or full and steaming while it keeps the computer awake
-pub fn draw_caffeine_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, color: Color, on: bool) {
-    let cy = cy - 1.0;
-    let (left, right, top, bottom) = (cx - 6.5, cx + 3.0, cy - 1.5, cy + 5.5);
+/// A cup: an empty outline, or full and steaming while it keeps the computer awake. `k` scales
+/// the menu bar's size.
+pub fn draw_caffeine_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, k: f32, color: Color, on: bool) {
+    let cy = cy - k;
+    let (left, right, top, bottom) = (cx - 6.5 * k, cx + 3.0 * k, cy - 1.5 * k, cy + 5.5 * k);
     let mut body = PathBuilder::new();
     body.move_to(left, top);
     body.line_to(right, top);
-    body.line_to(right, bottom - 3.0);
-    body.quad_to(right, bottom, right - 3.0, bottom);
-    body.line_to(left + 3.0, bottom);
-    body.quad_to(left, bottom, left, bottom - 3.0);
+    body.line_to(right, bottom - 3.0 * k);
+    body.quad_to(right, bottom, right - 3.0 * k, bottom);
+    body.line_to(left + 3.0 * k, bottom);
+    body.quad_to(left, bottom, left, bottom - 3.0 * k);
     body.close();
     let Some(body) = body.finish() else { return };
     if on {
         crate::ui_raster::solid(pixmap, &body, ui_scale(), color);
     }
-    let scale = ui_scale();
     let mut paint = Paint::default();
     paint.set_color(color);
     paint.anti_alias = true;
-    let stroke = Stroke { width: 1.25, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
-    let transform = Transform::from_scale(scale, scale);
+    let stroke = Stroke { width: 1.25 * k, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+    let transform = scale_transform();
     pixmap.stroke_path(&body, &paint, &stroke, transform, None);
-    // The handle
     let mut handle = PathBuilder::new();
-    handle.move_to(right, top + 1.2);
-    handle.cubic_to(right + 4.2, top + 0.6, right + 4.2, top + 4.8, right, top + 4.4);
+    handle.move_to(right, top + 1.2 * k);
+    handle.cubic_to(right + 4.2 * k, top + 0.6 * k, right + 4.2 * k, top + 4.8 * k, right, top + 4.4 * k);
     if let Some(handle) = handle.finish() {
         pixmap.stroke_path(&handle, &paint, &stroke, transform, None);
     }
     if on {
-        for x in [cx - 3.9, cx - 0.5] {
+        for x in [cx - 3.9 * k, cx - 0.5 * k] {
             let mut steam = PathBuilder::new();
-            steam.move_to(x, cy - 3.2);
-            steam.cubic_to(x - 1.3, cy - 4.4, x + 1.3, cy - 5.4, x, cy - 6.8);
+            steam.move_to(x, cy - 3.2 * k);
+            steam.cubic_to(x - 1.3 * k, cy - 4.4 * k, x + 1.3 * k, cy - 5.4 * k, x, cy - 6.8 * k);
             if let Some(steam) = steam.finish() {
-                pixmap.stroke_path(&steam, &paint, &Stroke { width: 1.1, line_cap: tiny_skia::LineCap::Round, ..Default::default() }, transform, None);
+                pixmap.stroke_path(&steam, &paint, &Stroke { width: 1.1 * k, line_cap: tiny_skia::LineCap::Round, ..Default::default() }, transform, None);
             }
         }
     }
+}
+
+/// The Подложка: tiles as it lays out windows
+pub fn draw_scratch_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, k: f32, color: Color) {
+    let (x, y, w, h) = (cx - 7.0 * k, cy - 5.5 * k, 14.0 * k, 11.0 * k);
+    let gap = 1.4 * k;
+    let half = (w - gap) * 0.5;
+    let r = 1.6 * k;
+    fill_rounded_rect(pixmap, x, y, half, h, r, color);
+    let tile = (h - gap) * 0.5;
+    fill_rounded_rect(pixmap, x + half + gap, y, half, tile, r, color);
+    fill_rounded_rect(pixmap, x + half + gap, y + tile + gap, half, tile, r, color);
 }
 
 /// The battery of the menu bar: `cx` is the middle of its body

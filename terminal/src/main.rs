@@ -146,6 +146,8 @@ struct App {
     w: f32,
     h: f32,
     maximized: bool,
+    /// Tiled on all sides: on the Подложка, where windows go without their buttons
+    no_buttons: bool,
     focused: bool,
     tabs: Vec<Tab>,
     active: usize,
@@ -317,6 +319,7 @@ fn main() {
         w,
         h,
         maximized: false,
+        no_buttons: false,
         focused: true,
         tabs: Vec::new(),
         active: 0,
@@ -716,12 +719,16 @@ impl App {
         } else {
             ([238, 238, 241], ui::rgba(40, 40, 44, 255), ui::rgba(120, 120, 128, 255), [212, 212, 216])
         };
-        let total = TITLE_H + self.tab_h();
-        view::fill(pm, 0, 0, pm.width() as i32, (total * s).round() as i32, bar);
-        view::fill(pm, 0, (total * s).round() as i32 - (s.round() as i32).max(1), pm.width() as i32, (s.round() as i32).max(1), line);
+        let title_h = self.title_h();
+        let total = title_h + self.tab_h();
+        if total > 0.0 {
+            view::fill(pm, 0, 0, pm.width() as i32, (total * s).round() as i32, bar);
+            view::fill(pm, 0, (total * s).round() as i32 - (s.round() as i32).max(1), pm.width() as i32, (s.round() as i32).max(1), line);
+        }
         ui_scale::with_render_settings(s, if dark { ui_scale::Appearance::Dark } else { ui_scale::Appearance::Light }, || {
             let hovered = matches!(self.hover, Some(Hover::Traffic(_)));
-            for (i, cx) in [20.0f32, 40.0, 60.0].into_iter().enumerate() {
+            let show = !self.no_buttons;
+            for (i, cx) in [20.0f32, 40.0, 60.0].into_iter().enumerate().filter(|_| show) {
                 let color = if !self.focused && !hovered {
                     if dark { ui::rgba(80, 80, 86, 255) } else { ui::rgba(205, 205, 210, 255) }
                 } else {
@@ -746,8 +753,10 @@ impl App {
             let (cols, rows) = self.tabs.get(self.active).map(|t| (t.term.cols(), t.term.rows())).unwrap_or((0, 0));
             let name = self.tabs.get(self.active).map(|t| t.title.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| "Терминал".into());
             let title = format!("{name} — {cols}×{rows}");
-            let title = self.chrome_fonts.ellipsize(&title, self.w - 200.0, 13.0, true);
-            self.chrome_fonts.draw_text_centered(pm, &title, self.w * 0.5, 7.5, 13.0, text, true);
+            if show {
+                let title = self.chrome_fonts.ellipsize(&title, self.w - 200.0, 13.0, true);
+                self.chrome_fonts.draw_text_centered(pm, &title, self.w * 0.5, 7.5, 13.0, text, true);
+            }
             if self.tabs.len() > 1 {
                 let tw = (self.w - 40.0) / self.tabs.len() as f32;
                 for (i, tab) in self.tabs.iter().enumerate() {
@@ -755,15 +764,15 @@ impl App {
                     let active = i == self.active;
                     if active {
                         let bg = self.palette.bg;
-                        ui::fill_rrect(pm, x + 4.0, TITLE_H + 2.0, tw - 8.0, TAB_H - 6.0, 6.0, ui::rgba(bg[0], bg[1], bg[2], 255));
+                        ui::fill_rrect(pm, x + 4.0, title_h + 2.0, tw - 8.0, TAB_H - 6.0, 6.0, ui::rgba(bg[0], bg[1], bg[2], 255));
                     } else if self.hover == Some(Hover::Tab(i)) || self.hover == Some(Hover::TabClose(i)) {
-                        ui::fill_rrect(pm, x + 4.0, TITLE_H + 2.0, tw - 8.0, TAB_H - 6.0, 6.0, ui::rgba(0, 0, 0, 18));
+                        ui::fill_rrect(pm, x + 4.0, title_h + 2.0, tw - 8.0, TAB_H - 6.0, 6.0, ui::rgba(0, 0, 0, 18));
                     }
                     let label = if tab.title.is_empty() { "Терминал".to_string() } else { tab.title.clone() };
                     let label = self.chrome_fonts.ellipsize(&label, tw - 44.0, 12.0, false);
-                    self.chrome_fonts.draw_text_centered(pm, &label, x + tw * 0.5, TITLE_H + 6.0, 12.0, if active { text } else { sub }, false);
+                    self.chrome_fonts.draw_text_centered(pm, &label, x + tw * 0.5, title_h + 6.0, 12.0, if active { text } else { sub }, false);
                     if matches!(self.hover, Some(Hover::Tab(j)) | Some(Hover::TabClose(j)) if j == i) {
-                        let (cx, cy) = (x + 18.0, TITLE_H + 12.0);
+                        let (cx, cy) = (x + 18.0, title_h + 12.0);
                         if self.hover == Some(Hover::TabClose(i)) {
                             ui::fill_circle(pm, cx, cy, 8.0, ui::rgba(0, 0, 0, 30));
                         }
@@ -771,7 +780,7 @@ impl App {
                         ui::line(pm, cx + 3.0, cy - 3.0, cx - 3.0, cy + 3.0, 1.3, sub);
                     }
                 }
-                let (px, py) = (self.w - 20.0, TITLE_H + 12.0);
+                let (px, py) = (self.w - 20.0, title_h + 12.0);
                 if self.hover == Some(Hover::NewTab) {
                     ui::fill_circle(pm, px, py, 10.0, ui::rgba(0, 0, 0, 22));
                 }
@@ -782,7 +791,10 @@ impl App {
         if self.search.open { self.paint_search(pm,s); }
     }
 
-    fn chrome_h(&self) -> f32 { TITLE_H+self.tab_h()+if self.search.open {SEARCH_H}else{0.0} }
+    /// On the Подложка there is no title strip at all: the terminal is the whole window
+    fn title_h(&self) -> f32 { if self.no_buttons { 0.0 } else { TITLE_H } }
+
+    fn chrome_h(&self) -> f32 { self.title_h()+self.tab_h()+if self.search.open {SEARCH_H}else{0.0} }
 
     fn open_search(&mut self) {
         let was_open=self.search.open;
@@ -855,7 +867,7 @@ impl App {
     }
 
     fn paint_search(&mut self, pm: &mut tiny_skia::PixmapMut, s: f32) {
-        let y=TITLE_H+self.tab_h();
+        let y=self.title_h()+self.tab_h();
         let dark=self.palette.dark;
         let bg=if dark {[44,44,48]}else{[238,238,241]};
         view::fill(pm,0,(y*s).round() as i32,pm.width() as i32,(SEARCH_H*s).round() as i32,bg);
@@ -901,20 +913,20 @@ impl App {
     // ---------- input ----------
 
     fn chrome_hit(&self, x: f32, y: f32) -> Option<Hover> {
-        let search_y=TITLE_H+self.tab_h();
+        let search_y=self.title_h()+self.tab_h();
         if self.search.open && y>=search_y && y<search_y+SEARCH_H {
             return Some(if x>=self.w-32.0 {Hover::SearchClose} else if x>=self.w-60.0 {Hover::SearchNext}
                 else if x>=self.w-88.0 {Hover::SearchPrevious} else {Hover::SearchField});
         }
-        if y < TITLE_H {
-            for (i, cx) in [20.0f32, 40.0, 60.0].into_iter().enumerate() {
+        if y < self.title_h() {
+            for (i, cx) in [20.0f32, 40.0, 60.0].into_iter().enumerate().filter(|_| !self.no_buttons) {
                 if (x - cx).abs() <= 8.0 && (y - 15.0).abs() <= 8.0 {
                     return Some(Hover::Traffic(i as u8));
                 }
             }
             return None;
         }
-        if self.tabs.len() > 1 && y < TITLE_H + TAB_H {
+        if self.tabs.len() > 1 && y < self.title_h() + TAB_H {
             if x >= self.w - 40.0 {
                 return Some(Hover::NewTab);
             }
@@ -1375,6 +1387,13 @@ impl WindowHandler for App {
             self.maximized = maximized;
             self.needs_draw = true;
         }
+        let no_buttons = configure.state.contains(WindowState::TILED);
+        let bar_changed = no_buttons != self.no_buttons;
+        if bar_changed {
+            self.no_buttons = no_buttons;
+            self.full_redraw = true;
+            self.needs_draw = true;
+        }
         let focused = configure.state.contains(WindowState::ACTIVATED);
         if focused != self.focused {
             self.focused = focused;
@@ -1387,7 +1406,7 @@ impl WindowHandler for App {
                 }
             }
         }
-        if (w, h) != (self.w, self.h) || !self.configured {
+        if (w, h) != (self.w, self.h) || !self.configured || bar_changed {
             self.w = w;
             self.h = h;
             self.relayout();

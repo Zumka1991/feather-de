@@ -712,3 +712,13 @@ apt не может установить этот пакет	apt cannot install 
 безопасность	security	seguridad	Sicherheit	sécurité	安全
 Обновления установлены	Updates installed	Actualizaciones instaladas	Updates installiert	Mises à jour installées	更新已安装
 Не удалось обновить	Couldn’t update	No se pudo actualizar	Aktualisierung fehlgeschlagen	Échec de la mise à jour	更新失败
+Подложка	Scratchpad	Bloc de ventanas	Ablage	Bloc-notes de fenêtres	暂存区
+Окно на подложку и обратно	Move Window to Scratchpad and Back	Mover ventana al bloc y volver	Fenster in die Ablage und zurück	Fenêtre vers le bloc et retour	窗口移入或移出暂存区
+Подложка пуста	Scratchpad is empty	El bloc está vacío	Ablage ist leer	Le bloc est vide	暂存区为空
+Super + Shift + S переносит сюда окно с фокусом	Super + Shift + S moves the focused window here	Super + Mayús + S mueve aquí la ventana activa	Super + Umschalt + S legt das aktive Fenster hier ab	Super + Maj + S y déplace la fenêtre active	Super + Shift + S 将当前窗口移到此处
+Окно на подложке	Window moved to scratchpad	Ventana en el bloc	Fenster in der Ablage	Fenêtre dans le bloc	窗口已移入暂存区
+Super + S показывает и прячет подложку	Super + S shows and hides the scratchpad	Super + S muestra y oculta el bloc	Super + S zeigt und verbirgt die Ablage	Super + S affiche et masque le bloc	Super + S 显示或隐藏暂存区
+Режим повышенной бодрости включён	Extra alertness mode is on	Modo de alerta activado	Wachmodus ist an	Mode éveil activé	已开启提神模式
+Режим повышенной бодрости выключен	Extra alertness mode is off	Modo de alerta desactivado	Wachmodus ist aus	Mode éveil désactivé	已关闭提神模式
+Компьютер не уснёт, экран не погаснет	The computer won’t sleep, the screen stays on	El equipo no dormirá y la pantalla seguirá encendida	Der Computer schläft nicht, der Bildschirm bleibt an	L’ordinateur ne dormira pas, l’écran reste allumé	电脑不会休眠，屏幕保持开启
+Сон и гашение экрана снова по расписанию	Sleep and screen off follow your schedule again	El reposo y el apagado vuelven a su horario	Ruhezustand und Abschalten wieder nach Zeitplan	Veille et extinction selon le réglage habituel	休眠和关屏恢复按计划执行

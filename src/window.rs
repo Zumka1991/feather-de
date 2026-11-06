@@ -253,6 +253,8 @@ pub struct ManagedWindow {
     /// From the window memory, used when the window first shows
     pub remembered_place: Option<(i32, i32)>,
     pub remembered_space: Option<u32>,
+    /// Goes to the Подложка when it first shows; true: without opening it
+    pub remembered_scratch: Option<bool>,
     pub resize_anchor: Option<ResizeAnchor>,
     pub hovered_traffic: Option<TrafficButton>,
     pub traffic_group_hovered: bool,
@@ -419,6 +421,7 @@ impl ManagedWindow {
             tile_free: None,
             remembered_place: None,
             remembered_space: None,
+            remembered_scratch: None,
             hovered_traffic: None,
             traffic_group_hovered: false,
             backend: WindowBackend::Wayland(surface),
@@ -476,6 +479,7 @@ impl ManagedWindow {
             tile_free: None,
             remembered_place: None,
             remembered_space: None,
+            remembered_scratch: None,
             hovered_traffic: None,
             traffic_group_hovered: false,
             backend: WindowBackend::Builtin(kind),
@@ -509,7 +513,8 @@ impl ManagedWindow {
     }
 
     pub fn has_titlebar(&self) -> bool {
-        self.ssd && !self.fullscreen
+        // On the Подложка windows go bare; a built-in window's bar is part of its own picture
+        self.ssd && !self.fullscreen && (self.space != crate::scratch::SCRATCH_SPACE || self.is_builtin())
     }
 
     pub fn titlebar_h(&self) -> i32 {
@@ -666,6 +671,40 @@ impl ManagedWindow {
         self.tiled = Some(tile);
         self.set_tile_states(Some(tile));
         self.fit_tile_frame(frame);
+    }
+
+    /// Joins the Подложка: remembers the free size and place, and tells the client it is tiled
+    pub fn enter_scratch(&mut self) {
+        if self.tiled.is_none() {
+            self.tile_free = if self.maximized {
+                self.saved_rect
+            } else {
+                (self.width > 0 && self.height > 0).then_some((self.x, self.y, self.width, self.height))
+            };
+        }
+        if self.maximized {
+            self.maximized = false;
+            self.saved_rect = None;
+            self.set_xdg_state(xdg_toplevel::State::Maximized, false);
+        }
+        self.tiled = None;
+        self.set_xdg_state(xdg_toplevel::State::TiledLeft, true);
+        self.set_xdg_state(xdg_toplevel::State::TiledRight, true);
+        self.set_xdg_state(xdg_toplevel::State::TiledTop, true);
+        self.set_xdg_state(xdg_toplevel::State::TiledBottom, true);
+    }
+
+    /// Leaves the Подложка: its own size and place again
+    pub fn leave_scratch(&mut self, r: crate::monitors::Rect) {
+        self.set_tile_states(None);
+        let (x, y, w, h) = self.tile_free.take().unwrap_or_else(|| {
+            let (w, h) = Self::fallback_size(r.w, r.h);
+            (r.x + (r.w - w) / 2, r.y + TOP_BAR_HEIGHT + 40, w, h)
+        });
+        self.x = x;
+        self.y = y;
+        self.resize_client(w, h);
+        self.dirty = true;
     }
 
     /// Follows a new work area (Dock size, screen mode)

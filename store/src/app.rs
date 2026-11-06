@@ -183,6 +183,8 @@ pub struct App {
     pub h: f32,
     pub dirty: bool,
     pub maximized: bool,
+    /// Tiled on all sides: on the Подложка, where windows go without their buttons
+    pub no_buttons: bool,
     pub focused: bool,
     catalog: Option<Catalog>,
     page: Page,
@@ -224,6 +226,7 @@ impl App {
             h: DEFAULT_H,
             dirty: true,
             maximized: false,
+            no_buttons: false,
             focused: true,
             catalog: None,
             page: Page::Home,
@@ -1342,6 +1345,9 @@ impl App {
     }
 
     fn paint_traffic(&mut self, pm: &mut PixmapMut) {
+        if self.no_buttons {
+            return;
+        }
         let hovered = matches!(self.hover, Hit::Close | Hit::Minimize | Hit::Zoom);
         for (hit, cx) in [(Hit::Close, 26.0), (Hit::Minimize, 46.0), (Hit::Zoom, 66.0)] {
             let color = if !self.focused && !hovered {

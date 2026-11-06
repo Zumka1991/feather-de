@@ -899,6 +899,137 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("{LOG} toplevel close ok");
         })?;
     }
+    if let Ok(mode) = std::env::var("FEATHER_DEBUG_SCRATCH") {
+        // Real clients and the real shortcuts. "hold" stays open with three tiles for a snapshot.
+        use crate::scratch::SCRATCH_SPACE;
+        const LOG: &str = "[feather-scratch-check]";
+        fn chord(s: &mut FeatherCompositor, shift: bool) {
+            s.debug_keyboard_key(125, true);
+            if shift { s.debug_keyboard_key(42, true); }
+            s.debug_keyboard_key(31, true);
+            s.debug_keyboard_key(31, false);
+            if shift { s.debug_keyboard_key(42, false); }
+            s.debug_keyboard_key(125, false);
+        }
+        fn terms(s: &FeatherCompositor) -> Vec<u64> {
+            s.windows.iter().filter(|w| w.app_id == "feather-terminal" && w.mapped).map(|w| w.id).collect()
+        }
+        fn front(s: &mut FeatherCompositor, id: u64) {
+            s.execute_shell_action(crate::shell::ShellClickAction::FocusWindow(id));
+        }
+        if mode == "remembered" {
+            // A program closed while on the Подложка: opened at login, it goes back there quietly
+            at(state, 2000, |s| {
+                let id = terms(s)[0];
+                let w = s.windows.iter().find(|w| w.id == id).unwrap();
+                assert_eq!(w.space, SCRATCH_SPACE, "{LOG} back on the Подложка");
+                assert!(!w.is_visible() && !s.shell.scratch_open, "{LOG} without opening it");
+                assert_eq!(s.shell.scratch_count, 1);
+                eprintln!("{LOG} remembered ok");
+            })?;
+            return Ok(());
+        }
+        if mode == "one" || mode == "builtin" {
+            // One window is the whole screen and nothing else
+            let builtin = mode == "builtin";
+            at(state, 1800, move |s| {
+                if builtin {
+                    s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+                } else {
+                    let id = terms(s)[0];
+                    front(s, id);
+                }
+                chord(s, true);
+                chord(s, false);
+                assert!(s.shell.scratch_open, "{LOG} open");
+            })?;
+            at(state, 2800, |s| {
+                let screen = s.primary_monitor().unwrap().info.rect;
+                let w = s.windows.iter().find(|w| w.space == SCRATCH_SPACE).expect("on the Подложка");
+                assert_eq!((w.x, w.y, w.width, w.total_height()), (screen.x, screen.y, screen.w, screen.h), "{LOG} the whole screen");
+                assert!(!w.has_titlebar() || w.is_builtin(), "{LOG} no bar of ours");
+                eprintln!("{LOG} one window: the whole screen");
+            })?;
+            return Ok(());
+        }
+        let hold = mode == "hold";
+        at(state, 2000, |s| {
+            let ids = terms(s);
+            assert!(ids.len() >= 3, "{LOG} three terminals: {}", ids.len());
+            chord(s, false);
+            assert!(!s.shell.scratch_open, "{LOG} empty: stays closed with a message");
+            assert!(s.banner.message.is_some());
+            front(s, ids[0]);
+            chord(s, true);
+            assert_eq!(s.shell.scratch_count, 1);
+            let win = s.windows.iter().find(|w| w.id == ids[0]).unwrap();
+            assert!(win.space == SCRATCH_SPACE && !win.is_visible(), "{LOG} moved and hidden");
+            for id in &ids[1..3] {
+                front(s, *id);
+                chord(s, true);
+            }
+            assert_eq!(s.shell.scratch_count, 3);
+            chord(s, false);
+            assert!(s.shell.scratch_open, "{LOG} Super+S opens it");
+            eprintln!("{LOG} three windows moved, opened");
+        })?;
+        at(state, 3000, move |s| {
+            let ids = terms(s);
+            let area = s.primary_monitor().unwrap().info.rect;
+            let rects = crate::scratch::layout(3, area);
+            for (id, r) in ids[..3].iter().zip(&rects) {
+                let w = s.windows.iter().find(|w| w.id == *id).unwrap();
+                assert_eq!((w.x, w.y, w.width, w.total_height()), (r.x, r.y, r.w, r.h), "{LOG} tile");
+                assert!(w.is_visible());
+            }
+            eprintln!("{LOG} tiles ok {rects:?}");
+            if hold {
+                return;
+            }
+            // The focused one goes back to the desktop and the others close up
+            let top = s.windows.iter().rev().find(|w| w.is_visible()).unwrap().id;
+            chord(s, true);
+            let w = s.windows.iter().find(|w| w.id == top).unwrap();
+            assert_eq!(w.space, s.spaces.current, "{LOG} back on the desktop");
+            assert_eq!(s.shell.scratch_count, 2);
+            assert!(s.shell.scratch_open);
+        })?;
+        if !hold {
+            at(state, 3800, |s| {
+                let on: Vec<_> = s.windows.iter().filter(|w| w.space == SCRATCH_SPACE).map(|w| w.id).collect();
+                let area = s.primary_monitor().unwrap().info.rect;
+                let w = s.windows.iter().find(|w| w.id == on[0]).unwrap();
+                assert_eq!(w.width, crate::scratch::layout(2, area)[0].w, "{LOG} two tiles now");
+                // Dropped on the other tile, a window takes its place
+                let rects = crate::scratch::layout(2, area);
+                let (x, y) = (rects[0].x as f64 + 60.0, rects[0].y as f64 + 60.0);
+                s.debug_pointer_motion(x, y);
+                s.debug_keyboard_key(125, true);
+                s.debug_pointer_button(0x110, true);
+                s.debug_pointer_motion(rects[1].x as f64 + 80.0, rects[1].y as f64 + 80.0);
+                s.debug_pointer_button(0x110, false);
+                s.debug_keyboard_key(125, false);
+                let moved = s.windows.iter().find(|w| w.id == on[0]).unwrap();
+                assert_eq!(moved.x, rects[1].x, "{LOG} swapped");
+                let other = s.windows.iter().find(|w| w.id == on[1]).unwrap();
+                assert_eq!(other.x, rects[0].x, "{LOG} swapped");
+                // A click on the backdrop puts it away; a Dock activation brings it back
+                let free = s.windows.iter().find(|w| w.space == s.spaces.current && w.app_id == "feather-terminal").unwrap();
+                let free_id = free.id;
+                let (x, y) = (area.x as f64 + 2.0, area.y as f64 + 2.0);
+                s.debug_pointer_motion(x, y);
+                s.debug_pointer_button(0x110, true);
+                s.debug_pointer_button(0x110, false);
+                assert!(!s.shell.scratch_open, "{LOG} the backdrop closes it");
+                let id = on[0];
+                s.execute_shell_action(crate::shell::ShellClickAction::FocusWindow(id));
+                assert!(s.shell.scratch_open, "{LOG} Alt+Tab to its window opens it");
+                s.execute_shell_action(crate::shell::ShellClickAction::FocusWindow(free_id));
+                assert!(!s.shell.scratch_open, "{LOG} a desktop window closes it");
+                eprintln!("{LOG} done");
+            })?;
+        }
+    }
     if std::env::var_os("FEATHER_DEBUG_CAFFEINE").is_some() {
         const LOG: &str = "[feather-caffeine-check]";
         at(state, 1200, |s| {

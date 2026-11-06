@@ -83,6 +83,8 @@ pub struct App {
     pub h: f32,
     pub dirty: bool,
     pub maximized: bool,
+    /// Tiled on all sides: on the Подложка, where windows go without their buttons
+    pub no_buttons: bool,
     pub focused: bool,
     notes: Vec<Note>,
     selected: Option<u64>,
@@ -172,6 +174,7 @@ impl App {
             h: 620.0,
             dirty: true,
             maximized: false,
+            no_buttons: false,
             focused: true,
             notes: Vec::new(),
             selected: None,
@@ -477,8 +480,11 @@ impl App {
 
     // ---------- geometry ----------
 
-    fn traffic(&self) -> [(Hit, f32); 3] {
-        [(Hit::Close, 26.0), (Hit::Minimize, 46.0), (Hit::Zoom, 66.0)]
+    fn traffic(&self) -> Vec<(Hit, f32)> {
+        if self.no_buttons {
+            return Vec::new();
+        }
+        vec![(Hit::Close, 26.0), (Hit::Minimize, 46.0), (Hit::Zoom, 66.0)]
     }
 
     fn search_rect(&self) -> (f32, f32, f32, f32) {

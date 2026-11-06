@@ -64,7 +64,7 @@
 
 | Тип | Подпись D-Bus | Поля |
 |---|---|---|
-| `WindowInfo` | `(tsssubbbb)` | `id`, `app_id`, `app_name` (из `.desktop`, пусто для неизвестных), `title`, `space` (с 1), `focused`, `minimized`, `maximized`, `fullscreen` |
+| `WindowInfo` | `(tsssubbbb)` | `id`, `app_id`, `app_name` (из `.desktop`, пусто для неизвестных), `title`, `space` (0 — окно на подложке) (с 1), `focused`, `minimized`, `maximized`, `fullscreen` |
 | `SpaceInfo` | `(ubu)` | `number` (с 1), `current`, `windows` (открытых окон, включая свёрнутые) |
 | `AppInfo` | `(sssb)` | `id`, `name`, `description`, `running` |
 | `AudioInfo` | `(bsubbsub)` | `available`, `output`, `volume`, `muted`, `mic_available`, `input`, `mic_volume`, `mic_muted` |

@@ -56,16 +56,23 @@ impl FeatherCompositor {
     }
 
     pub fn apply_space_visibility(&mut self) {
-        let (current, larvis) = (self.spaces.current, self.larvis_shown);
+        let (current, larvis, scratch) = (self.spaces.current, self.larvis_shown, self.shell.scratch_open);
         for w in &mut self.windows {
             // Larvis's desktop replaces every desktop of the user while it is shown
-            w.off_space = if w.larvis { !larvis } else { larvis || w.space != current };
+            w.off_space = if w.larvis {
+                !larvis
+            } else if w.space == crate::scratch::SCRATCH_SPACE {
+                !scratch
+            } else {
+                larvis || w.space != current
+            };
         }
     }
 
     pub fn switch_space(&mut self, target: u32) {
         // Any desktop switch leaves Larvis's desktop, even to the desktop under it
         self.leave_larvis_desktop();
+        self.set_scratch_open(false);
         if target == self.spaces.current || target >= self.spaces.count {
             return;
         }
@@ -125,7 +132,7 @@ impl FeatherCompositor {
         for w in &mut self.windows {
             if w.space == space {
                 w.space = home;
-            } else if w.space > space {
+            } else if w.space > space && w.space < crate::scratch::SCRATCH_SPACE {
                 w.space -= 1;
             }
         }
@@ -144,7 +151,12 @@ impl FeatherCompositor {
             return;
         }
         if let Some(space) = self.windows.iter().find(|w| w.id == id && w.mapped && !w.minimized).map(|w| w.space) {
-            self.switch_space(space);
+            if space == crate::scratch::SCRATCH_SPACE {
+                self.set_scratch_open(true);
+            } else {
+                self.set_scratch_open(false);
+                self.switch_space(space);
+            }
         }
     }
 }

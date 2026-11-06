@@ -116,6 +116,10 @@ pub struct Animations {
     overlay_key: Option<OverlayKind>,
     overlay: Option<Spring>,
     launchpad: Option<Spring>,
+    /// The Подложка: 0 away, 1 in front. While it moves, its windows slide from above.
+    scratch: Option<Spring>,
+    scratch_open: bool,
+    scratch_travel: f64,
     last_frame: Option<Instant>,
 }
 
@@ -206,6 +210,25 @@ impl Animations {
         self.mission.as_ref().map_or(0.0, |m| m.spring.value)
     }
 
+    pub fn set_scratch(&mut self, open: bool, travel: f64) {
+        self.scratch_open = open;
+        self.scratch_travel = travel;
+        if self.disabled {
+            self.scratch = None;
+            return;
+        }
+        let target = if open { 1.0 } else { 0.0 };
+        match self.scratch.as_mut() {
+            Some(s) => s.target = target,
+            None => self.scratch = Some(Spring::new(1.0 - target, target)),
+        }
+    }
+
+    /// How far the backdrop of the Подложка has come
+    pub fn scratch_progress(&self) -> f64 {
+        self.scratch.as_ref().map_or(if self.scratch_open { 1.0 } else { 0.0 }, |s| s.value)
+    }
+
     pub fn slide_spaces(&mut self, from: u32, to: u32, width: f64) {
         if self.disabled || from == to {
             self.slide = None;
@@ -272,6 +295,12 @@ impl Animations {
         if let Some(d) = self.dock.as_mut() {
             d.advance(dt);
         }
+        if let Some(s) = self.scratch.as_mut() {
+            s.advance(dt);
+            if !s.active() {
+                self.scratch = None;
+            }
+        }
         if let Some(m) = self.mission.as_mut() {
             if !std::mem::take(&mut m.fresh) {
                 m.spring.advance(dt);
@@ -281,6 +310,7 @@ impl Animations {
             }
         }
         let active = self.slide.is_some()
+            || self.scratch.is_some()
             || self.dock.as_ref().is_some_and(Spring::active)
             || self.mission.as_ref().is_some_and(|m| m.spring.active())
             || self.windows.values().any(|w| w.spring.active())
@@ -300,6 +330,9 @@ impl Animations {
             visual.scale *= 1.0 + (k - 1.0) * p;
             visual.offset.0 += ((r.x + r.w * 0.5) as f64 - cx) * p;
             visual.offset.1 += ((r.y + r.h * 0.5) as f64 - cy) * p;
+        }
+        if let Some(s) = self.scratch.as_ref().filter(|_| w.space == crate::scratch::SCRATCH_SPACE) {
+            visual.offset.1 -= (1.0 - s.value) * self.scratch_travel;
         }
         if let Some(s) = self.slide.as_ref() {
             let p = s.spring.value;
@@ -339,7 +372,9 @@ impl Animations {
 
     pub fn draws_window(&self, w: &ManagedWindow) -> bool {
         // The desktop being left stays drawn while it slides out
-        let on_screen = !w.off_space || self.slide.as_ref().is_some_and(|s| w.space == s.from || w.space == s.to);
+        let on_screen = !w.off_space
+            || self.slide.as_ref().is_some_and(|s| w.space == s.from || w.space == s.to)
+            || (w.space == crate::scratch::SCRATCH_SPACE && self.scratch.is_some());
         w.mapped
             && on_screen
             && (!w.minimized

@@ -44,6 +44,7 @@ impl FeatherCompositor {
         if shown != self.larvis_shown {
             self.larvis_shown = shown;
             if shown {
+                self.set_scratch_open(false);
                 self.shell.switcher = None;
                 self.shell.launchpad = None;
                 if self.mission_open() {

@@ -288,7 +288,7 @@ impl FeatherCompositor {
     pub fn apply_tile(&mut self, idx: usize, step: Step) {
         let r = self.window_monitor(idx);
         let win = &mut self.windows[idx];
-        if win.fullscreen || win.larvis || !win.mapped {
+        if win.fullscreen || win.larvis || !win.mapped || win.space == crate::scratch::SCRATCH_SPACE {
             return;
         }
         win.resize_anchor = None;
@@ -320,6 +320,9 @@ impl FeatherCompositor {
 
     /// During a window drag: shows or moves the preview when the pointer reaches a zone
     pub fn tile_drag_motion(&mut self, win_id: u64, x: f64, y: f64) {
+        if self.windows.iter().any(|w| w.id == win_id && w.space == crate::scratch::SCRATCH_SPACE) {
+            return;
+        }
         let r = self.monitor_at(x, y);
         let reach = 8.0;
         let open = (

@@ -356,6 +356,7 @@ impl crate::FeatherCompositor {
         self.refit_monitor_windows();
         self.refresh_output_membership();
         self.sync_layers();
+        self.scratch_sync();
         self.refresh_display_choices();
         self.lock_resized();
         self.lock.display_protected = false;

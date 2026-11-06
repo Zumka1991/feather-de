@@ -192,6 +192,15 @@ impl FeatherCompositor {
             self.windows[idx].off_space = space != self.spaces.current;
             self.place_new_window(idx);
             self.window_memory_changed();
+            // In front of the Подложка a new window joins it, as in Hyprland; so does a program
+            // that lived there when it was last closed
+            let remembered = self.windows[idx].remembered_scratch.take();
+            if self.shell.scratch_open || remembered.is_some() {
+                self.scratch_adopt(idx);
+            }
+            if remembered == Some(false) {
+                self.set_scratch_open(true);
+            }
             // New windows go to the top of the stack and get keyboard focus
             let win = self.windows.remove(idx);
             self.windows.push(win);
@@ -365,6 +374,7 @@ impl XdgShellHandler for FeatherCompositor {
                 self.active_drag = None;
                 self.shell.tile_preview.clear();
             }
+            self.scratch_sync();
             self.shell.topbar_dirty = true;
             self.shell.dock_dirty = true;
             self.drop_keyboard_focus_if(surface.wl_surface());

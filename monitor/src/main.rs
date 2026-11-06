@@ -292,6 +292,7 @@ impl WindowHandler for MonitorWin {
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window, configure: WindowConfigure, _: u32) {
         let w = configure.new_size.0.map_or(self.app.width as u32, |v| v.get());
         let h = configure.new_size.1.map_or(self.app.height as u32, |v| v.get());
+        self.app.no_buttons = configure.state.contains(WindowState::TILED);
         let maximized = configure.state.contains(WindowState::MAXIMIZED) || configure.state.contains(WindowState::FULLSCREEN);
         let focused = configure.state.contains(WindowState::ACTIVATED);
         if focused != self.app.focused || maximized != self.app.maximized {

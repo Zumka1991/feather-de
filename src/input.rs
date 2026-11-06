@@ -141,6 +141,9 @@ pub(crate) enum KeyAction {
     Tile(crate::tiling::Dir),
     /// Clipboard history or the emoji panel
     Picker(crate::shell::SpotlightMode),
+    /// Super+S and Super+Shift+S
+    ScratchToggle,
+    ScratchMove,
     /// Alt/Super+Tab: open the app switcher or move the selection
     SwitcherStep { reverse: bool },
     SwitcherCommit,
@@ -892,6 +895,8 @@ impl FeatherCompositor {
             Some(KeyAction::ToggleMaximizeTop | KeyAction::Tile(_)) if self.larvis_shown => {}
             Some(KeyAction::Tile(dir)) => self.tile_front_step(dir),
             Some(KeyAction::Picker(mode)) => self.open_picker(mode),
+            Some(KeyAction::ScratchToggle) => self.toggle_scratch(),
+            Some(KeyAction::ScratchMove) => self.scratch_move_focused(),
             Some(KeyAction::CloseTop) => self.close_top_window(),
             Some(KeyAction::MinimizeTop) => {
                 if let Some(top) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
@@ -1083,7 +1088,7 @@ impl FeatherCompositor {
     /// Auto-hide Dock: the bottom edge brings it, leaving its area sends it away (not while
     /// its menu is open or an icon is being dragged onto it)
     pub(crate) fn dock_autohide_motion(&mut self, x: f64, y: f64) {
-        if !crate::theme::dock_autohide() {
+        if !crate::theme::dock_autohide() || self.shell.scratch_open {
             return;
         }
         // Distance from the Dock's screen edge, and how deep its bar reaches
@@ -1240,7 +1245,9 @@ impl FeatherCompositor {
             }
         }
 
-        self.shell.update_pointer_hover(pos.x, pos.y);
+        if !self.shell.scratch_open || self.shell.has_visible_overlay() {
+            self.shell.update_pointer_hover(pos.x, pos.y);
+        }
         for win in &mut self.windows {
             if win.is_visible() {
                 win.update_hover(pos.x, pos.y);
@@ -1495,6 +1502,10 @@ impl FeatherCompositor {
             }
             if let Some(DragOperation::MoveWindow { win_id, .. }) = drag {
                 self.tile_drag_finish(win_id);
+                self.scratch_drop(win_id);
+            }
+            if let Some(DragOperation::ResizeWindow { win_id, .. }) = drag {
+                self.scratch_drop(win_id);
             }
             let was_dragging = drag.is_some();
             if was_dragging {
@@ -1552,9 +1563,11 @@ impl FeatherCompositor {
         let primary=self.primary_monitor().map(|m|m.info.rect).unwrap_or_else(||self.monitor_at(0.0,0.0));
         // Larvis's desktop keeps our menu bar over its own, so its item can switch back
         let over_bar=pos.y<(primary.y+TOP_BAR_HEIGHT) as f64;
-        let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen&&!(w.larvis&&over_bar));
+        let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen&&!(w.larvis&&over_bar))||self.shell.scratch_open;
         if !primary.contains(pos.x,pos.y)&&self.shell.launchpad.is_some(){self.shell.launchpad=None;self.needs_redraw=true;}
-        if (!fullscreen_top || self.shell.has_visible_overlay()) && self.shell.launchpad.is_none() {
+        // Over the Подложка the menu bar and the Dock are gone: a passing banner must not revive them
+        let panels=if self.shell.scratch_open {self.shell.has_open_panel()} else {self.shell.has_visible_overlay()};
+        if (!fullscreen_top || panels) && self.shell.launchpad.is_none() {
             if let Some((item,_))=self.shell.tray_hit(pos.x,pos.y).map(|(i,r)|(i.clone(),r)) {
                 let action=match button {
                     BTN_LEFT if !item.menu_only=>crate::tray::Action::Activate,
@@ -1567,7 +1580,7 @@ impl FeatherCompositor {
             }
         }
         // Middle click on a Dock app: another copy of it
-        if button == 0x112 && self.shell.dock_menu.is_none() {
+        if button == 0x112 && self.shell.dock_menu.is_none() && !self.shell.scratch_open {
             if let Some((DockTarget::App(i), _)) = self.shell.dock_target_at(pos.x, pos.y) {
                 self.consumed_buttons.push(button);
                 self.launch_app_instance(i);
@@ -1575,7 +1588,7 @@ impl FeatherCompositor {
             }
         }
         // Right click on a Dock icon: its context menu
-        if button == BTN_RIGHT && self.shell.dock_menu.is_none() {
+        if button == BTN_RIGHT && self.shell.dock_menu.is_none() && !self.shell.scratch_open {
             if let Some((target, anchor)) = self.shell.dock_target_at(pos.x, pos.y) {
                 self.consumed_buttons.push(button);
                 self.open_dock_menu_for(target, anchor);
@@ -1625,7 +1638,7 @@ impl FeatherCompositor {
             let panel = self.shell.control_panel_rect();
             self.shell.cc.click_password(panel, pos.x as f32, pos.y as f32, &mut self.fonts, self.keyboard.modifier_state().shift);
         }
-        if !fullscreen_top || self.shell.has_visible_overlay() {
+        if !fullscreen_top || panels {
             if let Some(action) = self
                 .shell
                 .handle_pointer_click(pos.x, pos.y, &self.app_registry)
@@ -1646,6 +1659,12 @@ impl FeatherCompositor {
             }
         }
 
+        // The backdrop of the Подложка: a click past its windows puts it away
+        if self.shell.scratch_open && !self.scratch_contains(pos.x, pos.y) {
+            self.consumed_buttons.push(button);
+            self.set_scratch_open(false);
+            return;
+        }
         let under = self.surface_under_pointer(pos.x, pos.y);
         let (owner, on_popup) = under
             .as_ref()

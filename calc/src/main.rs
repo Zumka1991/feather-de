@@ -446,6 +446,7 @@ impl WindowHandler for CalcWin {
                 .1
                 .map_or(self.app.height as u32, |v| v.get()),
         );
+        self.app.no_buttons = configure.state.contains(WindowState::TILED);
         self.app.maximized = configure.state.contains(WindowState::MAXIMIZED)
             || configure.state.contains(WindowState::FULLSCREEN);
         let focused = configure.state.contains(WindowState::ACTIVATED);

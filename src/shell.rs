@@ -572,6 +572,7 @@ enum TopbarItem {
     ControlCenter,
     Clock,
     Caffeine,
+    Scratch,
     Battery,
     Tray(usize),
     TrayOverflow,
@@ -647,6 +648,7 @@ pub enum ShellClickAction {
     ZoomFocused,
     TileFocused(crate::tiling::Step),
     ToggleCaffeine,
+    ToggleScratch,
     OpenSettingsPage(crate::system_settings::Page),
     /// A file or folder, in the program it opens with
     OpenPath(std::path::PathBuf),
@@ -872,6 +874,10 @@ pub struct MacShell {
 
     /// Keeps the computer awake (`power.rs`)
     pub caffeine: bool,
+    /// Подложка in front, how many windows it has, and its backdrop still on screen (`scratch.rs`)
+    pub scratch_open: bool,
+    pub scratch_count: usize,
+    pub scratch_backdrop: bool,
     /// Layer surfaces of other programs, front first (`layer_shell.rs`)
     pub layers: Vec<crate::layer_shell::LayerItem>,
     /// None on a machine without a battery
@@ -1009,6 +1015,9 @@ impl MacShell {
             dock_icon_uploads: Vec::new(),
             dock_gpu_failed: false,
             caffeine: false,
+            scratch_open: false,
+            scratch_count: 0,
+            scratch_backdrop: false,
             layers: Vec::new(),
             battery: None,
             spotlight_open: false,
@@ -1584,6 +1593,11 @@ impl MacShell {
         }
     }
 
+    /// Something opened by hand is up, as opposed to a passing banner
+    pub fn has_open_panel(&self) -> bool {
+        self.spotlight_open || self.control_center_open || self.open_menu.is_some() || self.center_open || self.dock_menu.is_some()
+    }
+
     pub fn any_menu_open(&self) -> bool {
         self.open_menu.is_some() || self.dock_menu.is_some()
     }
@@ -1912,7 +1926,7 @@ impl MacShell {
             }
             crate::raster::Asset::Frosted(key, buffer) => {
                 self.launchpad_bg_requested = None;
-                if self.launchpad.is_none() { return false; }
+                if self.launchpad.is_none() && !self.scratch_backdrop { return false; }
                 self.launchpad_bg_key = Some(key);
                 self.launchpad_bg = buffer;
             }
@@ -1942,7 +1956,7 @@ impl MacShell {
     /// Drop CPU/GPU references before scene construction, so this frame can release
     /// old textures. Reclaim allocator pages only after that frame has been submitted.
     pub fn release_closed_launchpad(&mut self) {
-        if self.raster_launchpad_open && self.launchpad.is_none() {
+        if self.raster_launchpad_open && self.launchpad.is_none() && !self.scratch_backdrop {
             self.launchpad_bg = new_buffer(1, 1);
             self.launchpad_bg_key = None;
             self.launchpad_bg_requested = None;
@@ -2732,6 +2746,7 @@ impl MacShell {
                 }
                 Some(TopbarItem::Clock)=>{ if !was.3 { self.toggle_center(); } }
                 Some(TopbarItem::Caffeine) => return Some(ShellClickAction::ToggleCaffeine),
+                Some(TopbarItem::Scratch) => return Some(ShellClickAction::ToggleScratch),
                 Some(TopbarItem::Battery) => return Some(ShellClickAction::OpenSettingsPage(crate::system_settings::Page::Power)),
                 Some(TopbarItem::ControlCenter) | Some(TopbarItem::Wifi) => {
                     // From the speaker's panel straight to the whole Control Center
@@ -2996,6 +3011,7 @@ impl MacShell {
         let input=self.input_sources.get(self.input_selected).copied().unwrap_or(crate::settings::SOURCES[0]);
         let hover=self.status_hover;
         let (center_open,dnd,caffeine,battery)=(self.center_open,self.dnd_active(),self.caffeine,self.battery);
+        let scratch=(self.scratch_open,self.scratch_count);
         let mut menus = vec![(active_app_title.to_string(), TopMenu::App, true, true)];
         if let Some(root) = self.client_menu.as_ref().filter(|root| root.children.iter().any(|n| n.visible)) {
             menus.extend(root.children.iter().filter(|n| n.visible && !n.separator).map(|n| (n.label.clone(), TopMenu::Client(n.id), false, n.enabled)));
@@ -3026,7 +3042,7 @@ impl MacShell {
                 draw_feather_logo(&mut pm, 22.0, lh * 0.5, 0.95, bar.text);
                 hits.push((0.0, 38.0, TopbarItem::Menu(TopMenu::Feather)));
                 let mut x = 46.0;
-                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 222.0+tray_width+if battery.is_some(){72.0}else{0.0};
+                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 222.0+tray_width+if battery.is_some(){72.0}else{0.0}+if scratch.1>0{46.0}else{0.0};
                 for (label, menu, bold, enabled) in &menus {
                     let available = lw - right_reserved - x - 12.0;
                     if available < 24.0 { break; }
@@ -3049,8 +3065,16 @@ impl MacShell {
                 if dnd {crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Moon,rx-cw-12.0,lh*0.5,bar.text,false);}
                 hits.push((rx-clock_width-4.0,lw,TopbarItem::Clock));rx-=clock_width+14.0;
                 if hover==Some(TopbarItem::Caffeine){highlight(&mut pm,rx-29.0,rx-1.0);}
-                crate::theme::draw_caffeine_icon(&mut pm,rx-15.0,lh*0.5,bar.text,caffeine);
+                crate::theme::draw_caffeine_icon(&mut pm,rx-15.0,lh*0.5,1.0,bar.text,caffeine);
                 hits.push((rx-30.0,rx,TopbarItem::Caffeine));rx-=30.0;
+                if scratch.1>0 {
+                    let label=scratch.1.to_string();
+                    let width=fonts.measure_text(&label,12.0,false)+36.0;
+                    if scratch.0||hover==Some(TopbarItem::Scratch){highlight(&mut pm,rx-width+1.0,rx-1.0);}
+                    crate::theme::draw_scratch_icon(&mut pm,rx-width+15.0,lh*0.5,1.0,bar.text);
+                    fonts.draw_text(&mut pm,&label,rx-width+27.0,text_y+0.5,12.0,bar.text,false);
+                    hits.push((rx-width,rx,TopbarItem::Scratch));rx-=width;
+                }
                 if let Some(b)=battery {
                     let label=format!("{}%",b.percent);
                     let tw=fonts.measure_text(&label,12.0,false);

@@ -236,6 +236,8 @@ pub struct App {
     pub w: f32,
     pub h: f32,
     pub maximized: bool,
+    /// Tiled on all sides: on the Подложка, where windows go without their buttons
+    pub no_buttons: bool,
     pub focused: bool,
     dir: PathBuf,
     history: Vec<PathBuf>,
@@ -319,6 +321,7 @@ impl App {
             w: 1000.0,
             h: 640.0,
             maximized: false,
+            no_buttons: false,
             focused: true,
             dir: PathBuf::new(),
             history: Vec::new(),
@@ -1061,8 +1064,11 @@ impl App {
         self.clamp_scroll();
     }
 
-    fn traffic(&self) -> [(Hit, f32); 3] {
-        [(Hit::Close, 26.0), (Hit::Minimize, 46.0), (Hit::Zoom, 66.0)]
+    fn traffic(&self) -> Vec<(Hit, f32)> {
+        if self.no_buttons {
+            return Vec::new();
+        }
+        vec![(Hit::Close, 26.0), (Hit::Minimize, 46.0), (Hit::Zoom, 66.0)]
     }
 
     fn search_rect(&self) -> (f32, f32, f32, f32) {

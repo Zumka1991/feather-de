@@ -399,6 +399,33 @@ pub enum LockClick {
     PowerOff,
 }
 
+/// What the status pill says about the machine. Only what is drawn: a battery's time left
+/// changes often and must not repaint anything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LockStatus {
+    battery: Option<LockBattery>,
+    /// `None` without a Wi-Fi adapter, otherwise whether Wi-Fi is on
+    wifi: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LockBattery {
+    percent: u8,
+    plugged: bool,
+    low: bool,
+}
+
+impl LockStatus {
+    pub fn new(battery: Option<crate::battery::Battery>, wifi: Option<bool>) -> Self {
+        let battery = battery.map(|b| LockBattery {
+            percent: b.percent,
+            plugged: b.charging || b.full,
+            low: b.low(),
+        });
+        Self { battery, wifi }
+    }
+}
+
 pub struct Lock {
     pub active: bool,
     pub login_mode: bool,
@@ -423,6 +450,9 @@ pub struct Lock {
     clock_buffer: MemoryRenderBuffer,
     /// Top-right status pill (session badge, keyboard layout switcher, Wi-Fi & battery icons)
     status_buffer: MemoryRenderBuffer,
+    status: LockStatus,
+    /// Logical width of the pill: it depends on the icons this machine has
+    status_w: f32,
     clock: String,
     /// 4×4 black, stretched over the wallpaper so white text reads on light ones
     dim: MemoryRenderBuffer,
@@ -470,6 +500,8 @@ impl Default for Lock {
                 Transform::Normal,
                 None,
             ),
+            status: LockStatus::default(),
+            status_w: STATUS_BASE_W,
             clock: String::new(),
             dim: {
                 let mut dim =
@@ -548,8 +580,8 @@ impl Lock {
         )
     }
 
-    fn status_origin(screen: (i32, i32)) -> (f32, f32) {
-        ((screen.0 as f32 - STATUS_W - 18.0).max(12.0), 12.0)
+    fn status_origin(&self, screen: (i32, i32)) -> (f32, f32) {
+        ((screen.0 as f32 - self.status_w - 18.0).max(12.0), 12.0)
     }
 
     fn action_buttons_centers() -> [(f32, f32); 3] {
@@ -563,8 +595,8 @@ impl Lock {
             return false;
         }
         let mut new_hover = None;
-        let (sx, sy) = Self::status_origin(screen);
-        if (sx..=sx + STATUS_W).contains(&(x as f32))
+        let (sx, sy) = self.status_origin(screen);
+        if (sx..=sx + self.status_w).contains(&(x as f32))
             && (sy..=sy + STATUS_H).contains(&(y as f32))
         {
             new_hover = Some(3);
@@ -602,8 +634,8 @@ impl Lock {
             return LockClick::None;
         }
         // 1. Top-right status pill (keyboard layout switcher)
-        let (sx, sy) = Self::status_origin(screen);
-        if (sx..=sx + STATUS_W).contains(&(x as f32))
+        let (sx, sy) = self.status_origin(screen);
+        if (sx..=sx + self.status_w).contains(&(x as f32))
             && (sy..=sy + STATUS_H).contains(&(y as f32))
         {
             return LockClick::NextLayout;
@@ -667,7 +699,14 @@ impl Lock {
         self.active && !self.external() && self.clock != clock_text().1
     }
 
-    pub fn paint(&mut self, fonts: &mut FontSystem, scale: f64, layout: &str, screen: (i32, i32)) {
+    pub fn paint(
+        &mut self,
+        fonts: &mut FontSystem,
+        scale: f64,
+        layout: &str,
+        status: LockStatus,
+        screen: (i32, i32),
+    ) {
         if !self.active || self.external() {
             return;
         }
@@ -675,6 +714,10 @@ impl Lock {
             self.layout.clear();
             self.layout.push_str(layout);
             self.dirty = true;
+            self.status_dirty = true;
+        }
+        if self.status != status {
+            self.status = status;
             self.status_dirty = true;
         }
         let rescaled = self.scale != scale;
@@ -943,8 +986,23 @@ impl Lock {
     }
 
     fn paint_status(&mut self, fonts: &mut FontSystem, scale: f64, screen: (i32, i32)) {
+        let status = self.status;
+        let battery_label = status.battery.map(|b| {
+            let label = format!("{}%", b.percent);
+            let width = fonts.measure_text(&label, 12.0, false);
+            (label, width)
+        });
+        // The pill ends right after what it holds
+        let mut width = STATUS_BASE_W;
+        if status.wifi.is_some() {
+            width += STATUS_WIFI_W + STATUS_GAP;
+        }
+        if let Some((_, label_w)) = &battery_label {
+            width += label_w + STATUS_BATTERY_GAP + STATUS_BATTERY_W + STATUS_GAP;
+        }
+        self.status_w = width;
         let size = (
-            (STATUS_W as f64 * scale).round().max(1.0) as i32,
+            (width as f64 * scale).round().max(1.0) as i32,
             (STATUS_H as f64 * scale).round().max(1.0) as i32,
         );
         if self.status_phys != size {
@@ -952,7 +1010,7 @@ impl Lock {
             self.status_buffer =
                 MemoryRenderBuffer::new(Fourcc::Abgr8888, size, 1, Transform::Normal, None);
         }
-        let (ox, oy) = Self::status_origin(screen);
+        let (ox, oy) = self.status_origin(screen);
         set_glass_origin(ox, oy);
         let layout_str = if self.layout.is_empty() {
             "RU"
@@ -966,12 +1024,12 @@ impl Lock {
             let mut pm =
                 tiny_skia::PixmapMut::from_bytes(buf, size.0 as u32, size.1 as u32).unwrap();
             let r = STATUS_H * 0.5;
-            fill_frosted(&mut pm, 0.0, 0.0, STATUS_W, STATUS_H, r);
+            fill_frosted(&mut pm, 0.0, 0.0, width, STATUS_H, r);
             fill_rounded_rect(
                 &mut pm,
                 0.0,
                 0.0,
-                STATUS_W,
+                width,
                 STATUS_H,
                 r,
                 rgba(255, 255, 255, if hovered { 78 } else { 52 }),
@@ -980,7 +1038,7 @@ impl Lock {
                 &mut pm,
                 0.5,
                 0.5,
-                STATUS_W - 1.0,
+                width - 1.0,
                 STATUS_H - 1.0,
                 r - 0.5,
                 1.0,
@@ -1039,21 +1097,18 @@ impl Lock {
                 true,
             );
 
-            // Wi-Fi waves icon + battery icon on the right
+            // Only what this machine has, the way the menu bar shows it
             let white = rgba(255, 255, 255, 235);
-            let wx = 154.0;
-            let wy = r + 3.5;
-            fill_circle(&mut pm, wx, wy, 1.5, white);
-            stroke_line(&mut pm, wx - 4.0, wy - 3.5, wx, wy - 5.5, 1.4, white);
-            stroke_line(&mut pm, wx, wy - 5.5, wx + 4.0, wy - 3.5, 1.4, white);
-            stroke_line(&mut pm, wx - 6.5, wy - 6.5, wx, wy - 9.0, 1.4, white);
-            stroke_line(&mut pm, wx, wy - 9.0, wx + 6.5, wy - 6.5, 1.4, white);
-
-            let bx = 174.0;
-            let by = 9.5;
-            stroke_rounded_rect(&mut pm, bx, by, 22.0, 11.0, 2.5, 1.2, white);
-            fill_rounded_rect(&mut pm, bx + 2.2, by + 2.2, 16.0, 6.6, 1.2, white);
-            fill_rounded_rect(&mut pm, bx + 23.0, by + 3.2, 2.0, 4.6, 1.0, white);
+            let mut x = STATUS_BASE_W;
+            if let Some(enabled) = status.wifi {
+                draw_wifi_icon(&mut pm, x + STATUS_WIFI_W * 0.5, r - 0.5, white, enabled);
+                x += STATUS_WIFI_W + STATUS_GAP;
+            }
+            if let (Some(b), Some((label, label_w))) = (status.battery, battery_label.as_ref()) {
+                fonts.draw_text(&mut pm, label, x, 8.0, 12.0, white, false);
+                let center = x + label_w + STATUS_BATTERY_GAP + STATUS_BATTERY_W * 0.5;
+                draw_battery_icon(&mut pm, center, r, white, b.percent, b.plugged, b.low);
+            }
 
             Result::<_, ()>::Ok(vec![Rectangle::from_size(size.into())])
         });
@@ -1128,7 +1183,7 @@ impl Lock {
         let mut out: Vec<FeatherElement> = [
             (&self.buffer, Self::panel_origin(screen)),
             (&self.clock_buffer, Self::clock_origin(screen)),
-            (&self.status_buffer, Self::status_origin(screen)),
+            (&self.status_buffer, self.status_origin(screen)),
         ]
         .into_iter()
         .filter_map(|(buffer, origin)| {
@@ -1227,7 +1282,13 @@ const PANEL_W: f32 = 420.0;
 const PANEL_H: f32 = 264.0;
 const CLOCK_W: f32 = 640.0;
 const CLOCK_H: f32 = 150.0;
-const STATUS_W: f32 = 212.0;
+/// The status pill without icons: badge, title, layout switcher and the padding after them
+const STATUS_BASE_W: f32 = 148.0;
+const STATUS_WIFI_W: f32 = 14.0;
+/// Body and contact of `draw_battery_icon`
+const STATUS_BATTERY_W: f32 = 23.4;
+const STATUS_BATTERY_GAP: f32 = 5.0;
+const STATUS_GAP: f32 = 12.0;
 const STATUS_H: f32 = 30.0;
 /// Password field in panel coordinates: x, y, width, height
 const FIELD: (f32, f32, f32, f32) = (90.0, 124.0, 240.0, 34.0);
@@ -1663,6 +1724,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_pill_holds_only_what_the_machine_has() {
+        let battery = |percent, seconds| crate::battery::Battery { percent, charging: false, full: false, seconds };
+        let mut fonts = FontSystem::new();
+        let mut lock = Lock::default();
+        lock.active = true;
+        let screen = (1440, 900);
+        let mut paint = |lock: &mut Lock, status| {
+            lock.paint(&mut fonts, 1.0, "RU", status, screen);
+            lock.status_w
+        };
+
+        let bare = paint(&mut lock, LockStatus::new(None, None));
+        assert_eq!(bare, STATUS_BASE_W);
+        let wifi = paint(&mut lock, LockStatus::new(None, Some(true)));
+        assert_eq!(wifi, STATUS_BASE_W + STATUS_WIFI_W + STATUS_GAP);
+        // A change arrives through paint alone, and the switcher stays under the pointer
+        assert!(paint(&mut lock, LockStatus::new(Some(battery(8, 60)), Some(true))) > wifi);
+        assert_eq!(lock.status.battery.map(|b| (b.percent, b.low)), Some((8, true)));
+        let (sx, sy) = lock.status_origin(screen);
+        assert_eq!(sx + lock.status_w, 1440.0 - 18.0);
+        assert_eq!(
+            lock.click_action(&mut fonts, (sx + 120.0) as f64, (sy + 15.0) as f64, screen, false),
+            LockClick::NextLayout
+        );
+        assert_eq!(
+            LockStatus::new(Some(battery(64, 60)), None),
+            LockStatus::new(Some(battery(64, 5400)), None),
+            "the time left is not drawn"
+        );
+    }
+
+    #[test]
     fn boot_splash_and_login_screen_paint_and_handle_actions() {
         let mut fonts = FontSystem::new();
         let mut lock = Lock::default();
@@ -1685,9 +1778,9 @@ mod tests {
         lock.login_mode = true;
         lock.message = "Вход в систему Пёрышко";
         let screen = (1440, 900);
-        lock.paint(&mut fonts, 1.0, "RU", screen);
+        lock.paint(&mut fonts, 1.0, "RU", LockStatus::default(), screen);
 
-        let (sx, sy) = Lock::status_origin(screen);
+        let (sx, sy) = lock.status_origin(screen);
         assert_eq!(
             lock.click_action(&mut fonts, (sx + 120.0) as f64, (sy + 15.0) as f64, screen, false),
             LockClick::NextLayout

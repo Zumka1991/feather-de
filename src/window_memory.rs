@@ -19,6 +19,8 @@ const SAVE_DELAY: Duration = Duration::from_secs(3);
 const MAX_APPS: usize = 200;
 /// A remembered window stays this much on screen at least, whatever became of the monitors
 const MIN_VISIBLE: i32 = 80;
+/// How long after start a remembered window joins the Подложка without opening it
+const LOGIN_QUIET: Duration = Duration::from_secs(45);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Place {
@@ -30,6 +32,8 @@ pub struct Place {
     pub space: u32,
     pub maximized: bool,
     pub tile: Option<Tile>,
+    /// Lives on the Подложка: opens there again
+    pub scratch: bool,
 }
 
 #[derive(Default)]
@@ -88,13 +92,14 @@ impl WindowMemory {
                 }
                 Some("window") => {
                     let f: Vec<&str> = fields.collect();
-                    let [id, x, y, w, h, space, maximized, tile] = f[..] else { continue };
+                    // The last field came later: older files have none
+                    let [id, x, y, w, h, space, maximized, tile, ref rest @ ..] = f[..] else { continue };
                     let (Ok(x), Ok(y), Ok(w), Ok(h), Ok(space)) = (x.parse(), y.parse(), w.parse(), h.parse(), space.parse()) else { continue };
                     if id.is_empty() || w <= 0 || h <= 0 {
                         continue;
                     }
                     memory.clock += 1;
-                    memory.places.insert(id.to_string(), (memory.clock, Place { x, y, w, h, space, maximized: maximized == "1", tile: parse_tile(tile) }));
+                    memory.places.insert(id.to_string(), (memory.clock, Place { x, y, w, h, space, maximized: maximized == "1", tile: parse_tile(tile), scratch: rest.first() == Some(&"1") }));
                 }
                 _ => {}
             }
@@ -111,8 +116,8 @@ impl WindowMemory {
         }
         for (id, (_, p)) in rows {
             text.push_str(&format!(
-                "window\t{id}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                p.x, p.y, p.w, p.h, p.space, u8::from(p.maximized), p.tile.map_or("", tile_name)
+                "window\t{id}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                p.x, p.y, p.w, p.h, p.space, u8::from(p.maximized), p.tile.map_or("", tile_name), u8::from(p.scratch)
             ));
         }
         text
@@ -145,14 +150,15 @@ pub fn remembers(win: &ManagedWindow) -> bool {
 
 /// The window's size and place apart from any tile or maximized state
 pub fn place_of(win: &ManagedWindow) -> Option<Place> {
-    let (x, y, w, h) = if win.tiled.is_some() {
+    let scratch = win.space == crate::scratch::SCRATCH_SPACE;
+    let (x, y, w, h) = if win.tiled.is_some() || scratch {
         win.tile_free?
     } else if win.maximized || win.fullscreen {
         win.saved_rect?
     } else {
         (win.x, win.y, win.width, win.height)
     };
-    (w > 0 && h > 0).then_some(Place { x, y, w, h, space: win.space, maximized: win.maximized, tile: win.tiled })
+    (w > 0 && h > 0).then_some(Place { x, y, w, h, space: if scratch { 0 } else { win.space }, maximized: win.maximized, tile: win.tiled, scratch })
 }
 
 /// Keeps a remembered frame reachable on the monitors there are now
@@ -193,8 +199,13 @@ impl FeatherCompositor {
             self.window_memory.reopening.swap_remove(i);
             self.windows[idx].remembered_space = Some(place.space);
         }
+        // Quietly at login; a program opened by hand brings the Подложка forward
+        let quiet = reopening.is_some() || self.start_time.elapsed() < LOGIN_QUIET;
         let win = &mut self.windows[idx];
-        if place.maximized {
+        if place.scratch {
+            win.resize_client(w, h);
+            win.remembered_scratch = Some(quiet);
+        } else if place.maximized {
             win.maximize_on(true, r);
             win.saved_rect = Some(free);
         } else if let Some(tile) = place.tile {
@@ -295,8 +306,8 @@ mod tests {
     #[test]
     fn places_and_the_open_list_survive_the_file() {
         let mut m = WindowMemory::default();
-        m.record("firefox", Place { x: -40, y: 60, w: 900, h: 700, space: 2, maximized: false, tile: None });
-        m.record("kate", Place { x: 10, y: 40, w: 640, h: 480, space: 0, maximized: true, tile: Some(Tile::TopLeft) });
+        m.record("firefox", Place { x: -40, y: 60, w: 900, h: 700, space: 2, maximized: false, tile: None, scratch: false });
+        m.record("kate", Place { x: 10, y: 40, w: 640, h: 480, space: 0, maximized: true, tile: Some(Tile::TopLeft), scratch: true });
         let back = WindowMemory::parse(&m.text(&["firefox.desktop".to_string()]));
         assert_eq!(back.reopen, ["firefox.desktop"]);
         assert_eq!(back.place("firefox"), m.place("firefox"));
@@ -305,6 +316,8 @@ mod tests {
 
     #[test]
     fn damaged_lines_are_skipped() {
+        let old = WindowMemory::parse("window\told\t1\t2\t3\t4\t0\t0\t\n");
+        assert!(!old.place("old").unwrap().scratch, "a file from before the Подложка still loads");
         let m = WindowMemory::parse("window\tx\t1\nwindow\ty\ta\t1\t1\t1\t0\t0\t\nwindow\tz\t1\t2\t0\t4\t0\t0\t\nunknown\nopen\t\nwindow\tok\t1\t2\t3\t4\t0\t0\tnonsense\n");
         assert!(m.place("x").is_none() && m.place("y").is_none() && m.place("z").is_none());
         assert!(m.reopen.is_empty());
@@ -314,7 +327,7 @@ mod tests {
     #[test]
     fn the_least_recently_used_program_is_forgotten() {
         let mut m = WindowMemory::default();
-        let p = Place { x: 0, y: 0, w: 10, h: 10, space: 0, maximized: false, tile: None };
+        let p = Place { x: 0, y: 0, w: 10, h: 10, space: 0, maximized: false, tile: None, scratch: false };
         for i in 0..=MAX_APPS {
             m.record(&format!("app{i}"), p.clone());
         }
@@ -325,11 +338,11 @@ mod tests {
     #[test]
     fn a_window_from_a_lost_monitor_stays_reachable() {
         let r = Rect { x: 0, y: 0, w: 1280, h: 800 };
-        let p = Place { x: 4000, y: 3000, w: 2600, h: 1500, space: 0, maximized: false, tile: None };
+        let p = Place { x: 4000, y: 3000, w: 2600, h: 1500, space: 0, maximized: false, tile: None, scratch: false };
         let (x, y, w, h) = fit(&p, r, 28);
         assert!(x + MIN_VISIBLE <= 1280 && y + MIN_VISIBLE <= 800);
         assert!(w <= 1264 && h <= 772);
-        let p = Place { x: 100, y: 0, w: 400, h: 300, space: 0, maximized: false, tile: None };
+        let p = Place { x: 100, y: 0, w: 400, h: 300, space: 0, maximized: false, tile: None, scratch: false };
         assert_eq!(fit(&p, r, 28).1, 28, "never under the menu bar");
     }
 }

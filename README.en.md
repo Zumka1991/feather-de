@@ -93,6 +93,7 @@ on top of an application's own decorations.
 
 - Tiling: halves and quarters at screen edges, in the green button's menu and with Ctrl+Super+arrows.
 - Window memory: programs reopen where they were, and the previous session returns at login.
+- A scratchpad layer over all workspaces on Super+S: one window fills the screen, more are tiled.
 - Move, resize, minimize, maximize, and fullscreen operations.
 - Alt+Tab / Super+Tab with most-recently-used ordering, mouse selection, and cancellation.
 - Cycling windows of the active application with Alt+` / Super+`.
@@ -505,6 +506,7 @@ many shell actions can be reassigned in System Settings.
 |---|---|
 | Super+Space | Spotlight search |
 | Ctrl+Super+arrows | Tile the window to a half or quarter of the screen |
+| Super+S / Super+Shift+S | Scratchpad layer / move the window there and back |
 | Super+Shift+V | Clipboard history |
 | Super+. | Emoji panel |
 | Super+A | Application grid |

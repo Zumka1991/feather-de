@@ -117,6 +117,7 @@ impl FeatherCompositor {
     }
 
     pub fn open_mission(&mut self) {
+        self.set_scratch_open(false);
         if self.lock.active {
             return;
         }

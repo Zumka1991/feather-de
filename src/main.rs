@@ -55,11 +55,13 @@ mod trash;
 mod labwc;
 mod shell;
 use feather_ui::text;
+mod banner;
 mod battery;
 mod clipboard;
 mod foreign_toplevel;
 mod layer_shell;
 mod emoji;
+mod scratch;
 mod spotlight;
 mod theme;
 mod tiling;
@@ -350,6 +352,8 @@ pub struct FeatherCompositor {
     pub modifier_used_while_held: bool,
     pub gestures: crate::input::GestureState,
     pub audio_hud: crate::audio_hud::Hud,
+    pub banner: crate::banner::Banner,
+    pub scratch: crate::scratch::Scratch,
     pub preferences: Option<crate::settings::Worker>,
     pub wallpaper_picker: Option<crate::wallpaper::Picker>,
     pub system_settings: crate::system_settings::Panel,
@@ -373,6 +377,7 @@ impl FeatherCompositor {
     /// The topmost visible window is active; only Wayland windows receive keyboard focus.
     pub fn refresh_focus(&mut self) {
         self.cancel_key_repeat();
+        self.scratch_sync();
         let top = self.windows.iter().rposition(|w| w.is_visible() && !self.auxiliary_game_window(w));
         // The desktop keeps the keyboard until another window comes to the front
         if self.shell.desktop.focused && top.map(|i| self.windows[i].id) != self.desktop_focus_top {
@@ -761,6 +766,10 @@ impl FeatherCompositor {
             return;
         }
         self.leave_larvis_desktop();
+        // In front of the Подложка: only its own windows can come forward without closing it
+        if self.shell.scratch_open && !self.windows.iter().any(|w| ids.contains(&w.id) && w.space == crate::scratch::SCRATCH_SPACE) {
+            self.set_scratch_open(false);
+        }
         // Nothing of it on this desktop: go where its most recent window is
         let here = self.windows.iter().any(|w| ids.contains(&w.id) && !w.minimized && w.space == self.spaces.current);
         if !here {
@@ -1500,7 +1509,8 @@ impl FeatherCompositor {
                 recent.truncate(crate::clipboard::EMOJI_COLUMNS);
                 self.paste_clip(crate::clipboard::Clip { mime: "text/plain;charset=utf-8".into(), data: ch.to_string() });
             }
-            ShellClickAction::ToggleCaffeine => self.set_caffeine(!self.shell.caffeine),
+            ShellClickAction::ToggleCaffeine => self.toggle_caffeine(),
+            ShellClickAction::ToggleScratch => self.toggle_scratch(),
             ShellClickAction::OpenSettingsPage(page) => {
                 self.open_or_focus_builtin(BuiltinWindowKind::SystemSettings);
                 self.apply_system_setting(crate::system_settings::Action::Page(page));
@@ -2369,6 +2379,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         modifier_used_while_held: false,
         gestures: Default::default(),
         audio_hud: Default::default(),
+        banner: Default::default(),
+        scratch: Default::default(),
         preferences: None,
         wallpaper_picker: None,
         system_settings: crate::system_settings::Panel {keybindings:saved.keybindings.clone(),..Default::default()},

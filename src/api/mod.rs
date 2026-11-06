@@ -303,7 +303,8 @@ impl FeatherCompositor {
                             _ => String::new(),
                         },
                         title: w.title.clone(),
-                        space: w.space + 1,
+                        // 0: on the Подложка, over every desktop
+                        space: if w.space == crate::scratch::SCRATCH_SPACE { 0 } else { w.space + 1 },
                         focused: w.activated,
                         minimized: w.minimized,
                         maximized: w.maximized,

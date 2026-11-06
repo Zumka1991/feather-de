@@ -411,10 +411,10 @@ pub(crate) fn build_scene(
         }
     }
     let launchpad_open = shell.launchpad.is_some();
-    if (!fullscreen_top || larvis_top) && !launchpad_open && !shell.topbar_hidden {
+    if (!fullscreen_top || larvis_top) && !launchpad_open && !shell.topbar_hidden && !shell.scratch_open {
         mem(&mut out, (0.0, 0.0), &shell.topbar_buffer, None, crate::animation::Visual::default());
     }
-    if !fullscreen_top || launchpad_open {
+    if (!fullscreen_top || launchpad_open) && !shell.scratch_open {
         use crate::theme::DockEdge;
         let edge = crate::theme::dock_edge();
         let (sx, sy) = shell.dock_shown_origin();
@@ -484,7 +484,14 @@ pub(crate) fn build_scene(
         if animations.launchpad(shell).identity() { return out; }
     }
 
+    let backdrop = animations.scratch_progress().clamp(0.0, 1.0);
+    let mut backdrop_due = backdrop > 0.0;
     for win in windows.iter().rev() {
+        // Everything below the Подложка's windows is seen through its backdrop
+        if backdrop_due && win.space != crate::scratch::SCRATCH_SPACE {
+            backdrop_due = false;
+            push_scratch_backdrop(&mut out, renderer, shell, backdrop, view, scale);
+        }
         if !animations.draws_window(win) || (animations.window(win).identity() && crate::monitors::Rect{x:win.x,y:win.y,w:win.width,h:win.total_height()}.intersection(view)==0) {
             continue;
         }
@@ -503,6 +510,9 @@ pub(crate) fn build_scene(
         }
     }
 
+    if backdrop_due {
+        push_scratch_backdrop(&mut out, renderer, shell, backdrop, view, scale);
+    }
     push_layers(&mut out, renderer, shell, smithay::wayland::shell::wlr_layer::Layer::Bottom, view, scale);
 
     // Mission Control dims the desktop behind the spread windows
@@ -526,6 +536,28 @@ pub(crate) fn build_scene(
         out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer((view.x as f64*scale,view.y as f64*scale),texture,None,Some(smithay::utils::Rectangle::from_size((w as f64,h as f64).into())),Some(wp_size.into()),Kind::Unspecified)).into());
     }
     out
+}
+
+/// Frosted wallpaper over the desktop, faintly letting it through; a plain dim until the
+/// frosted picture is ready. Stretched on the GPU from a small buffer shared with Launchpad.
+fn push_scratch_backdrop(out: &mut Vec<FeatherElement>, renderer: &mut GlesRenderer, shell: &MacShell, progress: f64, view: crate::monitors::Rect, scale: f64) {
+    let size = ((view.w as f64 * scale).round() as i32, (view.h as f64 * scale).round() as i32);
+    let loc = (view.x as f64 * scale, view.y as f64 * scale);
+    let (buffer, src, alpha) = match shell.launchpad_bg_key {
+        Some((_, w, h, _)) => (&shell.launchpad_bg, (w as f64, h as f64), 0.9 * progress),
+        None => (&shell.mission_dim, (4.0, 4.0), 0.5 * progress),
+    };
+    if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+        renderer,
+        loc,
+        buffer,
+        Some(alpha as f32),
+        Some(smithay::utils::Rectangle::from_size(src.into())),
+        Some(size.into()),
+        Kind::Unspecified,
+    ) {
+        out.push(SceneElement::Memory(element).into());
+    }
 }
 
 /// The surfaces of one layer on this monitor, front first
@@ -766,8 +798,10 @@ impl FeatherCompositor {
             self.lock.splash.paint(&mut self.fonts, self.scale_factor);
             profile.step("boot-splash");
         }
-        if self.lock.active {self.shell.ensure_wallpaper_rendered();self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name,(self.shell.screen_w,self.shell.screen_h));profile.step("lock");return;}
+        if self.lock.active {self.shell.ensure_wallpaper_rendered();let status=crate::session_lock::LockStatus::new(self.shell.battery,self.shell.cc.wifi.available.then_some(self.shell.wifi_enabled));self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name,status,(self.shell.screen_w,self.shell.screen_h));profile.step("lock");return;}
         self.audio_hud.paint(&mut self.fonts,self.scale_factor);
+        self.banner.paint(&mut self.fonts,self.scale_factor);
+        self.shell.scratch_backdrop = self.animations.scratch_progress() > 0.0;
         profile.step("audio-hud");
         let active_title = self.active_window_title();
         self.shell.ensure_wallpaper_rendered();
@@ -788,7 +822,7 @@ impl FeatherCompositor {
         self.shell.ensure_switcher_rendered(&mut self.fonts);
         self.shell.ensure_ghost_rendered(&mut self.fonts);
         profile.step("switcher/ghost");
-        if self.shell.launchpad.is_some() {
+        if self.shell.launchpad.is_some() || self.shell.scratch_backdrop {
             self.shell.ensure_launchpad_bg();
         }
         if let Some(lp) = self.shell.launchpad.as_mut() {
@@ -1012,7 +1046,7 @@ impl FeatherCompositor {
                 self.lock.monitor_elements(renderer,scale,&view,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size)))
             } else {
                 let mut elements = if view.primary {self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h))}else{Vec::new()};
-                if view.primary {elements.extend(self.audio_hud.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h)));}
+                if view.primary {elements.extend(self.banner.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h)));elements.extend(self.audio_hud.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h)));}
                 if draw_pointer {
                     elements.extend(cursor_elements(renderer, &mut self.cursor, pointer, scale));
                 }
@@ -1155,7 +1189,7 @@ impl FeatherCompositor {
                 let mut e=if pointer_locked {Vec::new()} else {cursor_elements(&mut d.renderer,&mut self.cursor,pointer,scale)};
                 if info.primary {
                     e.extend(self.auth.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h),(self.phys_w,self.phys_h)));
-                    e.extend(self.audio_hud.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));
+                    e.extend(self.banner.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));e.extend(self.audio_hud.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));
                     e.extend(crate::screenshot::overlay(&mut d.renderer,self.screenshot_select.as_ref(),pointer,scale,(self.phys_w,self.phys_h)));
                     e.extend(crate::screencast::overlay(&mut d.renderer,&self.screencast,scale,(self.phys_w,self.phys_h)));
                 }
@@ -1387,6 +1421,10 @@ impl FeatherCompositor {
         for win in self.windows.iter().rev() {
             if !win.is_visible() {
                 continue;
+            }
+            // The backdrop of the Подложка takes the pointer from the desktop below
+            if self.shell.scratch_open && win.space != crate::scratch::SCRATCH_SPACE {
+                return None;
             }
             let Some(surface) = win.wl_surface() else {
                 if win.contains_point(px, py) || win.resize_edges_at(px, py).is_some() {

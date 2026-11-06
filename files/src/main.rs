@@ -833,6 +833,7 @@ impl WindowHandler for Files {
             configure.new_size.0.map_or(self.app.w, |v| v.get() as f32),
             configure.new_size.1.map_or(self.app.h, |v| v.get() as f32),
         );
+        self.app.no_buttons = configure.state.contains(WindowState::TILED);
         self.app.maximized = configure.state.contains(WindowState::MAXIMIZED) || configure.state.contains(WindowState::FULLSCREEN);
         let focused = configure.state.contains(WindowState::ACTIVATED);
         if focused != self.app.focused {

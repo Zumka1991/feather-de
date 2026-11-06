@@ -3436,6 +3436,7 @@ impl crate::FeatherCompositor {
             let r = rects.iter().find(|r| r.contains(center.0 as f64, center.1 as f64)).copied().unwrap_or(crate::monitors::Rect { x: 0, y: 0, w: sw, h: sh });
             w.fit_tile_frame(tile.frame(crate::tiling::work_area(r)));
         }
+        self.scratch_sync();
         self.dock_model_dirty = true;
         self.needs_redraw = true;
     }

@@ -260,6 +260,8 @@ pub struct App {
     pub h: f32,
     pub dirty: bool,
     pub maximized: bool,
+    /// Tiled on all sides: on the Подложка, where windows go without their buttons
+    pub no_buttons: bool,
     pub focused: bool,
     docs: Vec<Doc>,
     active: usize,
@@ -416,6 +418,7 @@ impl App {
             h: 640.0,
             dirty: true,
             maximized: false,
+            no_buttons: false,
             focused: true,
             docs: vec![doc],
             active: 0,
@@ -923,8 +926,11 @@ impl App {
 
     // ---------- Toolbar & Bar Rects ----------
 
-    fn traffic(&self) -> [(Hit, f32); 3] {
-        [(Hit::Close, 22.0), (Hit::Minimize, 42.0), (Hit::Zoom, 62.0)]
+    fn traffic(&self) -> Vec<(Hit, f32)> {
+        if self.no_buttons {
+            return Vec::new();
+        }
+        vec![(Hit::Close, 22.0), (Hit::Minimize, 42.0), (Hit::Zoom, 62.0)]
     }
 
     fn toolbar_buttons(&self) -> Vec<(Hit, (f32, f32, f32, f32))> {

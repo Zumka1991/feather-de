@@ -259,6 +259,8 @@ pub struct App {
     pub height: f32,
     pub focused: bool,
     pub maximized: bool,
+    /// Tiled on all sides: on the Подложка, where windows go without their buttons
+    pub no_buttons: bool,
     pub dirty: bool,
     pub mode: CalcMode,
     pub show_history: bool,
@@ -290,6 +292,7 @@ impl App {
             height: 500.0,
             focused: true,
             maximized: false,
+            no_buttons: false,
             dirty: true,
             mode: CalcMode::Basic,
             show_history: false,
@@ -1263,7 +1266,8 @@ impl App {
     }
 
     pub fn handle_click(&mut self, x: f32, y: f32) -> Action {
-        match hit_traffic_lights(x, y) {
+        let traffic = if self.no_buttons { TrafficHit::None } else { hit_traffic_lights(x, y) };
+        match traffic {
             TrafficHit::Close => return Action::CloseWindow,
             TrafficHit::Minimize => return Action::MinimizeWindow,
             TrafficHit::Maximize => return Action::ToggleMaximize,
@@ -1397,11 +1401,15 @@ impl App {
     fn draw_toolbar(&mut self, pm: &mut PixmapMut, dark: bool) {
         let hovered_tl = hit_traffic_lights(self.hover_x, self.hover_y) != TrafficHit::None;
         let cy = TOOLBAR_H * 0.5;
+        let show = !self.no_buttons;
         for (hit, cx) in [
             (TrafficHit::Close, 20.0),
             (TrafficHit::Minimize, 40.0),
             (TrafficHit::Maximize, 60.0),
-        ] {
+        ]
+        .into_iter()
+        .filter(|_| show)
+        {
             let color = if !self.focused && !hovered_tl {
                 colors::traffic_inactive()
             } else {
