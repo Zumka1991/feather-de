@@ -6,14 +6,25 @@
 //! and GTK apps break the same way). A handler is reset to the default by `exec`, so children
 //! start clean.
 
-/// Reaps finished children in the background, without passing anything on to them
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static REAPING_HELD: AtomicUsize = AtomicUsize::new(0);
+
+/// Collects finished children, unless someone is waiting for a status right now
+fn reap_finished() {
+    // SAFETY: waitpid with a null status only touches finished children
+    while REAPING_HELD.load(Ordering::SeqCst) == 0 && unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
+}
+
+/// Reaps finished children in the background, without passing anything on to them. It takes
+/// any child: code that waits for one and reads its status needs [`hold_reaping`] first
 pub fn reap_children() {
     extern "C" fn reap(_: libc::c_int) {
-        // SAFETY: waitpid and errno access are async-signal-safe; errno is restored for the
-        // code the signal interrupted
+        // SAFETY: errno access is async-signal-safe; errno is restored for the code the signal
+        // interrupted. The atomic and waitpid in reap_finished are async-signal-safe too
         unsafe {
             let errno = *libc::__errno_location();
-            while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {}
+            reap_finished();
             *libc::__errno_location() = errno;
         }
     }
@@ -24,6 +35,24 @@ pub fn reap_children() {
         action.sa_flags = libc::SA_RESTART | libc::SA_NOCLDSTOP;
         libc::sigemptyset(&mut action.sa_mask);
         libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut());
+    }
+}
+
+/// While this lives, the [`reap_children`] handler leaves every child alone, so `output()` and
+/// `try_wait()` get their exit status instead of ECHILD. Children that finish meanwhile are
+/// collected when the last hold goes. Take it before the child starts.
+#[must_use]
+pub struct ReapingHold(());
+
+pub fn hold_reaping() -> ReapingHold {
+    REAPING_HELD.fetch_add(1, Ordering::SeqCst);
+    ReapingHold(())
+}
+
+impl Drop for ReapingHold {
+    fn drop(&mut self) {
+        REAPING_HELD.fetch_sub(1, Ordering::SeqCst);
+        reap_finished();
     }
 }
 

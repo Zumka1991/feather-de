@@ -281,6 +281,7 @@ fn device_order(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 fn udisksctl(args: &[&std::ffi::OsStr]) -> Result<(), String> {
+    let _hold = feather_ui::process::hold_reaping();
     let out = std::process::Command::new("udisksctl")
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -501,11 +502,14 @@ const ARCHIVES: [&str; 28] = [
 
 pub fn is_archive(name: &str) -> bool {
     let lower = name.to_lowercase();
-    ARCHIVES.iter().any(|ext| lower.ends_with(ext) && lower.len() > ext.len())
+    ARCHIVES.iter().any(|ext| lower.ends_with(ext) && lower.len() > ext.len()) || old_rar_volume(name).is_some()
 }
 
 /// "Фото.tar.gz" → "Фото", "Фильм.part01.rar" → "Фильм"
 pub fn archive_stem(name: &str) -> &str {
+    if let Some(stem) = old_rar_volume(name) {
+        return &name[..stem];
+    }
     let lower = name.to_lowercase();
     let Some(ext) = ARCHIVES.iter().find(|ext| lower.ends_with(*ext)) else { return name };
     let stem = &name[..name.len() - ext.len()];
@@ -523,17 +527,36 @@ fn rar_volume(name: &str) -> Option<(usize, usize)> {
     (start < end && lower[..start].ends_with(".part") && start > ".part".len()).then_some((start, end))
 }
 
+/// Length of the stem of an old-style volume: "x.rar" goes on as "x.r00"… "x.r99", "x.s00"…
+fn old_rar_volume(name: &str) -> Option<usize> {
+    let stem = name.len().checked_sub(4).filter(|&n| n > 0 && name.is_char_boundary(n))?;
+    let ext = name[stem..].to_ascii_lowercase();
+    let ext = ext.as_bytes();
+    (ext[0] == b'.' && matches!(ext[1], b'r' | b's') && ext[2].is_ascii_digit() && ext[3].is_ascii_digit()).then_some(stem)
+}
+
+/// The n-th part after "x.rar", in either case of the extension
+fn old_rar_part(first: &Path, n: usize) -> Option<PathBuf> {
+    let letter = |base: u8| (base + (n / 100) as u8) as char;
+    [letter(b'r'), letter(b'R')].iter().map(|l| first.with_extension(format!("{l}{:02}", n % 100))).find(|p| p.is_file())
+}
+
 /// Volumes unpack from the first one, whichever was double-clicked: "x.part3.rar" → "x.part1.rar"
-/// (or part01…) when it is there
+/// (or part01…), "x.r05" → "x.rar", when it is there
 fn first_volume(archive: &Path) -> PathBuf {
     let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if old_rar_volume(&name).is_some() {
+        let first = [archive.with_extension("rar"), archive.with_extension("RAR")].into_iter().find(|p| p.is_file());
+        return first.unwrap_or_else(|| archive.to_path_buf());
+    }
     let Some((start, end)) = rar_volume(&name) else { return archive.to_path_buf() };
     let first = archive.with_file_name(format!("{}{:0>width$}{}", &name[..start], 1, &name[end..], width = end - start));
     if first.is_file() { first } else { archive.to_path_buf() }
 }
 
-/// unar from the unar package (free, universe): unlike libarchive it reads RAR5 reliably,
-/// volumes and encrypted archives. FEATHER_UNAR points tests at another copy
+/// unar from the unar package (free, universe): reads what libarchive does not (ARJ, ACE, a lone
+/// .gz, deflate64, encrypted 7z) and RAR that our own decoder refuses. FEATHER_UNAR points tests
+/// at another copy
 fn unar() -> std::process::Command {
     std::process::Command::new(std::env::var_os("FEATHER_UNAR").unwrap_or_else(|| "unar".into()))
 }
@@ -595,10 +618,23 @@ fn bytes_read(pid: u32) -> Option<u64> {
 }
 
 /// `cmd.output()` that reports how much of the archive the unpacker has read into
-/// `progress.done` (out of `progress.total`, the archive size) and kills it on cancel
-fn run_watched(mut cmd: std::process::Command, progress: &Progress, tick: &mut dyn FnMut()) -> std::io::Result<std::process::Output> {
-    use std::{io::Read, process::Stdio, sync::atomic::Ordering};
+/// `progress.done` (out of `progress.total`, the archive size) and kills it on cancel. `input`
+/// goes to its stdin. The caller holds off the child reaper
+fn run_watched(mut cmd: std::process::Command, input: Option<&[u8]>, progress: &Progress, tick: &mut dyn FnMut()) -> std::io::Result<std::process::Output> {
+    use std::{
+        io::{Read, Write},
+        process::Stdio,
+        sync::atomic::Ordering,
+    };
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    // Far smaller than a pipe's buffer, and dropping the pipe ends the input. An unpacker
+    // already gone is seen below
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        let _ = stdin.write_all(input);
+    }
     // Both pipes drain on their own threads: a chatty unpacker must not block on a full pipe
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
@@ -629,14 +665,74 @@ fn run_watched(mut cmd: std::process::Command, progress: &Progress, tick: &mut d
     Ok(std::process::Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
 }
 
-/// Volumes of a "….partN.rar" set that are there (just `archive` for any other archive)
+/// Volumes of a set that are there, in order, up to the first gap ("x.partN.rar", or "x.rar" and
+/// "x.r00"…); just `archive` for any other archive or a set whose first part is not there
 fn volumes_of(archive: &Path) -> Vec<PathBuf> {
     let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let Some((start, end)) = rar_volume(&name) else { return vec![archive.to_path_buf()] };
-    (1..)
+    let Some((start, end)) = rar_volume(&name) else {
+        let mut parts = vec![archive.to_path_buf()];
+        if name.to_ascii_lowercase().ends_with(".rar") {
+            parts.extend((0..200).map_while(|n| old_rar_part(archive, n)));
+        }
+        return parts;
+    };
+    let parts: Vec<PathBuf> = (1..)
         .map(|n| archive.with_file_name(format!("{}{:0>width$}{}", &name[..start], n, &name[end..], width = end - start)))
         .take_while(|p| p.is_file())
-        .collect()
+        .collect();
+    if parts.is_empty() {
+        vec![archive.to_path_buf()]
+    } else {
+        parts
+    }
+}
+
+/// The env var that tells the test binary to play the [`crate::rar`] role
+#[cfg(test)]
+pub const TEST_HELPER_ARGS: &str = "FEATHER_TEST_UNRAR";
+
+/// This very program as the RAR unpacker. /proc/self/exe still runs after an upgrade has replaced
+/// the file on disk
+fn rar_helper(folder: &Path, volumes: &[PathBuf]) -> std::process::Command {
+    let mut cmd = std::process::Command::new("/proc/self/exe");
+    #[cfg(not(test))]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.arg0("feather-files").arg(crate::rar::FLAG).arg(folder).args(volumes);
+    }
+    #[cfg(test)]
+    {
+        let args: Vec<std::ffi::OsString> = std::iter::once(folder).chain(volumes.iter().map(PathBuf::as_path)).map(Into::into).collect();
+        cmd.args(["rar::tests::helper_entry", "--exact", "--nocapture", "--test-threads=1"]).env(TEST_HELPER_ARGS, args.join(std::ffi::OsStr::new("\n")));
+    }
+    cmd.stdin(std::process::Stdio::null());
+    cmd
+}
+
+/// What became of the RAR unpacker
+enum RarOutcome {
+    Unpacked,
+    Failed(String),
+    /// Not something it reads, or it crashed. Someone else may try, but only without a password:
+    /// unar takes one only as an argument, in plain view in `ps`
+    TryOthers,
+}
+
+fn rar_outcome(out: std::io::Result<std::process::Output>, password: bool) -> RarOutcome {
+    use crate::rar;
+    let code = out.as_ref().ok().and_then(|o| o.status.code());
+    let stderr = out.as_ref().map(|o| String::from_utf8_lossy(&o.stderr).trim().to_string()).unwrap_or_default();
+    match code {
+        Some(0) => RarOutcome::Unpacked,
+        Some(rar::NEEDS_PASSWORD) => RarOutcome::Failed(NEEDS_PASSWORD.into()),
+        Some(rar::WRONG_PASSWORD) => RarOutcome::Failed(WRONG_PASSWORD.into()),
+        Some(rar::DAMAGED) => RarOutcome::Failed("Архив повреждён".into()),
+        Some(rar::MISSING_PART) => RarOutcome::Failed(MISSING_PART.into()),
+        Some(rar::NO_MEMORY) => RarOutcome::Failed("Для распаковки этого архива не хватает памяти".into()),
+        Some(rar::IO_ERROR) if !stderr.is_empty() => RarOutcome::Failed(stderr),
+        _ if password => RarOutcome::Failed("Не удалось распаковать этот архив".into()),
+        _ => RarOutcome::TryOthers,
+    }
 }
 
 /// A zip whose names are neither ASCII nor marked UTF-8 nor valid UTF-8: written by Windows
@@ -714,6 +810,7 @@ pub fn compress(paths: &[PathBuf]) -> Result<PathBuf, String> {
     };
     let target = unique_file(dir, &stem, ".zip");
     let part = dir.join(format!(".{}.feather-part", target.file_name().unwrap().to_string_lossy()));
+    let _hold = feather_ui::process::hold_reaping();
     let out = bsdtar().args(["--format", "zip", "-cf"]).arg(&part).arg("-C").arg(dir).arg("--").args(&names).output();
     match out {
         Ok(out) if out.status.success() => std::fs::rename(&part, &target).map(|_| target).map_err(|e| e.to_string()),
@@ -728,11 +825,11 @@ pub fn compress(paths: &[PathBuf]) -> Result<PathBuf, String> {
 /// Double-click on an archive: unpacked next to it, like macOS. One folder (or file) inside
 /// appears as is; several items go into a folder named after the archive. Everything is
 /// unpacked into a hidden folder first, so a failure leaves nothing half-extracted. bsdtar
-/// and unar refuse ".." and strip leading "/" from member names. RAR goes to unar; without
-/// it bsdtar tries (old RAR mostly works, RAR5 and volumes often do not). `password` goes to
-/// unar as -p and to bsdtar as --passphrase (zip); an encrypted 7z, which libarchive cannot
-/// decrypt, goes to unar too. A missing or wrong password comes back as `NEEDS_PASSWORD` or
-/// `WRONG_PASSWORD`.
+/// and unar refuse ".." and strip leading "/" from member names. RAR goes to [`crate::rar`] in a
+/// process of its own, the password on its stdin; what that does not read, if there is no
+/// password, goes to unar and bsdtar. For other archives `password` goes to unar as -p and to
+/// bsdtar as --passphrase (zip); an encrypted 7z, which libarchive cannot decrypt, goes to unar
+/// too. A missing or wrong password comes back as `NEEDS_PASSWORD` or `WRONG_PASSWORD`.
 #[cfg(test)]
 pub fn extract(archive: &Path, password: Option<&str>) -> Result<PathBuf, String> {
     extract_with(archive, password, &Progress::default(), &mut || {})
@@ -747,11 +844,14 @@ pub fn extract_with(archive: &Path, password: Option<&str>, progress: &Progress,
     let dir = archive.parent().ok_or("Нет папки архива")?;
     let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let stem = archive_stem(&name).to_string();
-    let rar = name.to_lowercase().ends_with(".rar");
-    let volumes = rar_volume(&name).is_some();
+    let rar = name.to_lowercase().ends_with(".rar") || old_rar_volume(&name).is_some();
     let archive = &first_volume(archive);
-    let total = volumes_of(archive).iter().filter_map(|p| p.metadata().ok()).map(|m| m.len()).sum();
+    let parts = volumes_of(archive);
+    let volumes = parts.len() > 1 || rar_volume(&name).is_some() || old_rar_volume(&name).is_some();
+    let total = parts.iter().filter_map(|p| p.metadata().ok()).map(|m| m.len()).sum();
     progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
+    // Exit codes are read below; the reaper of the window would take them first
+    let _hold = feather_ui::process::hold_reaping();
     let tmp = dir.join(format!(".{stem}.feather-extract-{}", std::process::id()));
     std::fs::create_dir(&tmp).map_err(|e| e.to_string())?;
     let fail = |e: String| {
@@ -766,15 +866,38 @@ pub fn extract_with(archive: &Path, password: Option<&str>, progress: &Progress,
             cmd.arg("-p").arg(password);
         }
         cmd.arg(archive).stdin(std::process::Stdio::null());
-        run_watched(cmd, progress, tick).ok()
+        run_watched(cmd, None, progress, tick).ok()
     };
-    let unpacked = if rar { run_unar(tick) } else { None };
+    let mut own_decoder = false;
+    let unpacked = if rar {
+        let out = run_watched(rar_helper(&tmp, &parts), password.map(str::as_bytes), progress, tick);
+        if progress.cancelled() {
+            return fail(EXTRACT_STOPPED.into());
+        }
+        match rar_outcome(out, password.is_some()) {
+            RarOutcome::Unpacked => {
+                own_decoder = true;
+                None
+            }
+            RarOutcome::Failed(e) => return fail(e),
+            RarOutcome::TryOthers => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                if let Err(e) = std::fs::create_dir(&tmp) {
+                    return fail(e.to_string());
+                }
+                run_unar(tick)
+            }
+        }
+    } else {
+        None
+    };
     if progress.cancelled() {
         return fail(EXTRACT_STOPPED.into());
     }
     match unpacked {
         Some(out) if out.status.success() => {}
         Some(out) => return fail(unar_error(&out, volumes, password.is_some())),
+        None if own_decoder => {}
         None => {
             let mut tar = bsdtar();
             // Windows writes Russian names in zip as CP866 without the UTF-8 flag
@@ -785,7 +908,7 @@ pub fn extract_with(archive: &Path, password: Option<&str>, progress: &Progress,
             if let Some(password) = password {
                 tar.arg(&*zeroize::Zeroizing::new(format!("--passphrase={password}")));
             }
-            let tar = match unattended(tar).and_then(|tar| run_watched(tar, progress, tick)) {
+            let tar = match unattended(tar).and_then(|tar| run_watched(tar, None, progress, tick)) {
                 _ if progress.cancelled() => return fail(EXTRACT_STOPPED.into()),
                 Ok(out) if out.status.success() => None,
                 Ok(out) => Some(Some(out)),
@@ -827,8 +950,8 @@ pub fn extract_with(archive: &Path, password: Option<&str>, progress: &Progress,
     };
     let result = match items.as_slice() {
         // unar skips what it cannot read (a file whose next part is missing) and still succeeds
-        [] if volumes => return fail(MISSING_PART.into()),
-        [] if rar => return fail("Архив повреждён".into()),
+        [] if volumes && !own_decoder => return fail(MISSING_PART.into()),
+        [] if rar && !own_decoder => return fail("Архив повреждён".into()),
         [] => return fail("Архив пуст".into()),
         [only] => {
             let item = only.file_name().unwrap().to_string_lossy().into_owned();
@@ -1065,74 +1188,6 @@ mod tests {
         !data.iter().fold(!0u32, |crc, &b| (0..8).fold(crc ^ b as u32, |c, _| if c & 1 == 1 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 }))
     }
 
-    fn vint(out: &mut Vec<u8>, mut v: u64) {
-        while v >= 0x80 {
-            out.push(v as u8 | 0x80);
-            v >>= 7;
-        }
-        out.push(v as u8);
-    }
-
-    /// One RAR5 block: CRC32, size, then `body` (type, flags, fields) and the data
-    fn rar_block(body: &[u8], data: &[u8]) -> Vec<u8> {
-        let mut sized = Vec::new();
-        vint(&mut sized, body.len() as u64);
-        sized.extend_from_slice(body);
-        let mut block = crc32(&sized).to_le_bytes().to_vec();
-        block.extend(sized);
-        block.extend_from_slice(data);
-        block
-    }
-
-    /// Part of a file in a RAR volume: its bytes here, the whole size, split flags (0x08 —
-    /// continues from the previous volume, 0x10 — into the next) and the whole file's CRC32
-    /// (only in its last part)
-    type RarPart<'a> = (&'a [u8], u64, u64, Option<u32>);
-
-    /// A stored (uncompressed) RAR5 archive, as WinRAR writes it with -m0. `volume`: its number
-    /// and whether it is the last; items without a part are folders
-    fn rar5(volume: Option<(u64, bool)>, items: &[(&str, Option<RarPart>)]) -> Vec<u8> {
-        let mut out = b"Rar!\x1a\x07\x01\x00".to_vec();
-        let mut main = vec![1, 0];
-        match volume {
-            None => main.push(0),
-            Some((0, _)) => main.push(1),
-            Some((n, _)) => {
-                main.push(3);
-                vint(&mut main, n);
-            }
-        }
-        out.extend(rar_block(&main, &[]));
-        for &(name, part) in items {
-            let mut head = vec![2];
-            match part {
-                Some((data, size, split, crc)) => {
-                    vint(&mut head, 2 | split);
-                    vint(&mut head, data.len() as u64);
-                    vint(&mut head, if crc.is_some() { 4 } else { 0 });
-                    vint(&mut head, size);
-                    vint(&mut head, 0o100644);
-                    head.extend(crc.map(u32::to_le_bytes).unwrap_or_default());
-                }
-                None => {
-                    // No data, a folder of size 0
-                    head.extend([0, 1, 0]);
-                    vint(&mut head, 0o40755);
-                }
-            }
-            // Stored, Unix, the UTF-8 name
-            head.extend([0, 1]);
-            vint(&mut head, name.len() as u64);
-            head.extend_from_slice(name.as_bytes());
-            out.extend(rar_block(&head, part.map_or(&[][..], |p| p.0)));
-        }
-        let more = volume.is_some_and(|(_, last)| !last);
-        out.extend(rar_block(&[5, 0, more as u8], &[]));
-        out
-    }
-
-    /// FEATHER_UNAR=/path/to/unar when the unar package is not installed. Without unar, plain
-    /// RAR goes through bsdtar, volumes cannot unpack
     /// A stored zip whose one name is written as raw bytes, with or without the UTF-8 flag
     fn stored_zip(name: &[u8], data: &[u8], utf8: bool) -> Vec<u8> {
         let flags: u16 = if utf8 { 0x800 } else { 0 };
@@ -1236,19 +1291,12 @@ mod tests {
         assert!(SortBy::Modified.descending_first() && !SortBy::Name.descending_first());
     }
 
+    /// Real archives are tested in `rar::tests`
     #[test]
-    fn rar_unpacks_with_volumes() {
-        let has_unar = unar().stdin(std::process::Stdio::null()).output().is_ok();
-        if !has_unar && bsdtar().output().is_err() {
-            eprintln!("нет ни unar, ни bsdtar — тест пропущен");
-            return;
-        }
-        let root = std::env::temp_dir().join(format!("feather-rar-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+    fn rar_names_and_unars_words() {
         assert!(is_archive("Фильм.part2.rar") && archive_stem("Фильм.Part01.RAR") == "Фильм" && archive_stem("a.part.rar") == "a.part");
         assert_eq!(archive_stem(".part1.rar"), ".part1");
-        // unar's words for an encrypted archive (WinRAR's encryption is not generated here)
+        // unar's words for an encrypted archive: it still does 7z, and RAR our decoder refuses
         let said = |text: &str| {
             use std::os::unix::process::ExitStatusExt;
             std::process::Output { status: std::process::ExitStatus::from_raw(2 << 8), stdout: text.into(), stderr: vec![] }
@@ -1259,42 +1307,12 @@ mod tests {
         let wrong = said("  кадр.txt  (13 B)... Failed! (Missing or wrong password)\n");
         assert_eq!(unar_error(&wrong, false, true), WRONG_PASSWORD);
 
-        // Several items → a folder named after the archive
-        let cat = "мяу".repeat(100);
-        let cat = cat.as_bytes();
-        let note = b"x";
-        let one = rar5(None, &[
-            ("Фото", None),
-            ("Фото/кот.txt", Some((cat, cat.len() as u64, 0, Some(crc32(cat))))),
-            ("заметка.txt", Some((note, 1, 0, Some(crc32(note))))),
-        ]);
-        std::fs::write(root.join("Снимки.rar"), one).unwrap();
-        let folder = extract(&root.join("Снимки.rar"), None).unwrap();
-        assert_eq!(folder, root.join("Снимки"));
-        assert_eq!(std::fs::read(folder.join("Фото/кот.txt")).unwrap(), cat);
-        assert_eq!(std::fs::read(folder.join("заметка.txt")).unwrap(), note);
-
-        // A broken one says so and leaves nothing behind
+        let root = std::env::temp_dir().join(format!("feather-rar-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("битый.rar"), b"Rar!\x1a\x07\x01\x00garbage").unwrap();
-        let broken = extract(&root.join("битый.rar"), None).unwrap_err();
-        assert!(!has_unar || broken == "Архив повреждён", "{broken}");
-
-        if has_unar {
-            // A file split over two volumes; double-click on the second still starts from the first
-            let film = b"0123456789".repeat(50);
-            let (a, b) = film.split_at(200);
-            let size = film.len() as u64;
-            let crc = Some(crc32(&film));
-            std::fs::write(root.join("Фильм.part1.rar"), rar5(Some((0, false)), &[("кадр.txt", Some((a, size, 0x10, None)))])).unwrap();
-            std::fs::write(root.join("Фильм.part2.rar"), rar5(Some((1, true)), &[("кадр.txt", Some((b, size, 0x08, crc)))])).unwrap();
-            assert_eq!(extract(&root.join("Фильм.part2.rar"), None).unwrap(), root.join("кадр.txt"));
-            assert_eq!(std::fs::read(root.join("кадр.txt")).unwrap(), film);
-            // Without the second part: a clear message
-            std::fs::remove_file(root.join("Фильм.part2.rar")).unwrap();
-            assert_eq!(extract(&root.join("Фильм.part1.rar"), None).unwrap_err(), "Архив повреждён или не хватает одной из его частей");
-        }
-        let leftovers = std::fs::read_dir(&root).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with('.')).count();
-        assert_eq!(leftovers, 0);
+        assert_eq!(extract(&root.join("битый.rar"), None).unwrap_err(), "Архив повреждён");
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

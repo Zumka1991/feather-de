@@ -408,14 +408,7 @@ impl crate::FeatherCompositor {
                 w.y = r.y;
                 w.resize_client(r.w, r.h);
             } else if w.maximized {
-                let (x, y, ww, hh) = if r.x == 0 && r.y == 0 {
-                    crate::theme::maximized_area(r.w, r.h)
-                } else {
-                    (0, 0, r.w, r.h)
-                };
-                w.x = r.x + x;
-                w.y = r.y + y;
-                w.resize_client(ww, hh - w.titlebar_h());
+                w.fit_maximized(r);
             } else if let Some(tile) = w.tiled {
                 w.fit_tile_frame(tile.frame(crate::tiling::work_area(r)));
             } else {
@@ -788,6 +781,10 @@ pub fn install_checks(
         let w = &s.windows[i];
         assert!(w.maximized);
         assert_eq!((w.x, w.y, w.width, w.total_height()), (r.x, r.y, r.w, r.h));
+        // A Dock change leaves a window maximized on another monitor where it is
+        s.refit_maximized_windows();
+        let w = &s.windows[i];
+        assert_eq!((w.x, w.y), (r.x, r.y));
         fullscreen(s, true);
         eprintln!("[feather-monitor-check] drag and maximize: ok");
     })?;

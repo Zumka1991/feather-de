@@ -488,10 +488,14 @@ impl FeatherCompositor {
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(mode);
         });
-        if let Some(win) = self.window_for_toplevel_mut(toplevel.wl_surface()) {
+        if let Some(idx) = self.window_index_for_toplevel(toplevel.wl_surface()) {
+            let win = &mut self.windows[idx];
             if win.ssd != ssd {
                 win.ssd = ssd;
                 win.dirty = true;
+                // Chromium asks to be maximized before it settles on its own frame: the height
+                // it got still left room for our titlebar, a gap above the Dock
+                self.refit_window(idx);
             }
         }
         if toplevel.is_initial_configure_sent() {

@@ -3423,22 +3423,26 @@ impl crate::FeatherCompositor {
     }
     /// The room kept for the Dock changed: maximized windows take the new height
     pub fn refit_maximized_windows(&mut self) {
-        let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
-        for w in self.windows.iter_mut().filter(|w| w.maximized && !w.fullscreen) {
-            let (ax, _, aw, ah) = crate::theme::maximized_area(sw, sh);
-            w.x = ax;
-            w.resize_client(aw, ah - w.titlebar_h());
-        }
-        let rects = self.monitor_rects();
-        for w in self.windows.iter_mut().filter(|w| !w.maximized && !w.fullscreen) {
-            let Some(tile) = w.tiled else { continue };
-            let center = (w.x + w.width / 2, w.y);
-            let r = rects.iter().find(|r| r.contains(center.0 as f64, center.1 as f64)).copied().unwrap_or(crate::monitors::Rect { x: 0, y: 0, w: sw, h: sh });
-            w.fit_tile_frame(tile.frame(crate::tiling::work_area(r)));
+        for idx in 0..self.windows.len() {
+            self.refit_window(idx);
         }
         self.scratch_sync();
         self.dock_model_dirty = true;
         self.needs_redraw = true;
+    }
+
+    /// A maximized or tiled window takes its frame on its own monitor again
+    pub fn refit_window(&mut self, idx: usize) {
+        let r = self.window_monitor(idx);
+        let win = &mut self.windows[idx];
+        if win.fullscreen {
+            return;
+        }
+        if win.maximized {
+            win.fit_maximized(r);
+        } else if let Some(tile) = win.tiled {
+            win.fit_tile_frame(tile.frame(crate::tiling::work_area(r)));
+        }
     }
 
     /// Programs learn the new repeat delay/rate at once (wl_keyboard.repeat_info)

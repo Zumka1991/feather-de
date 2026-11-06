@@ -715,6 +715,11 @@ impl ManagedWindow {
         self.dirty = true;
     }
 
+    /// A maximized window over the monitor's work area, in step with its titlebar and the Dock
+    pub fn fit_maximized(&mut self, r: crate::monitors::Rect) {
+        self.fit_tile_frame(crate::tiling::work_area(r));
+    }
+
     fn set_tile_states(&self, tile: Option<crate::tiling::Tile>) {
         let (l, r, t, b) = tile.map_or((false, false, false, false), |t| t.edges());
         self.set_xdg_state(xdg_toplevel::State::TiledLeft, l);
@@ -1512,6 +1517,21 @@ mod maximize_tests {
         drag.unmaximize_under((sw as f64 * 0.75, 40.0), sw, sh);
         assert!(!drag.maximized && drag.width == 600);
         assert_eq!(drag.x, (sw as f64 * 0.75 - 0.75 * 600.0) as i32);
+    }
+    #[test]
+    fn a_maximized_window_keeps_filling_the_area_when_its_titlebar_comes_or_goes() {
+        let r = crate::monitors::Rect { x: 0, y: 0, w: 1440, h: 900 };
+        let area = crate::tiling::work_area(r);
+        let mut w = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 100, 120);
+        w.maximize_on(true, r);
+        assert_eq!(w.total_height(), area.h);
+        // The program says it draws its own frame only after asking to be maximized (Chromium)
+        w.ssd = false;
+        w.fit_maximized(r);
+        assert_eq!((w.x, w.y, w.width, w.total_height()), (area.x, area.y, area.w, area.h));
+        w.ssd = true;
+        w.fit_maximized(r);
+        assert_eq!((w.x, w.y, w.width, w.total_height()), (area.x, area.y, area.w, area.h));
     }
 }
 

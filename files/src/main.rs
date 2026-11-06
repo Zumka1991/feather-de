@@ -7,6 +7,7 @@ mod fsops;
 mod openwith;
 mod theme;
 mod preview;
+mod rar;
 
 use feather_ui::{draw as ui, file_icons as icons, text};
 
@@ -155,6 +156,10 @@ struct Files {
 }
 
 fn main() {
+    let mut raw_args = std::env::args_os().skip(1);
+    if raw_args.next().is_some_and(|a| a == rar::FLAG) {
+        std::process::exit(rar::main(raw_args));
+    }
     feather_ui::appearance::init();
     // Children (xdg-open, terminals) are reaped by the kernel; we never wait for them
     // Programs we open must not inherit an ignored SIGCHLD (see feather_ui::process)
