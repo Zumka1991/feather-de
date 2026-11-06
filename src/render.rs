@@ -353,6 +353,13 @@ pub(crate) fn build_scene(
     let mut out: Vec<FeatherElement> = Vec::with_capacity(64);
     let primary=view.x==0&&view.y==0;
     if primary {push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations, drawn);}
+    // Pictures of the hidden Подложка are uploaded as soon as its programs repaint, while nothing
+    // moves: otherwise they all arrive in the first frame of its slide and cost it a frame
+    if primary && shell.scratch_count > 0 && !shell.scratch_open && animations.scratch_progress() == 0.0 {
+        for surface in windows.iter().filter(|w| w.space == crate::scratch::SCRATCH_SPACE && w.mapped).filter_map(|w| w.wl_surface()) {
+            let _ = smithay::backend::renderer::utils::import_surface_tree(renderer, surface);
+        }
+    }
     if !shell.layers.is_empty() {
         use smithay::wayland::shell::wlr_layer::Layer;
         push_layers(&mut out, renderer, shell, Layer::Overlay, view, scale);
@@ -801,24 +808,28 @@ impl FeatherCompositor {
         if self.lock.active {self.shell.ensure_wallpaper_rendered();let status=crate::session_lock::LockStatus::new(self.shell.battery,self.shell.cc.wifi.available.then_some(self.shell.wifi_enabled));self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name,status,(self.shell.screen_w,self.shell.screen_h));profile.step("lock");return;}
         self.audio_hud.paint(&mut self.fonts,self.scale_factor);
         self.banner.paint(&mut self.fonts,self.scale_factor);
-        self.shell.scratch_backdrop = self.animations.scratch_progress() > 0.0;
+        // Kept while the Подложка has windows, so that it opens with its frosted glass at once
+        self.shell.scratch_backdrop = self.animations.scratch_progress() > 0.0 || self.shell.scratch_count > 0;
         profile.step("audio-hud");
         let active_title = self.active_window_title();
         self.shell.ensure_wallpaper_rendered();
         self.shell.ensure_cc_backdrop();
-        if self.dock_model_dirty {
-            self.dock_model_dirty = false;
-            let items = self.build_dock_items();
-            self.shell.set_dock_items(items);
-            let ctx = self.build_menu_context();
-            self.shell.set_menu_context(ctx);
+        // The Подложка hides the menu bar and the Dock: they catch up when it goes away
+        if !self.shell.scratch_open {
+            if self.dock_model_dirty {
+                self.dock_model_dirty = false;
+                let items = self.build_dock_items();
+                self.shell.set_dock_items(items);
+                let ctx = self.build_menu_context();
+                self.shell.set_menu_context(ctx);
+            }
+            profile.step("model");
+            self.shell
+                .ensure_topbar_rendered(&mut self.fonts, &active_title, &self.active_layout_name);
+            profile.step("topbar");
+            self.shell.ensure_dock_rendered(&mut self.fonts);
+            profile.step("dock");
         }
-        profile.step("model");
-        self.shell
-            .ensure_topbar_rendered(&mut self.fonts, &active_title, &self.active_layout_name);
-        profile.step("topbar");
-        self.shell.ensure_dock_rendered(&mut self.fonts);
-        profile.step("dock");
         self.shell.ensure_switcher_rendered(&mut self.fonts);
         self.shell.ensure_ghost_rendered(&mut self.fonts);
         profile.step("switcher/ghost");
@@ -939,6 +950,9 @@ impl FeatherCompositor {
             self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now()) || self.auth.animating();
             self.finish_mission();
             self.advance_bounce();
+            if self.activation_deferred && !self.animations.scratch_moving() {
+                self.refresh_focus();
+            }
         }
         if self.lock.splash.active && self.lock.splash.advance(Instant::now()) {
             self.needs_redraw = true;

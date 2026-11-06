@@ -917,6 +917,38 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         fn front(s: &mut FeatherCompositor, id: u64) {
             s.execute_shell_action(crate::shell::ShellClickAction::FocusWindow(id));
         }
+        if mode == "alttab" || mode == "plain" {
+            // Super+S and, right after it, Alt+Tab while the windows are still sliding: compare
+            // FEATHER_PROFILE=1 with and without the Alt+Tab
+            let alt = mode == "alttab";
+            at(state, 2000, |s| {
+                let ids = terms(s);
+                for id in ids {
+                    front(s, id);
+                    chord(s, true);
+                }
+                s.banner = Default::default();
+            })?;
+            for round in 0..6u64 {
+                let base = 3000 + round * 1400;
+                at(state, base, |s| chord(s, false))?;
+                if alt {
+                    at(state, base + 40, |s| {
+                        s.debug_keyboard_key(56, true);
+                        s.debug_keyboard_key(15, true);
+                        s.debug_keyboard_key(15, false);
+                    })?;
+                    at(state, base + 140, |s| s.debug_keyboard_key(56, false))?;
+                }
+                at(state, base + 700, |s| {
+                    if s.shell.scratch_open {
+                        chord(s, false);
+                    }
+                    eprintln!("{LOG} round");
+                })?;
+            }
+            return Ok(());
+        }
         if mode == "remembered" {
             // A program closed while on the Подложка: opened at login, it goes back there quietly
             at(state, 2000, |s| {

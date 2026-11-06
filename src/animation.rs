@@ -13,6 +13,7 @@ pub struct Spring {
     pub value: f64,
     velocity: f64,
     target: f64,
+    omega: f64,
 }
 
 impl Spring {
@@ -21,7 +22,13 @@ impl Spring {
             value,
             velocity: 0.0,
             target,
+            omega: 24.0,
         }
+    }
+
+    /// A stiffer spring for what must feel instant: settles in about 0.3 s instead of 0.5
+    fn quick(value: f64, target: f64) -> Self {
+        Self { omega: 42.0, ..Self::new(value, target) }
     }
 
     fn active(&self) -> bool {
@@ -32,7 +39,7 @@ impl Spring {
         if !self.active() {
             return;
         }
-        let omega = 24.0;
+        let omega = self.omega;
         let displacement = self.value - self.target;
         let c = self.velocity + omega * displacement;
         let decay = (-omega * dt).exp();
@@ -220,8 +227,13 @@ impl Animations {
         let target = if open { 1.0 } else { 0.0 };
         match self.scratch.as_mut() {
             Some(s) => s.target = target,
-            None => self.scratch = Some(Spring::new(1.0 - target, target)),
+            None => self.scratch = Some(Spring::quick(1.0 - target, target)),
         }
+    }
+
+    /// The Подложка is on its way in or out
+    pub fn scratch_moving(&self) -> bool {
+        self.scratch.is_some()
     }
 
     /// How far the backdrop of the Подложка has come

@@ -354,6 +354,7 @@ pub struct FeatherCompositor {
     pub audio_hud: crate::audio_hud::Hud,
     pub banner: crate::banner::Banner,
     pub scratch: crate::scratch::Scratch,
+    pub activation_deferred: bool,
     pub preferences: Option<crate::settings::Worker>,
     pub wallpaper_picker: Option<crate::wallpaper::Picker>,
     pub system_settings: crate::system_settings::Panel,
@@ -384,8 +385,14 @@ impl FeatherCompositor {
             self.shell.desktop.focused = false;
         }
         let desktop = self.shell.desktop.focused;
-        for (i, w) in self.windows.iter_mut().enumerate() {
-            w.set_activated(!self.lock.active && !desktop && Some(i) == top);
+        // While the Подложка slides, nobody is told about focus yet: each told client repaints
+        // its whole window, and uploading that picture costs the slide its frames. The keyboard
+        // below moves at once; the active look follows when the slide ends.
+        self.activation_deferred = self.animations.scratch_moving();
+        if !self.activation_deferred {
+            for (i, w) in self.windows.iter_mut().enumerate() {
+                w.set_activated(!self.lock.active && !desktop && Some(i) == top);
+            }
         }
         let password = self.auth.is_open() || (self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password);
         let target = if self.lock.active {self.lock_focus()} else if password || self.shell.switcher.is_some() {None} else if let Some(layer) = self.layer_keyboard_target() {Some(layer)} else if desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
@@ -2381,6 +2388,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         audio_hud: Default::default(),
         banner: Default::default(),
         scratch: Default::default(),
+        activation_deferred: false,
         preferences: None,
         wallpaper_picker: None,
         system_settings: crate::system_settings::Panel {keybindings:saved.keybindings.clone(),..Default::default()},
