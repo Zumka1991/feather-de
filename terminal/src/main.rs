@@ -78,7 +78,11 @@ use vt::{
 };
 
 const TITLE_H: f32 = 30.0;
-const TAB_H: f32 = 28.0;
+const TAB_H: f32 = 34.0;
+/// Side margin of the tab track, room for the "+" button and the close cross's offset
+const TAB_INSET: f32 = 8.0;
+const NEW_TAB_W: f32 = 40.0;
+const TAB_CLOSE_DX: f32 = 13.0;
 const SEARCH_H: f32 = 34.0;
 const PAD_X: f32 = 8.0;
 const PAD_TOP: f32 = 4.0;
@@ -100,6 +104,8 @@ struct Tab {
     /// Value of `term.scrolled_out` the view was last drawn for
     seen_scrolled: u64,
     title: String,
+    /// New output while in the background: a dot on its tab until it is shown
+    activity: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -372,7 +378,7 @@ impl App {
         let mode=std::env::var("FEATHER_TERMINAL_DEBUG").unwrap_or_default();
         let steps:Vec<(u64,u8)>=match mode.as_str(){
             "search"=>vec![(1200,0),(1800,1),(2300,2),(2800,3),(3400,4),(4000,5)],
-            "copy"=>vec![(3000,6)],_=>return,
+            "copy"=>vec![(3000,6)],"tabs"=>vec![(800,7),(1600,8)],_=>return,
         };
         for (delay,step) in steps {
             let _=self.handle.insert_source(Timer::from_duration(Duration::from_millis(delay)),move|_,_,app|{
@@ -398,6 +404,22 @@ impl App {
                         key(app,Keysym::p,Some("привет"),Mods::default());
                     }
                     5=>{assert_eq!(app.search.count,3);assert!(!app.search.busy());eprintln!("[feather-terminal-check] search, history, Unicode, next/previous, no results and Esc passed");}
+                    7=>{
+                        // Three tabs, the first one shown: the others' prompts mark them active
+                        key(app,Keysym::T,Some("T"),Mods{ctrl:true,shift:true,alt:false});
+                        key(app,Keysym::T,Some("T"),Mods{ctrl:true,shift:true,alt:false});
+                        app.switch_tab(0);
+                    }
+                    8=>{
+                        assert_eq!(app.tabs.len(),3);
+                        let ((tx,ty,_,th),tw)=app.tab_geometry();
+                        let (x,y)=(tx+2.0+tw*1.5,ty+th*0.5);
+                        app.motion(x,y);
+                        assert_eq!(app.hover,Some(Hover::Tab(1)));
+                        assert_eq!(app.chrome_hit(tx+2.0+tw+TAB_CLOSE_DX,y),Some(Hover::TabClose(1)));
+                        assert_eq!(app.chrome_hit(app.w-NEW_TAB_W*0.5,y),Some(Hover::NewTab));
+                        eprintln!("[feather-terminal-check] tabs: strip, hover, close and new-tab targets passed");
+                    }
                     _=>{
                         let (origin,_,_)=app.layout();let (cw,ch)=app.grid.cell_px();let s=app.scale_f();
                         let x=(origin.0+cw/2) as f32/s;let y=(origin.1+ch/2) as f32/s;
@@ -420,7 +442,8 @@ impl App {
     }
 
     fn tab_h(&self) -> f32 {
-        if self.tabs.len() > 1 { TAB_H } else { 0.0 }
+        // Always shown, so "+" is there to click; on the Подложка a lone tab keeps the window bare
+        if self.no_buttons && self.tabs.len() <= 1 { 0.0 } else { TAB_H }
     }
 
     /// Physical origin of the cell grid and the grid size that fits the window
@@ -457,7 +480,7 @@ impl App {
         let token = self.handle.insert_source(source, move |_, _, app| Ok(app.pty_ready(id))).ok();
         let mut term = Term::new(size.0, size.1);
         term.report_colors = (self.palette.fg, self.palette.bg);
-        self.tabs.push(Tab { id, term, parser: Parser::new(), pty, source: token, offset: 0, seen_scrolled: 0, title: String::new() });
+        self.tabs.push(Tab { id, term, parser: Parser::new(), pty, source: token, offset: 0, seen_scrolled: 0, title: String::new(), activity: false });
         self.active = self.tabs.len() - 1;
         self.selection = None;
         self.relayout();
@@ -524,6 +547,10 @@ impl App {
             let title = tab.term.title.clone().filter(|t| !t.is_empty()).or_else(|| tab.pty.foreground_name()).unwrap_or_default();
             if title != tab.title {
                 tab.title = title;
+                retitled = true;
+            }
+            if total > 0 && index != self.active && !tab.activity {
+                tab.activity = true;
                 retitled = true;
             }
             rang = std::mem::take(&mut tab.term.bell) && index == self.active;
@@ -757,38 +784,78 @@ impl App {
                 let title = self.chrome_fonts.ellipsize(&title, self.w - 200.0, 13.0, true);
                 self.chrome_fonts.draw_text_centered(pm, &title, self.w * 0.5, 7.5, 13.0, text, true);
             }
-            if self.tabs.len() > 1 {
-                let tw = (self.w - 40.0) / self.tabs.len() as f32;
-                for (i, tab) in self.tabs.iter().enumerate() {
-                    let x = i as f32 * tw;
-                    let active = i == self.active;
-                    if active {
-                        let bg = self.palette.bg;
-                        ui::fill_rrect(pm, x + 4.0, title_h + 2.0, tw - 8.0, TAB_H - 6.0, 6.0, ui::rgba(bg[0], bg[1], bg[2], 255));
-                    } else if self.hover == Some(Hover::Tab(i)) || self.hover == Some(Hover::TabClose(i)) {
-                        ui::fill_rrect(pm, x + 4.0, title_h + 2.0, tw - 8.0, TAB_H - 6.0, 6.0, ui::rgba(0, 0, 0, 18));
-                    }
-                    let label = if tab.title.is_empty() { "Терминал".to_string() } else { tab.title.clone() };
-                    let label = self.chrome_fonts.ellipsize(&label, tw - 44.0, 12.0, false);
-                    self.chrome_fonts.draw_text_centered(pm, &label, x + tw * 0.5, title_h + 6.0, 12.0, if active { text } else { sub }, false);
-                    if matches!(self.hover, Some(Hover::Tab(j)) | Some(Hover::TabClose(j)) if j == i) {
-                        let (cx, cy) = (x + 18.0, title_h + 12.0);
-                        if self.hover == Some(Hover::TabClose(i)) {
-                            ui::fill_circle(pm, cx, cy, 8.0, ui::rgba(0, 0, 0, 30));
-                        }
-                        ui::line(pm, cx - 3.0, cy - 3.0, cx + 3.0, cy + 3.0, 1.3, sub);
-                        ui::line(pm, cx + 3.0, cy - 3.0, cx - 3.0, cy + 3.0, 1.3, sub);
-                    }
-                }
-                let (px, py) = (self.w - 20.0, title_h + 12.0);
-                if self.hover == Some(Hover::NewTab) {
-                    ui::fill_circle(pm, px, py, 10.0, ui::rgba(0, 0, 0, 22));
-                }
-                ui::line(pm, px - 5.0, py, px + 5.0, py, 1.4, sub);
-                ui::line(pm, px, py - 5.0, px, py + 5.0, 1.4, sub);
+            if self.tab_h() > 0.0 {
+                self.paint_tabs(pm, text, sub);
             }
         });
         if self.search.open { self.paint_search(pm,s); }
+    }
+
+    /// The tab strip's track (x, y, w, h) and the width of one tab inside it
+    fn tab_geometry(&self) -> ((f32, f32, f32, f32), f32) {
+        let track = (TAB_INSET, self.title_h() + 3.0, (self.w - TAB_INSET - NEW_TAB_W).max(40.0), TAB_H - 8.0);
+        let tw = (track.2 - 4.0) / self.tabs.len().max(1) as f32;
+        (track, tw)
+    }
+
+    /// macOS Tahoe tabs: a recessed track, the active tab a raised pill with a soft shadow,
+    /// hairline dividers between the others, close on the left when hovered, "+" on the right
+    fn paint_tabs(&mut self, pm: &mut tiny_skia::PixmapMut, text: tiny_skia::Color, sub: tiny_skia::Color) {
+        let dark = self.palette.dark;
+        let ((tx, ty, tw_all, th), tw) = self.tab_geometry();
+        let (track, pill, edge, shadow, hover_fill, divider, press) = if dark {
+            (ui::rgba(28, 28, 31, 255), ui::rgba(78, 78, 84, 255), ui::rgba(255, 255, 255, 22), ui::rgba(0, 0, 0, 90),
+             ui::rgba(255, 255, 255, 14), ui::rgba(255, 255, 255, 30), ui::rgba(255, 255, 255, 26))
+        } else {
+            (ui::rgba(222, 222, 227, 255), ui::rgba(255, 255, 255, 255), ui::rgba(0, 0, 0, 20), ui::rgba(0, 0, 0, 34),
+             ui::rgba(0, 0, 0, 14), ui::rgba(0, 0, 0, 32), ui::rgba(0, 0, 0, 22))
+        };
+        ui::fill_rrect(pm, tx, ty, tw_all, th, 8.5, track);
+        // A faint inner top shadow makes the track read as pressed into the bar
+        ui::fill_rrect(pm, tx + 1.0, ty, tw_all - 2.0, 1.0, 0.5, ui::rgba(0, 0, 0, if dark { 60 } else { 16 }));
+        let hovered = |i: usize| matches!(self.hover, Some(Hover::Tab(j)) | Some(Hover::TabClose(j)) if j == i);
+        let (py, ph) = (ty + 2.0, th - 4.0);
+        let n = self.tabs.len();
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let x = tx + 2.0 + i as f32 * tw;
+            let active = i == self.active;
+            if active {
+                ui::fill_rrect(pm, x - 0.5, py + 0.5, tw + 1.0, ph + 1.0, 7.0, shadow);
+                ui::fill_rrect(pm, x, py, tw, ph, 6.5, pill);
+                ui::stroke_rrect(pm, x + 0.25, py + 0.25, tw - 0.5, ph - 0.5, 6.25, 0.5, edge);
+            } else if hovered(i) {
+                ui::fill_rrect(pm, x + 1.0, py, tw - 2.0, ph, 6.5, hover_fill);
+            }
+            // Dividers only between two resting tabs, as macOS draws them
+            if i + 1 < n {
+                let calm = |j: usize| j != self.active && !hovered(j);
+                if calm(i) && calm(i + 1) {
+                    ui::fill_rect(pm, x + tw - 0.5, py + 5.0, 1.0, ph - 10.0, divider);
+                }
+            }
+            let label = if tab.title.is_empty() { "Терминал".to_string() } else { tab.title.clone() };
+            let label = self.chrome_fonts.ellipsize(&label, (tw - 52.0).max(12.0), 12.0, active);
+            let mid = py + ph * 0.5;
+            self.chrome_fonts.draw_text_centered(pm, &label, x + tw * 0.5, mid - 7.0, 12.0, if active { text } else { sub }, active);
+            if tab.activity && !active {
+                let w = self.chrome_fonts.measure_text(&label, 12.0, active);
+                ui::fill_circle(pm, (x + tw * 0.5 + w * 0.5 + 9.0).min(x + tw - 10.0), mid, 2.6, ui::rgba(10, 132, 255, 255));
+            }
+            if hovered(i) {
+                let cx = x + TAB_CLOSE_DX;
+                if self.hover == Some(Hover::TabClose(i)) {
+                    ui::fill_rrect(pm, cx - 8.0, mid - 8.0, 16.0, 16.0, 4.5, press);
+                }
+                ui::line(pm, cx - 3.0, mid - 3.0, cx + 3.0, mid + 3.0, 1.3, if active { text } else { sub });
+                ui::line(pm, cx + 3.0, mid - 3.0, cx - 3.0, mid + 3.0, 1.3, if active { text } else { sub });
+            }
+        }
+        let (px, cy) = (self.w - NEW_TAB_W * 0.5 - 2.0, ty + th * 0.5);
+        if self.hover == Some(Hover::NewTab) {
+            ui::fill_rrect(pm, px - 13.0, cy - 12.0, 26.0, 24.0, 7.0, hover_fill);
+        }
+        ui::line(pm, px - 5.5, cy, px + 5.5, cy, 1.5, sub);
+        ui::line(pm, px, cy - 5.5, px, cy + 5.5, 1.5, sub);
     }
 
     /// On the Подложка there is no title strip at all: the terminal is the whole window
@@ -926,13 +993,13 @@ impl App {
             }
             return None;
         }
-        if self.tabs.len() > 1 && y < self.title_h() + TAB_H {
-            if x >= self.w - 40.0 {
+        if self.tab_h() > 0.0 && y < self.title_h() + TAB_H {
+            if x >= self.w - NEW_TAB_W {
                 return Some(Hover::NewTab);
             }
-            let tw = (self.w - 40.0) / self.tabs.len() as f32;
-            let i = ((x / tw) as usize).min(self.tabs.len() - 1);
-            let close = (x - (i as f32 * tw + 18.0)).abs() <= 8.0;
+            let ((tx, ty, _, th), tw) = self.tab_geometry();
+            let i = (((x - tx - 2.0).max(0.0) / tw) as usize).min(self.tabs.len() - 1);
+            let close = (x - (tx + 2.0 + i as f32 * tw + TAB_CLOSE_DX)).abs() <= 8.0 && (y - (ty + th * 0.5)).abs() <= 8.0;
             return Some(if close { Hover::TabClose(i) } else { Hover::Tab(i) });
         }
         None
@@ -1147,13 +1214,14 @@ impl App {
     fn new_tab(&mut self) {
         let cwd = self.tabs.get(self.active).and_then(|t| t.term.cwd.clone().map(PathBuf::from).or_else(|| t.pty.cwd()));
         let (_, cols, rows) = self.layout();
-        // The strip appears with the second tab, so the grid gets shorter
+        // On the Подложка the strip appears with the second tab, so the grid gets shorter
         self.open_tab(cwd, None, (cols, rows));
     }
 
     fn switch_tab(&mut self, i: usize) {
         if i < self.tabs.len() && i != self.active {
             self.active = i;
+            self.tabs[i].activity = false;
             self.selection = None;
             self.full_redraw = true;
             self.needs_draw = true;

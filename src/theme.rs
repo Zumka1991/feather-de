@@ -777,18 +777,17 @@ pub fn draw_search_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, r: f32, color:
     );
 }
 
-/// A cup: an empty outline, or full and steaming while it keeps the computer awake. `k` scales
-/// the menu bar's size.
+/// A coffee cup on its saucer: a rounded bowl with a looped handle, so it never reads as the
+/// battery beside it. Off it is an outline; on it is full and three wisps of steam rise from
+/// it. `k` scales the menu bar's size.
 pub fn draw_caffeine_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, k: f32, color: Color, on: bool) {
-    let cy = cy - k;
-    let (left, right, top, bottom) = (cx - 6.5 * k, cx + 3.0 * k, cy - 1.5 * k, cy + 5.5 * k);
+    let (mid, cy) = (cx - 1.0 * k, cy - 0.6 * k);
+    let (half, top, bottom) = (4.6 * k, cy - 2.4 * k, cy + 3.6 * k);
     let mut body = PathBuilder::new();
-    body.move_to(left, top);
-    body.line_to(right, top);
-    body.line_to(right, bottom - 3.0 * k);
-    body.quad_to(right, bottom, right - 3.0 * k, bottom);
-    body.line_to(left + 3.0 * k, bottom);
-    body.quad_to(left, bottom, left, bottom - 3.0 * k);
+    body.move_to(mid - half, top);
+    body.line_to(mid + half, top);
+    body.cubic_to(mid + half, top + 4.2 * k, mid + 2.6 * k, bottom, mid, bottom);
+    body.cubic_to(mid - 2.6 * k, bottom, mid - half, top + 4.2 * k, mid - half, top);
     body.close();
     let Some(body) = body.finish() else { return };
     if on {
@@ -797,22 +796,30 @@ pub fn draw_caffeine_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, k: f32, colo
     let mut paint = Paint::default();
     paint.set_color(color);
     paint.anti_alias = true;
-    let stroke = Stroke { width: 1.25 * k, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
+    let line = |width: f32| Stroke { width: width * k, line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round, ..Default::default() };
     let transform = scale_transform();
-    pixmap.stroke_path(&body, &paint, &stroke, transform, None);
+    pixmap.stroke_path(&body, &paint, &line(1.3), transform, None);
+    // The handle loops out from under the rim and back into the bowl
     let mut handle = PathBuilder::new();
-    handle.move_to(right, top + 1.2 * k);
-    handle.cubic_to(right + 4.2 * k, top + 0.6 * k, right + 4.2 * k, top + 4.8 * k, right, top + 4.4 * k);
+    handle.move_to(mid + half - 0.2 * k, top + 0.9 * k);
+    handle.cubic_to(mid + half + 3.3 * k, top + 0.2 * k, mid + half + 3.1 * k, top + 4.6 * k, mid + half - 1.3 * k, top + 4.4 * k);
     if let Some(handle) = handle.finish() {
-        pixmap.stroke_path(&handle, &paint, &stroke, transform, None);
+        pixmap.stroke_path(&handle, &paint, &line(1.3), transform, None);
+    }
+    // A saucer, a shallow arc wider than the cup
+    let mut saucer = PathBuilder::new();
+    saucer.move_to(mid - 6.6 * k, bottom + 1.9 * k);
+    saucer.quad_to(mid, bottom + 3.3 * k, mid + 6.6 * k, bottom + 1.9 * k);
+    if let Some(saucer) = saucer.finish() {
+        pixmap.stroke_path(&saucer, &paint, &line(1.4), transform, None);
     }
     if on {
-        for x in [cx - 3.9 * k, cx - 0.5 * k] {
+        for (x, rise) in [(mid - 2.5 * k, 3.6 * k), (mid, 4.4 * k), (mid + 2.5 * k, 3.6 * k)] {
             let mut steam = PathBuilder::new();
-            steam.move_to(x, cy - 3.2 * k);
-            steam.cubic_to(x - 1.3 * k, cy - 4.4 * k, x + 1.3 * k, cy - 5.4 * k, x, cy - 6.8 * k);
+            steam.move_to(x, top - 1.0 * k);
+            steam.cubic_to(x - 1.2 * k, top - 1.0 * k - rise * 0.3, x + 1.2 * k, top - 1.0 * k - rise * 0.6, x, top - 1.0 * k - rise);
             if let Some(steam) = steam.finish() {
-                pixmap.stroke_path(&steam, &paint, &Stroke { width: 1.1 * k, line_cap: tiny_skia::LineCap::Round, ..Default::default() }, transform, None);
+                pixmap.stroke_path(&steam, &paint, &line(1.1), transform, None);
             }
         }
     }
