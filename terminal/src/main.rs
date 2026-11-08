@@ -83,6 +83,8 @@ const TAB_H: f32 = 34.0;
 const TAB_INSET: f32 = 8.0;
 const NEW_TAB_W: f32 = 40.0;
 const TAB_CLOSE_DX: f32 = 13.0;
+/// The lone tab's "+" in the title bar, from the right edge
+const TITLE_PLUS_DX: f32 = 22.0;
 const SEARCH_H: f32 = 34.0;
 const PAD_X: f32 = 8.0;
 const PAD_TOP: f32 = 4.0;
@@ -378,7 +380,7 @@ impl App {
         let mode=std::env::var("FEATHER_TERMINAL_DEBUG").unwrap_or_default();
         let steps:Vec<(u64,u8)>=match mode.as_str(){
             "search"=>vec![(1200,0),(1800,1),(2300,2),(2800,3),(3400,4),(4000,5)],
-            "copy"=>vec![(3000,6)],"tabs"=>vec![(800,7),(1600,8)],_=>return,
+            "copy"=>vec![(3000,6)],"tabs"=>vec![(800,7),(1600,8)],"plus"=>vec![(800,9)],_=>return,
         };
         for (delay,step) in steps {
             let _=self.handle.insert_source(Timer::from_duration(Duration::from_millis(delay)),move|_,_,app|{
@@ -420,6 +422,13 @@ impl App {
                         assert_eq!(app.chrome_hit(app.w-NEW_TAB_W*0.5,y),Some(Hover::NewTab));
                         eprintln!("[feather-terminal-check] tabs: strip, hover, close and new-tab targets passed");
                     }
+                    9=>{
+                        assert_eq!((app.tabs.len(),app.tab_h()),(1,0.0));
+                        app.motion(app.w-TITLE_PLUS_DX,15.0);
+                        assert_eq!(app.hover,Some(Hover::NewTab));
+                        assert_eq!(app.chrome_hit(app.w*0.5,15.0),None);
+                        eprintln!("[feather-terminal-check] lone tab: no strip, title-bar plus passed");
+                    }
                     _=>{
                         let (origin,_,_)=app.layout();let (cw,ch)=app.grid.cell_px();let s=app.scale_f();
                         let x=(origin.0+cw/2) as f32/s;let y=(origin.1+ch/2) as f32/s;
@@ -442,8 +451,8 @@ impl App {
     }
 
     fn tab_h(&self) -> f32 {
-        // Always shown, so "+" is there to click; on the Подложка a lone tab keeps the window bare
-        if self.no_buttons && self.tabs.len() <= 1 { 0.0 } else { TAB_H }
+        // A lone tab has no strip: its "+" sits in the title bar instead
+        if self.tabs.len() > 1 { TAB_H } else { 0.0 }
     }
 
     /// Physical origin of the cell grid and the grid size that fits the window
@@ -786,6 +795,17 @@ impl App {
             }
             if self.tab_h() > 0.0 {
                 self.paint_tabs(pm, text, sub);
+            } else if show {
+                // Like Safari's toolbar: a quiet "+" at the right of the title bar, a rounded
+                // button under the pointer
+                let (px, py) = (self.w - TITLE_PLUS_DX, 15.0);
+                let hovered = self.hover == Some(Hover::NewTab);
+                if hovered {
+                    ui::fill_rrect(pm, px - 13.0, py - 11.0, 26.0, 22.0, 6.0, if dark { ui::rgba(255, 255, 255, 22) } else { ui::rgba(0, 0, 0, 16) });
+                }
+                let ink = if hovered { text } else { sub };
+                ui::line(pm, px - 5.5, py, px + 5.5, py, 1.5, ink);
+                ui::line(pm, px, py - 5.5, px, py + 5.5, 1.5, ink);
             }
         });
         if self.search.open { self.paint_search(pm,s); }
@@ -990,6 +1010,9 @@ impl App {
                 if (x - cx).abs() <= 8.0 && (y - 15.0).abs() <= 8.0 {
                     return Some(Hover::Traffic(i as u8));
                 }
+            }
+            if self.tab_h() == 0.0 && !self.no_buttons && (x - (self.w - TITLE_PLUS_DX)).abs() <= 13.0 && (y - 15.0).abs() <= 11.0 {
+                return Some(Hover::NewTab);
             }
             return None;
         }
@@ -1214,7 +1237,7 @@ impl App {
     fn new_tab(&mut self) {
         let cwd = self.tabs.get(self.active).and_then(|t| t.term.cwd.clone().map(PathBuf::from).or_else(|| t.pty.cwd()));
         let (_, cols, rows) = self.layout();
-        // On the Подложка the strip appears with the second tab, so the grid gets shorter
+        // The strip appears with the second tab, so the grid gets shorter
         self.open_tab(cwd, None, (cols, rows));
     }
 
