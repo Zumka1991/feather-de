@@ -308,6 +308,23 @@ impl FeatherCompositor {
     pub fn start_xwayland(&mut self, update_activation_env: bool) {
         let socket = self.wayland_socket_name.clone();
         self.xwayland = Xwayland::new(&self.loop_handle, &socket, update_activation_env);
+        // A build from source without xwayland-satellite: Steam and Wine only say «Unable to
+        // open a connection to X». Explained once after login (see maybe_launch_autostart).
+        self.xwayland_missing = find_satellite().is_none();
+        if self.xwayland_missing {
+            tracing::warn!("XWayland: xwayland-satellite не найден, X11-программы недоступны");
+        }
+    }
+
+    /// Once per session, after the login items: why X11 programs do not start
+    pub fn warn_xwayland_missing(&mut self) {
+        if std::mem::take(&mut self.xwayland_missing) {
+            self.shell.notify(
+                "X11-программы недоступны",
+                "Для Steam и Wine установите пакет xwayland-satellite и войдите заново.",
+            );
+            self.needs_redraw = true;
+        }
     }
 
     fn xwayland_wanted(&mut self) {

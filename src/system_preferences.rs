@@ -192,12 +192,9 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn scan_apps() -> Vec<DesktopApp> {
-    let mut dirs = vec![data_home()];
-    dirs.extend(
-        std::env::var_os("XDG_DATA_DIRS")
-            .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-            .unwrap_or_else(|| vec!["/usr/local/share".into(), "/usr/share".into()]),
-    );
+    // The same folders as Launchpad: Flatpak/Snap exports even when XDG_DATA_DIRS lacks them,
+    // otherwise a Flatpak browser starts from Launchpad but cannot be made the default one
+    let dirs = crate::apps::application_dirs();
     let mut seen = std::collections::HashSet::new();
     let mut apps = vec![
         DesktopApp {
@@ -231,7 +228,7 @@ fn scan_apps() -> Vec<DesktopApp> {
         seen.insert("feather-notes.desktop".to_string());
     }
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir.join("applications")) else {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for file in entries.flatten() {
@@ -271,7 +268,8 @@ fn scan_apps() -> Vec<DesktopApp> {
                             exec = Some(
                                 value
                                     .split_whitespace()
-                                    .filter(|p| !p.starts_with('%'))
+                                    // %u field codes; @@u … @@ are Flatpak's file-forwarding marks
+                                    .filter(|p| !p.starts_with('%') && !matches!(*p, "@@" | "@@u"))
                                     .collect::<Vec<_>>()
                                     .join(" "),
                             )

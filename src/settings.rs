@@ -180,6 +180,8 @@ pub struct Keyboard {
     pub layouts: Vec<String>,
     pub shortcut: Shortcut,
     pub caps: Caps,
+    /// Ilya Birman's typographic characters on the right Alt (`misc:typo`), like macOS Option
+    pub typography: bool,
     /// Milliseconds before a held key repeats
     pub repeat_delay: u32,
     /// Repeats per second
@@ -191,6 +193,7 @@ impl Default for Keyboard {
             layouts: vec!["us".into(), "ru".into()],
             shortcut: Shortcut::default(),
             caps: Caps::default(),
+            typography: false,
             repeat_delay: 250,
             repeat_rate: 35,
         }
@@ -210,9 +213,10 @@ impl Keyboard {
         self.layouts = layouts;
         self
     }
-    /// XKB options: the layout shortcut and the Caps Lock behaviour
+    /// XKB options: the layout shortcut, the Caps Lock behaviour and the typographic layer
     pub fn options(&self) -> String {
-        std::iter::once(self.shortcut.option()).chain(self.caps.option()).collect::<Vec<_>>().join(",")
+        let typo = self.typography.then_some(["misc:typo", "lv3:ralt_switch"]).into_iter().flatten();
+        std::iter::once(self.shortcut.option()).chain(self.caps.option()).chain(typo).collect::<Vec<_>>().join(",")
     }
     pub fn sources(&self) -> Vec<InputSource> {
         self.layouts.iter().filter_map(|s| source(s)).collect()
@@ -668,6 +672,7 @@ impl Settings {
                         s.keyboard.caps = v;
                     }
                 }
+                "keyboard_typography" => s.keyboard.typography = v == "true",
                 "keyboard_repeat_delay" => {
                     if let Some(v) = v.parse().ok().filter(|v| REPEAT_DELAYS.contains(v)) {
                         s.keyboard.repeat_delay = v;
@@ -740,7 +745,7 @@ impl Settings {
             self.dock_zoom,self.dock.as_ref().map(|d|format!("dock={}\n",d.join(","))).unwrap_or_default(),self.animations,self.keyboard.layouts.join(","),self.keyboard.shortcut.option(),
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
         text.push_str(&format!("idle_lock_minutes={}\nidle_blank_minutes={}\nidle_suspend_minutes={}\n",self.power.lock,self.power.blank,self.power.suspend));
-        text.push_str(&format!("keyboard_caps={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\n", self.keyboard.caps.id(), self.keyboard.repeat_delay, self.keyboard.repeat_rate));
+        text.push_str(&format!("keyboard_caps={}\nkeyboard_typography={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\n", self.keyboard.caps.id(), self.keyboard.typography, self.keyboard.repeat_delay, self.keyboard.repeat_rate));
         for line in self.keybindings.lines() { text.push_str(&line); }
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("restore_session={}\n", self.restore_session));
@@ -988,7 +993,14 @@ mod tests {
             let mut k = Keyboard::default();
             k.caps = caps;
             assert!(k.compile().is_ok(), "{caps:?} compiles");
+            k.typography = true;
+            assert!(k.compile().is_ok(), "{caps:?} with typography compiles");
         }
+        s.keyboard.typography = true;
+        let back = Settings::parse(&s.text());
+        assert_eq!(back.keyboard, s.keyboard);
+        assert_eq!(back.keyboard.options(), "grp:alt_shift_toggle,caps:escape,misc:typo,lv3:ralt_switch");
+        s.keyboard.typography = false;
         let bad = Settings::parse("keyboard_repeat_delay=3\nkeyboard_repeat_rate=9999\nkeyboard_caps=boom");
         assert_eq!((bad.keyboard.repeat_delay, bad.keyboard.repeat_rate, bad.keyboard.caps), (250, 35, Caps::Normal));
         assert_eq!(Caps::Off.next(), Caps::Normal);

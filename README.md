@@ -463,6 +463,9 @@ make build
 Потребуются заголовки и библиотеки графического стека, libinput, libudev,
 libxkbcommon, libseat, Wayland и `pkg-config`, а также fontconfig и шрифты во время
 запуска. Используйте Rust toolchain, совместимый с зависимостями из Cargo.lock.
+Для X11-программ (Steam, Wine, старые приложения) нужен `xwayland-satellite` и `xwayland`
+(`sudo apt install xwayland-satellite xwayland`; если пакета нет, его собирает
+`packaging/install-ubuntu.sh`). Без него Пёрышко после входа покажет уведомление.
 
 ```bash
 # Установка уже собранных файлов в систему:

@@ -128,6 +128,24 @@ impl AppEntry {
 /// Folders with .desktop files, most important first: the user's, then $XDG_DATA_DIRS. Snap and
 /// Flatpak export folders are added even when the session's environment lacks them (a greeter
 /// that starts us without /etc/profile.d), otherwise their apps would be missing from Launchpad.
+/// $XDG_DATA_DIRS for launched programs, with the Flatpak and Snap exports that a greeter
+/// without /etc/profile.d leaves out: xdg-open and GIO look up the default browser there, so a
+/// Flatpak browser chosen in Settings would otherwise not open links.
+pub fn session_data_dirs() -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let current = std::env::var("XDG_DATA_DIRS").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    with_export_dirs(&current, &home)
+}
+fn with_export_dirs(current: &str, home: &std::path::Path) -> String {
+    let mut dirs: Vec<String> = current.split(':').filter(|d| !d.is_empty()).map(str::to_string).collect();
+    let exports = [home.join(".local/share/flatpak/exports/share"), PathBuf::from("/var/lib/flatpak/exports/share"), PathBuf::from("/var/lib/snapd/desktop")];
+    for d in exports.iter().filter_map(|d| d.to_str()) {
+        if !dirs.iter().any(|x| x.trim_end_matches('/') == d) {
+            dirs.push(d.to_string());
+        }
+    }
+    dirs.join(":")
+}
 pub fn application_dirs() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let mut data = vec![std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"))];
@@ -708,6 +726,7 @@ pub fn spawn_wayland_app(cmd_line: &str, wayland_socket: &str) -> Option<i32> {
         .env("PATH", enriched_path)
         .env("WAYLAND_DISPLAY", wayland_socket)
         .env("XDG_SESSION_TYPE", "wayland")
+        .env("XDG_DATA_DIRS", session_data_dirs())
         .env("XDG_CURRENT_DESKTOP", "FeatherDE")
         .env("LANGUAGE", feather_ui::scale::lang().id())
         .env("LC_TIME", region_locale)
@@ -1455,6 +1474,15 @@ mod desktop_scan_tests {
         assert_eq!(registry.app_for_app_id("telegram-desktop"), Some(1));
     }
 
+    #[test]
+    fn launched_programs_see_flatpak_exports_once() {
+        let home = std::path::Path::new("/home/u");
+        assert_eq!(
+            with_export_dirs("/usr/share:/var/lib/flatpak/exports/share/", home),
+            "/usr/share:/var/lib/flatpak/exports/share/:/home/u/.local/share/flatpak/exports/share:/var/lib/snapd/desktop"
+        );
+        assert_eq!(with_export_dirs(&with_export_dirs("/usr/share", home), home), with_export_dirs("/usr/share", home));
+    }
     #[test]
     fn snap_and_flatpak_folders_are_scanned() {
         let dirs = application_dirs();

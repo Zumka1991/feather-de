@@ -191,6 +191,8 @@ pub struct FeatherCompositor {
     pub sounds: Option<crate::sounds::Sounds>,
     pub sound_preferences: crate::sounds::Preferences,
     pub xwayland: Option<crate::xwayland::Xwayland>,
+    /// xwayland-satellite was not found; the login notification is still due
+    pub xwayland_missing: bool,
     pub hot_corners: crate::hot_corners::HotCorners,
     pub spaces: crate::spaces::Spaces,
     pub mission: Option<crate::mission::Mission>,
@@ -440,6 +442,7 @@ impl FeatherCompositor {
                 started.push(item.exec.clone());
             }
             self.reopen_previous_session(&started);
+            self.warn_xwayland_missing();
         }
     }
 
@@ -2270,6 +2273,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         sounds: None,
         sound_preferences: saved.sounds,
         xwayland: None,
+        xwayland_missing: false,
         hot_corners: crate::hot_corners::HotCorners::new(saved.hot_corners),
         spaces: Default::default(),
         mission: None,
@@ -2752,6 +2756,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("settings-network") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Network)),
         Ok("settings-bluetooth") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth)),
         Ok("settings-defaults") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults)),
+        Ok("settings-keyboard") => {
+            state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Keyboard));
+            state.system_settings.scroll = 420.0;
+        }
+        Ok("settings-browser-picker") => {
+            state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults));
+            state.apply_system_setting(crate::system_settings::Action::AppPicker(crate::system_preferences::DefaultKind::Browser));
+        }
         Ok("settings-privacy") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Privacy)),
         Ok("settings-accessibility") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Accessibility)),
         Ok("settings-language") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Language)),
