@@ -35,6 +35,7 @@ pub enum Job {
         logical: (i32, i32),
         theme: WallpaperTheme,
         image: Option<crate::wallpaper::ImageSource>,
+        fit: crate::wallpaper::Fit,
     },
     Frosted(BackgroundKey),
     Icon(IconKey),
@@ -52,6 +53,7 @@ pub enum Asset {
         size: (i32, i32),
         image: Option<crate::wallpaper::ImageSource>,
         glass: tiny_skia::Pixmap,
+        preview: crate::wallpaper::Preview,
     },
     WallpaperError(String),
     Frosted(BackgroundKey, MemoryRenderBuffer),
@@ -127,6 +129,8 @@ impl RasterSender {
                     if wallpaper_ready {
                         state.shell.upload_wallpaper(state.backend.renderer());
                         state.save_settings();
+                        // The settings card shows the new picture and its facts
+                        state.mark_settings_dirty();
                     }
                 }
                 if settings_frame {
@@ -210,6 +214,7 @@ impl RasterSender {
                                 logical: (w, h),
                                 theme,
                                 image,
+                                fit,
                             } => {
                                 let (pw, ph) = if image.is_some() {
                                     crate::wallpaper::image_size(
@@ -219,16 +224,18 @@ impl RasterSender {
                                 } else {
                                     crate::shell::wallpaper_buffer_size(*w, *h)
                                 };
-                                let data = if let Some(source) = image {
-                                    match crate::wallpaper::decode(source, pw, ph) {
-                                        Ok(pixels) => pixels,
+                                let (data, info) = if let Some(source) = image {
+                                    match crate::wallpaper::decode(source, pw, ph, *fit) {
+                                        Ok((pixels, info)) => (pixels, Some(info)),
                                         Err(e) => return Asset::WallpaperError(e),
                                     }
                                 } else {
                                     let mut pixels = vec![0; pw as usize * ph as usize * 4];
                                     crate::theme::render_wallpaper(&mut pixels, pw, ph, *theme);
-                                    pixels
+                                    (pixels, None)
                                 };
+                                // What the settings show: a small copy of the final frame
+                                let preview = crate::wallpaper::preview(&data, (pw, ph), info);
                                 let (gw, gh) = (
                                     (crate::theme::to_phys(*w) / 8).max(8),
                                     (crate::theme::to_phys(*h) / 8).max(8),
@@ -271,6 +278,7 @@ impl RasterSender {
                                     size: (pw, ph),
                                     image: image.clone(),
                                     glass,
+                                    preview,
                                 }
                             }
                             Job::CcBackdrop { screen } => {

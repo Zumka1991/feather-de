@@ -358,7 +358,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
     if std::env::var_os("FEATHER_DEBUG_SYSTEM_SOUNDS_RESTORE").is_some() {
         if state.backend.is_drm() || !state.debug_input_only {return Err("sounds restore requires isolated windowed input".into());}
         at(state,1200,|s| {
-            assert_eq!(s.sound_preferences,crate::sounds::Preferences {alerts:true,tone:crate::sounds::Tone::Glass,volume:75,interface:true,volume_feedback:true});
+            assert_eq!(s.sound_preferences,crate::sounds::Preferences {alerts:true,tone:crate::sounds::Tone::Glass,volume:75,interface:true,volume_feedback:true,auto_headphones:true});
             s.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Sound));
             eprintln!("[feather-system-sounds-check] restored: ok");
         })?;

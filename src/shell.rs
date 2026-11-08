@@ -830,6 +830,10 @@ pub struct MacShell {
     pub theme: WallpaperTheme,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
     pub applied_wallpaper_image: Option<crate::wallpaper::ImageSource>,
+    /// Layout and automatic change of the wallpaper
+    pub wallpaper_prefs: crate::wallpaper::Prefs,
+    /// Small copy of the applied wallpaper and facts about it, for the settings
+    pub wallpaper_preview: crate::wallpaper::Preview,
     pub wallpaper_texture: Option<smithay::backend::renderer::element::texture::TextureBuffer<smithay::backend::renderer::gles::GlesTexture>>,
     pub wallpaper_texture_size:(i32,i32),
     wallpaper_pending: Option<(Vec<u8>,(i32,i32))>,
@@ -986,7 +990,7 @@ impl MacShell {
             screen_w: w,
             screen_h: h,
             theme: WallpaperTheme::for_appearance(appearance()),
-            wallpaper_image:None,applied_wallpaper_image:None,wallpaper_texture:None,wallpaper_texture_size:(1,1),wallpaper_pending:None,
+            wallpaper_image:None,applied_wallpaper_image:None,wallpaper_prefs:Default::default(),wallpaper_preview:Default::default(),wallpaper_texture:None,wallpaper_texture_size:(1,1),wallpaper_pending:None,
             wallpaper_dirty: true,
             cc_backdrop: None,
             cc_backdrop_requested: false,
@@ -1907,9 +1911,11 @@ impl MacShell {
                 self.overlay_dirty = true;
             }
             crate::raster::Asset::WallpaperError(_)=>return false,
-            crate::raster::Asset::Wallpaper { pixels,size,image, glass } => {
+            crate::raster::Asset::Wallpaper { pixels,size,image, glass, mut preview } => {
                 let (w, h) = (glass.width(), glass.height());
                 let dark = bar_luma(&glass, self.screen_h) < 0.5;
+                preview.bar_dark = dark;
+                self.wallpaper_preview = preview;
                 if self.bar_on_dark != Some(dark) {
                     self.bar_on_dark = Some(dark);
                     self.topbar_dirty = true;
@@ -2935,7 +2941,7 @@ impl MacShell {
             return;
         }
         if self.raster.as_ref().is_some_and(|worker| worker.submit(crate::raster::Job::Wallpaper {
-            logical: (self.screen_w, self.screen_h), theme: self.theme,image:self.wallpaper_image.clone(),
+            logical: (self.screen_w, self.screen_h), theme: self.theme,image:self.wallpaper_image.clone(),fit:self.wallpaper_prefs.fit,
         })) { self.wallpaper_dirty = false; }
     }
 
@@ -4459,7 +4465,7 @@ mod appmenu_tests {
                     let mut shell = MacShell::new(lw, lh);
                     shell.toasts.clear();
                     let glass = crate::wallpaper::glass(wall, (pw, ph), ((pw / 8).max(8), (ph / 8).max(8)), if look == Appearance::Dark { 0.8 } else { 1.0 });
-                    shell.install_asset(crate::raster::Asset::Wallpaper { pixels: Vec::new(), size: (pw, ph), image: None, glass });
+                    shell.install_asset(crate::raster::Asset::Wallpaper { pixels: Vec::new(), size: (pw, ph), image: None, glass, preview: Default::default() });
                     shell.set_tray_items(items.clone());
                     let mut frame = |shell: &mut MacShell, fonts: &mut FontSystem, top: i32| {
                         shell.topbar_dirty = true;

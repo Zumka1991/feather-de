@@ -919,6 +919,8 @@ mod tests {
             direct: false,
             wallpaper: crate::theme::WallpaperTheme::TahoeDay,
             wallpaper_image: None,
+            wallpaper_prefs: Default::default(),
+            wallpaper_preview: Default::default(),
             dnd: false,
             dnd_schedule: None,
             notify_sounds: true,

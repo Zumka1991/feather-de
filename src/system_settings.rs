@@ -144,6 +144,7 @@ pub enum Action {
     PreviewAlert,
     InterfaceSounds,
     VolumeFeedback,
+    AutoHeadphones,
     Audio(crate::controls::Control),
     Network(crate::controls::Control),
     Bluetooth(crate::controls::Control),
@@ -179,8 +180,12 @@ pub enum Action {
     GtkTheme,
     DockEdge(crate::theme::DockEdge),
     DockAutohide,
-    Wallpaper,
+    WallpaperTheme(WallpaperTheme),
     WallpaperImage(Option<crate::wallpaper::ImageSource>),
+    WallpaperFit(crate::wallpaper::Fit),
+    WallpaperCycle(crate::wallpaper::Cycle),
+    WallpaperShuffle,
+    NextWallpaper,
     ChooseWallpaper,
     ScreenshotFormat(crate::screenshot::Format),
     ChooseScreenshotDir,
@@ -314,6 +319,8 @@ pub struct Context<'a> {
     pub direct: bool,
     pub wallpaper: WallpaperTheme,
     pub wallpaper_image: Option<&'a crate::wallpaper::ImageSource>,
+    pub wallpaper_prefs: crate::wallpaper::Prefs,
+    pub wallpaper_preview: crate::wallpaper::Preview,
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
@@ -338,6 +345,8 @@ pub struct FrameJob {
     pub power_ready: bool,
     pub pointer_managed: bool,
     pub wallpaper_image: Option<crate::wallpaper::ImageSource>,
+    wallpaper_prefs: crate::wallpaper::Prefs,
+    wallpaper_preview: crate::wallpaper::Preview,
     pub shadow: bool,
     pub ticket: std::sync::Weak<()>,
     pub panel: Panel,
@@ -390,6 +399,8 @@ impl FrameJob {
             power: c.power,power_ready:c.power_ready,
             pointer_managed: c.pointer_managed,
             wallpaper_image: c.wallpaper_image.cloned(),
+            wallpaper_prefs: c.wallpaper_prefs,
+            wallpaper_preview: c.wallpaper_preview.clone(),
             shadow: win.settings_needs_shadow(),
             ticket,
             panel: panel.clone(),
@@ -452,6 +463,8 @@ impl FrameJob {
             direct: self.direct,
             wallpaper: self.wallpaper,
             wallpaper_image: self.wallpaper_image.as_ref(),
+            wallpaper_prefs: self.wallpaper_prefs,
+            wallpaper_preview: self.wallpaper_preview.clone(),
             dnd: self.dnd,
             dnd_schedule: self.dnd_schedule,
             notify_sounds: self.notify_sounds,
@@ -514,7 +527,9 @@ enum Style {
     Preview(bool, bool),
     ColorSwatch { color: Option<crate::theme::AccentColor>, selected: bool },
     Wallpaper(usize, bool),
-    Gradient(bool),
+    Gradient(WallpaperTheme, bool),
+    /// The applied wallpaper on a small monitor, with facts about it
+    WallpaperCard,
     TextField(bool),
     /// Click-away layer of a sheet (dimmed) or of a popup menu (invisible).
     Scrim(bool),
@@ -645,6 +660,42 @@ impl Layout {
         c
     }
 }
+/// Where the parts of the wallpaper card go: the monitor on the left, facts on the right.
+struct WallpaperCardGeometry {
+    height: f32,
+    screen: R,
+    info: R,
+}
+fn wallpaper_card(card: R, preview: &crate::wallpaper::Preview) -> WallpaperCardGeometry {
+    let aspect = preview
+        .thumb
+        .as_ref()
+        .map_or(9.0 / 16.0, |t| t.height() as f32 / t.width().max(1) as f32)
+        .clamp(0.42, 0.8);
+    let mw = (card.w * 0.44).min(260.0).floor();
+    let mh = (mw * aspect).round();
+    let height = (18.0 + mh + 20.0 + 16.0).max(176.0);
+    let screen = R::new(card.x + 22.0, card.y + 20.0, mw - 8.0, mh);
+    let ix = card.x + 18.0 + mw + 22.0;
+    WallpaperCardGeometry { height, screen, info: R::new(ix, card.y + 18.0, card.x + card.w - 18.0 - ix, height - 36.0) }
+}
+/// «3 ч 05 мин», «25 мин», «меньше минуты»
+fn duration_label(secs: u64) -> String {
+    let minutes = secs.div_ceil(60);
+    match minutes {
+        0 | 1 if secs < 60 => "меньше минуты".into(),
+        m if m < 60 => format!("{m} мин"),
+        m => format!("{} ч {:02} мин", m / 60, m % 60),
+    }
+}
+fn human_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} МБ", bytes as f64 / (1024.0 * 1024.0)).replace('.', ",")
+    } else {
+        format!("{} КБ", bytes.div_ceil(1024))
+    }
+}
+
 /// "breeze_cursors" → "Breeze", "Breeze_Light" → "Breeze Light".
 fn theme_label(dir: &str) -> String {
     let name = dir.trim_end_matches("_cursors").trim_end_matches("-cursors").replace(['_', '-'], " ");
@@ -1497,6 +1548,9 @@ impl Panel {
                         } else { l.footer("Устройство по умолчанию недоступно. Выберите устройство из списка."); }
                     }
                 }
+                l.begin();
+                l.row(52.0, "Переключаться на наушники", "Bluetooth и гарнитуры сразу после подключения".into(), Style::Toggle(c.sounds.auto_headphones), Some(Action::AutoHeadphones));
+                l.end();
                 l.footer("Уровень записи задаёт усиление микрофона. Изменение уровня сохраняет баланс каналов.");
                 l.begin();
                 l.row(48.0, "Обновить устройства", String::new(), Style::Row, Some(Action::Audio(Audio::RefreshAudio)));
@@ -2441,31 +2495,91 @@ impl Panel {
             Page::Desktop => {
                 l.hero(Page::Desktop);
                 l.header("Обои");
-                l.begin();
-                let r = l.row(
-                    52.0,
-                    "Текущие обои",
-                    c.wallpaper_image
-                        .map_or_else(|| c.wallpaper.name().to_string(), |s| s.name()),
-                    Style::Row,
+                let prefs = c.wallpaper_prefs;
+                let picture = c.wallpaper_image.is_some();
+                let card = R::new(x, l.y, cw, 0.0);
+                let geo = wallpaper_card(card, &c.wallpaper_preview);
+                let card = R::new(x, l.y, cw, geo.height);
+                l.push(
+                    card,
+                    &c.wallpaper_image.map_or_else(|| c.wallpaper.name().to_string(), |s| s.name()),
+                    Style::WallpaperCard,
                     None,
                 );
+                l.y += geo.height + 8.0;
+                let (bw1, bw2) = (((geo.info.w - 8.0) * 0.54).min(128.0), ((geo.info.w - 8.0) * 0.46).min(108.0));
+                let by = card.y + card.h - 18.0 - 28.0;
                 l.push(
-                    right(r, 150.0, 26.0),
-                    if self.wallpaper_busy {
-                        "Выбор…"
-                    } else {
-                        "Выбрать файл…"
-                    },
+                    R::new(geo.info.x, by, bw1, 28.0),
+                    if self.wallpaper_busy { "Выбор…" } else { "Выбрать файл…" },
                     Style::Push(false),
                     (!self.wallpaper_busy).then_some(Action::ChooseWallpaper),
                 );
-                let tw = (cw - 28.0 - 3.0 * 12.0) / 4.0;
-                let th = (tw * 0.6).round() + 22.0;
-                let r = l.row(th + 28.0, "", String::new(), Style::Row, None);
-                for i in 0..3 {
+                l.push(R::new(geo.info.x + bw1 + 8.0, by, bw2, 28.0), "Следующие", Style::Push(false), Some(Action::NextWallpaper));
+                l.begin();
+                let r = l.row(
+                    48.0,
+                    "Масштаб",
+                    if picture { String::new() } else { "Только для изображений".into() },
+                    Style::Row,
+                    None,
+                );
+                let sw = ((cw - 190.0) / 3.0).clamp(64.0, 96.0);
+                let track = right(r, 3.0 * sw, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, fit) in crate::wallpaper::Fit::ALL.into_iter().enumerate() {
                     l.push(
-                        R::new(r.x + 14.0 + i as f32 * (tw + 12.0), r.y + 14.0, tw, th),
+                        R::new(track.x + i as f32 * sw, track.y, sw, track.h),
+                        fit.label(),
+                        Style::Segment(prefs.fit == fit),
+                        picture.then_some(Action::WallpaperFit(fit)),
+                    );
+                }
+                let r = l.row(48.0, "Менять обои", String::new(), Style::Row, None);
+                let sw = ((cw - 150.0) / 5.0).clamp(54.0, 76.0);
+                let track = right(r, 5.0 * sw, 28.0);
+                l.push(track, "", Style::Track, None);
+                for (i, cycle) in crate::wallpaper::Cycle::ALL.into_iter().enumerate() {
+                    l.push(
+                        R::new(track.x + i as f32 * sw, track.y, sw, track.h),
+                        cycle.label(),
+                        Style::Segment(prefs.cycle == cycle),
+                        Some(Action::WallpaperCycle(cycle)),
+                    );
+                }
+                if prefs.cycle != crate::wallpaper::Cycle::Off {
+                    l.row(
+                        52.0,
+                        "В случайном порядке",
+                        "Иначе по порядку коллекции".into(),
+                        Style::Toggle(prefs.shuffle),
+                        Some(Action::WallpaperShuffle),
+                    );
+                }
+                l.end();
+                l.footer(&match prefs.cycle.period() {
+                    Some(period) => {
+                        let elapsed = crate::wallpaper::unix_now().saturating_sub(prefs.changed);
+                        format!(
+                            "Следующая смена через {}. Отсчёт сохраняется между перезапусками; в ожидании ничего не работает.",
+                            duration_label(period.as_secs().saturating_sub(elapsed))
+                        )
+                    }
+                    None if prefs.cycle == crate::wallpaper::Cycle::Login => {
+                        "Новая картинка из коллекции при каждом входе в систему.".to_string()
+                    }
+                    None => "Автосмена перебирает коллекцию Пёрышка по таймеру или при входе.".to_string(),
+                });
+                l.header("Коллекция Пёрышка");
+                l.begin();
+                let tw = ((cw - 28.0 - 3.0 * 12.0) / 4.0).floor();
+                let th = (tw * 0.5625).round() + 22.0;
+                let rows = crate::wallpaper::COUNT.div_ceil(4);
+                let r = l.row(rows as f32 * (th + 10.0) + 18.0, "", String::new(), Style::Row, None);
+                for i in 0..crate::wallpaper::COUNT {
+                    let (col, row) = ((i % 4) as f32, (i / 4) as f32);
+                    l.push(
+                        R::new(r.x + 14.0 + col * (tw + 12.0), r.y + 14.0 + row * (th + 10.0), tw, th),
                         crate::wallpaper::NAMES[i],
                         Style::Wallpaper(
                             i,
@@ -2474,14 +2588,20 @@ impl Panel {
                         Some(Action::WallpaperImage(Some(crate::wallpaper::ImageSource::Bundled(i)))),
                     );
                 }
-                l.push(
-                    R::new(r.x + 14.0 + 3.0 * (tw + 12.0), r.y + 14.0, tw, th),
-                    c.wallpaper.name(),
-                    Style::Gradient(c.wallpaper_image.is_none()),
-                    Some(Action::Wallpaper),
-                );
                 l.end();
-                l.footer("Свои изображения PNG, JPEG и WebP заполняют экран без искажения. Повторный выбор градиента переключает его вариант.");
+                l.header("Градиенты");
+                l.begin();
+                let r = l.row(th + 28.0, "", String::new(), Style::Row, None);
+                for (i, theme) in WallpaperTheme::ALL.into_iter().enumerate() {
+                    l.push(
+                        R::new(r.x + 14.0 + i as f32 * (tw + 12.0), r.y + 14.0, tw, th),
+                        theme.name(),
+                        Style::Gradient(theme, !picture && c.wallpaper == theme),
+                        Some(Action::WallpaperTheme(theme)),
+                    );
+                }
+                l.end();
+                l.footer("Свои изображения PNG, JPEG и WebP до 32 МБ. Градиенты рисуются на лету под разрешение экрана и не занимают места на диске.");
                 l.header("Dock");
                 l.begin();
                 l.row(
@@ -2817,6 +2937,118 @@ impl Panel {
             self.paint_control(pm, fonts, control, (ox, oy), c, hovered == Some(i));
         }
     }
+    /// The applied wallpaper on a small monitor (menu bar and Dock marks over the real
+    /// picture) and what is known about it: size, format, weight, average colour.
+    fn paint_wallpaper_card(&self, pm: &mut PixmapMut, fonts: &mut FontSystem, control: &Control, r: R, c: &Context<'_>) {
+        let p = palette();
+        let dark = appearance() == Appearance::Dark;
+        let hc = crate::theme::high_contrast();
+        fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 12.0, if dark { rgba(255, 255, 255, if hc { 24 } else { 13 }) } else { rgba(0, 0, 0, if hc { 18 } else { 10 }) });
+        let preview = &c.wallpaper_preview;
+        let geo = wallpaper_card(r, preview);
+        let s = geo.screen;
+        // Monitor: bezel, picture, stand
+        fill_rounded_rect(pm, s.x - 5.0, s.y - 5.0, s.w + 10.0, s.h + 10.0, 9.0, if dark { rgba(12, 12, 14, 255) } else { rgba(34, 34, 38, 255) });
+        match &preview.thumb {
+            Some(thumb) => crate::wallpaper::paint_pixmap_rounded(pm, thumb, s, 4.5),
+            None => {
+                fill_rounded_rect(pm, s.x, s.y, s.w, s.h, 4.5, rgba(40, 40, 46, 255));
+                fonts.draw_text_clipped_centered(pm, "Подготовка…", s.x + s.w / 2.0, s.y + s.h / 2.0 - 7.0, s.w - 16.0, 11.0, rgba(255, 255, 255, 150), false);
+            }
+        }
+        let ink = if preview.bar_dark { rgba(255, 255, 255, 210) } else { rgba(0, 0, 0, 170) };
+        // Menu bar marks: logo, menus, clock
+        fill_circle(pm, s.x + 8.0, s.y + 5.5, 2.0, ink);
+        for (i, w) in [14.0, 10.0, 12.0].into_iter().enumerate() {
+            fill_rounded_rect(pm, s.x + 14.0 + i as f32 * 17.0, s.y + 4.5, w, 2.0, 1.0, with_alpha(ink, 0.8));
+        }
+        fill_rounded_rect(pm, s.x + s.w - 26.0, s.y + 4.5, 20.0, 2.0, 1.0, with_alpha(ink, 0.8));
+        // Dock on its real edge
+        let glass = if preview.bar_dark { rgba(255, 255, 255, 60) } else { rgba(255, 255, 255, 120) };
+        let tiles = [rgba(70, 160, 255, 255), rgba(255, 170, 60, 255), rgba(90, 210, 120, 255), rgba(255, 95, 110, 255), rgba(170, 120, 255, 255), rgba(230, 230, 235, 255)];
+        let (t, gap) = (5.0, 3.0);
+        let len = tiles.len() as f32 * (t + gap) + gap;
+        match crate::theme::dock_edge() {
+            crate::theme::DockEdge::Bottom => {
+                let (dx, dy) = (s.x + (s.w - len) / 2.0, s.y + s.h - t - 2.0 * gap - 3.0);
+                fill_rounded_rect(pm, dx, dy, len, t + 2.0 * gap, 3.5, glass);
+                for (i, col) in tiles.iter().enumerate() {
+                    fill_rounded_rect(pm, dx + gap + i as f32 * (t + gap), dy + gap, t, t, 1.5, *col);
+                }
+            }
+            edge => {
+                let dx = if edge == crate::theme::DockEdge::Left { s.x + 3.0 } else { s.x + s.w - t - 2.0 * gap - 3.0 };
+                let dy = s.y + (s.h - len) / 2.0 + 4.0;
+                fill_rounded_rect(pm, dx, dy, t + 2.0 * gap, len, 3.5, glass);
+                for (i, col) in tiles.iter().enumerate() {
+                    fill_rounded_rect(pm, dx + gap, dy + gap + i as f32 * (t + gap), t, t, 1.5, *col);
+                }
+            }
+        }
+        let cx = s.x + s.w / 2.0;
+        fill_rounded_rect(pm, cx - 9.0, s.y + s.h + 5.0, 18.0, 9.0, 0.0, p.text_tertiary);
+        fill_rounded_rect(pm, cx - 30.0, s.y + s.h + 13.0, 60.0, 4.0, 2.0, p.text_tertiary);
+        // Facts
+        let info = geo.info;
+        fonts.draw_text_clipped(pm, &control.label, info.x, info.y + 2.0, info.w, 15.0, p.text, true);
+        let kind = match c.wallpaper_image {
+            Some(crate::wallpaper::ImageSource::Bundled(_)) => "Коллекция Пёрышка".to_string(),
+            Some(crate::wallpaper::ImageSource::File(path)) => {
+                let dir = path.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                let home = std::env::var("HOME").unwrap_or_default();
+                match dir.strip_prefix(&home) {
+                    Some(rest) if !home.is_empty() => format!("~{rest}"),
+                    _ => dir,
+                }
+            }
+            None => "Градиент, рисуется под экран".to_string(),
+        };
+        let kind = fonts.ellipsize(&kind, info.w, 12.0, false);
+        fonts.draw_text(pm, &kind, info.x, info.y + 24.0, 12.0, p.text_secondary, false);
+        let mut chips: Vec<String> = Vec::new();
+        match (&preview.info, c.wallpaper_image) {
+            (Some(i), Some(_)) => {
+                chips.push(format!("{} × {}", i.size.0, i.size.1));
+                chips.push(i.format.to_string());
+                if let Some(bytes) = i.bytes {
+                    chips.push(human_bytes(bytes));
+                }
+            }
+            _ => {
+                chips.push(format!("{} × {}", c.current.width, c.current.height));
+                chips.push("Процедурный".into());
+                chips.push("Без файла".into());
+            }
+        }
+        let (mut chip_x, chip_y) = (info.x, info.y + 48.0);
+        let chip_fill = if dark { rgba(255, 255, 255, 20) } else { rgba(0, 0, 0, 12) };
+        for chip in &chips {
+            let w = fonts.measure_text(chip, 11.0, true) + 16.0;
+            if chip_x + w > info.x + info.w {
+                break;
+            }
+            fill_rounded_rect(pm, chip_x, chip_y, w, 20.0, 10.0, chip_fill);
+            fonts.draw_text(pm, chip, chip_x + 8.0, chip_y + 3.5, 11.0, p.text_secondary, true);
+            chip_x += w + 6.0;
+        }
+        if preview.thumb.is_some() {
+            let [ar, ag, ab] = preview.average;
+            let y = info.y + 80.0;
+            fill_circle(pm, info.x + 7.0, y + 7.0, 6.5, rgba(ar, ag, ab, 255));
+            stroke_circle(pm, info.x + 7.0, y + 7.0, 6.5, 1.0, if dark { rgba(255, 255, 255, 60) } else { rgba(0, 0, 0, 40) });
+            fonts.draw_text_clipped(pm, &format!("Основной цвет #{ar:02X}{ag:02X}{ab:02X}"), info.x + 20.0, y, info.w - 20.0, 12.0, p.text_secondary, false);
+            let bar = if preview.bar_dark { "Меню: светлый текст" } else { "Меню: тёмный текст" };
+            fonts.draw_text_clipped(pm, bar, info.x + 20.0, y + 20.0, info.w - 20.0, 12.0, p.text_secondary, false);
+            // Tiny menu-bar glyph: a strip with text marks in the chosen ink
+            let (gx, gy) = (info.x, y + 21.5);
+            let back = if preview.bar_dark { rgba(30, 30, 36, 255) } else { rgba(240, 240, 244, 255) };
+            fill_rounded_rect(pm, gx, gy, 14.0, 11.0, 3.0, back);
+            stroke_rounded_rect(pm, gx, gy, 14.0, 11.0, 3.0, 1.0, if dark { rgba(255, 255, 255, 60) } else { rgba(0, 0, 0, 40) });
+            let ink = if preview.bar_dark { rgba(255, 255, 255, 235) } else { rgba(0, 0, 0, 210) };
+            fill_rounded_rect(pm, gx + 3.0, gy + 3.0, 8.0, 1.6, 0.8, ink);
+            fill_rounded_rect(pm, gx + 3.0, gy + 6.4, 5.0, 1.6, 0.8, ink);
+        }
+    }
     fn paint_control(
         &self,
         pm: &mut PixmapMut,
@@ -2844,7 +3076,7 @@ impl Panel {
         let r = R::new(r.x + ox, r.y + oy, r.w, r.h);
         let interactive = !matches!(
             control.style,
-            Style::Row | Style::Group | Style::Header | Style::Footer | Style::Hero(_) | Style::Display | Style::Sheet | Style::Menu | Style::Banner(_) | Style::Track | Style::Scrim(_)
+            Style::Row | Style::Group | Style::Header | Style::Footer | Style::Hero(_) | Style::Display | Style::WallpaperCard | Style::Sheet | Style::Menu | Style::Banner(_) | Style::Track | Style::Scrim(_)
         );
         let disabled = interactive && control.action.is_none();
         let fg = if disabled { p.text_tertiary } else { p.text };
@@ -2909,7 +3141,9 @@ impl Panel {
                     WallpaperTheme::TahoeNight | WallpaperTheme::SequoiaMidnight => (rgba(48, 57, 96, 255), rgba(78, 51, 88, 255)),
                     _ => (rgba(150, 205, 245, 255), rgba(240, 195, 185, 255)),
                 };
-                if let Some(path) = rounded_rect_path(mx + 4.0, my + 4.0, mw - 8.0, mh - 8.0, 4.0) {
+                if let Some(thumb) = &c.wallpaper_preview.thumb {
+                    crate::wallpaper::paint_pixmap_rounded(pm, thumb, R::new(mx + 4.0, my + 4.0, mw - 8.0, mh - 8.0), 4.0);
+                } else if let Some(path) = rounded_rect_path(mx + 4.0, my + 4.0, mw - 8.0, mh - 8.0, 4.0) {
                     fill_path_gradient(pm, &path, my, my + mh, top, bottom);
                 }
                 fill_rounded_rect(pm, mx + mw / 2.0 - 4.0, my + mh, 8.0, 10.0, 0.0, p.text_tertiary);
@@ -3152,7 +3386,7 @@ impl Panel {
                 crate::wallpaper::paint_thumb_rounded(pm, index, t, 7.0);
                 fonts.draw_text_clipped_centered(pm, &control.label, r.x + r.w / 2.0, r.y + r.h - 16.0, r.w, 11.0, if selected { p.text } else { p.text_secondary }, selected);
             }
-            Style::Gradient(selected) => {
+            Style::Gradient(theme, selected) => {
                 let t = R::new(r.x, r.y, r.w, r.h - 22.0);
                 if hover && !selected {
                     stroke_rounded_rect(pm, t.x - 3.0, t.y - 3.0, t.w + 6.0, t.h + 6.0, 10.0, 2.5, if dark { rgba(255, 255, 255, 70) } else { rgba(0, 0, 0, 45) });
@@ -3160,17 +3394,10 @@ impl Panel {
                 if selected {
                     stroke_rounded_rect(pm, t.x - 3.0, t.y - 3.0, t.w + 6.0, t.h + 6.0, 10.0, 2.5, p.accent);
                 }
-                let (top, bottom) = match c.wallpaper {
-                    WallpaperTheme::TahoeDay => (rgba(185, 225, 249, 255), rgba(246, 207, 191, 255)),
-                    WallpaperTheme::TahoeNight => (rgba(48, 57, 96, 255), rgba(78, 51, 88, 255)),
-                    WallpaperTheme::SequoiaMidnight => (rgba(22, 32, 72, 255), rgba(70, 40, 92, 255)),
-                    WallpaperTheme::FeatherCyan => (rgba(0, 196, 220, 255), rgba(32, 62, 140, 255)),
-                };
-                if let Some(path) = rounded_rect_path(t.x, t.y, t.w, t.h, 7.0) {
-                    fill_path_gradient(pm, &path, t.y, t.y + t.h, top, bottom);
-                }
+                crate::wallpaper::paint_gradient_rounded(pm, theme, t, 7.0);
                 fonts.draw_text_clipped_centered(pm, &control.label, r.x + r.w / 2.0, r.y + r.h - 16.0, r.w, 11.0, if selected { p.text } else { p.text_secondary }, selected);
             }
+            Style::WallpaperCard => self.paint_wallpaper_card(pm, fonts, control, r, c),
             Style::TextField(active) => {
                 if active {
                     stroke_rounded_rect(pm, r.x - 1.5, r.y - 1.5, r.w + 3.0, r.h + 3.0, 8.5, 3.0, with_alpha(p.accent, 0.45));
@@ -3371,6 +3598,8 @@ impl crate::FeatherCompositor {
             direct: self.backend.is_drm(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.as_ref(),
+            wallpaper_prefs: self.shell.wallpaper_prefs,
+            wallpaper_preview: self.shell.wallpaper_preview.clone(),
             dnd: self.shell.dnd_active(),
             dnd_schedule: self.shell.dnd_schedule,
             notify_sounds: self.shell.notify_sounds,
@@ -3668,6 +3897,13 @@ impl crate::FeatherCompositor {
                     Action::AlertSounds=>self.sound_preferences.alerts=!self.sound_preferences.alerts,
                     Action::InterfaceSounds=>self.sound_preferences.interface=!self.sound_preferences.interface,
                     _=>self.sound_preferences.volume_feedback=!self.sound_preferences.volume_feedback,
+                }
+                self.save_settings();
+            }
+            Action::AutoHeadphones => {
+                self.sound_preferences.auto_headphones = !self.sound_preferences.auto_headphones;
+                if let Some(controls) = &self.controls {
+                    let _ = controls.send(crate::controls::Control::AutoHeadphones(self.sound_preferences.auto_headphones));
                 }
                 self.save_settings();
             }
@@ -4067,10 +4303,43 @@ impl crate::FeatherCompositor {
             Action::DockZoom => {
                 self.execute_shell_action(crate::shell::ShellClickAction::ToggleDockZoom)
             }
-            Action::Wallpaper => {
-                self.execute_shell_action(crate::shell::ShellClickAction::CycleTheme)
+            Action::WallpaperTheme(theme) => {
+                if self.shell.theme != theme || self.shell.wallpaper_image.is_some() {
+                    self.shell.theme = theme;
+                    self.set_wallpaper_image(None);
+                }
             }
-            Action::WallpaperImage(image) => self.set_wallpaper_image(image),
+            Action::WallpaperImage(image) => {
+                if self.shell.wallpaper_image != image {
+                    self.set_wallpaper_image(image);
+                }
+            }
+            Action::WallpaperFit(fit) => {
+                if self.shell.wallpaper_prefs.fit != fit {
+                    self.shell.wallpaper_prefs.fit = fit;
+                    if self.shell.wallpaper_image.is_some() {
+                        self.shell.invalidate_wallpaper();
+                        self.needs_redraw = true;
+                    }
+                    self.mark_settings_dirty();
+                    self.save_settings();
+                }
+            }
+            Action::WallpaperCycle(cycle) => {
+                if self.shell.wallpaper_prefs.cycle != cycle {
+                    self.shell.wallpaper_prefs.cycle = cycle;
+                    self.shell.wallpaper_prefs.changed = crate::wallpaper::unix_now();
+                    self.schedule_wallpaper_cycle();
+                    self.mark_settings_dirty();
+                    self.save_settings();
+                }
+            }
+            Action::WallpaperShuffle => {
+                self.shell.wallpaper_prefs.shuffle = !self.shell.wallpaper_prefs.shuffle;
+                self.mark_settings_dirty();
+                self.save_settings();
+            }
+            Action::NextWallpaper => self.next_wallpaper(),
             Action::ChooseWallpaper => {
                 if !self.system_settings.wallpaper_busy
                     && !self.system_settings.screenshot_dir_busy
@@ -4295,6 +4564,9 @@ impl crate::FeatherCompositor {
     }
     pub fn set_wallpaper_image(&mut self, image: Option<crate::wallpaper::ImageSource>) {
         self.shell.wallpaper_image = image;
+        // A manual choice restarts the countdown of the automatic change
+        self.shell.wallpaper_prefs.changed = crate::wallpaper::unix_now();
+        self.schedule_wallpaper_cycle();
         self.shell.invalidate_wallpaper();
         self.mark_builtin_windows_dirty();
         self.needs_redraw = true;
@@ -4518,6 +4790,10 @@ mod tests {
             height: 2160,
             refresh: 59940,
         };
+        let bundled = crate::wallpaper::ImageSource::Bundled(5);
+        let pixels = crate::wallpaper::prepare_pixels(bundled.clone(), 1280, 720, Default::default()).unwrap();
+        let mut wallpaper_preview = crate::wallpaper::preview(&pixels, (1280, 720), Some(crate::wallpaper::Info { size: (2560, 1440), format: "JPEG", bytes: Some(199_923) }));
+        wallpaper_preview.bar_dark = true;
         let context = Context {
             system: Default::default(),
             pointer: Default::default(),
@@ -4538,7 +4814,9 @@ mod tests {
             current: mode,
             direct: false,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
-            wallpaper_image: None,
+            wallpaper_image: Some(&bundled),
+            wallpaper_prefs: Default::default(),
+            wallpaper_preview,
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
@@ -4914,6 +5192,8 @@ mod tests {
                             Panel { page: Page::DateTime, zone_picker: true, ..Default::default() },
                             // Hover: sidebar «Дисплеи» and, below, nothing else lit
                             Panel { page: Page::Desktop, pointer: Some((100.0, 100.0)), ..Default::default() },
+                            // Wallpaper gallery and gradients under the card
+                            Panel { page: Page::Desktop, scroll: 380.0, ..Default::default() },
                             Panel { page: Page::Sound, scroll: 440.0, ..Default::default() },
                             Panel { page: Page::Power, choice_menu: Some(Choice::Idle(1)), ..Default::default() },
                             Panel { page: Page::Language, choice_menu: Some(Choice::Region), ..Default::default() },
@@ -4931,7 +5211,7 @@ mod tests {
                             .enumerate()
                         {
                             let page = panel.page;
-                            let page = if n >= Page::ALL.len() { format!("{page:?}-overlay") } else { format!("{page:?}") };
+                            let page = if n >= Page::ALL.len() { format!("{page:?}-overlay{}", n - Page::ALL.len()) } else { format!("{page:?}") };
                             let mut pixels = tiny_skia::Pixmap::new(
                                 (800.0 * scale) as u32,
                                 (568.0 * scale) as u32,
@@ -5013,6 +5293,8 @@ mod tests {
             direct: false,
             wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
             wallpaper_image: None,
+            wallpaper_prefs: Default::default(),
+            wallpaper_preview: Default::default(),
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,

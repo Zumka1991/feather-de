@@ -56,6 +56,8 @@ pub struct Preferences {
     pub volume: u8,
     pub interface: bool,
     pub volume_feedback: bool,
+    /// Switch the output to headphones (Bluetooth, USB or headset) as soon as they connect
+    pub auto_headphones: bool,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -65,6 +67,7 @@ impl Default for Preferences {
             volume: 50,
             interface: true,
             volume_feedback: false,
+            auto_headphones: true,
         }
     }
 }

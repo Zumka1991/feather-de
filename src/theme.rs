@@ -240,6 +240,13 @@ pub enum WallpaperTheme {
 }
 
 impl WallpaperTheme {
+    pub const ALL: [Self; 4] = [
+        WallpaperTheme::TahoeDay,
+        WallpaperTheme::TahoeNight,
+        WallpaperTheme::SequoiaMidnight,
+        WallpaperTheme::FeatherCyan,
+    ];
+
     pub fn name(&self) -> &'static str {
         match self {
             WallpaperTheme::TahoeDay => "Tahoe День",
@@ -268,14 +275,7 @@ impl WallpaperTheme {
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
-        [
-            WallpaperTheme::TahoeDay,
-            WallpaperTheme::TahoeNight,
-            WallpaperTheme::SequoiaMidnight,
-            WallpaperTheme::FeatherCyan,
-        ]
-        .into_iter()
-        .find(|t| t.id() == id)
+        Self::ALL.into_iter().find(|t| t.id() == id)
     }
 
     /// Default wallpaper matching an appearance (like macOS dynamic wallpapers)

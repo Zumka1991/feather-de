@@ -1583,6 +1583,8 @@ mod settings_tests {
                 direct: false,
                 wallpaper: crate::theme::WallpaperTheme::for_appearance(Appearance::Light),
                 wallpaper_image: None,
+                wallpaper_prefs: Default::default(),
+                wallpaper_preview: Default::default(),
                 dnd: false,
                 dnd_schedule: None,
                 notify_sounds: true,
@@ -1693,6 +1695,8 @@ mod settings_tests {
                                 Appearance::Light
                             }),
                             wallpaper_image: None,
+                            wallpaper_prefs: Default::default(),
+                            wallpaper_preview: Default::default(),
                             dnd: false,
                             dnd_schedule: None,
                             notify_sounds: true,

@@ -359,6 +359,8 @@ pub struct FeatherCompositor {
     pub activation_deferred: bool,
     pub preferences: Option<crate::settings::Worker>,
     pub wallpaper_picker: Option<crate::wallpaper::Picker>,
+    /// Next automatic wallpaper change, when one is set up
+    pub wallpaper_cycle_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     pub system_settings: crate::system_settings::Panel,
     pub first_run: crate::first_run::Wizard,
     pub first_run_completed: bool,
@@ -856,6 +858,7 @@ impl FeatherCompositor {
             screen_capture_apps: self.screen_capture_apps.clone(),
             wallpaper: self.shell.theme,
             wallpaper_image: self.shell.wallpaper_image.clone(),
+            wallpaper_prefs: self.shell.wallpaper_prefs,
             default_browser: self.system_preferences.browser.clone(),
             default_terminal: Some(self.system_preferences.terminal.clone()),
             default_file_manager: Some(self.system_preferences.file_manager.clone()),
@@ -1436,6 +1439,7 @@ impl FeatherCompositor {
                 self.select_input_source((self.active_layout_index+1)%self.keyboard_config.layouts.len());
             }
             ShellClickAction::CycleTheme => {
+                self.shell.wallpaper_prefs.changed=crate::wallpaper::unix_now();
                 self.shell.wallpaper_image=None;
                 self.shell.theme = self.shell.theme.next();
                 self.shell.invalidate_wallpaper();
@@ -2395,6 +2399,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         activation_deferred: false,
         preferences: None,
         wallpaper_picker: None,
+        wallpaper_cycle_timer: None,
         system_settings: crate::system_settings::Panel {keybindings:saved.keybindings.clone(),..Default::default()},
         first_run: Default::default(),
         first_run_completed: saved.first_run_completed,
@@ -2411,6 +2416,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.preferences=Some(crate::settings::Worker::new(&state.loop_handle)?);
     state.wallpaper_picker=Some(crate::wallpaper::Picker::new(&state.loop_handle,state.wayland_socket_name.clone())?);
     state.shell.wallpaper_image=saved.wallpaper_image.clone();
+    state.shell.wallpaper_prefs=saved.wallpaper_prefs;
+    state.start_wallpaper_cycle();
     state.system_worker=Some(crate::system_preferences::Worker::new(&state.loop_handle,saved.default_browser.clone(),saved.default_terminal.clone(),saved.default_file_manager.clone())?);
     state.refresh_input_source(0);
     state.animations.set_enabled(saved.animations,&state.windows,&state.shell);
@@ -2439,6 +2446,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         crate::labwc::apply(state.pointer_config.clone(), state.scale_factor);
     }
     state.controls=Some(crate::controls::Controls::new(&state.loop_handle)?);
+    if !state.sound_preferences.auto_headphones { if let Some(c)=&state.controls { let _=c.send(crate::controls::Control::AutoHeadphones(false)); } }
     state.mpris=crate::mpris::Mpris::new(&state.loop_handle).map_err(|e| tracing::warn!("MPRIS: {e}")).ok();
     state.sounds=Some(crate::sounds::Sounds::new(&state.loop_handle)?);
     if is_standalone || use_drm || std::env::var_os("FEATHER_DEBUG_TRAY").is_some() {

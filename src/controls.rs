@@ -28,6 +28,8 @@ pub struct Sink {
     pub muted: bool,
     /// The active port (or every known port) reports "not available".
     pub unplugged: bool,
+    /// Worn audio: Bluetooth output or a headphone/headset form factor (USB headsets too)
+    pub headphones: bool,
 }
 impl Sink {
     pub fn volume(&self) -> f32 {
@@ -89,6 +91,8 @@ impl AudioKey {
 #[derive(Clone)]
 pub enum Control {
     Refresh,
+    /// Switch to headphones as they connect (from the Sound settings)
+    AutoHeadphones(bool),
     RefreshAudio,
     RefreshNetwork,
     RefreshBluetooth,
@@ -141,6 +145,7 @@ impl std::fmt::Debug for Control {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Refresh => "Refresh",
+            Self::AutoHeadphones(_) => "AutoHeadphones",
             Self::RefreshAudio => "RefreshAudio",
             Self::RefreshNetwork => "RefreshNetwork",
             Self::RefreshBluetooth => "RefreshBluetooth",
@@ -499,7 +504,11 @@ fn parse_devices(json: &str, skip_monitors: bool) -> Result<Vec<Sink>, String> {
         } else {
             Vec::new()
         };
+        let props = &s["properties"];
+        let headphones = props["device.bus"].as_str() == Some("bluetooth")
+            || matches!(props["device.form_factor"].as_str(), Some("headphone" | "headset" | "hands-free" | "handset"));
         result.push(Sink {
+            headphones,
             label: s["description"]
                 .as_str()
                 .unwrap_or(&name)
@@ -824,6 +833,30 @@ fn subscribe(
         .map_err(|_| "Не удалось читать события звука")?;
     Ok(guard)
 }
+/// Headphones that have just appeared in the output list (not at the first listing, and not
+/// a sink that vanished moments ago: a Bluetooth profile change recreates the same sink)
+fn arrived_headphones(
+    before: &Audio,
+    after: &Audio,
+    vanished: &mut std::collections::HashMap<String, Instant>,
+    now: Instant,
+) -> Option<String> {
+    for sink in &before.sinks {
+        if !after.sinks.iter().any(|s| s.name == sink.name) {
+            vanished.insert(sink.name.clone(), now);
+        }
+    }
+    vanished.retain(|_, at| now.duration_since(*at) < Duration::from_secs(10));
+    if before.sinks.is_empty() || before.error.is_some() || after.error.is_some() {
+        return None;
+    }
+    after
+        .sinks
+        .iter()
+        .filter(|s| s.headphones && !s.unplugged && s.name != after.default)
+        .find(|s| !before.sinks.iter().any(|b| b.name == s.name) && !vanished.contains_key(&s.name))
+        .map(|s| s.name.clone())
+}
 fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncSender<Update>) {
     use std::sync::atomic::{AtomicBool, Ordering};
     let (wake, changes) = async_channel::bounded(1);
@@ -831,6 +864,8 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
     let mut watcher = subscribe(wake.clone(), sources_dirty.clone()).ok();
     let mut state = Audio::default();
     let mut command = Some(Control::Refresh);
+    let mut auto_headphones = true;
+    let mut vanished = std::collections::HashMap::new();
     loop {
         let mut feedback = false;
         let mut queued = None;
@@ -853,7 +888,10 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
             {
                 watcher = subscribe(wake.clone(), sources_dirty.clone()).ok();
             }
-            let result = if let Control::AudioKey(first) = c {
+            let result = if let Control::AutoHeadphones(on) = c {
+                auto_headphones = on;
+                Ok(())
+            } else if let Control::AudioKey(first) = c {
                 feedback = true;
                 let mut keys = vec![first];
                 // Collapse a burst without crossing a slider/output command or reordering mute.
@@ -877,6 +915,15 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
         refresh_inputs |= sources_dirty.swap(false, Ordering::AcqRel);
         let mut next = audio_snapshot(if refresh_inputs { None } else { Some(&state) });
         next.retain_zero_balances(&state);
+        let arrived = arrived_headphones(&state, &next, &mut vanished, Instant::now());
+        if let Some(target) = arrived.filter(|_| auto_headphones) {
+            // Like macOS: freshly connected headphones take over, playing streams follow
+            if audio_action(Control::Output(target), &next).is_ok() {
+                let switched = audio_snapshot(Some(&next));
+                next = switched;
+                next.retain_zero_balances(&state);
+            }
+        }
         if feedback || next != state {
             state = next;
             let update = if feedback { Update::AudioFeedback(state.clone()) } else { Update::Audio(state.clone()) };
@@ -1214,5 +1261,36 @@ mod tests {
                 state.available, state.enabled, state.hardware
             );
         });
+    }
+    #[test]
+    fn freshly_connected_headphones_take_over_once() {
+        let sink = |name: &str, headphones: bool| Sink { name: name.into(), label: name.into(), channels: vec![30000], headphones, ..Default::default() };
+        let wired = Audio { sinks: vec![sink("speakers", false), sink("hdmi", false)], default: "speakers".into(), ..Default::default() };
+        let mut with_buds = wired.clone();
+        with_buds.sinks.push(sink("bluez_output.AA", true));
+        let mut vanished = std::collections::HashMap::new();
+        let t = Instant::now();
+        // Startup listing: nothing «arrived»
+        assert_eq!(arrived_headphones(&Audio::default(), &with_buds, &mut vanished, t), None);
+        // Connected later: switch to them
+        assert_eq!(arrived_headphones(&wired, &with_buds, &mut vanished, t), Some("bluez_output.AA".into()));
+        // Already the default, or a plain new speaker: nothing to do
+        let mut chosen = with_buds.clone();
+        chosen.default = "bluez_output.AA".into();
+        assert_eq!(arrived_headphones(&wired, &chosen, &mut vanished, t), None);
+        let mut usb = wired.clone();
+        usb.sinks.push(sink("usb-speaker", false));
+        assert_eq!(arrived_headphones(&wired, &usb, &mut vanished, t), None);
+        // A profile change drops and recreates the sink within seconds: the user's pick stays
+        assert_eq!(arrived_headphones(&with_buds, &wired, &mut vanished, t), None);
+        assert_eq!(arrived_headphones(&wired, &with_buds, &mut vanished, t + Duration::from_secs(2)), None);
+        // A real reconnect later switches again
+        assert_eq!(arrived_headphones(&wired, &with_buds, &mut vanished, t + Duration::from_secs(30)), Some("bluez_output.AA".into()));
+        // pactl JSON: Bluetooth bus or headset form factor mark headphones
+        let json = r#"[{"name":"bluez_output.X","index":1,"volume":{"front-left":{"value":30000}},"properties":{"device.bus":"bluetooth","device.form_factor":"speaker"}},
+            {"name":"usb","index":2,"volume":{"mono":{"value":30000}},"properties":{"device.bus":"usb","device.form_factor":"headset"}},
+            {"name":"pci","index":3,"volume":{"mono":{"value":30000}},"properties":{"device.bus":"pci","device.form_factor":"internal"}}]"#;
+        let sinks = parse_sinks(json).unwrap();
+        assert_eq!(sinks.iter().map(|s| s.headphones).collect::<Vec<_>>(), [true, true, false]);
     }
 }

@@ -1,0 +1,16 @@
+[package]
+name = "feather-wallpaper-gen"
+version = "0.1.0"
+edition = "2021"
+description = "Процедурный генератор встроенных обоев Пёрышка (assets/wallpapers)"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Отдельно от рабочего пространства: инструмент запускается вручную, в сборку DE не входит
+[workspace]
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+
+[profile.release]
+opt-level = 3

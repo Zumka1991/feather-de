@@ -44,7 +44,15 @@ pub struct Panel {
     pending_volume: Option<(String, f32, u8)>,
     /// Last volume sent while dragging (sent again only after a 2 % change)
     sent_volume: Option<f32>,
+    /// Output rows that fit the Sound page as last painted: the full Control Center and the
+    /// speaker's own panel have different heights
+    sound_fit: std::cell::Cell<usize>,
 }
+
+/// Row pitch of the output list on the Sound page
+const OUTPUT_ROW: f32 = 34.0;
+/// Most outputs the speaker's own panel grows to before it scrolls
+const SPEAKER_ROWS: usize = 6;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Slider {
@@ -61,10 +69,21 @@ impl Panel {
         self.error = None;
         self.sound_only = false;
     }
-    /// Height of the speaker's panel: the slider, up to three outputs and an error line
+    /// Height of the speaker's panel: the slider, up to six outputs and an error line
     pub fn sound_height(&self) -> f32 {
-        let rows = self.audio.sinks.len().clamp(1, 3) as f32;
-        151.0 + rows * 36.0 + self.bottom_gap()
+        let rows = self.audio.sinks.len().clamp(1, SPEAKER_ROWS) as f32;
+        151.0 + rows * OUTPUT_ROW + self.bottom_gap()
+    }
+    /// Output rows that fit a Sound page of this height
+    fn output_rows(&self, h: f32) -> usize {
+        (((h - self.bottom_gap() - 151.0 + 2.0) / OUTPUT_ROW).floor() as usize).max(1)
+    }
+    /// Rows visible now (before the first paint: as many as the speaker's panel shows)
+    fn visible_outputs(&self) -> usize {
+        match self.sound_fit.get() {
+            0 => SPEAKER_ROWS,
+            n => n,
+        }
     }
     /// Room under the lists: the footer button and error line, or only the error line in the
     /// speaker's panel
@@ -169,7 +188,7 @@ impl Panel {
         let max = match self.page {
             Page::Wifi => self.wifi.networks.len().saturating_sub(5),
             Page::Bluetooth => self.bluetooth.devices.len().saturating_sub(5),
-            Page::Sound => self.audio.sinks.len().saturating_sub(3),
+            Page::Sound => self.audio.sinks.len().saturating_sub(self.visible_outputs()),
             _ => 0,
         };
         self.scroll = if delta > 0.0 {
@@ -270,10 +289,11 @@ impl Panel {
                 if (50.0..85.0).contains(&y) {
                     return Some((3, row(50.0, 34.0)));
                 }
-                if (151.0..259.0).contains(&y) {
-                    let i = ((y - 151.0) / 36.0) as usize;
+                let rows = self.output_rows(p.h);
+                if (151.0..151.0 + rows as f32 * OUTPUT_ROW).contains(&y) {
+                    let i = ((y - 151.0) / OUTPUT_ROW) as usize;
                     if self.audio.sinks.len() > i + self.scroll {
-                        return Some((200 + (i + self.scroll) as u32, row(149.0 + i as f32 * 36.0, 34.0)));
+                        return Some((200 + (i + self.scroll) as u32, row(150.0 + i as f32 * OUTPUT_ROW, 32.0)));
                     }
                 }
                 None
@@ -362,8 +382,8 @@ impl Panel {
             if slider.contains(x + p.x, y + p.y) {
                 self.start_slider(slider, x + p.x);
             }
-            if (151.0..259.0).contains(&y) {
-                let i = ((y - 151.0) / 36.0) as usize + self.scroll;
+            if (151.0..151.0 + self.output_rows(p.h) as f32 * OUTPUT_ROW).contains(&y) {
+                let i = ((y - 151.0) / OUTPUT_ROW) as usize + self.scroll;
                 if let Some(sink) = self.audio.sinks.get(i) {
                     return ShellClickAction::Control(Control::Output(sink.name.clone()));
                 }
@@ -684,18 +704,19 @@ impl Panel {
                 pal.text_secondary,
                 true,
             );
-            for (row, sink) in self
-                .audio
-                .sinks
-                .iter()
-                .skip(self.scroll)
-                .take(3)
-                .enumerate()
-            {
-                let y = p.y + 151.0 + row as f32 * 36.0;
-                if y + 36.0 > p.y + p.h - self.bottom_gap() {
-                    break;
-                }
+            let rows = self.output_rows(p.h);
+            self.sound_fit.set(rows);
+            let total = self.audio.sinks.len();
+            if total > rows {
+                // More outputs than fit: a thin scroll bar says the list goes on
+                let track = rows as f32 * OUTPUT_ROW - 4.0;
+                let thumb = (track * rows as f32 / total as f32).max(16.0);
+                let at = track - thumb;
+                let ty = p.y + 152.0 + at * self.scroll.min(total - rows) as f32 / (total - rows) as f32;
+                fill_rounded_rect(pm, p.x + p.w - 7.0, ty, 3.0, thumb, 1.5, with_alpha(pal.text_secondary, 0.55));
+            }
+            for (row, sink) in self.audio.sinks.iter().skip(self.scroll).take(rows).enumerate() {
+                let y = p.y + 151.0 + row as f32 * OUTPUT_ROW;
                 let active = sink.name == self.audio.default;
                 if active {
                     fill_rounded_rect(
@@ -1136,14 +1157,19 @@ mod tests {
                 ..Default::default()
             })
             .collect();
+        // The full Control Center fits four outputs (headphones included next to three
+        // wired ones), the painted height decides how far the list scrolls
+        assert_eq!(panel.output_rows(384.0), 4);
+        panel.sound_fit.set(panel.output_rows(384.0));
         for _ in 0..8 {
             panel.scroll(1.);
         }
+        assert_eq!(panel.scroll, 4);
         assert!(
-            matches!(panel.click(R::new(0.,0.,324.,384.),30.,240.),ShellClickAction::Control(Control::Output(name)) if name=="sink-7")
+            matches!(panel.click(R::new(0.,0.,324.,384.),30.,260.),ShellClickAction::Control(Control::Output(name)) if name=="sink-7")
         );
         assert!(matches!(
-            panel.click(R::new(0., 0., 324., 384.), 30., 280.),
+            panel.click(R::new(0., 0., 324., 384.), 30., 300.),
             ShellClickAction::None
         ));
     }
@@ -1155,13 +1181,13 @@ mod tests {
         panel.sound_only = true;
         let sink = |name: &str| crate::controls::Sink { name: name.into(), label: name.into(), channels: vec![32768, 32768], ..Default::default() };
         panel.audio = Audio { sinks: vec![sink("a"), sink("b")], default: "a".into(), ..Default::default() };
-        assert_eq!(panel.sound_height(), 151.0 + 72.0 + 14.0);
+        assert_eq!(panel.sound_height(), 151.0 + 2.0 * OUTPUT_ROW + 14.0);
         let p = R::new(100.0, 40.0, 300.0, panel.sound_height());
         assert!(matches!(panel.click(p, p.x + 20.0, p.y + 20.0), ShellClickAction::None));
         assert!(panel.page == Page::Sound && panel.sound_only);
         assert!(panel.hover_target(p).is_none());
         // The second output is still in reach
-        assert!(matches!(panel.click(p, p.x + 60.0, p.y + 151.0 + 36.0 + 10.0), ShellClickAction::Control(Control::Output(ref s)) if s == "b"));
+        assert!(matches!(panel.click(p, p.x + 60.0, p.y + 151.0 + OUTPUT_ROW + 10.0), ShellClickAction::Control(Control::Output(ref s)) if s == "b"));
         panel.close();
         assert!(!panel.sound_only && panel.page == Page::Main);
     }

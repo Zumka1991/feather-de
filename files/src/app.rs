@@ -23,6 +23,9 @@ use feather_ui::fileops::Conflict;
 pub const SIDEBAR_W: f32 = 220.0;
 pub const TOOLBAR_H: f32 = 52.0;
 pub const PATHBAR_H: f32 = 28.0;
+/// The floating sidebar card starts under the title row: the window buttons live on the
+/// window itself, not on the panel (on the panel they read as part of the list)
+const SIDEBAR_TOP: f32 = TOOLBAR_H;
 const RESIZE_BAND: f32 = 5.0;
 const CELL_W: f32 = 104.0;
 const CELL_H: f32 = 104.0;
@@ -1081,7 +1084,7 @@ impl App {
     }
 
     fn place_rects(&self) -> Vec<(usize, f32)> {
-        let mut y = 56.0;
+        let mut y = SIDEBAR_TOP + 11.0;
         let mut section = "";
         let mut out = Vec::new();
         for (i, p) in self.places.iter().enumerate() {
@@ -2182,9 +2185,11 @@ impl App {
     }
 
     fn paint_sidebar(&mut self, pm: &mut PixmapMut) {
-        // Floating sidebar panel, as in Tahoe
-        theme::fill_rrect(pm, 8.0, 8.0, SIDEBAR_W - 16.0, self.h - 16.0, 14.0, colors::sidebar());
-        theme::stroke_rrect(pm, 8.5, 8.5, SIDEBAR_W - 17.0, self.h - 17.0, 13.5, 1.0, colors::sidebar_edge());
+        // Floating sidebar card under the title row, as in Tahoe; the window buttons stay
+        // on the window's own title row above it
+        let top = SIDEBAR_TOP;
+        theme::fill_rrect(pm, 8.0, top, SIDEBAR_W - 16.0, self.h - top - 8.0, 14.0, colors::sidebar());
+        theme::stroke_rrect(pm, 8.5, top + 0.5, SIDEBAR_W - 17.0, self.h - top - 9.0, 13.5, 1.0, colors::sidebar_edge());
         let hovered_traffic = matches!(self.hover, Hit::Close | Hit::Minimize | Hit::Zoom);
         for (hit, cx) in self.traffic() {
             let color = if !self.focused && !hovered_traffic {
