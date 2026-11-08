@@ -6,9 +6,11 @@
 //! and GTK apps break the same way). A handler is reset to the default by `exec`, so children
 //! start clean.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static REAPING_HELD: AtomicUsize = AtomicUsize::new(0);
+/// Set by [`reap_children`]: only then may anyone but a child's owner collect it
+static REAPER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Collects finished children, unless someone is waiting for a status right now
 fn reap_finished() {
@@ -28,6 +30,7 @@ pub fn reap_children() {
             *libc::__errno_location() = errno;
         }
     }
+    REAPER_INSTALLED.store(true, Ordering::SeqCst);
     // SAFETY: a plain sigaction with a handler that only calls async-signal-safe functions
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
@@ -40,7 +43,9 @@ pub fn reap_children() {
 
 /// While this lives, the [`reap_children`] handler leaves every child alone, so `output()` and
 /// `try_wait()` get their exit status instead of ECHILD. Children that finish meanwhile are
-/// collected when the last hold goes. Take it before the child starts.
+/// collected when the last hold goes, but only under the reaper: without it every child has an
+/// owner that waits for it, and a `waitpid(-1)` here would steal it. Take it before the child
+/// starts.
 #[must_use]
 pub struct ReapingHold(());
 
@@ -52,7 +57,9 @@ pub fn hold_reaping() -> ReapingHold {
 impl Drop for ReapingHold {
     fn drop(&mut self) {
         REAPING_HELD.fetch_sub(1, Ordering::SeqCst);
-        reap_finished();
+        if REAPER_INSTALLED.load(Ordering::SeqCst) {
+            reap_finished();
+        }
     }
 }
 
@@ -181,6 +188,22 @@ pub fn default_child_signal() {
 
 #[cfg(test)]
 mod tests {
+    /// Without the window's reaper nobody but the owner may collect a child: a hold dropped by
+    /// one thread used to waitpid(-1) another thread's finished child, whose wait then failed
+    /// with ECHILD (Files' archive tests failed now and then that way)
+    #[test]
+    fn a_dropped_hold_leaves_other_waiters_their_children() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id() as i32;
+        let start = std::time::Instant::now();
+        while !super::stat(pid).is_some_and(|s| s.zombie) {
+            assert!(start.elapsed().as_secs() < 5, "true exits");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(super::hold_reaping());
+        assert!(child.wait().expect("the child is still ours to wait for").success());
+    }
+
     #[test]
     fn programs_start_in_their_own_session_without_a_terminal() {
         let mut cmd = std::process::Command::new("cat");
