@@ -1,8 +1,8 @@
 //! Кольцо программ: короткое одиночное нажатие Cmd (Super) раскладывает открытые программы по
 //! окружности вокруг курсора. Стрелки, Tab, колесо, буква названия, наведение или «жест» мышью
-//! в сторону сектора выбирают; Enter, щелчок или второй тап Cmd переходят, Esc или щелчок мимо
-//! закрывают. Сразу выбрана предыдущая программа, поэтому «Cmd, Cmd» возвращает к ней, как
-//! быстрый Alt+Tab, а «Cmd, движение мыши, щелчок» ведёт к любой.
+//! в сторону сектора только подсвечивают; переходят щелчок по сектору или Enter. Esc, второй тап
+//! Cmd или щелчок мимо закрывают кольцо без перехода. Места программ постоянны
+//! (порядок Дока), сразу подсвечена предыдущая программа.
 //!
 //! Триггер не мешает сочетаниям: кольцо открывается на *отпускании* Super, только если между
 //! нажатием и отпусканием не было ни одной другой клавиши, кнопки мыши, прокрутки или жеста,
@@ -256,6 +256,7 @@ pub enum RingKey {
     Nav(Dir),
     Step(i32),
     Letter(char),
+    /// Enter: явное подтверждение с клавиатуры
     Commit,
     Close,
 }
@@ -556,22 +557,38 @@ pub fn icon_motion(n: usize, i: usize, open: f64, sel: f64) -> (f64, f64, f32) {
 // ───────────────────────── Композитор ─────────────────────────
 
 impl FeatherCompositor {
-    /// Программы с открытыми окнами в порядке недавнего использования (как в Alt+Tab).
-    pub fn ring_items(&self) -> Vec<RingItem> {
-        let mut items: Vec<RingItem> = self
-            .switcher_items()
+    /// Программы с открытыми окнами в порядке Дока: закреплённые — в порядке закрепления,
+    /// остальные — по первому открытому окну. У программы постоянное место: переход к ней ничего
+    /// не переставляет, новая встаёт в конец, закрытая уходит, не сдвигая остальных по кругу.
+    /// Второе значение — предыдущая программа (её выбор при открытии), как у Alt+Tab.
+    pub fn ring_items(&self) -> (Vec<RingItem>, usize) {
+        let mru = self.switcher_items();
+        let previous = mru.get(1).or(mru.first()).map(|s| s.key);
+        let mut items: Vec<RingItem> = mru
             .into_iter()
             .take(MAX_ITEMS)
             .map(|s| RingItem { key: s.key, window_id: s.window_id, label: s.label, icon: s.icon, windows: 0, hidden: true })
             .collect();
+        let mut first_window = vec![u64::MAX; items.len()];
         for w in self.windows.iter().filter(|w| w.mapped && !w.larvis) {
             let key = self.app_key(w);
-            if let Some(item) = items.iter_mut().find(|i| i.key == key) {
-                item.windows += 1;
-                item.hidden &= w.minimized;
+            if let Some(i) = items.iter().position(|i| i.key == key) {
+                items[i].windows += 1;
+                items[i].hidden &= w.minimized;
+                first_window[i] = first_window[i].min(w.id);
             }
         }
-        items
+        let pinned = self.pinned_indices();
+        let rank = |item: &RingItem, first: u64| match item.key {
+            AppKey::App(i) => pinned.iter().position(|p| *p == i).map_or((1, first), |p| (0, p as u64)),
+            AppKey::Window(_) => (1, first),
+        };
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by_key(|&i| rank(&items[i], first_window[i]));
+        let mut slots: Vec<Option<RingItem>> = items.into_iter().map(Some).collect();
+        let items: Vec<RingItem> = order.into_iter().filter_map(|i| slots[i].take()).collect();
+        let selected = items.iter().position(|i| Some(i.key) == previous).unwrap_or(0);
+        (items, selected)
     }
 
     /// Можно ли сейчас открыть кольцо: не поверх пароля, блокировки, игры с захваченным
@@ -602,17 +619,18 @@ impl FeatherCompositor {
         ((self.pointer_location.x - o.0 as f64) as f32, (self.pointer_location.y - o.1 as f64) as f32)
     }
 
-    /// Чистый тап Super: открывает кольцо, а второй тап переходит к выбранной программе.
+    /// Чистый тап Super открывает кольцо, а второй закрывает его без перехода: к программе
+    /// ведёт только щелчок.
     pub fn super_tapped(&mut self) {
         if self.shell.ring.is_some() {
-            self.ring_commit(None);
+            self.close_ring();
         } else if self.ring_allowed() {
             self.open_ring();
         }
     }
 
     pub fn open_ring(&mut self) -> bool {
-        let items = self.ring_items();
+        let (items, selected) = self.ring_items();
         if items.is_empty() {
             return false;
         }
@@ -622,7 +640,9 @@ impl FeatherCompositor {
         if !(0.0..w).contains(&pointer.0) || !(0.0..h).contains(&pointer.1) {
             pointer = (w * 0.5, h * 0.5);
         }
-        self.shell.ring = Some(Ring::new(items, pointer, (w, h)));
+        let mut ring = Ring::new(items, pointer, (w, h));
+        ring.selected = selected;
+        self.shell.ring = Some(ring);
         self.shell.ring_fading = None;
         self.shell.ring_dirty = true;
         // Клавиатура уходит от программы, пока кольцо открыто
@@ -727,7 +747,7 @@ impl FeatherCompositor {
             k::KEY_Down | k::KEY_KP_Down => RingKey::Nav(Dir::Down),
             k::KEY_Tab => RingKey::Step(if shift { -1 } else { 1 }),
             k::KEY_ISO_Left_Tab => RingKey::Step(-1),
-            k::KEY_Return | k::KEY_KP_Enter | k::KEY_space => RingKey::Commit,
+            k::KEY_Return | k::KEY_KP_Enter => RingKey::Commit,
             k::KEY_Escape => RingKey::Close,
             _ => return ch.filter(|c| c.is_alphanumeric()).map(RingKey::Letter),
         })
@@ -901,6 +921,8 @@ mod tests {
         assert_eq!(f(k::KEY_Tab, None, true), Some(RingKey::Step(-1)));
         assert_eq!(f(k::KEY_ISO_Left_Tab, None, true), Some(RingKey::Step(-1)));
         assert_eq!(f(k::KEY_Return, None, false), Some(RingKey::Commit));
+        assert_eq!(f(k::KEY_KP_Enter, None, false), Some(RingKey::Commit));
+        assert_eq!(f(k::KEY_space, Some(' '), false), None, "Space does not switch");
         assert_eq!(f(k::KEY_Escape, None, false), Some(RingKey::Close));
         assert_eq!(f(k::KEY_Up, None, false), Some(RingKey::Nav(Dir::Up)));
         assert_eq!(f(0x6c1, Some('ф'), false), Some(RingKey::Letter('ф')));

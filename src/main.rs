@@ -2776,11 +2776,15 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
                 state.open_ring();
                 TimeoutAction::Drop
             })?;
-            // Второй тап Cmd через настоящую обработку клавиш: переход проверяется по D-Bus
-            if let Some(ms) = std::env::var("FEATHER_DEBUG_RING_TAP_MS").ok().and_then(|s| s.parse().ok()) {
+            // Щелчок по выбранному сектору через настоящую обработку мыши: переход виден по D-Bus
+            if let Some(ms) = std::env::var("FEATHER_DEBUG_RING_CLICK_MS").ok().and_then(|s| s.parse().ok()) {
                 state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(ms)), |_, _, state| {
-                    state.debug_keyboard_key(125, true);
-                    state.debug_keyboard_key(125, false);
+                    if let Some((x, y)) = state.shell.ring.as_ref().map(|r| r.slot_center(r.selected)) {
+                        let o = state.primary_monitor().map_or((0, 0), |m| (m.info.rect.x, m.info.rect.y));
+                        state.debug_pointer_motion(f64::from(x) + f64::from(o.0), f64::from(y) + f64::from(o.1));
+                        state.debug_pointer_button(0x110, true);
+                        state.debug_pointer_button(0x110, false);
+                    }
                     TimeoutAction::Drop
                 })?;
             }

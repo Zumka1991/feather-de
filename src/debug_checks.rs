@@ -332,14 +332,17 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             let ids=fixture(s,&apps);
             assert_eq!(front(s),ids[2]);
             tap(s,125);assert!(open(s),"a lone short Super tap opens the ring");
-            assert_eq!(sel(s),1,"the previous app is preselected");
+            let r=s.shell.ring.as_ref().unwrap();
+            assert_eq!(r.items[r.selected].window_id,ids[1],"the previous app is preselected");
             assert!(s.keyboard.current_focus().is_none(),"the ring owns the keyboard");
-            tap(s,125);assert!(!open(s));assert_eq!(front(s),ids[1],"Cmd, Cmd returns to the previous app");
-            tap(s,125);tap(s,125);assert_eq!(front(s),ids[2],"and back again");
-            eprintln!("[feather-ring-check] tap opens, double tap switches back and forth: ok");
+            tap(s,125);assert!(!open(s));assert_eq!(front(s),ids[2],"a second Cmd only closes: switching is by click");
+            tap(s,125);tap(s,57);assert!(open(s),"Space does not switch");assert_eq!(front(s),ids[2]);
+            tap(s,28);assert!(!open(s));assert_eq!(front(s),ids[1],"Enter switches to the highlighted app");
+            assert!(s.shell.switcher_keys.is_empty());
+            eprintln!("[feather-ring-check] tap opens; second Cmd and Space never switch, Enter does: ok");
             // Chords never open it
             s.debug_keyboard_key(125,true);tap(s,15);s.debug_keyboard_key(125,false);
-            assert!(!open(s),"Super+Tab");assert!(s.shell.switcher.is_none());assert_eq!(front(s),ids[1],"Super+Tab still switches");
+            assert!(!open(s),"Super+Tab");assert!(s.shell.switcher.is_none());assert_eq!(front(s),ids[2],"Super+Tab still switches");
             s.debug_keyboard_key(125,true);s.debug_keyboard_key(42,true);tap(s,6);s.debug_keyboard_key(42,false);s.debug_keyboard_key(125,false);
             assert!(!open(s),"Super+Shift+5");assert!(s.screencast.is_open(),"Super+Shift+5 still opens the recorder");
             s.toggle_screen_recorder();
@@ -363,33 +366,45 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
         at(state,2000,move |s| {
             let ids=fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",0,false),("fixture.minimized",1,true)]);
-            // MRU around the ring: settings (top), monitor, about, minimized app
-            tap(s,125);assert_eq!(sel(s),1);
-            let r=s.shell.ring.as_ref().unwrap();
-            assert_eq!(r.items.iter().map(|i|i.window_id).collect::<Vec<_>>(),vec![ids[2],ids[1],ids[0],ids[3]]);
-            assert!(r.items[3].hidden);
+            // Dock order: the newest unpinned app is last; places do not depend on focus
+            tap(s,125);
+            let order=|s: &FeatherCompositor| s.shell.ring.as_ref().unwrap().items.iter().map(|i|i.window_id).collect::<Vec<_>>();
+            let places=order(s);
+            assert_eq!(places.last(),Some(&ids[3]),"a new app takes the last place");
+            assert!(s.shell.ring.as_ref().unwrap().items[3].hidden);
+            s.shell.ring.as_mut().unwrap().selected=1;
             tap(s,108);assert_eq!(sel(s),2,"↓ from the right slot reaches the bottom one");
             tap(s,105);assert_eq!(sel(s),3,"← reaches the left one");
             tap(s,15);assert_eq!(sel(s),0,"Tab cycles");
             s.debug_keyboard_key(42,true);tap(s,15);s.debug_keyboard_key(42,false);assert_eq!(sel(s),3,"Shift+Tab goes back");
-            s.debug_keyboard_key(28,true);
-            assert!(!open(s));assert_eq!(front(s),ids[3],"Enter restores a minimized app from another desktop");
+            // A click switches: the minimized app from another desktop comes back
+            let (x,y)=s.shell.ring.as_ref().unwrap().slot_center(3);
+            s.debug_pointer_motion(x as f64,y as f64);assert_eq!(sel(s),3);
+            s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);
+            assert!(!open(s));assert_eq!(front(s),ids[3],"a click restores a minimized app from another desktop");
             assert!(!s.windows.iter().find(|w|w.id==ids[3]).unwrap().minimized);
+            s.debug_pointer_motion(700.0,450.0);
+            tap(s,125);assert_eq!(order(s),places,"switching does not reorder the ring");
+            let before=front(s);tap(s,1);assert!(!open(s));assert_eq!(front(s),before,"Esc closes without switching");
+            // Enter switches too, and its release stays with the ring
+            tap(s,125);let target=s.shell.ring.as_ref().map(|r|r.items[r.selected].window_id).unwrap();
+            s.debug_keyboard_key(28,true);assert!(!open(s));assert_eq!(front(s),target,"Enter switches");
             assert!(!s.shell.switcher_keys.is_empty(),"Enter's release stays with the ring");
             s.debug_keyboard_key(28,false);assert!(s.shell.switcher_keys.is_empty());
-            tap(s,125);let before=front(s);tap(s,1);assert!(!open(s));assert_eq!(front(s),before,"Esc closes without switching");
-            eprintln!("[feather-ring-check] arrows/Tab/Shift+Tab/Enter/Esc, minimized app on another desktop: ok");
+            tap(s,125);assert_eq!(order(s),places,"still the same places");s.close_ring();
+            eprintln!("[feather-ring-check] stable places, arrows/Tab/Shift+Tab, click and Enter switch, Esc: ok");
         })?;
         at(state,2600,move |s| {
             let ids=fixture(s,&apps);
             tap(s,125);
             let r=s.shell.ring.as_ref().unwrap().clone();
             assert_eq!(r.center,(700.0,450.0),"the ring stands around the pointer");
-            // A short flick towards the left-bottom slot, then a click there
-            let (x,y)=r.slot_center(2);
+            // A short flick towards the oldest app's slot, then a click there
+            let j=r.items.iter().position(|i|i.window_id==ids[0]).unwrap();
+            let (x,y)=r.slot_center(j);
             let (dx,dy)=((x-r.center.0)/(x-r.center.0).hypot(y-r.center.1),(y-r.center.1)/(x-r.center.0).hypot(y-r.center.1));
             s.debug_pointer_motion((r.center.0+dx*40.0) as f64,(r.center.1+dy*40.0) as f64);
-            assert_eq!(sel(s),2,"moving the mouse towards a sector selects it");
+            assert_eq!(sel(s),j,"moving the mouse towards a sector selects it");
             s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);
             assert!(!open(s));assert_eq!(front(s),ids[0],"clicking there switches");
             tap(s,125);s.debug_pointer_motion(1400.0,860.0);s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);
