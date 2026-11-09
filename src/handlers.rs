@@ -16,10 +16,13 @@ use smithay::{
             decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
             shell::server::xdg_toplevel,
         },
+        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
+            Mode as KdeMode, OrgKdeKwinServerDecoration,
+        },
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
             protocol::{wl_buffer, wl_output, wl_seat, wl_surface::WlSurface},
-            Client, Resource,
+            Client, Resource, WEnum,
         },
     },
     utils::{Logical, Rectangle, Serial, SERIAL_COUNTER},
@@ -38,6 +41,7 @@ use smithay::{
             primary_selection::{PrimarySelectionHandler, PrimarySelectionState},
             SelectionHandler,
         },
+        shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState},
         shell::xdg::{
             decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
             XdgShellHandler, XdgShellState,
@@ -360,7 +364,12 @@ impl XdgShellHandler for FeatherCompositor {
         let id = self.next_win_id;
         self.next_win_id += 1;
         tracing::debug!(id, "new toplevel");
-        self.windows.push(ManagedWindow::new_wayland(id, surface));
+        let mut win = ManagedWindow::new_wayland(id, surface);
+        // GTK 4 chose its frame before the toplevel role existed
+        if let Some(ssd) = win.wl_surface().and_then(kde_wants_ssd) {
+            win.ssd = ssd;
+        }
+        self.windows.push(win);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -484,11 +493,18 @@ impl XdgDecorationHandler for FeatherCompositor {
 
 impl FeatherCompositor {
     fn set_decoration_mode(&mut self, toplevel: &ToplevelSurface, mode: DecorationMode) {
-        let ssd = mode == DecorationMode::ServerSide;
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(mode);
         });
-        if let Some(idx) = self.window_index_for_toplevel(toplevel.wl_surface()) {
+        self.set_window_ssd(toplevel.wl_surface(), mode == DecorationMode::ServerSide);
+        if toplevel.is_initial_configure_sent() {
+            toplevel.send_pending_configure();
+        }
+    }
+
+    /// Who draws the frame of the window on `surface`: we (titlebar with traffic lights) or the client
+    fn set_window_ssd(&mut self, surface: &WlSurface, ssd: bool) {
+        if let Some(idx) = self.window_index_for_toplevel(surface) {
             let win = &mut self.windows[idx];
             if win.ssd != ssd {
                 win.ssd = ssd;
@@ -496,12 +512,48 @@ impl FeatherCompositor {
                 // Chromium asks to be maximized before it settles on its own frame: the height
                 // it got still left room for our titlebar, a gap above the Dock
                 self.refit_window(idx);
+                self.needs_redraw = true;
             }
         }
-        if toplevel.is_initial_configure_sent() {
-            toplevel.send_pending_configure();
+    }
+}
+
+/// Mode a surface asked for through KDE's server-decoration protocol: GTK 4 asks while the
+/// window is realized, before its xdg_toplevel exists, so it is kept on the surface itself
+struct KdeDecorationMode(std::sync::atomic::AtomicU8);
+const KDE_NONE: u8 = 0;
+const KDE_CLIENT: u8 = 1;
+const KDE_SERVER: u8 = 2;
+
+/// Some(true): the client asked for our titlebar; None: it never used the protocol
+pub fn kde_wants_ssd(surface: &WlSurface) -> Option<bool> {
+    with_states(surface, |states| {
+        let mode = states.data_map.get::<KdeDecorationMode>()?;
+        match mode.0.load(std::sync::atomic::Ordering::Relaxed) {
+            KDE_NONE => None,
+            m => Some(m == KDE_SERVER),
         }
-        self.needs_redraw = true;
+    })
+}
+
+impl KdeDecorationHandler for FeatherCompositor {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.kde_decoration_state
+    }
+
+    fn request_mode(&mut self, surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration, mode: WEnum<KdeMode>) {
+        let WEnum::Value(mode) = mode else { return };
+        // Always agree: GTK answers a mode it did not ask for by asking again (a loop).
+        // Header bars, libadwaita and Firefox ask for "client"; plain GTK windows for "server".
+        decoration.mode(mode);
+        let ssd = mode == KdeMode::Server;
+        with_states(surface, |states| {
+            states.data_map.insert_if_missing_threadsafe(|| KdeDecorationMode(std::sync::atomic::AtomicU8::new(KDE_NONE)));
+            if let Some(m) = states.data_map.get::<KdeDecorationMode>() {
+                m.0.store(if ssd { KDE_SERVER } else { KDE_CLIENT }, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        self.set_window_ssd(surface, ssd);
     }
 }
 
@@ -746,6 +798,7 @@ impl XdgActivationHandler for FeatherCompositor {
 
 delegate_xdg_shell!(FeatherCompositor);
 delegate_xdg_decoration!(FeatherCompositor);
+smithay::delegate_kde_decoration!(FeatherCompositor);
 delegate_xdg_activation!(FeatherCompositor);
 delegate_compositor!(FeatherCompositor);
 delegate_shm!(FeatherCompositor);

@@ -252,6 +252,8 @@ pub struct FeatherCompositor {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub xdg_decoration_state: XdgDecorationState,
+    /// KDE's server-decoration protocol: how GTK 3/4 windows without a header bar ask for ours
+    pub kde_decoration_state: smithay::wayland::shell::kde::decoration::KdeDecorationState,
     pub xdg_activation_state: XdgActivationState,
     pub shm_state: ShmState,
     pub dmabuf_state: DmabufState,
@@ -2007,6 +2009,11 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let compositor_state = CompositorState::new::<FeatherCompositor>(&dh);
     let xdg_shell_state = XdgShellState::new::<FeatherCompositor>(&dh);
     let xdg_decoration_state = XdgDecorationState::new::<FeatherCompositor>(&dh);
+    // Default "server": GTK windows without their own header bar then leave the frame to us
+    let kde_decoration_state = smithay::wayland::shell::kde::decoration::KdeDecorationState::new::<FeatherCompositor>(
+        &dh,
+        smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode::Server,
+    );
     let xdg_activation_state = XdgActivationState::new::<FeatherCompositor>(&dh);
     // RGBA byte order (tiny-skia, Feather's own clients) uploads without a channel swap
     let shm_state = ShmState::new::<FeatherCompositor>(&dh, vec![smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr8888, smithay::reexports::wayland_server::protocol::wl_shm::Format::Xbgr8888]);
@@ -2307,6 +2314,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         compositor_state,
         xdg_shell_state,
         xdg_decoration_state,
+        kde_decoration_state,
         xdg_activation_state,
         shm_state,
         dmabuf_state,

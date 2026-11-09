@@ -80,10 +80,15 @@ pub fn css(gtk4: bool, dark: bool) -> String {
     )
 }
 
-/// The libadwaita user stylesheet: only our rules, no base theme
-pub fn user_css(dark: bool) -> String {
-    format!("{MARK}\n{}\n{}", colors_css(dark), GTK4)
+/// The user stylesheet (`gtk.css` next to settings.ini): only our rules, no base theme.
+/// libadwaita reads nothing else; for GTK 3 it reaches programs that cannot see our theme:
+/// snaps link their `gtk-3.0/gtk.css` to this file, Flatpaks often mount the directory.
+pub fn user_css(gtk4: bool, dark: bool) -> String {
+    format!("{MARK}\n{}\n{}", colors_css(dark), if gtk4 { GTK4 } else { GTK3 })
 }
+
+/// The user stylesheets we own and their backup names
+const USER_CSS: [(&str, bool); 2] = [("gtk-3.0", false), ("gtk-4.0", true)];
 
 /// Value of `key` in the [Settings] group of a GTK settings.ini
 pub fn ini_get(text: &str, key: &str) -> Option<String> {
@@ -199,13 +204,19 @@ fn backup(d: &Dirs) {
             text.push_str(&format!("ini\t{gtk}\t{key}\t{v}\n"));
         }
     }
-    let css = d.config.join("gtk-4.0/gtk.css");
-    if let Ok(old) = std::fs::read_to_string(&css) {
-        if !old.starts_with(MARK) {
-            write(&dir.join("gtk-4.0.css"), &old);
+    write(&dir.join("values.conf"), &text);
+}
+
+/// The user's own stylesheets, each saved once (an install from before the GTK 3 one existed
+/// already has values.conf, so this does not wait for the first apply)
+fn backup_css(d: &Dirs) {
+    for (gtk, _) in USER_CSS {
+        let saved = d.backup.join(format!("{gtk}.css"));
+        match std::fs::read_to_string(d.config.join(gtk).join("gtk.css")) {
+            Ok(old) if !old.starts_with(MARK) && !saved.exists() => write(&saved, &old),
+            _ => {}
         }
     }
-    write(&dir.join("values.conf"), &text);
 }
 
 fn install_theme(d: &Dirs) {
@@ -227,6 +238,7 @@ pub fn apply(dark: bool) {
 
 fn apply_in(d: &Dirs, dark: bool) {
     backup(d);
+    backup_css(d);
     install_theme(d);
     let name = theme_name(dark);
     let prefer = if dark { "true" } else { "false" };
@@ -240,7 +252,9 @@ fn apply_in(d: &Dirs, dark: bool) {
         }
         write(&path, &ini_set(&old, &keys));
     }
-    write(&d.config.join("gtk-4.0/gtk.css"), &user_css(dark));
+    for (gtk, four) in USER_CSS {
+        write(&d.config.join(gtk).join("gtk.css"), &user_css(four, dark));
+    }
     if d.gsettings {
         gsettings_set("org.gnome.desktop.interface", "gtk-theme", name);
         gsettings_set("org.gnome.desktop.interface", "color-scheme", if dark { "prefer-dark" } else { "default" });
@@ -275,12 +289,14 @@ fn restore_in(d: &Dirs) {
             let keys: Vec<(&str, Option<&str>)> = keys.iter().map(|(k, v)| (k.as_str(), v.as_deref())).collect();
             write(&path, &ini_set(&old, &keys));
         }
-        let css = d.config.join("gtk-4.0/gtk.css");
-        match std::fs::read_to_string(dir.join("gtk-4.0.css")) {
-            Ok(old) => write(&css, &old),
-            Err(_) => {
-                if std::fs::read_to_string(&css).is_ok_and(|t| t.starts_with(MARK)) {
-                    let _ = std::fs::remove_file(&css);
+        for (gtk, _) in USER_CSS {
+            let css = d.config.join(gtk).join("gtk.css");
+            match std::fs::read_to_string(dir.join(format!("{gtk}.css"))) {
+                Ok(old) => write(&css, &old),
+                Err(_) => {
+                    if std::fs::read_to_string(&css).is_ok_and(|t| t.starts_with(MARK)) {
+                        let _ = std::fs::remove_file(&css);
+                    }
                 }
             }
         }
@@ -316,6 +332,11 @@ mod tests {
         write(&d.config.join("gtk-3.0/settings.ini"), ini3);
         write(&d.config.join("gtk-4.0/gtk.css"), "@import 'colors.css';\n");
         apply_in(&d, true);
+        let css3 = std::fs::read_to_string(d.config.join("gtk-3.0/gtk.css")).unwrap();
+        assert!(css3.starts_with(MARK) && css3.contains("titlebutton") && !css3.contains("@import"), "GTK 3 user stylesheet: rules only");
+        // An older install already has values.conf: a stylesheet KDE writes later is still saved
+        write(&d.config.join("gtk-3.0/gtk.css"), "@import 'colors.css';\n/* kde */\n");
+        apply_in(&d, true);
         let now = std::fs::read_to_string(d.config.join("gtk-3.0/settings.ini")).unwrap();
         assert_eq!(ini_get(&now, "gtk-theme-name").as_deref(), Some("Feather-Dark"));
         assert_eq!(ini_get(&now, "gtk-modules").as_deref(), Some("colorreload-gtk-module"), "KDE's title buttons are off");
@@ -331,6 +352,7 @@ mod tests {
         assert_eq!(ini_get(&back, "gtk-modules").as_deref(), Some("window-decorations-gtk-module:colorreload-gtk-module"));
         assert_eq!(ini_get(&back, "gtk-decoration-layout"), None, "a key that was absent goes away");
         assert_eq!(std::fs::read_to_string(d.config.join("gtk-4.0/gtk.css")).unwrap(), "@import 'colors.css';\n");
+        assert_eq!(std::fs::read_to_string(d.config.join("gtk-3.0/gtk.css")).unwrap(), "@import 'colors.css';\n/* kde */\n");
         assert!(!d.backup.exists());
         // gtk-4.0/settings.ini did not exist: restoring leaves no theme keys behind
         let four = std::fs::read_to_string(d.config.join("gtk-4.0/settings.ini")).unwrap_or_default();
@@ -343,6 +365,7 @@ mod tests {
         assert!(css(false, false).contains("Adwaita/gtk-contained.css"));
         assert!(css(false, true).contains("gtk-contained-dark.css") && css(false, true).contains("#1e1e20"));
         assert!(css(true, false).contains("Default-light.css"));
-        assert!(user_css(true).starts_with(MARK) && !user_css(true).contains("@import"));
+        assert!(user_css(true, true).starts_with(MARK) && !user_css(true, true).contains("@import"));
+        assert!(user_css(false, false).contains("button.titlebutton") && !user_css(false, false).contains("@import"));
     }
 }

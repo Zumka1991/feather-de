@@ -90,6 +90,8 @@
 - [x] Resize XWayland с CSD: внешний край поверх нижнего окна, `Resizing`, настоящий размер X11-клиента — [GAMING.md](GAMING.md)
 - [x] Lineage II в DRM: масштаб/UI, ПКМ и камера, resize и переключение из Dock после повторного входа (проверено пользователем)
 - [x] Глобальное меню GTK (`org.gtk.Menus` / `org.gtk.Actions`, `gtk_shell1`) — [APPMENU.md](APPMENU.md#gtk)
+- [x] Единые светофоры: KDE server-decoration для GTK 3/4 без HeaderBar (наш заголовок), `gtk-3.0/gtk.css` для snap — [DECORATIONS.md](DECORATIONS.md)
+  - [ ] Chrome, Firefox, Electron и Telegram рисуют свои кнопки (слева); переключатели в самих программах — [DECORATIONS.md](DECORATIONS.md#кто-остаётся-со-своими-кнопками-и-почему)
 - [x] Протоколы для чужих панелей и методов ввода: layer-shell, foreign-toplevel (wlr и ext), text-input, input-method, virtual-keyboard — [PROTOCOLS.md](PROTOCOLS.md)
   - [ ] Проверка с настоящими waybar, rofi, fcitx5 и ibus
 - [x] Буфер обмена без фокуса окна: `ext-data-control-v1` и `zwlr-data-control-v1` (wl-copy/wl-paste, менеджеры буфера, arboard; картинки больше не уходят в X11-буфер)
