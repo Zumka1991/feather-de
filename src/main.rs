@@ -37,6 +37,7 @@ mod launchpad;
 mod render;
 mod raster;
 mod rounded;
+mod ring;
 mod screenshot;
 mod screencast;
 mod pw_cast;
@@ -354,6 +355,8 @@ pub struct FeatherCompositor {
     pub keybindings: crate::shortcuts::Bindings,
     pub key_repeat: crate::key_repeat::Repeat,
     pub sticky_keys: bool,
+    /// Короткий одиночный тап Super открывает кольцо программ
+    pub super_tap: crate::ring::SuperTap,
     pub physically_held_modifiers: std::collections::HashSet<smithay::input::keyboard::Keycode>,
     pub latched_modifiers: std::collections::HashSet<smithay::input::keyboard::Keycode>,
     /// Caps Lock held while it switches languages (see `input::CapsHold`)
@@ -406,7 +409,7 @@ impl FeatherCompositor {
             }
         }
         let password = self.auth.is_open() || (self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password);
-        let target = if self.lock.active {self.lock_focus()} else if password || self.shell.switcher.is_some() {None} else if let Some(layer) = self.layer_keyboard_target() {Some(layer)} else if desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
+        let target = if self.lock.active {self.lock_focus()} else if password || self.shell.switcher.is_some() || self.shell.ring.is_some() {None} else if let Some(layer) = self.layer_keyboard_target() {Some(layer)} else if desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus() != target {
             self.clear_all_forwarded_pressed_keys();
@@ -2403,6 +2406,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         keybindings: saved.keybindings.clone(),
         key_repeat: Default::default(),
         sticky_keys: saved.sticky_keys,
+        super_tap: Default::default(),
         physically_held_modifiers: Default::default(),
         latched_modifiers: Default::default(),
         caps_hold: None,
@@ -2765,6 +2769,22 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("menu-app") => state.shell.open_menu = Some(crate::shell::TopMenu::App),
         Ok("menu-window") => state.shell.open_menu = Some(crate::shell::TopMenu::Window),
         Ok("cc") => state.shell.control_center_open = true,
+        Ok("ring") => {
+            // Кольцо открывается, когда появятся окна (--autostart): ждём, пока они нарисуются
+            state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(
+                std::env::var("FEATHER_DEBUG_RING_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(1500))), |_, _, state| {
+                state.open_ring();
+                TimeoutAction::Drop
+            })?;
+            // Второй тап Cmd через настоящую обработку клавиш: переход проверяется по D-Bus
+            if let Some(ms) = std::env::var("FEATHER_DEBUG_RING_TAP_MS").ok().and_then(|s| s.parse().ok()) {
+                state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(ms)), |_, _, state| {
+                    state.debug_keyboard_key(125, true);
+                    state.debug_keyboard_key(125, false);
+                    TimeoutAction::Drop
+                })?;
+            }
+        }
         Ok("center") => state.shell.toggle_center(),
         Ok("dock-minimized") => {
             if let Some(w) = state.windows.last_mut() {

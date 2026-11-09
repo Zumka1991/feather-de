@@ -347,6 +347,7 @@ impl XdgShellHandler for FeatherCompositor {
                 self.dock_model_dirty = true;
                 self.shell.topbar_dirty = true;
                 self.shell.switcher_dirty = true;
+                self.shell.ring_dirty = true;
                 self.needs_redraw = true;
                 let top = self.windows.iter().rposition(|w| w.is_visible() && !self.auxiliary_game_window(w));
                 if self.windows.iter().position(|w| w.activated) != top { self.refresh_focus(); }

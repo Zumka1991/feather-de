@@ -1415,6 +1415,8 @@ impl FeatherCompositor {
         self.cancel_scene_input();
         self.shell.close_menus();
         self.shell.switcher = None;
+        self.shell.ring = None;
+        self.shell.ring_fading = None;
         self.icon_drag = None;
         self.screenshot_select = None;
         self.apply_cursor(smithay::input::pointer::CursorImageStatus::default_named());

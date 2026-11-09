@@ -308,6 +308,97 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
         at(state,6500,|s| {tap(s,1);finish(s);})?;
     }
+
+    if std::env::var_os("FEATHER_DEBUG_RING").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only { return Err("ring check requires isolated windowed input".into()); }
+        // evdev: Super 125, Shift 42, Tab 15, 5 → 6, Esc 1, Enter 28, ← 105, → 106, ↓ 108
+        fn fixture(s: &mut FeatherCompositor, specs: &[(&str,u32,bool)]) -> Vec<u64> {
+            s.release_all_input();s.close_ring();s.shell.switcher=None;s.shell.close_menus();s.windows.clear();
+            s.spaces=crate::spaces::Spaces {current:0,count:2};
+            let mut ids=Vec::new();
+            for (i,(app,space,minimized)) in specs.iter().enumerate() {
+                let id=s.next_win_id;s.next_win_id+=1;
+                let mut w=crate::window::ManagedWindow::new_builtin(id,crate::apps::BuiltinWindowKind::QuickNotes,120+i as i32*80,100+i as i32*50);
+                w.app_id=(*app).into();w.title=format!("Ring fixture {app} #{id}");w.space=*space;w.minimized=*minimized;
+                s.windows.push(w);ids.push(id);
+            }
+            s.apply_space_visibility();s.refresh_focus();s.debug_pointer_motion(700.0,450.0);s.needs_redraw=true;ids
+        }
+        fn front(s: &FeatherCompositor) -> u64 { s.windows.iter().rev().find(|w|w.is_visible()).unwrap().id }
+        fn open(s: &FeatherCompositor) -> bool { s.shell.ring.is_some() }
+        fn sel(s: &FeatherCompositor) -> usize { s.shell.ring.as_ref().unwrap().selected }
+        let apps=[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",0,false)];
+        at(state,1200,move |s| {
+            let ids=fixture(s,&apps);
+            assert_eq!(front(s),ids[2]);
+            tap(s,125);assert!(open(s),"a lone short Super tap opens the ring");
+            assert_eq!(sel(s),1,"the previous app is preselected");
+            assert!(s.keyboard.current_focus().is_none(),"the ring owns the keyboard");
+            tap(s,125);assert!(!open(s));assert_eq!(front(s),ids[1],"Cmd, Cmd returns to the previous app");
+            tap(s,125);tap(s,125);assert_eq!(front(s),ids[2],"and back again");
+            eprintln!("[feather-ring-check] tap opens, double tap switches back and forth: ok");
+            // Chords never open it
+            s.debug_keyboard_key(125,true);tap(s,15);s.debug_keyboard_key(125,false);
+            assert!(!open(s),"Super+Tab");assert!(s.shell.switcher.is_none());assert_eq!(front(s),ids[1],"Super+Tab still switches");
+            s.debug_keyboard_key(125,true);s.debug_keyboard_key(42,true);tap(s,6);s.debug_keyboard_key(42,false);s.debug_keyboard_key(125,false);
+            assert!(!open(s),"Super+Shift+5");assert!(s.screencast.is_open(),"Super+Shift+5 still opens the recorder");
+            s.toggle_screen_recorder();
+            s.debug_keyboard_key(42,true);tap(s,125);s.debug_keyboard_key(42,false);assert!(!open(s),"Shift+Super");
+            s.debug_keyboard_key(125,true);s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);s.debug_keyboard_key(125,false);
+            assert!(!open(s),"Super+click");
+            s.release_all_input();
+            // Autorepeat of the held key does not spoil a tap
+            s.debug_keyboard_key(125,true);s.debug_keyboard_key(125,true);s.debug_keyboard_key(125,false);
+            assert!(open(s),"autorepeat");s.close_ring();
+            // Gates: sticky keys (a tap latches Super), lock, password dialog, off switch
+            s.sticky_keys=true;tap(s,125);assert!(!open(s),"sticky keys");s.sticky_keys=false;s.release_all_input();
+            s.lock.active=true;assert!(!s.ring_allowed());s.lock.active=false;
+            s.keyboard_config.app_ring=false;tap(s,125);assert!(!open(s),"switched off");s.keyboard_config.app_ring=true;
+            eprintln!("[feather-ring-check] Super+Tab/Super+Shift+5/Shift+Super/Super+click/sticky/lock/off do not open; repeat does: ok");
+            s.debug_keyboard_key(125,true);
+        })?;
+        at(state,1200+u64::from(crate::ring::TAP_MAX_MS)+150,|s| {
+            s.debug_keyboard_key(125,false);assert!(!open(s),"a long hold is not a tap");
+            eprintln!("[feather-ring-check] long hold: ok");
+        })?;
+        at(state,2000,move |s| {
+            let ids=fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",0,false),("fixture.minimized",1,true)]);
+            // MRU around the ring: settings (top), monitor, about, minimized app
+            tap(s,125);assert_eq!(sel(s),1);
+            let r=s.shell.ring.as_ref().unwrap();
+            assert_eq!(r.items.iter().map(|i|i.window_id).collect::<Vec<_>>(),vec![ids[2],ids[1],ids[0],ids[3]]);
+            assert!(r.items[3].hidden);
+            tap(s,108);assert_eq!(sel(s),2,"↓ from the right slot reaches the bottom one");
+            tap(s,105);assert_eq!(sel(s),3,"← reaches the left one");
+            tap(s,15);assert_eq!(sel(s),0,"Tab cycles");
+            s.debug_keyboard_key(42,true);tap(s,15);s.debug_keyboard_key(42,false);assert_eq!(sel(s),3,"Shift+Tab goes back");
+            s.debug_keyboard_key(28,true);
+            assert!(!open(s));assert_eq!(front(s),ids[3],"Enter restores a minimized app from another desktop");
+            assert!(!s.windows.iter().find(|w|w.id==ids[3]).unwrap().minimized);
+            assert!(!s.shell.switcher_keys.is_empty(),"Enter's release stays with the ring");
+            s.debug_keyboard_key(28,false);assert!(s.shell.switcher_keys.is_empty());
+            tap(s,125);let before=front(s);tap(s,1);assert!(!open(s));assert_eq!(front(s),before,"Esc closes without switching");
+            eprintln!("[feather-ring-check] arrows/Tab/Shift+Tab/Enter/Esc, minimized app on another desktop: ok");
+        })?;
+        at(state,2600,move |s| {
+            let ids=fixture(s,&apps);
+            tap(s,125);
+            let r=s.shell.ring.as_ref().unwrap().clone();
+            assert_eq!(r.center,(700.0,450.0),"the ring stands around the pointer");
+            // A short flick towards the left-bottom slot, then a click there
+            let (x,y)=r.slot_center(2);
+            let (dx,dy)=((x-r.center.0)/(x-r.center.0).hypot(y-r.center.1),(y-r.center.1)/(x-r.center.0).hypot(y-r.center.1));
+            s.debug_pointer_motion((r.center.0+dx*40.0) as f64,(r.center.1+dy*40.0) as f64);
+            assert_eq!(sel(s),2,"moving the mouse towards a sector selects it");
+            s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);
+            assert!(!open(s));assert_eq!(front(s),ids[0],"clicking there switches");
+            tap(s,125);s.debug_pointer_motion(1400.0,860.0);s.debug_pointer_button(0x110,true);s.debug_pointer_button(0x110,false);
+            assert!(!open(s));assert_eq!(front(s),ids[0],"a click outside only closes");
+            s.debug_pointer_motion(700.0,450.0);tap(s,125);s.release_all_input();assert!(!open(s),"losing host focus closes it");
+            eprintln!("[feather-ring-check] mouse flick/click/click outside/focus loss: ok");
+            eprintln!("[feather-ring-check] complete: ok");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_SYSTEM_SOUNDS").is_some() {
         use crate::{sounds::{Effect,Tone},system_settings::{Action as A,Page}};
         if state.backend.is_drm() || !state.debug_input_only {return Err("sounds check requires isolated windowed input".into());}

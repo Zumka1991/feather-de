@@ -129,6 +129,7 @@ impl FeatherCompositor {
         self.shell.dock_dirty = true;
         self.shell.topbar_dirty = true;
         self.shell.switcher_dirty = true;
+        self.shell.ring_dirty = true;
         for w in &mut self.windows {
             w.dirty = true;
         }

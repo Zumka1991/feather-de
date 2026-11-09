@@ -224,6 +224,7 @@ pub enum Action {
     Shortcut(Switch),
     CapsLock,
     Typography,
+    AppRing,
     EditShortcut(crate::shortcuts::Action),
     ResetShortcuts,
     RepeatDelay(u32),
@@ -1887,8 +1888,9 @@ impl Panel {
                 }
                 l.choice(48.0, "Клавиша Caps Lock", String::new(), c.keyboard.caps.label().into(), kb.then_some(Action::ChoiceMenu(Some(Choice::CapsLock))));
                 l.row(52.0, "Типографская раскладка", "Правый Alt: «ёлочки», — тире, ₽, ≠, ©, →".into(), Style::Toggle(c.keyboard.typography), kb.then_some(Action::Typography));
+                l.row(52.0, "Кольцо программ", "Короткое нажатие Cmd (Super) без других клавиш".into(), Style::Toggle(c.keyboard.app_ring), kb.then_some(Action::AppRing));
                 l.end();
-                l.footer("Автоповтор применяется сразу во всех программах. Типографская раскладка Ильи Бирмана: с правым Alt набираются типографские символы, с Shift + правый Alt — дополнительные.");
+                l.footer("Автоповтор применяется сразу во всех программах. В кольце программы выбирают стрелками, Tab, колесом, первой буквой или движением мыши; Enter или щелчок — перейти, Esc — закрыть. Типографская раскладка Ильи Бирмана: с правым Alt набираются типографские символы, с Shift + правый Alt — дополнительные.");
                 l.header("Сочетания действий");
                 l.begin();
                 for action in crate::shortcuts::Action::ALL.iter().copied() {
@@ -4423,6 +4425,11 @@ impl crate::FeatherCompositor {
                 let mut config = self.keyboard_config.clone();
                 config.typography = !config.typography;
                 self.request_keyboard(config);
+            }
+            Action::AppRing => {
+                self.keyboard_config.app_ring = !self.keyboard_config.app_ring;
+                self.close_ring();
+                self.save_settings();
             }
             Action::RepeatDelay(delay) => {
                 self.keyboard_config.repeat_delay = delay;

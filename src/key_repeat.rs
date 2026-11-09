@@ -51,6 +51,7 @@ impl FeatherCompositor {
             || self.auth.is_open()
             || self.capturing_shortcut()
             || self.shell.switcher.is_some()
+            || self.shell.ring.is_some()
         {
             return None;
         }

@@ -178,6 +178,8 @@ pub(crate) enum KeyAction {
     Lock,
     Unlock,
     Audio(crate::controls::AudioKey),
+    /// Клавиша при открытом кольце программ
+    Ring(crate::ring::RingKey),
 }
 
 /// Delay before the Alt+Tab panel appears: short enough to feel instant when Alt is held,
@@ -333,6 +335,7 @@ impl FeatherCompositor {
             }
             InputEvent::PointerAxis { event } => self.on_pointer_axis::<B>(event),
             InputEvent::GestureSwipeBegin { event } => {
+                self.super_tap.spoil();
                 self.gestures.swipe_begin(event.fingers());
             }
             InputEvent::GestureSwipeUpdate { event } => {
@@ -345,6 +348,7 @@ impl FeatherCompositor {
                 self.gestures.swipe_end();
             }
             InputEvent::GesturePinchBegin { event } => {
+                self.super_tap.spoil();
                 self.gestures.pinch_begin(event.fingers());
             }
             InputEvent::GesturePinchUpdate { event } => {
@@ -363,6 +367,7 @@ impl FeatherCompositor {
         if self.lock.active || self.auth.is_open() {
             return;
         }
+        self.close_ring();
         match action {
             GestureAction::SpaceStep(delta) => {
                 if let Some(lp) = self.shell.launchpad.as_mut() {
@@ -581,6 +586,10 @@ impl FeatherCompositor {
         self.needs_redraw = true;
     }
     fn process_keyboard_key(&mut self,keycode:smithay::input::keyboard::Keycode,key_state:KeyState,time:u32){
+        // Кольцо программ: детектор тапа Super видит каждую клавишу до любых ранних выходов
+        let is_super = matches!(keycode.raw().saturating_sub(8), 125 | 126);
+        let others_held = self.keyboard.pressed_keys().iter().any(|k| *k != keycode);
+        let super_tapped = self.super_tap.key(keycode.raw(), is_super, key_state == KeyState::Pressed, others_held, time);
         if keycode.raw() == CAPS_KEYCODE
             && self.keyboard_config.caps == crate::settings::Caps::Layout
             && !self.capturing_shortcut()
@@ -816,6 +825,18 @@ impl FeatherCompositor {
                     return FilterResult::Intercept(());
                 }
             }
+            // Кольцо программ владеет клавиатурой, пока открыто; системные сочетания, снимки и
+            // блокировка обработаны выше. Нажатые им клавиши не отпускаются в программу.
+            if st.shell.ring.is_some() && !system_chord {
+                if key_state == KeyState::Pressed && !FeatherCompositor::is_modifier_keycode(keycode) {
+                    st.shell.switcher_keys.insert(keycode);
+                    let sym = keysym_handle.modified_sym();
+                    deferred = FeatherCompositor::ring_key_for(sym.raw(), sym.key_char(), mods.shift || switcher_shift).map(KeyAction::Ring);
+                    repeat_candidate = None;
+                    return FilterResult::Intercept(());
+                }
+                return FilterResult::Forward;
+            }
             if key_state == KeyState::Pressed && (mods.alt || switcher_alt || mods.logo) {
                 let raw = keysym_handle.modified_sym().raw();
                 if raw == keysyms::KEY_Tab || raw == keysyms::KEY_ISO_Left_Tab {
@@ -934,7 +955,14 @@ impl FeatherCompositor {
             if let Some(candidate) = repeat_candidate { self.arm_key_repeat(candidate); }
         }
 
+        // Любое другое действие (Mission Control, запись экрана, сочетание) закрывает кольцо
+        if self.shell.ring.is_some()
+            && deferred.as_ref().is_some_and(|a| !matches!(a, KeyAction::Ring(_) | KeyAction::Audio(_) | KeyAction::Screenshot { shift: false, .. }))
+        {
+            self.close_ring();
+        }
         match deferred {
+            Some(KeyAction::Ring(key)) => self.ring_key(key),
             Some(KeyAction::Audio(key)) => {
                 self.handle_audio_key(key);
                 if let Some(candidate) = repeat_candidate { self.arm_key_repeat(candidate); }
@@ -997,6 +1025,9 @@ impl FeatherCompositor {
         }
         if self.sticky_keys && !is_modifier && key_state == KeyState::Pressed && self.shell.switcher.is_none() {
             self.release_latched_modifiers(time);
+        }
+        if super_tapped {
+            self.super_tapped();
         }
     }
 
@@ -1287,6 +1318,11 @@ impl FeatherCompositor {
         if self.shell.switcher.as_ref().is_some_and(|s|s.visible){
             self.pointer_focus_dirty=true;return false;
         }
+        if self.shell.ring.is_some() {
+            self.ring_motion();
+            self.pointer_focus_dirty = true;
+            return false;
+        }
         if self.system_settings.audio_drag.is_some() {
             if let Some(action) = self.system_settings.audio_motion(pos.x as f32) {
                 self.apply_system_setting(action);
@@ -1502,6 +1538,10 @@ impl FeatherCompositor {
     }
 
     pub(crate) fn on_pointer_button(&mut self, button: u32, btn_state: ButtonState, time: u32) {
+        if btn_state == ButtonState::Pressed {
+            // Super+щелчок и Super+перетаскивание — не тап
+            self.super_tap.spoil();
+        }
         self.cancel_key_repeat();
         self.cancel_green_hover();
         if self.mission_open() && !self.lock.active {
@@ -1549,6 +1589,15 @@ impl FeatherCompositor {
             time,
         };
 
+        // Кольцо программ над всем: щелчок по сектору переходит, мимо — закрывает
+        if btn_state == ButtonState::Pressed && self.shell.ring.is_some() {
+            if !self.pressed_buttons.contains(&button) {
+                self.pressed_buttons.push(button);
+            }
+            self.consumed_buttons.push(button);
+            self.ring_button(button == BTN_LEFT);
+            return;
+        }
         // A panel or launcher of another desktop in front of everything: the press is its own
         if btn_state == ButtonState::Pressed && !self.shell.layers.is_empty() {
             let target = self.layer_button(pos.x, pos.y);
@@ -1967,7 +2016,9 @@ impl FeatherCompositor {
         }
         self.shell.tile_preview.clear();
         self.cancel_green_hover();
-        let was_switching = self.shell.switcher.take().is_some();
+        self.super_tap.reset();
+        // Фокус ушёл к хосту или вложенному окну: кольцо, как и Alt+Tab, закрывается
+        let was_switching = self.shell.switcher.take().is_some() | self.shell.ring.take().is_some();
         if was_switching {
             self.consume_held_switcher_modifiers();
             self.needs_redraw = true;
@@ -2003,8 +2054,16 @@ impl FeatherCompositor {
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
+        self.super_tap.spoil();
         if self.lock.active {
             if self.lock.external(){self.forward_pointer_axis::<B>(event);}
+            return;
+        }
+        if self.shell.ring.is_some() {
+            match event.amount_v120(Axis::Vertical).filter(|v| *v != 0.0) {
+                Some(v) => self.ring_scroll(v, true),
+                None => self.ring_scroll(event.amount(Axis::Vertical).unwrap_or(0.0), false),
+            }
             return;
         }
         let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|w.fullscreen&&!w.larvis);

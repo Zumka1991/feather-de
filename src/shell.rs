@@ -943,6 +943,14 @@ pub struct MacShell {
     pub switcher_rect: R,
     pub switcher_dirty: bool,
 
+    /// Кольцо программ (тап Cmd/Super), см. `ring.rs`
+    pub ring: Option<crate::ring::Ring>,
+    /// Закрытое кольцо, пока оно гаснет (ввод не принимает)
+    pub ring_fading: Option<crate::ring::Ring>,
+    /// Иконки кольца надо перерисовать
+    pub ring_dirty: bool,
+    pub ring_gfx: crate::ring::RingGfx,
+
     /// While dragging an app: index in the Dock where an empty slot opens
     pub dock_gap: Option<usize>,
     pub dock_dragging: bool,
@@ -1067,6 +1075,10 @@ impl MacShell {
             switcher_buffer: new_buffer(1, 1),
             switcher_rect: R::new(0.0, 0.0, 0.0, 0.0),
             switcher_dirty: false,
+            ring: None,
+            ring_fading: None,
+            ring_dirty: false,
+            ring_gfx: Default::default(),
             dock_gap: None,
             dock_dragging: false,
             dock_menu: None,
@@ -1479,6 +1491,7 @@ impl MacShell {
         self.dock_dirty = true;
         self.overlay_dirty = true;
         self.switcher_dirty = true;
+        self.ring_dirty = true;
         // Launchpad tiles are rasterized for one scale/size/appearance: rebuild them lazily
         if let Some(lp) = self.launchpad.as_mut() {
             lp.invalidate(self.screen_w, self.screen_h);
@@ -1511,6 +1524,9 @@ impl MacShell {
         self.overlay_buffer = new_buffer(1, 1);
         self.overlay_allocated = false;
         self.switcher_rect = R::new(0.0, 0.0, 0.0, 0.0);
+        // Кольцо стояло вокруг точки старого экрана
+        self.ring = None;
+        self.ring_fading = None;
         self.invalidate_all();
     }
 
@@ -1928,7 +1944,7 @@ impl MacShell {
                 self.cc_backdrop = None;
                 self.cc_backdrop_requested = false;
                 self.dock_painted.clear(); self.overlay_painted.clear();
-                self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true;
+                self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true; self.ring_dirty = true;
             }
             crate::raster::Asset::Frosted(key, buffer) => {
                 self.launchpad_bg_requested = None;
@@ -1939,7 +1955,7 @@ impl MacShell {
             crate::raster::Asset::Icon(key, pixmap) => {
                 if !self.tray_items.is_empty(){self.topbar_dirty=true;}
                 self.icons.install(key, pixmap);
-                self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true; self.ghost_dirty = true;
+                self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true; self.ring_dirty = true; self.ghost_dirty = true;
             }
             crate::raster::Asset::DesktopTile(pixels) => return self.desktop.install(pixels),
             crate::raster::Asset::Tile { ticket, app, buffer } => {

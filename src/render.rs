@@ -411,6 +411,29 @@ pub(crate) fn build_scene(
             crate::animation::Visual::default(),
         );
     }
+    if let Some(ring) = shell.ring_shown() {
+        // Спереди назад: подпись, иконки, подсветка с огоньком, стекло. Всё движение — GPU:
+        // буферы не перерисовываются, пока кольцо открывается, гаснет или подсветка едет.
+        let n = ring.len();
+        let open = animations.ring_open();
+        let disc = animations.ring(shell);
+        let at = |r: crate::shell::R| ((r.x as f64 * scale).round(), (r.y as f64 * scale).round());
+        let g = &shell.ring_gfx;
+        mem(&mut out, at(ring.label_rect()), &g.label, None, disc);
+        let c = (ring.center.0 as f64, ring.center.1 as f64);
+        for (i, buf) in g.icons.iter().enumerate().take(n) {
+            let (travel, s, alpha) = crate::ring::icon_motion(n, i, open, animations.ring_selected(i, ring.selected));
+            let (x, y) = ring.slot_center(i);
+            let (x, y) = (x as f64, y as f64);
+            let visual = crate::animation::Visual { scale: s, alpha, center: (x, y), offset: ((c.0 - x) * (1.0 - travel), (c.1 - y) * (1.0 - travel)) };
+            mem(&mut out, at(ring.icon_rect(i)), buf, None, visual);
+        }
+        let a = animations.ring_mark_angle().unwrap_or_else(|| crate::ring::angle(n, ring.selected));
+        let mark = crate::animation::Visual { alpha: disc.alpha * open.clamp(0.0, 1.0) as f32, ..disc };
+        mem(&mut out, at(ring.pip_rect_at(a)), &g.pip, None, mark);
+        mem(&mut out, at(ring.mark_rect_at(a)), &g.mark, None, mark);
+        mem(&mut out, at(ring.rect()), &g.base, None, disc);
+    }
     if shell.has_visible_overlay() {
         if let Some(r) = shell.overlay_region() {
             mem(&mut out, (r.loc.x as f64, r.loc.y as f64), &shell.overlay_buffer,
@@ -831,6 +854,12 @@ impl FeatherCompositor {
             profile.step("dock");
         }
         self.shell.ensure_switcher_rendered(&mut self.fonts);
+        // Пароль и блокировка забирают экран: кольцо не остаётся поверх
+        if self.shell.ring_shown().is_some() && (self.auth.is_open() || self.lock.active) {
+            self.close_ring();
+            self.shell.ring_fading = None;
+        }
+        self.shell.ensure_ring_rendered(&mut self.fonts);
         self.shell.ensure_ghost_rendered(&mut self.fonts);
         profile.step("switcher/ghost");
         if self.shell.launchpad.is_some() || self.shell.scratch_backdrop {
@@ -949,6 +978,7 @@ impl FeatherCompositor {
             }
             self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now()) || self.auth.animating();
             self.finish_mission();
+            self.finish_ring();
             self.advance_bounce();
             if self.activation_deferred && !self.animations.scratch_moving() {
                 self.refresh_focus();
@@ -1490,7 +1520,7 @@ impl FeatherCompositor {
         if self.lock.active {
             let r=self.monitor_at(px,py);return self.lock_focus().and_then(|surface|smithay::desktop::utils::under_from_surface_tree(&surface,(px,py).into(),(r.x,r.y),WindowSurfaceType::ALL).map(|(s,p)|(s,p.to_f64())));
         }
-        if (self.shell.launchpad.is_some() && px>=0.0 && px<self.shell.screen_w as f64 && py>=0.0 && py<self.shell.screen_h as f64) || self.shell.switcher.as_ref().is_some_and(|s|s.visible) || self.icon_drag.as_ref().is_some_and(|d| d.active) {
+        if (self.shell.launchpad.is_some() && px>=0.0 && px<self.shell.screen_w as f64 && py>=0.0 && py<self.shell.screen_h as f64) || self.shell.switcher.as_ref().is_some_and(|s|s.visible) || self.shell.ring.is_some() || self.icon_drag.as_ref().is_some_and(|d| d.active) {
             // Launchpad covers all windows; while dragging an app nothing below gets the pointer
             return None;
         }

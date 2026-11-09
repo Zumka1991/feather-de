@@ -112,6 +112,17 @@ struct MissionMotion {
     targets: HashMap<u64, R>,
 }
 
+/// Кольцо программ (`ring.rs`): всё движение — пружины, без таймеров
+struct RingMotion {
+    /// 0 закрыто, 1 открыто; при закрытии идёт обратно к 0
+    open: Spring,
+    /// Угол подсветки на окружности (радианы, без заворота: путь всегда короткий)
+    mark: Spring,
+    /// Выделенность каждой иконки, 0…1
+    icons: Vec<Spring>,
+    selected: usize,
+}
+
 #[derive(Default)]
 pub struct Animations {
     disabled: bool,
@@ -123,6 +134,8 @@ pub struct Animations {
     overlay_key: Option<OverlayKind>,
     overlay: Option<Spring>,
     launchpad: Option<Spring>,
+    /// Кольцо программ: открытие, подсветка по дуге, увеличение выбранной иконки
+    ring: Option<RingMotion>,
     /// The Подложка: 0 away, 1 in front. While it moves, its windows slide from above.
     scratch: Option<Spring>,
     scratch_open: bool,
@@ -295,6 +308,38 @@ impl Animations {
         } else {
             self.launchpad = None;
         }
+        match shell.ring_shown() {
+            None => self.ring = None,
+            Some(ring) => {
+                let (n, sel) = (ring.len(), ring.selected);
+                let a = crate::ring::angle(n, sel) as f64;
+                let fresh = self.ring.as_ref().is_none_or(|m| m.icons.len() != n);
+                if fresh {
+                    // Новое кольцо (или гаснущее сменилось новым другого размера): с нуля
+                    let open = self.ring.take().map_or(Spring::quick(0.0, 1.0), |m| m.open);
+                    self.ring = Some(RingMotion {
+                        open,
+                        mark: Spring::quick(a, a),
+                        icons: (0..n).map(|i| { let v = f64::from(u8::from(i == sel)); Spring::quick(v, v) }).collect(),
+                        selected: sel,
+                    });
+                }
+                let m = self.ring.as_mut().unwrap();
+                m.open.target = if shell.ring.is_some() { 1.0 } else { 0.0 };
+                if m.selected != sel {
+                    m.selected = sel;
+                    let d = (a - m.mark.value).rem_euclid(std::f64::consts::TAU);
+                    let d = if d > std::f64::consts::PI { d - std::f64::consts::TAU } else { d };
+                    m.mark.target = m.mark.value + d;
+                    for (i, s) in m.icons.iter_mut().enumerate() {
+                        s.target = f64::from(u8::from(i == sel));
+                    }
+                }
+                m.open.advance(dt);
+                m.mark.advance(dt);
+                m.icons.iter_mut().for_each(|s| s.advance(dt));
+            }
+        }
         if let Some(slide) = self.slide.as_mut() {
             // Starts on this frame, not at the previous idle one
             if !std::mem::take(&mut slide.fresh) {
@@ -327,7 +372,8 @@ impl Animations {
             || self.mission.as_ref().is_some_and(|m| m.spring.active())
             || self.windows.values().any(|w| w.spring.active())
             || self.overlay.as_ref().is_some_and(Spring::active)
-            || self.launchpad.as_ref().is_some_and(Spring::active);
+            || self.launchpad.as_ref().is_some_and(Spring::active)
+            || self.ring.as_ref().is_some_and(|m| m.open.active() || m.mark.active() || m.icons.iter().any(Spring::active));
         self.last_frame = active.then_some(now);
         active
     }
@@ -408,6 +454,32 @@ impl Animations {
             ),
             0.96,
         )
+    }
+
+    /// Стекло кольца вырастает из своего центра (под курсором) и туда же втягивается
+    pub fn ring(&self, shell: &MacShell) -> Visual {
+        let Some(ring) = shell.ring_shown().filter(|_| !self.disabled) else {
+            return Visual::default();
+        };
+        Visual::appearing(self.ring_open().clamp(0.0, 1.0), (ring.center.0 as f64, ring.center.1 as f64), 0.86)
+    }
+    /// Открытость кольца 0…1 (без анимаций — сразу 1)
+    pub fn ring_open(&self) -> f64 {
+        if self.disabled { 1.0 } else { self.ring.as_ref().map_or(1.0, |m| m.open.value) }
+    }
+    /// Угол подсветки; `None` — стоять точно на выбранной
+    pub fn ring_mark_angle(&self) -> Option<f32> {
+        self.ring.as_ref().filter(|_| !self.disabled).map(|m| m.mark.value as f32)
+    }
+    pub fn ring_selected(&self, i: usize, selected: usize) -> f64 {
+        match self.ring.as_ref().filter(|_| !self.disabled).and_then(|m| m.icons.get(i)) {
+            Some(s) => s.value,
+            None => f64::from(u8::from(i == selected)),
+        }
+    }
+    /// Закрытое кольцо догасло
+    pub fn ring_faded(&self) -> bool {
+        self.disabled || self.ring.as_ref().is_none_or(|m| m.open.target == 0.0 && !m.open.active())
     }
 
     pub fn launchpad(&self, shell: &MacShell) -> Visual {
