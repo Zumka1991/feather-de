@@ -73,14 +73,14 @@ esac
 BUILD_PKGS=(
     build-essential pkg-config curl ca-certificates
     libdrm-dev libgbm-dev libinput-dev libseat-dev libudev-dev libxkbcommon-dev
-    libwayland-dev libegl-dev libgles-dev libpam0g-dev
+    libwayland-dev libegl-dev libgles-dev libpam0g-dev libpipewire-0.3-dev libclang-dev clang
 )
 # Запуск: Mesa (EGL/GLES и DRI-драйверы), D-Bus, PAM, курсоры, домашние папки и шрифты.
 # Свои шрифты (Inter, JetBrains Mono) и иконки Пёрышко носит с собой; системные Noto нужны
 # Firefox и другим программам, а также для иероглифов и эмодзи. На Ubuntu Server нет ничего из
 # того, что обычно приносит рабочий стол: без xdg-user-dirs нет «Документов» и «Загрузок».
 RUNTIME_PKGS=(
-    libegl1 libgles2 libgl1-mesa-dri libgbm1 libinput10 libseat1 libxkbcommon0
+    libegl1 libgles2 libgl1-mesa-dri libgbm1 libinput10 libseat1 libxkbcommon0 libpipewire-0.3-0t64
     libpam0g fontconfig dbus dbus-user-session xdg-utils xdg-user-dirs locales
     # update-desktop-database: без индекса типов файлов порталы (браузер из snap) не находят,
     # чем открыть .deb и другие файлы

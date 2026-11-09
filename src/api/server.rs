@@ -233,6 +233,36 @@ impl Server {
     async fn space_changed(emitter: &SignalEmitter<'_>, number: u32, count: u32, larvis: bool) -> zbus::Result<()>;
 }
 
+/// `org.feather.ScreenCast1`: потоки демонстрации экрана для портала Пёрышка
+/// (`org.freedesktop.impl.portal.ScreenCast`). Разрешение спрашивает портал; здесь — только
+/// создание и остановка потока PipeWire.
+pub struct Cast {
+    requests: channel::SyncSender<Request>,
+}
+
+impl Cast {
+    async fn call(&self, call: Call) -> Result<Reply, Error> {
+        Server { requests: self.requests.clone(), automation_enabled: false }.call(call).await
+    }
+}
+
+#[zbus::interface(name = "org.feather.ScreenCast1")]
+impl Cast {
+    /// `cursor_mode`: 1 — без курсора, 2 — курсор в кадре. Пустой `monitor` — монитор под
+    /// курсором. Ответ: id потока, узел PipeWire и логический прямоугольник монитора.
+    async fn start(&self, cursor_mode: u32, monitor: String) -> Result<(u64, u32, i32, i32, i32, i32), Error> {
+        if monitor.len() > 64 {
+            return Err(Error::InvalidArgs("Слишком длинное имя монитора".into()));
+        }
+        want!(self.call(Call::CastStart(cursor_mode != 1, monitor)).await,
+            Reply::Cast { stream, node, rect } => (stream, node, rect.0, rect.1, rect.2, rect.3))
+    }
+
+    async fn stop(&self, stream: u64) -> Result<(), Error> {
+        want!(self.call(Call::CastStop(stream)).await, Reply::Done => ())
+    }
+}
+
 pub async fn run(requests: channel::SyncSender<Request>, events: async_channel::Receiver<Event>, name: String, replace: bool, automation_enabled: bool) -> zbus::Result<()> {
     let conn = zbus::connection::Builder::session()?.build().await?;
     serve(&conn, requests, events, &name, replace, automation_enabled).await
@@ -242,7 +272,8 @@ pub async fn run(requests: channel::SyncSender<Request>, events: async_channel::
 /// takes it from the real session. Either one lets a later owner replace it.
 async fn serve(conn: &Connection, requests: channel::SyncSender<Request>, events: async_channel::Receiver<Event>, name: &str, replace: bool, automation_enabled: bool) -> zbus::Result<()> {
     use zbus::fdo::{RequestNameFlags as F, RequestNameReply as R};
-    conn.object_server().at(feather_api::PATH, Server { requests, automation_enabled }).await?;
+    conn.object_server().at(feather_api::PATH, Server { requests: requests.clone(), automation_enabled }).await?;
+    conn.object_server().at(feather_api::CAST_PATH, Cast { requests }).await?;
     let mut flags = F::AllowReplacement | F::DoNotQueue;
     if replace {
         flags |= F::ReplaceExisting;

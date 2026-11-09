@@ -317,11 +317,12 @@ GTK-тема сессии помогает согласовать оформле
 на настоящих программах, `security-context` для песочниц не реализован.
 
 **Порталы:** `FileChooser` использует настоящие диалоги «Файлов» и поддерживает
-OpenFile/SaveFile/SaveFiles. Интерфейсы `Screenshot`, `ScreenCast` и `Access`
-присутствуют в коде, но пока экспериментальны: Screenshot возвращает тестовое
-изображение 1×1, а ScreenCast — метаданные без настоящего потока PipeWire.
-Политика «спрашивать» ещё не показывает полноценный диалог разрешения.
-Полноценную демонстрацию экрана в OBS/браузере считать готовой нельзя.
+OpenFile/SaveFile/SaveFiles. `ScreenCast` отдаёт настоящий поток PipeWire с монитором
+(под курсором) для OBS, браузеров и звонков: кадры снимаются только при изменении экрана,
+не чаще 60 в секунду, курсор по выбору программы; под блокировкой в поток идёт экран
+блокировки. Захвата отдельного окна и окна выбора монитора пока нет. `Screenshot` и
+`Access` экспериментальны: Screenshot возвращает тестовое изображение 1×1, политика
+«спрашивать» ещё не показывает полноценный диалог разрешения.
 **Встроенные снимки по Print / Shift+Print / Alt+Print работают отдельно:**
 весь экран, область или окно, сохранение в файл и буфер обмена, PNG/JPEG/WebP.
 
@@ -369,7 +370,7 @@ makepkg -si
 
 Понадобятся `base-devel` и актуальный Rust/Cargo. Зависимости перечислены в
 [PKGBUILD](packaging/PKGBUILD): glibc, gcc-libs, libinput, libxkbcommon, seatd,
-Mesa/EGL, PAM, systemd-libs, Wayland, fontconfig, Noto и D-Bus.
+Mesa/EGL, PAM, systemd-libs, Wayland, fontconfig, Noto, D-Bus и libpipewire.
 Текущая упаковка указывает **glibc ≥ 2.44**.
 
 ### Ubuntu
@@ -461,7 +462,7 @@ make build
 ```
 
 Потребуются заголовки и библиотеки графического стека, libinput, libudev,
-libxkbcommon, libseat, Wayland и `pkg-config`, а также fontconfig и шрифты во время
+libxkbcommon, libseat, Wayland, PipeWire (`libpipewire-0.3-dev`), clang и `pkg-config`, а также fontconfig и шрифты во время
 запуска. Используйте Rust toolchain, совместимый с зависимостями из Cargo.lock.
 Для X11-программ (Steam, Wine, старые приложения) нужен `xwayland-satellite` и `xwayland`
 (`sudo apt install xwayland-satellite xwayland`; если пакета нет, его собирает

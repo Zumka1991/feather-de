@@ -967,6 +967,12 @@ impl FeatherCompositor {
         };
 
         self.shell.reclaim_after_frame();
+        // Screen cast: the heads that changed (nested shows one view: any frame counts)
+        if presented.is_some() && !self.casts.is_empty() {
+            let heads = std::mem::take(&mut self.frame_heads);
+            self.cast_after_render(self.backend.is_drm().then_some(&heads[..]));
+            self.frame_heads = heads;
+        }
         let gpu_time = t_gpu.elapsed();
         // Recent worst cost, decaying: how early the next DRM frame has to start
         self.frame_cost = (cpu_time + gpu_time).max(self.frame_cost.mul_f64(0.95));
@@ -1260,6 +1266,69 @@ impl FeatherCompositor {
         let next=d.heads.iter().filter(|h|h.dirty&&!h.pending).filter_map(|h|h.render_at).min();
         if let Some(at)=next {self.arm_render_deadline(at);}
         submitted.then(||t.elapsed())
+    }
+
+    /// Кадр монитора для демонстрации экрана: сцена во внеэкранную текстуру и асинхронное
+    /// чтение в PBO. Под блокировкой — экран блокировки, рабочий стол не попадает в поток.
+    pub(crate) fn render_cast_frame(
+        &mut self,
+        monitor: &str,
+        cursor: bool,
+        target: &mut Option<(smithay::backend::renderer::gles::GlesTexture, (i32, i32))>,
+    ) -> Option<smithay::backend::renderer::gles::GlesMapping> {
+        use smithay::backend::{
+            allocator::Fourcc,
+            renderer::{damage::OutputDamageTracker, Bind, ExportMem, Offscreen},
+        };
+        let info = self.monitors.iter().find(|m| m.info.name == monitor)?.info.clone();
+        let scale = self.scale_factor;
+        let size = ((info.rect.w as f64 * scale).round() as i32, (info.rect.h as f64 * scale).round() as i32);
+        let pointer = (self.pointer_location.x, self.pointer_location.y);
+        let draw_cursor = cursor && !self.pointer_locked();
+        let blank = self.power.blanked || self.lock.splash.is_opaque(Instant::now());
+        let renderer = self.backend.renderer();
+        let elements = if blank {
+            Vec::new()
+        } else if self.lock.active {
+            let wallpaper = self.shell.wallpaper_texture.as_ref().map(|t| (t, self.shell.wallpaper_texture_size));
+            output_elements(
+                self.lock.monitor_elements(renderer, scale, &info, wallpaper),
+                crate::monitors::Rect { x: 0, y: 0, ..info.rect },
+                scale,
+            )
+        } else {
+            let mut e = if draw_cursor { cursor_elements(renderer, &mut self.cursor, pointer, scale) } else { Vec::new() };
+            if info.primary {
+                let screen = (self.shell.screen_w, self.shell.screen_h);
+                e.extend(self.auth.elements(renderer, scale, screen, (self.phys_w, self.phys_h)));
+                e.extend(self.banner.elements(renderer, scale, screen));
+                e.extend(self.audio_hud.elements(renderer, scale, screen));
+            }
+            drag_overlay(&mut e, renderer, &self.shell, pointer, scale);
+            e.extend(build_scene(
+                renderer,
+                &self.shell,
+                &self.windows,
+                scale,
+                pointer,
+                self.rounded_program.as_ref(),
+                &self.animations,
+                info.rect,
+                &mut Vec::new(),
+            ));
+            output_elements(e, info.rect, scale)
+        };
+        if target.as_ref().is_none_or(|(_, s)| *s != size) {
+            *target = renderer.create_buffer(Fourcc::Abgr8888, size.into()).ok().map(|t| (t, size));
+        }
+        let (texture, _) = target.as_mut()?;
+        let mut fb = renderer.bind(texture).ok()?;
+        let clear = if blank || self.lock.active { Color32F::new(0.0, 0.0, 0.0, 1.0) } else { CLEAR_COLOR };
+        OutputDamageTracker::new(size, 1.0, smithay::utils::Transform::Normal)
+            .render_output(renderer, &mut fb, 0, &elements, clear)
+            .ok()?;
+        let rect = smithay::utils::Rectangle::<i32, smithay::utils::Buffer>::from_size(size.into());
+        renderer.copy_framebuffer(&fb, rect, Fourcc::Abgr8888).ok()
     }
 
     fn mark_frame_in_flight(&mut self) {

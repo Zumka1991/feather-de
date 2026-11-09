@@ -21,6 +21,7 @@ depends=(
     'fontconfig'
     'noto-fonts'
     'dbus'
+    'libpipewire'
 )
 optdepends=(
     'noto-fonts-emoji: значки панели эмодзи и эмодзи в программах'

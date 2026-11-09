@@ -732,6 +732,37 @@ struct CastSessionState {
     source_type: u32,
     cursor_mode: u32,
     persist_mode: u32,
+    /// Поток композитора (`org.feather.ScreenCast1`), пока сеанс открыт
+    stream: Option<u64>,
+}
+
+/// `org.feather.ScreenCast1.Start` в композиторе этого сеанса: id потока, узел PipeWire,
+/// логический прямоугольник монитора
+async fn cast_start(conn: &zbus::Connection, cursor_mode: u32) -> zbus::Result<(u64, u32, i32, i32, i32, i32)> {
+    let name = feather_api::bus_name();
+    let reply = conn
+        .call_method(
+            Some(name.as_str()),
+            feather_api::CAST_PATH,
+            Some(feather_api::CAST_INTERFACE),
+            "Start",
+            &(cursor_mode, ""),
+        )
+        .await?;
+    reply.body().deserialize()
+}
+
+async fn cast_stop(conn: &zbus::Connection, stream: u64) -> zbus::Result<()> {
+    let name = feather_api::bus_name();
+    conn.call_method(
+        Some(name.as_str()),
+        feather_api::CAST_PATH,
+        Some(feather_api::CAST_INTERFACE),
+        "Stop",
+        &(stream,),
+    )
+    .await
+    .map(|_| ())
 }
 
 struct PortalSession {
@@ -743,13 +774,20 @@ struct PortalSession {
 impl PortalSession {
     async fn close(
         &self,
+        #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(object_server)] server: &ObjectServer,
         #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
-        self.sessions
+        let removed = self
+            .sessions
             .lock()
             .unwrap()
             .remove(self.path.as_str());
+        if let Some(stream) = removed.and_then(|s| s.stream) {
+            if let Err(e) = cast_stop(conn, stream).await {
+                tracing::warn!("Портал: не удалось остановить демонстрацию {stream}: {e}");
+            }
+        }
         let _ = Self::closed(&emitter).await;
         let path = self.path.clone();
         let _ = server.remove::<Self, _>(path).await;
@@ -775,12 +813,12 @@ impl ScreenCastPortal {
 
     #[zbus(property, name = "AvailableSourceTypes")]
     fn available_source_types(&self) -> u32 {
-        3 // 1 = MONITOR, 2 = WINDOW
+        1 // MONITOR; WINDOW (2) is not streamed yet
     }
 
     #[zbus(property, name = "AvailableCursorModes")]
     fn available_cursor_modes(&self) -> u32 {
-        7 // 1 = Hidden, 2 = Embedded, 4 = Metadata
+        3 // 1 = Hidden, 2 = Embedded; no Metadata (4)
     }
 
     async fn create_session(
@@ -818,6 +856,7 @@ impl ScreenCastPortal {
                     source_type: 1,
                     cursor_mode: default_cursor,
                     persist_mode: 0,
+                    stream: None,
                 },
             );
         }
@@ -865,7 +904,8 @@ impl ScreenCastPortal {
         }
         if let Some(cm) = get::<u32>(&options, "cursor_mode") {
             if matches!(cm, 1 | 2 | 4) {
-                sess.cursor_mode = cm;
+                // Metadata is not offered: the cursor is drawn into the frame instead
+                sess.cursor_mode = if cm == 4 { 2 } else { cm };
             } else {
                 return (2, Options::new());
             }
@@ -878,6 +918,7 @@ impl ScreenCastPortal {
 
     async fn start(
         &self,
+        #[zbus(connection)] conn: &zbus::Connection,
         handle: OwnedObjectPath,
         session_handle: OwnedObjectPath,
         app_id: String,
@@ -907,12 +948,36 @@ impl ScreenCastPortal {
         if !evaluate_and_record_portal_access(&cfg, effective_app, effective_app) {
             return (1, Options::new());
         }
+        if sess.stream.is_some() {
+            return (2, Options::new());
+        }
+        // The compositor creates the PipeWire node; its number goes to the application
+        let started = cast_start(conn, sess.cursor_mode).await;
+        let (stream, node, x, y, w, h) = match started {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Портал: композитор не начал демонстрацию: {e}");
+                return (2, Options::new());
+            }
+        };
+        let still_open = match self.sessions.lock().unwrap().get_mut(session_handle.as_str()) {
+            Some(s) => {
+                s.stream = Some(stream);
+                true
+            }
+            None => false,
+        };
+        if !still_open {
+            // Closed while the node was being created
+            let _ = cast_stop(conn, stream).await;
+            return (2, Options::new());
+        }
         let mut props = Options::new();
-        props.insert("position".into(), value((0i32, 0i32)));
-        props.insert("size".into(), value((1920i32, 1080i32)));
-        props.insert("source_type".into(), value(sess.source_type));
+        props.insert("position".into(), value((x, y)));
+        props.insert("size".into(), value((w, h)));
+        props.insert("source_type".into(), value(1u32));
         props.insert("cursor_mode".into(), value(sess.cursor_mode));
-        let streams: Vec<(u32, Options)> = vec![(1u32, props)];
+        let streams: Vec<(u32, Options)> = vec![(node, props)];
         let mut r = Options::new();
         r.insert("streams".into(), value(streams));
         r.insert("persist_mode".into(), value(sess.persist_mode));

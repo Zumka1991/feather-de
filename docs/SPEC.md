@@ -178,7 +178,7 @@ D-Bus worker отправляет снимки через ограниченны
 | P0 | клавиатурный grab для `xdg_popup` | навигация по меню клавиатурой |
 | P0 | `zwlr_layer_shell_v1` | сторонние панели, уведомления (mako), лаунчеры |
 | P1 | `ext_session_lock_v1`, `ext_idle_notify_v1`, `zwp_idle_inhibit_manager_v1` | блокировка экрана, гашение, видео без засыпания |
-| P1 | `zwlr_screencopy_v1` / `ext_image_copy_capture` + xdg-desktop-portal | скриншоты, демонстрация экрана |
+| P1 | `zwlr_screencopy_v1` / `ext_image_copy_capture` + xdg-desktop-portal | скриншоты, демонстрация экрана (ScreenCast уже идёт своим потоком PipeWire, `src/pw_cast.rs`) |
 | P1 | XWayland (xwayland-satellite) | X11-приложения внутри DE, а не в labwc |
 | P2 | `wp_linux_drm_syncobj_v1` (explicit sync) | NVIDIA, меньше задержек |
 | P2 | `wp_content_type_v1`, `wp_tearing_control_v1` | игры, VRR |

@@ -39,6 +39,7 @@ mod raster;
 mod rounded;
 mod screenshot;
 mod screencast;
+mod pw_cast;
 mod settings;
 mod system_settings;
 mod system_preferences;
@@ -332,6 +333,8 @@ pub struct FeatherCompositor {
     /// Finished screenshots (encoded off the event loop) come back here
     pub screenshot_tx: smithay::reexports::calloop::channel::Sender<Option<crate::screenshot::Finished>>,
     pub screencast: crate::screencast::ScreenRecorderState,
+    /// Демонстрация экрана через PipeWire (портал ScreenCast)
+    pub casts: crate::pw_cast::ScreenCasts,
     /// Presses handled by the compositor whose release must not reach clients
     pub consumed_buttons: Vec<u32>,
     pub compositor_cursor: Option<CursorIcon>,
@@ -2386,6 +2389,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         client_clipboard_mimes: Vec::new(),
         screenshot_tx,
         screencast: crate::screencast::ScreenRecorderState::new(screencast_tx),
+        casts: Default::default(),
         consumed_buttons: Vec::new(),
         compositor_cursor: None,
         user_interacted: false,

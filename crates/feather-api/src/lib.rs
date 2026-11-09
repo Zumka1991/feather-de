@@ -12,6 +12,9 @@ use zvariant::Type;
 pub const BUS_NAME: &str = "org.feather.Shell1";
 pub const PATH: &str = "/org/feather/Shell1";
 pub const INTERFACE: &str = "org.feather.Shell1";
+/// Потоки демонстрации экрана (для портала ScreenCast) — на том же имени шины
+pub const CAST_PATH: &str = "/org/feather/ScreenCast1";
+pub const CAST_INTERFACE: &str = "org.feather.ScreenCast1";
 /// Версия интерфейса (свойство `Version`): растёт при несовместимых изменениях
 pub const VERSION: u32 = 1;
 /// Другое имя на шине — для тестового экземпляра рядом с настоящим Пёрышком

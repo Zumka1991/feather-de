@@ -44,6 +44,8 @@ serde_json = "1"
 x11rb = { version = "0.13", default-features = false }
 zeroize = "1"
 libloading = "0.8"
+# Screen cast for OBS and browsers: the compositor streams monitor frames to PipeWire
+pipewire = { version = "0.10", features = ["v0_3_34"] }
 feather-api = { path = "crates/feather-api", default-features = false }
 
 [dev-dependencies]

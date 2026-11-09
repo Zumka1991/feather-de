@@ -308,10 +308,12 @@ panels and input methods, but waybar, rofi, fcitx5 and ibus are still untested, 
 sandboxes is not implemented: [protocols (in Russian)](docs/PROTOCOLS.md).
 
 **Portals:** `FileChooser` uses real Files dialogs for OpenFile/SaveFile/SaveFiles.
-`Screenshot`, `ScreenCast`, and `Access` interfaces exist but are experimental:
-Screenshot currently returns a 1×1 placeholder, while ScreenCast returns metadata
-without a real PipeWire stream. The “ask” policy does not yet show a complete
-permission prompt. Browser/OBS screen sharing should not be treated as ready.
+`ScreenCast` provides a real PipeWire stream of the monitor under the pointer for OBS,
+browsers, and calls: frames are captured only when the screen changes, at most 60 per
+second, with the cursor as the application asks; while locked, the stream shows the lock
+screen. Single-window capture and a monitor picker are not implemented yet. `Screenshot`
+and `Access` are experimental: Screenshot returns a 1×1 placeholder, and the “ask” policy
+does not yet show a complete permission prompt.
 **Built-in Print / Shift+Print / Alt+Print capture works separately:** screen,
 region, or window, with clipboard/file output and PNG/JPEG/WebP formats.
 
@@ -357,7 +359,7 @@ makepkg -si
 
 You need `base-devel` and a current Rust/Cargo toolchain. The
 [PKGBUILD](packaging/PKGBUILD) declares glibc, gcc-libs, libinput, libxkbcommon,
-seatd, Mesa/EGL, PAM, systemd-libs, Wayland, fontconfig, Noto, and D-Bus dependencies.
+seatd, Mesa/EGL, PAM, systemd-libs, Wayland, fontconfig, Noto, D-Bus, and libpipewire dependencies.
 Current packaging specifies **glibc ≥ 2.44**.
 
 ### Ubuntu
@@ -425,7 +427,7 @@ make build
 ```
 
 Install the development libraries/headers for the graphics stack, libinput,
-libudev, libxkbcommon, libseat, Wayland, and `pkg-config`, plus runtime fontconfig
+libudev, libxkbcommon, libseat, Wayland, PipeWire (`libpipewire-0.3-dev`), clang, and `pkg-config`, plus runtime fontconfig
 and fonts. Use a Rust toolchain compatible with the dependencies in Cargo.lock.
 
 ```bash

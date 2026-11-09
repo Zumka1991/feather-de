@@ -51,6 +51,9 @@ pub enum Call {
     WindowInput(u64, automation::Input),
     LockScreen,
     Suspend,
+    /// Демонстрация экрана для портала: показывать ли курсор, имя монитора (пусто — под курсором)
+    CastStart(bool, String),
+    CastStop(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +78,8 @@ pub enum Reply {
     Percent(u32),
     Path(String),
     WindowImage(u64, u32, u32, Vec<u8>),
+    /// Поток демонстрации: id, узел PipeWire, логический прямоугольник монитора
+    Cast { stream: u64, node: u32, rect: (i32, i32, i32, i32) },
 }
 
 /// Одноразовый ответ; брошенный без ответа превращается у клиента в ошибку
@@ -150,6 +155,7 @@ pub fn allowed_while_locked(call: &Call) -> bool {
             | Call::Media(_)
             | Call::LockScreen
             | Call::Suspend
+            | Call::CastStop(_)
     )
 }
 
@@ -248,6 +254,12 @@ impl FeatherCompositor {
         match call {
             Call::Screenshot(target) => return self.api_screenshot(target, reply),
             Call::ObserveWindow(id) => return self.api_observe(id, reply),
+            // Answered once PipeWire has created the node
+            Call::CastStart(cursor, monitor) => return self.cast_start(cursor, &monitor, reply),
+            Call::CastStop(id) => {
+                self.cast_stop(id);
+                return reply.send(Ok(Reply::Done));
+            }
             _ => {}
         }
         let result = self.api_call(call);
@@ -538,7 +550,9 @@ impl FeatherCompositor {
             Call::LockScreen => self.lock_session(),
             Call::Suspend => self.sleep_system(),
             Call::WindowInput(token, input) => self.api_window_input(token, input)?,
-            Call::Screenshot(_) | Call::ObserveWindow(_) => unreachable!("answered from the encoder thread"),
+            Call::Screenshot(_) | Call::ObserveWindow(_) | Call::CastStart(..) | Call::CastStop(_) => {
+                unreachable!("answered in api_request")
+            }
         }
         Ok(Reply::Done)
     }
