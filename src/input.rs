@@ -28,6 +28,20 @@ use crate::{
 };
 
 const BTN_LEFT: u32 = 0x110;
+/// XKB keycode of Caps Lock (evdev 58)
+const CAPS_KEYCODE: u32 = 58 + 8;
+/// Holding Caps Lock this long turns on capitals, as on macOS; a shorter tap switches the language
+pub const CAPS_HOLD_MS: u64 = 400;
+
+/// A physical Caps Lock press while Caps Lock switches languages.
+/// The keymap then keeps an ordinary Caps_Lock key; the compositor decides what a press means:
+/// a tap switches the language, a hold (or any press while capitals are on) toggles Caps Lock.
+/// So a stray Shift+Caps can no longer leave capitals on with Caps only switching languages.
+pub struct CapsHold {
+    /// Caps Lock was already toggled for this press; the release does nothing more
+    done: bool,
+    timer: Option<smithay::reexports::calloop::RegistrationToken>,
+}
 const BTN_RIGHT: u32 = 0x111;
 const DOUBLE_CLICK_MS: u128 = 350;
 const SWIPE_THRESHOLD: f64 = 48.0;
@@ -504,7 +518,78 @@ impl FeatherCompositor {
             }
         }
     }
+    /// Tap → next language, hold → capitals on, press with capitals on → capitals off.
+    fn caps_switch_key(&mut self, key_state: KeyState, time: u32) {
+        match key_state {
+            KeyState::Pressed => {
+                if self.caps_hold.is_some() {
+                    return;
+                }
+                if self.keyboard.modifier_state().caps_lock {
+                    self.toggle_caps_lock(time);
+                    self.caps_hold = Some(CapsHold { done: true, timer: None });
+                    return;
+                }
+                let timer = self
+                    .loop_handle
+                    .insert_source(
+                        smithay::reexports::calloop::timer::Timer::from_duration(std::time::Duration::from_millis(CAPS_HOLD_MS)),
+                        |_, _, st| {
+                            st.caps_held_long();
+                            smithay::reexports::calloop::timer::TimeoutAction::Drop
+                        },
+                    )
+                    .ok();
+                self.caps_hold = Some(CapsHold { done: false, timer });
+            }
+            KeyState::Released => {
+                let Some(hold) = self.caps_hold.take() else { return };
+                if let Some(timer) = hold.timer {
+                    self.loop_handle.remove(timer);
+                }
+                if !hold.done {
+                    let count = self.keyboard_config.layouts.len().max(1);
+                    self.select_input_source((self.active_layout_index + 1) % count);
+                    if self.lock.active {
+                        let caps = self.keyboard.modifier_state().caps_lock;
+                        self.lock.status_changed(caps);
+                    }
+                }
+            }
+        }
+    }
+    pub fn caps_held_long(&mut self) {
+        let Some(hold) = self.caps_hold.as_mut() else { return };
+        hold.timer = None;
+        if !hold.done {
+            hold.done = true;
+            let time = self.start_time.elapsed().as_millis() as u32;
+            self.toggle_caps_lock(time);
+        }
+    }
+    /// An ordinary Caps_Lock press and release through XKB: the lock, the LEDs and the
+    /// modifiers sent to the focused client stay consistent.
+    fn toggle_caps_lock(&mut self, time: u32) {
+        let keyboard = self.keyboard.clone();
+        for state in [KeyState::Pressed, KeyState::Released] {
+            keyboard.input::<(), _>(self, CAPS_KEYCODE.into(), state, SERIAL_COUNTER.next_serial(), time, |_, _, _| FilterResult::Forward);
+        }
+        if self.lock.active {
+            let caps = self.keyboard.modifier_state().caps_lock;
+            self.lock.status_changed(caps);
+        }
+        self.needs_redraw = true;
+    }
     fn process_keyboard_key(&mut self,keycode:smithay::input::keyboard::Keycode,key_state:KeyState,time:u32){
+        if keycode.raw() == CAPS_KEYCODE
+            && self.keyboard_config.caps == crate::settings::Caps::Layout
+            && !self.capturing_shortcut()
+            && !self.lock.external()
+        {
+            self.cancel_key_repeat();
+            self.caps_switch_key(key_state, time);
+            return;
+        }
         if key_state == KeyState::Pressed {
             if let Some(stats) = self.frame_stats.as_mut() {
                 stats.record_key();

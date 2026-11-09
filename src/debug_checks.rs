@@ -1441,6 +1441,47 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
     }
 
+    if std::env::var_os("FEATHER_DEBUG_CAPS_CHECK").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only {return Err("caps check requires isolated windowed input".into());}
+        at(state, 1200, |st| {
+            st.apply_system_setting(crate::system_settings::Action::Shortcut(crate::settings::Switch::CapsLock));
+        })?;
+        at(state, 2200, |st| {
+            assert_eq!(st.keyboard_config.caps, crate::settings::Caps::Layout);
+            assert!(st.keyboard_config.layouts.len() >= 2);
+            let caps = |st: &FeatherCompositor| st.keyboard.modifier_state().caps_lock;
+            let start = st.active_layout_index;
+            st.debug_keyboard_key(58, true);
+            st.debug_keyboard_key(58, false);
+            assert_ne!(st.active_layout_index, start, "Caps tap switches the language");
+            assert!(!caps(st));
+            // The stray Shift+Caps that used to leave capitals stuck on now just switches
+            st.debug_keyboard_key(42, true);
+            st.debug_keyboard_key(58, true);
+            st.debug_keyboard_key(58, false);
+            st.debug_keyboard_key(42, false);
+            assert_eq!(st.active_layout_index, start);
+            assert!(!caps(st), "Shift+Caps no longer turns capitals on");
+            st.debug_keyboard_key(58, true); // held past CAPS_HOLD_MS below
+        })?;
+        at(state, 2200 + crate::input::CAPS_HOLD_MS + 300, |st| {
+            let caps = |st: &FeatherCompositor| st.keyboard.modifier_state().caps_lock;
+            let layout = st.active_layout_index;
+            assert!(caps(st), "holding Caps turns capitals on");
+            st.debug_keyboard_key(58, false);
+            assert!(caps(st));
+            assert_eq!(st.active_layout_index, layout, "a hold does not switch the language");
+            st.debug_keyboard_key(58, true);
+            st.debug_keyboard_key(58, false);
+            assert!(!caps(st), "a tap with capitals on turns them off");
+            assert_eq!(st.active_layout_index, layout);
+            st.debug_keyboard_key(58, true);
+            st.debug_keyboard_key(58, false);
+            assert_ne!(st.active_layout_index, layout);
+            eprintln!("[feather-caps-check] tap switches language, hold turns capitals on, tap turns them off, Shift+Caps is harmless");
+        })?;
+    }
+
     if std::env::var_os("FEATHER_DEBUG_LOCK_CHECK").is_some(){
         if state.backend.is_drm() || !state.debug_input_only {return Err("lock check requires isolated windowed input".into());}
         at(state,2000,|st|{
@@ -2002,7 +2043,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         at(state, 4200, |s| {
             assert_eq!(s.keyboard_config.layouts, ["us", "de"]);
             click(s, |a| {
-                matches!(a, A::Shortcut(crate::settings::Shortcut::CtrlSpace))
+                matches!(a, A::Shortcut(crate::settings::Switch::Chord(crate::settings::Shortcut::CtrlSpace)))
             });
         })?;
         at(state, 4800, |s| {

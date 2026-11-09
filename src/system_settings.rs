@@ -1,6 +1,6 @@
 //! System Settings: one layout describes painting and hit testing.
 use crate::{
-    settings::{Keyboard, Shortcut, SOURCES},
+    settings::{Keyboard, Switch, SOURCES},
     shell::R,
     text::FontSystem,
     theme::*,
@@ -221,7 +221,7 @@ pub enum Action {
     AddSource(String),
     RemoveSource(usize),
     SelectSource(usize),
-    Shortcut(Shortcut),
+    Shortcut(Switch),
     CapsLock,
     Typography,
     EditShortcut(crate::shortcuts::Action),
@@ -1839,31 +1839,37 @@ impl Panel {
                 l.header("Сочетания клавиш");
                 l.begin();
                 let seg = 98.0;
-                let wide = cw - 28.0 - 3.0 * seg >= 150.0;
+                let n = Switch::ALL.len() as f32;
+                let wide = cw - 28.0 - n * seg >= 150.0;
                 let r = l.row(
                     if wide { 48.0 } else { 84.0 },
-                    "Переключение раскладки",
+                    "Переключение языка",
                     String::new(),
                     Style::Row,
                     None,
                 );
                 let track = if wide {
-                    right(r, 3.0 * seg, 28.0)
+                    right(r, n * seg, 28.0)
                 } else {
                     R::new(r.x + 14.0, r.y + 44.0, r.w - 28.0, 28.0)
                 };
                 l.push(track, "", Style::Track, None);
-                let sw = track.w / 3.0;
-                for (i, shortcut) in Shortcut::ALL.into_iter().enumerate() {
+                let sw = track.w / n;
+                let current = c.keyboard.switch();
+                for (i, switch) in Switch::ALL.into_iter().enumerate() {
                     l.push(
                         R::new(track.x + i as f32 * sw, track.y, sw, track.h),
-                        shortcut.label(),
-                        Style::Segment(c.keyboard.shortcut == shortcut),
-                        kb.then_some(Action::Shortcut(shortcut)),
+                        switch.label(),
+                        Style::Segment(current == switch),
+                        kb.then_some(Action::Shortcut(switch)),
                     );
                 }
                 l.end();
-                l.footer("Сменить язык можно также в меню источников ввода в строке меню.");
+                l.footer(if current == Switch::CapsLock {
+                    "Нажмите Caps Lock, чтобы сменить язык; удерживайте, чтобы включить заглавные буквы. Сменить язык можно также в меню источников ввода в строке меню."
+                } else {
+                    "Сменить язык можно также в меню источников ввода в строке меню."
+                });
                 l.header("Клавиши");
                 l.begin();
                 for (title, values, current, labels, make) in [
@@ -3624,7 +3630,7 @@ impl crate::FeatherCompositor {
         self.active_layout_index = index;
         self.active_layout_name = sources[index].short.into();
         self.shell
-            .set_input_sources(sources, index, self.keyboard_config.shortcut.label());
+            .set_input_sources(sources, index, self.keyboard_config.switch().label());
         self.mark_builtin_windows_dirty();
         self.needs_redraw = true;
     }
@@ -4393,9 +4399,9 @@ impl crate::FeatherCompositor {
                     self.request_keyboard(config);
                 }
             }
-            Action::Shortcut(shortcut) => {
+            Action::Shortcut(switch) => {
                 let mut config = self.keyboard_config.clone();
-                config.shortcut = shortcut;
+                config.set_switch(switch);
                 self.request_keyboard(config);
             }
             Action::EditShortcut(action) => {

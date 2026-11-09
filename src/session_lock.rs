@@ -525,6 +525,12 @@ impl Default for Lock {
 }
 
 impl Lock {
+    /// Caps Lock or the language changed outside a typed key (Caps Lock switching languages)
+    pub fn status_changed(&mut self, caps: bool) {
+        self.caps = caps;
+        self.status_dirty = true;
+        self.dirty = true;
+    }
     pub fn external(&self) -> bool {
         self.owner.as_ref().is_some_and(Resource::is_alive)
     }

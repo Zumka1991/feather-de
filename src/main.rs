@@ -351,6 +351,8 @@ pub struct FeatherCompositor {
     pub sticky_keys: bool,
     pub physically_held_modifiers: std::collections::HashSet<smithay::input::keyboard::Keycode>,
     pub latched_modifiers: std::collections::HashSet<smithay::input::keyboard::Keycode>,
+    /// Caps Lock held while it switches languages (see `input::CapsHold`)
+    pub caps_hold: Option<crate::input::CapsHold>,
     pub modifier_used_while_held: bool,
     pub gestures: crate::input::GestureState,
     pub audio_hud: crate::audio_hud::Hud,
@@ -2391,6 +2393,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         sticky_keys: saved.sticky_keys,
         physically_held_modifiers: Default::default(),
         latched_modifiers: Default::default(),
+        caps_hold: None,
         modifier_used_while_held: false,
         gestures: Default::default(),
         audio_hud: Default::default(),

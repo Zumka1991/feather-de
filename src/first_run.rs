@@ -9,7 +9,7 @@
 use tiny_skia::PixmapMut;
 
 use crate::{
-    settings::{Shortcut, SOURCES},
+    settings::{Switch, SOURCES},
     text::FontSystem,
     theme::{
         accent_color, appearance, draw_feather_logo, fill_circle, fill_rounded_rect,
@@ -32,7 +32,7 @@ pub enum Action {
     Appearance(Appearance),
     Accent(AccentColor),
     TextSize(TextSize),
-    Shortcut(Shortcut),
+    Shortcut(Switch),
     ToggleLayout(&'static str),
 }
 
@@ -555,7 +555,7 @@ impl Wizard {
         stroke_rounded_rect(pm, x, y, w, 52.0, 12.0, 1.0, p.glass_outline);
         fonts.draw_text(
             pm,
-            "Сочетание клавиш",
+            "Переключение языка",
             x + 16.0,
             y + 16.0,
             13.0,
@@ -563,12 +563,13 @@ impl Wizard {
             true,
         );
 
-        let sw_w = 104.0;
-        let sx0 = x + w - 3.0 * sw_w - 2.0 * 8.0 - 14.0;
-        for (i, &sc) in Shortcut::ALL.iter().enumerate() {
+        let (sw_w, n) = (92.0, Switch::ALL.len() as f32);
+        let sx0 = x + w - n * sw_w - (n - 1.0) * 8.0 - 14.0;
+        let current = ctx.keyboard.switch();
+        for (i, &sc) in Switch::ALL.iter().enumerate() {
             let sx = sx0 + i as f32 * (sw_w + 8.0);
             let sy = y + 11.0;
-            let sel = ctx.keyboard.shortcut == sc;
+            let sel = current == sc;
             fill_rounded_rect(
                 pm,
                 sx,
@@ -688,7 +689,7 @@ impl Wizard {
             ("Язык интерфейса", crate::theme::lang().full_label()),
             ("Оформление", appearance().name()),
             ("Источники ввода", layouts.as_str()),
-            ("Переключение языка", ctx.keyboard.shortcut.label()),
+            ("Переключение языка", ctx.keyboard.switch().label()),
         ];
         for (i, (k, v)) in rows.iter().enumerate() {
             let ry = y + 12.0 + i as f32 * 22.0;
@@ -850,11 +851,11 @@ impl Wizard {
                 }
             }
             2 => {
-                let sw_w = 104.0;
-                let sx0 = x + w - 3.0 * sw_w - 2.0 * 8.0 - 14.0;
+                let (sw_w, n) = (92.0, Switch::ALL.len() as f32);
+                let sx0 = x + w - n * sw_w - (n - 1.0) * 8.0 - 14.0;
                 let sy = y + 11.0;
                 if (sy..=sy + 30.0).contains(&ly) {
-                    for (i, &sc) in Shortcut::ALL.iter().enumerate() {
+                    for (i, &sc) in Switch::ALL.iter().enumerate() {
                         let sx = sx0 + i as f32 * (sw_w + 8.0);
                         if (sx..=sx + sw_w).contains(&lx) {
                             return Some(Action::Shortcut(sc));
@@ -962,6 +963,12 @@ mod tests {
         assert_eq!(
             wiz.hit(60.0, 464.0, 640.0, 496.0, &ctx),
             Some(Action::Back)
+        );
+
+        wiz.step = 2;
+        assert_eq!(
+            wiz.hit(560.0, 175.0, 640.0, 496.0, &ctx),
+            Some(Action::Shortcut(crate::settings::Switch::CapsLock))
         );
 
         wiz.step = 3;

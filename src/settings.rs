@@ -122,6 +122,27 @@ impl Shortcut {
         Self::ALL.into_iter().find(|v| v.option() == s)
     }
 }
+/// How the input source is switched, as offered in Настройки → Клавиатура → «Переключение языка».
+/// Caps Lock is stored as `Caps::Layout`, so the Caps Lock menu and this row never disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    Chord(Shortcut),
+    CapsLock,
+}
+impl Switch {
+    pub const ALL: [Self; 4] = [
+        Self::Chord(Shortcut::AltShift),
+        Self::Chord(Shortcut::CtrlSpace),
+        Self::Chord(Shortcut::CtrlShift),
+        Self::CapsLock,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Chord(c) => c.label(),
+            Self::CapsLock => "Caps Lock",
+        }
+    }
+}
 /// What Caps Lock does (an XKB option compiled with the layouts)
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Caps {
@@ -140,7 +161,9 @@ impl Caps {
             Self::Normal => None,
             Self::Ctrl => Some("caps:ctrl_modifier"),
             Self::Escape => Some("caps:escape"),
-            Self::Layout => Some("grp:caps_toggle"),
+            // An ordinary Caps_Lock key: the compositor turns a tap into a language switch
+            // and a hold into capitals (input::CapsHold), like macOS
+            Self::Layout => None,
             Self::Off => Some("caps:none"),
         }
     }
@@ -213,10 +236,30 @@ impl Keyboard {
         self.layouts = layouts;
         self
     }
-    /// XKB options: the layout shortcut, the Caps Lock behaviour and the typographic layer
+    /// The one way the input source is switched now
+    pub fn switch(&self) -> Switch {
+        if self.caps == Caps::Layout { Switch::CapsLock } else { Switch::Chord(self.shortcut) }
+    }
+    /// Picking a chord takes language switching away from Caps Lock; the remembered chord
+    /// comes back if Caps Lock is later given another job.
+    pub fn set_switch(&mut self, switch: Switch) {
+        match switch {
+            Switch::CapsLock => self.caps = Caps::Layout,
+            Switch::Chord(chord) => {
+                self.shortcut = chord;
+                if self.caps == Caps::Layout {
+                    self.caps = Caps::Normal;
+                }
+            }
+        }
+    }
+    /// XKB options: the layout switch, the Caps Lock behaviour and the typographic layer.
+    /// With Caps Lock switching languages the chord is left out, so Alt+Shift and the like
+    /// stay free for programs, as the single selected option promises.
     pub fn options(&self) -> String {
         let typo = self.typography.then_some(["misc:typo", "lv3:ralt_switch"]).into_iter().flatten();
-        std::iter::once(self.shortcut.option()).chain(self.caps.option()).chain(typo).collect::<Vec<_>>().join(",")
+        let chord = (self.caps != Caps::Layout).then_some(self.shortcut.option());
+        chord.into_iter().chain(self.caps.option()).chain(typo).collect::<Vec<_>>().join(",")
     }
     pub fn sources(&self) -> Vec<InputSource> {
         self.layouts.iter().filter_map(|s| source(s)).collect()
@@ -1028,6 +1071,17 @@ mod tests {
         let bad = Settings::parse("keyboard_repeat_delay=3\nkeyboard_repeat_rate=9999\nkeyboard_caps=boom");
         assert_eq!((bad.keyboard.repeat_delay, bad.keyboard.repeat_rate, bad.keyboard.caps), (250, 35, Caps::Normal));
         assert_eq!(Caps::Off.next(), Caps::Normal);
+        let mut k = Keyboard::default();
+        k.shortcut = Shortcut::CtrlSpace;
+        k.set_switch(Switch::CapsLock);
+        assert_eq!((k.switch(), k.caps, k.options().as_str()), (Switch::CapsLock, Caps::Layout, ""));
+        let back = Settings::parse(&Settings { keyboard: k.clone(), ..Settings::default() }.text());
+        assert_eq!(back.keyboard.switch(), Switch::CapsLock);
+        k.set_switch(Switch::Chord(Shortcut::CtrlShift));
+        assert_eq!((k.caps, k.options().as_str()), (Caps::Normal, "grp:ctrl_shift_toggle"));
+        k.caps = Caps::Escape;
+        k.set_switch(Switch::Chord(Shortcut::AltShift));
+        assert_eq!(k.caps, Caps::Escape, "a chord leaves other Caps Lock jobs alone");
         s.dock_size = 64.0;
         s.dock_autohide = true;
         let back = Settings::parse(&s.text());

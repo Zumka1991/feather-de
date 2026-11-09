@@ -863,7 +863,7 @@ impl FeatherCompositor {
                 window_count: visible_count,
                 wayland_socket: &self.wayland_socket_name,
                 active_layout: &self.active_layout_name,
-                input_shortcut: self.keyboard_config.shortcut.label(),
+                input_shortcut: self.keyboard_config.switch().label(),
                 scale_factor: ui_scale(),
                 show_about: self.show_about,
             };
