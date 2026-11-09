@@ -9,10 +9,12 @@
 //! - Interactive region frame with 8 resize handles, interior move drag, exterior dim, and W×H badge.
 //! - Quick options right on the bar: countdown timer (Off / 5 s / 10 s), microphone audio,
 //!   cursor & click highlight visibility, and frame rate (30 / 60 FPS).
-//! - Non-blocking PBO GPU readback during recording + bounded channel (capacity 2) to the
-//!   `feather-recorder` background worker thread:
-//!   - Primary encoder: `ffmpeg` streaming raw RGBA → H.264 `.mp4` (`yuv420p`, `ultrafast`, `+faststart`,
-//!     plus optional PulseAudio/PipeWire microphone audio).
+//! - Damage-tracked offscreen render + non-blocking PBO GPU readback during recording: a still
+//!   area costs no readback, and the mapped buffer itself goes to the `feather-recorder` worker
+//!   (no copy on the main thread) through a bounded channel (capacity 2):
+//!   - Primary encoder: `ffmpeg` streaming raw RGBA → `.mp4`, BT.709: hardware VAAPI H.264 / HEVC
+//!     (RGBA → NV12 on the GPU) when available, else x264 `ultrafast`; frames are placed by the wall
+//!     clock, so the optional PulseAudio/PipeWire microphone stays in sync.
 //!   - Pure-Rust fallback encoder: built-in zero-dependency RIFF `AVI` / `MJPG` container writer
 //!     using `image::codecs::jpeg::JpegEncoder`, so video recording works out of the box even on
 //!     minimal systems without `ffmpeg`.
@@ -311,11 +313,6 @@ impl HudPanel {
     }
 }
 
-pub enum WorkerMsg {
-    Frame { rgba: Vec<u8>, pts_ms: u64 },
-    Stop,
-}
-
 #[derive(Debug, Clone)]
 pub struct FinishedRecording {
     pub saved: Option<PathBuf>,
@@ -331,10 +328,37 @@ pub struct ActiveRecording {
     pub show_cursor: bool,
     pub tx: SyncSender<WorkerMsg>,
     pub offscreen: Option<(GlesTexture, (i32, i32))>,
+    /// Tracks the offscreen texture across frames: unchanged frames are neither redrawn nor read back
+    pub damage: OutputDamageTracker,
     pub pending_pbo: Option<(GlesMapping, u64)>,
+    /// `FEATHER_PROFILE` main-thread capture statistics
+    pub stats: Option<CaptureStats>,
     pub last_shown_secs: u64,
     pub click_ring_buffer: MemoryRenderBuffer,
     pub click_ring_px: i32,
+}
+
+#[derive(Default)]
+pub struct CaptureStats {
+    pub ticks: u32,
+    pub readbacks: u32,
+    pub dropped: u32,
+    pub total: Duration,
+    pub max: Duration,
+}
+
+/// Hands a finished readback to the worker without copying it
+fn send_readback(renderer: &mut GlesRenderer, rec: &mut ActiveRecording, mapping: GlesMapping, pts_ms: u64) {
+    let Ok((ptr, len)) = renderer.map_texture(&mapping).map(|b| (b.as_ptr(), b.len())) else {
+        return;
+    };
+    let data = FrameData::Mapped(MappedFrame { ptr, len, _mapping: mapping });
+    if rec.tx.try_send(WorkerMsg::Frame { data, pts_ms }).is_err() {
+        if let Some(stats) = rec.stats.as_mut() {
+            stats.dropped += 1;
+            eprintln!("[feather-profile] запись: кадр {pts_ms} мс потерян, кодировщик не успевает");
+        }
+    }
 }
 
 pub struct ScreenRecorderState {
@@ -613,50 +637,268 @@ impl MjpegAviWriter {
 
 // ───────────────────────── Background Video Encoder Worker ─────────────────────────
 
-fn spawn_ffmpeg(path: &Path, width: u32, height: u32, fps: u32, with_audio: bool) -> Option<Child> {
-    if std::env::var_os("FEATHER_RECORD_PURE_RUST").is_some() {
-        return None;
+/// Pixels of one captured frame. On the compositor it is a GPU readback buffer that stays
+/// mapped until the worker drops it, so the main thread never copies the ~33 MB of a 4K frame.
+pub enum FrameData {
+    Owned(Vec<u8>),
+    Mapped(MappedFrame),
+}
+
+pub struct MappedFrame {
+    ptr: *const u8,
+    len: usize,
+    // Keeps the pixel-pack buffer mapped. Dropping it only queues the unmap for the renderer's
+    // next cleanup on the main thread.
+    _mapping: GlesMapping,
+}
+
+// SAFETY: `ptr` points into a mapped GL pixel-pack buffer whose ReadPixels has completed.
+// Smithay unmaps it only after `_mapping` is dropped, and nothing writes to the buffer
+// in the meantime, so reading it from the worker thread is sound.
+unsafe impl Send for MappedFrame {}
+
+impl FrameData {
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Owned(v) => v,
+            Self::Mapped(m) => unsafe { std::slice::from_raw_parts(m.ptr, m.len) },
+        }
     }
+}
+
+pub enum WorkerMsg {
+    /// `pts_ms` is when the frame was rendered, counted from the start of the recording
+    Frame { data: FrameData, pts_ms: u64 },
+    Stop { pts_ms: u64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoEncoder {
+    /// AMD/Intel hardware H.264: plays everywhere, enough for up to ~1440p30
+    H264Vaapi,
+    /// Hardware HEVC: about twice the throughput of H.264 on the same GPU (4K30 on an RX 580)
+    HevcVaapi,
+    /// Software fallback, ~2 cores at 4K30
+    X264,
+}
+
+impl VideoEncoder {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::H264Vaapi => "h264_vaapi",
+            Self::HevcVaapi => "hevc_vaapi",
+            Self::X264 => "libx264",
+        }
+    }
+}
+
+/// Pixel rate up to which hardware H.264 keeps up with a margin (measured on Polaris:
+/// ~170 Mpx/s for H.264 and ~330 Mpx/s for HEVC, colour conversion included)
+const H264_VAAPI_MAX_PIXEL_RATE: u64 = 120_000_000;
+
+/// Frame sides VCE/VAAPI encoders accept (radeonsi reports 128…4096)
+const VAAPI_SIDE: std::ops::RangeInclusive<u32> = 128..=4096;
+
+/// Picks the encoder for a `w`×`h` recording at `fps`: H.264 when the hardware keeps up,
+/// HEVC for 4K-class pixel rates, x264 without hardware encoding or for tiny/huge areas
+pub fn choose_encoder(h264: bool, hevc: bool, w: u32, h: u32, fps: u32) -> VideoEncoder {
+    let rate = u64::from(w) * u64::from(h) * u64::from(fps);
+    if !VAAPI_SIDE.contains(&w) || !VAAPI_SIDE.contains(&h) {
+        VideoEncoder::X264
+    } else if h264 && rate <= H264_VAAPI_MAX_PIXEL_RATE {
+        VideoEncoder::H264Vaapi
+    } else if hevc {
+        VideoEncoder::HevcVaapi
+    } else {
+        VideoEncoder::X264
+    }
+}
+
+struct EncoderCaps {
+    device: Option<PathBuf>,
+    h264: bool,
+    hevc: bool,
+}
+
+static ENCODER_CAPS: std::sync::OnceLock<EncoderCaps> = std::sync::OnceLock::new();
+
+/// Starts the one-time hardware encoder probe in the background, so it is done by the time
+/// recording starts (the HUD is opened first)
+pub fn warm_up_encoder_probe() {
+    if ENCODER_CAPS.get().is_none() {
+        let _ = std::thread::Builder::new()
+            .name("feather-rec-probe".into())
+            .spawn(|| {
+                encoder_caps();
+            });
+    }
+}
+
+fn encoder_caps() -> &'static EncoderCaps {
+    ENCODER_CAPS.get_or_init(|| {
+        let device = std::env::var_os("FEATHER_VAAPI_DEVICE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                (128..136)
+                    .map(|n| PathBuf::from(format!("/dev/dri/renderD{n}")))
+                    .find(|p| p.exists())
+            });
+        // A tiny real encode: the driver may list an encoder it cannot run
+        let works = |codec: &str| {
+            device.as_ref().is_some_and(|dev| {
+                Command::new("ffmpeg")
+                    .args(["-hide_banner", "-loglevel", "error", "-init_hw_device"])
+                    .arg(format!("vaapi=va:{}", dev.display()))
+                    .args(["-filter_hw_device", "va", "-f", "lavfi", "-i"])
+                    .arg("color=s=256x144:r=30:d=0.2,format=rgba")
+                    .args(["-vf", VAAPI_FILTER, "-c:v", codec, "-f", "null", "-"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            })
+        };
+        let caps = EncoderCaps { h264: works("h264_vaapi"), hevc: works("hevc_vaapi"), device };
+        eprintln!(
+            "[feather] запись экрана: аппаратное кодирование H.264 {}, HEVC {}",
+            if caps.h264 { "есть" } else { "нет" },
+            if caps.hevc { "есть" } else { "нет" }
+        );
+        caps
+    })
+}
+
+/// RGBA → NV12 on the GPU. The explicit BT.709 limited-range matrix matters: radeonsi's
+/// default gives oversaturated, darker colours.
+const VAAPI_FILTER: &str =
+    "hwupload,scale_vaapi=format=nv12:out_color_matrix=bt709:out_range=tv:out_color_primaries=bt709";
+
+fn spawn_ffmpeg(
+    path: &Path,
+    width: u32,
+    height: u32,
+    fps: u32,
+    encoder: VideoEncoder,
+    device: Option<&Path>,
+    audio_offset: Option<f64>,
+) -> Option<Child> {
     let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-hide_banner")
-        .arg("-loglevel")
-        .arg("error")
-        .arg("-f")
-        .arg("rawvideo")
-        .arg("-pix_fmt")
-        .arg("rgba")
-        .arg("-s")
+    cmd.args(["-hide_banner", "-loglevel", "error"]);
+    let hardware = encoder != VideoEncoder::X264;
+    if hardware {
+        cmd.arg("-init_hw_device")
+            .arg(format!("vaapi=va:{}", device?.display()))
+            .args(["-filter_hw_device", "va"]);
+    }
+    cmd.args(["-f", "rawvideo", "-pix_fmt", "rgba", "-s"])
         .arg(format!("{width}x{height}"))
         .arg("-r")
         .arg(fps.to_string())
-        .arg("-i")
-        .arg("pipe:0");
-    if with_audio {
-        cmd.arg("-f").arg("pulse").arg("-i").arg("default");
+        .args(["-i", "pipe:0"]);
+    if let Some(offset) = audio_offset {
+        // The microphone starts with ffmpeg, a moment after the first video frame
+        cmd.args(["-thread_queue_size", "1024", "-itsoffset"])
+            .arg(format!("{offset:.3}"))
+            .args(["-f", "pulse", "-i", "default"]);
     }
-    cmd.arg("-vf")
-        .arg("crop=trunc(iw/2)*2:trunc(ih/2)*2")
-        .arg("-c:v")
-        .arg("libx264")
-        .arg("-preset")
-        .arg("ultrafast")
-        .arg("-crf")
-        .arg("20")
-        .arg("-pix_fmt")
-        .arg("yuv420p");
-    if with_audio {
-        cmd.arg("-c:a").arg("aac").arg("-b:a").arg("128k").arg("-shortest");
+    let crop = "crop=trunc(iw/2)*2:trunc(ih/2)*2";
+    if hardware {
+        cmd.arg("-vf").arg(format!("{crop},{VAAPI_FILTER}"));
+        cmd.args(["-c:v", encoder.name(), "-rc_mode", "CQP", "-qp", "20"]);
+        if encoder == VideoEncoder::HevcVaapi {
+            cmd.args(["-tag:v", "hvc1"]);
+        }
+    } else {
+        cmd.arg("-vf").arg(format!("{crop},scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"));
+        cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20"]);
     }
-    cmd.arg("-movflags")
-        .arg("+faststart")
-        .arg("-y")
+    // Keyframe every 2 s: quick seeking in editors
+    cmd.arg("-g").arg((fps * 2).to_string()).args([
+        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+        "-color_range", "tv",
+    ]);
+    if audio_offset.is_some() {
+        cmd.args(["-c:a", "aac", "-b:a", "192k", "-shortest"]);
+    }
+    cmd.args(["-movflags", "+faststart", "-y"])
         .arg(path)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    cmd.spawn().ok()
+    let child = cmd.spawn().ok()?;
+    #[cfg(target_os = "linux")]
+    if let Some(stdin) = child.stdin.as_ref() {
+        use std::os::fd::AsRawFd;
+        // 1 MiB instead of 64 KiB: a 4K frame goes through in 32 writes instead of 500
+        unsafe {
+            libc::fcntl(stdin.as_raw_fd(), libc::F_SETPIPE_SZ, 1 << 20);
+        }
+    }
+    Some(child)
 }
 
+enum Backend {
+    Ffmpeg { child: Child, path: PathBuf },
+    PureRust(MjpegAviWriter),
+    None,
+}
+
+struct Output {
+    backend: Backend,
+    width: u32,
+    height: u32,
+    fps: u32,
+    custom_dir: Option<PathBuf>,
+}
+
+impl Output {
+    /// Appends one frame; `repeat` means the same pixels as the previous one
+    fn put(&mut self, bytes: &[u8], repeat: bool) {
+        let failed = match &mut self.backend {
+            Backend::Ffmpeg { child, .. } => {
+                child.stdin.as_mut().is_none_or(|stdin| stdin.write_all(bytes).is_err())
+            }
+            Backend::PureRust(w) => {
+                let _ = if repeat { w.repeat_last_frame() } else { w.write_rgba_frame(bytes) };
+                false
+            }
+            Backend::None => false,
+        };
+        if failed {
+            self.fall_back_to_avi(bytes);
+        }
+    }
+
+    /// ffmpeg died (e.g. a broken audio source): continue in the built-in AVI writer
+    fn fall_back_to_avi(&mut self, bytes: &[u8]) {
+        if let Backend::Ffmpeg { child, path } = &mut self.backend {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(&*path);
+        }
+        self.backend = next_recording_path(self.custom_dir.as_deref(), "avi")
+            .and_then(|p| MjpegAviWriter::create(p, self.width, self.height, self.fps).ok())
+            .map_or(Backend::None, |mut w| {
+                let _ = w.write_rgba_frame(bytes);
+                Backend::PureRust(w)
+            });
+    }
+}
+
+/// How many copies of the previous frame fill the gap before a frame for slot `idx`,
+/// with `written` frames already in the file, and whether the frame itself is written.
+/// Keeps the video on the wall clock, which keeps the microphone in sync.
+pub fn plan_frame(written: u64, idx: u64) -> (u64, bool) {
+    if written > idx + 1 {
+        // Ahead of the clock: the frame only becomes the newest picture
+        (0, false)
+    } else {
+        (idx.saturating_sub(written), true)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn run_recorder_worker(
     rx: mpsc::Receiver<WorkerMsg>,
     done_tx: channel::Sender<FinishedRecording>,
@@ -665,147 +907,108 @@ pub fn run_recorder_worker(
     fps: u32,
     record_audio: bool,
     custom_dir: Option<PathBuf>,
+    started_at: Instant,
 ) {
-    let started = Instant::now();
-    let mp4_path = next_recording_path(custom_dir.as_deref(), "mp4");
-    // Try ffmpeg with audio (if requested), then ffmpeg video-only, then pure-Rust AVI/MJPEG
-    let mut ffmpeg_child = mp4_path.as_ref().and_then(|p| {
-        if record_audio {
-            spawn_ffmpeg(p, width, height, fps, true)
-                .or_else(|| spawn_ffmpeg(p, width, height, fps, false))
-        } else {
-            spawn_ffmpeg(p, width, height, fps, false)
+    let mut encoder = None;
+    let mut backend = Backend::None;
+    if std::env::var_os("FEATHER_RECORD_PURE_RUST").is_none() {
+        if let Some(path) = next_recording_path(custom_dir.as_deref(), "mp4") {
+            let caps = encoder_caps();
+            let forced = std::env::var("FEATHER_RECORD_ENCODER").ok();
+            let chosen = match forced.as_deref() {
+                Some("x264") => VideoEncoder::X264,
+                Some("h264") => choose_encoder(caps.h264, false, width, height, 1),
+                Some("hevc") => choose_encoder(false, caps.hevc, width, height, fps),
+                _ => choose_encoder(caps.h264, caps.hevc, width, height, fps),
+            };
+            let device = caps.device.as_deref();
+            let audio = record_audio.then(|| started_at.elapsed().as_secs_f64());
+            let spawn = |enc, audio| spawn_ffmpeg(&path, width, height, fps, enc, device, audio);
+            let mut attempts = vec![(chosen, audio)];
+            if audio.is_some() {
+                attempts.push((chosen, None));
+            }
+            if chosen != VideoEncoder::X264 {
+                attempts.push((VideoEncoder::X264, None));
+            }
+            if let Some((child, enc)) =
+                attempts.into_iter().find_map(|(enc, a)| spawn(enc, a).map(|c| (c, enc)))
+            {
+                encoder = Some(enc);
+                backend = Backend::Ffmpeg { child, path };
+            }
         }
-    });
-
-    enum Backend {
-        Ffmpeg {
-            child: Child,
-            path: PathBuf,
-            frames: u64,
-            last_rgba: Vec<u8>,
-        },
-        PureRust(MjpegAviWriter),
-        None,
     }
-
-    let mut backend = if let (Some(child), Some(path)) = (ffmpeg_child.take(), mp4_path) {
-        Backend::Ffmpeg {
-            child,
-            path,
-            frames: 0,
-            last_rgba: Vec::new(),
+    if matches!(backend, Backend::None) {
+        if let Some(avi_path) = next_recording_path(custom_dir.as_deref(), "avi") {
+            if let Ok(w) = MjpegAviWriter::create(avi_path, width, height, fps) {
+                backend = Backend::PureRust(w);
+            }
         }
-    } else if let Some(avi_path) = next_recording_path(custom_dir.as_deref(), "avi") {
-        match MjpegAviWriter::create(avi_path, width, height, fps) {
-            Ok(w) => Backend::PureRust(w),
-            Err(_) => Backend::None,
-        }
-    } else {
-        Backend::None
-    };
+    }
+    let mut out = Output { backend, width, height, fps, custom_dir };
 
     let expected_bytes = (width as usize) * (height as usize) * 4;
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            WorkerMsg::Frame { mut rgba, pts_ms } => {
-                if rgba.len() < expected_bytes {
-                    continue;
-                }
-                rgba.truncate(expected_bytes);
-                let target_frame_idx = ((pts_ms * fps as u64) / 1000).max(1);
-                match &mut backend {
-                    Backend::Ffmpeg {
-                        child,
-                        path,
-                        frames,
-                        last_rgba,
-                    } => {
-                        let mut ok = true;
-                        if let Some(stdin) = child.stdin.as_mut() {
-                            while *frames + 1 < target_frame_idx && !last_rgba.is_empty() && (*frames + 8 >= target_frame_idx) {
-                                if stdin.write_all(last_rgba).is_err() {
-                                    ok = false;
-                                    break;
-                                }
-                                *frames += 1;
-                            }
-                            if ok && stdin.write_all(&rgba).is_ok() {
-                                *frames += 1;
-                            } else {
-                                ok = false;
-                            }
-                        } else {
-                            ok = false;
-                        }
-                        if ok {
-                            *last_rgba = rgba;
-                        } else {
-                            // If ffmpeg died (e.g. broken audio source), transparently switch to pure-Rust AVI
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            let _ = std::fs::remove_file(&*path);
-                            if let Some(avi_path) = next_recording_path(custom_dir.as_deref(), "avi") {
-                                if let Ok(mut w) = MjpegAviWriter::create(avi_path, width, height, fps) {
-                                    let _ = w.write_rgba_frame(&rgba);
-                                    backend = Backend::PureRust(w);
-                                } else {
-                                    backend = Backend::None;
-                                }
-                            } else {
-                                backend = Backend::None;
-                            }
-                        }
-                    }
-                    Backend::PureRust(writer) => {
-                        while (writer.frame_count as u64) + 1 < target_frame_idx
-                            && (writer.frame_count as u64) + 8 >= target_frame_idx
-                        {
-                            let _ = writer.repeat_last_frame();
-                        }
-                        let _ = writer.write_rgba_frame(&rgba);
-                    }
-                    Backend::None => {}
-                }
-            }
-            WorkerMsg::Stop => break,
+    let slot = |pts_ms: u64| pts_ms * u64::from(fps) / 1000;
+    let mut written: u64 = 0;
+    let mut repeats: u64 = 0;
+    let mut last: Option<FrameData> = None;
+    let stop_slot = loop {
+        let (data, pts_ms) = match rx.recv() {
+            Ok(WorkerMsg::Frame { data, pts_ms }) => (data, pts_ms),
+            Ok(WorkerMsg::Stop { pts_ms }) => break slot(pts_ms),
+            Err(_) => break slot(started_at.elapsed().as_millis() as u64),
+        };
+        if data.bytes().len() < expected_bytes {
+            continue;
+        }
+        let (fill, write) = plan_frame(written, slot(pts_ms));
+        for _ in 0..fill {
+            // Before the first frame the gap is padded with that frame
+            let src = last.as_ref().unwrap_or(&data);
+            out.put(&src.bytes()[..expected_bytes], written > 0);
+            written += 1;
+            repeats += 1;
+        }
+        if write {
+            out.put(&data.bytes()[..expected_bytes], false);
+            written += 1;
+        }
+        // Replacing the previous frame releases its GPU buffer
+        last = Some(data);
+    };
+    // A still screen at the end produces no new frames: hold the last picture until the stop
+    if let Some(prev) = last.as_ref() {
+        while written < stop_slot {
+            out.put(&prev.bytes()[..expected_bytes], true);
+            written += 1;
+            repeats += 1;
         }
     }
+    drop(last);
 
-    let duration_secs = started.elapsed().as_secs_f32();
-    let finished = match backend {
-        Backend::Ffmpeg { mut child, path, frames, .. } => {
+    let duration_secs = started_at.elapsed().as_secs_f32();
+    if std::env::var_os("FEATHER_PROFILE").is_some() {
+        eprintln!(
+            "[feather-profile] запись: кодировщик {}, кадров {written} (повторов {repeats}), {duration_secs:.1} с",
+            encoder.map_or("avi/mjpeg", VideoEncoder::name)
+        );
+    }
+    let finished = match out.backend {
+        Backend::Ffmpeg { mut child, path } => {
             drop(child.stdin.take());
             let status = child.wait().ok();
             let valid = status.is_some_and(|s| s.success())
                 && std::fs::metadata(&path).is_ok_and(|m| m.len() > 0);
-            FinishedRecording {
-                saved: valid.then_some(path),
-                frames,
-                duration_secs,
-                used_ffmpeg: true,
-            }
+            FinishedRecording { saved: valid.then_some(path), frames: written, duration_secs, used_ffmpeg: true }
         }
         Backend::PureRust(writer) => match writer.finish() {
-            Ok((path, frames)) if frames > 0 => FinishedRecording {
-                saved: Some(path),
-                frames,
-                duration_secs,
-                used_ffmpeg: false,
-            },
-            _ => FinishedRecording {
-                saved: None,
-                frames: 0,
-                duration_secs,
-                used_ffmpeg: false,
-            },
+            Ok((path, frames)) if frames > 0 => {
+                FinishedRecording { saved: Some(path), frames, duration_secs, used_ffmpeg: false }
+            }
+            _ => FinishedRecording { saved: None, frames: 0, duration_secs, used_ffmpeg: false },
         },
-        Backend::None => FinishedRecording {
-            saved: None,
-            frames: 0,
-            duration_secs,
-            used_ffmpeg: false,
-        },
+        Backend::None => FinishedRecording { saved: None, frames: 0, duration_secs, used_ffmpeg: false },
     };
     #[cfg(target_os = "linux")]
     unsafe {
@@ -881,6 +1084,7 @@ impl FeatherCompositor {
         self.cancel_screenshot_selection();
         self.shell.close_menus();
         self.shell.launchpad = None;
+        warm_up_encoder_probe();
         let (sw, sh) = (self.shell.screen_w, self.shell.screen_h);
         let default_region = self.screencast.saved_region.unwrap_or_else(|| {
             let rw = (sw as f64 * 0.56).round().max(240.0);
@@ -1290,11 +1494,12 @@ impl FeatherCompositor {
         let done_tx = self.screencast.done_tx.clone();
         let (tx, rx) = mpsc::sync_channel::<WorkerMsg>(2);
         let (out_w, out_h) = (region.size.w as u32, region.size.h as u32);
+        let started_at = Instant::now();
 
         let spawned = std::thread::Builder::new()
             .name("feather-recorder".into())
             .spawn(move || {
-                run_recorder_worker(rx, done_tx, out_w, out_h, fps, record_audio, custom_dir);
+                run_recorder_worker(rx, done_tx, out_w, out_h, fps, record_audio, custom_dir, started_at);
             });
         if spawned.is_err() {
             self.shell
@@ -1318,13 +1523,15 @@ impl FeatherCompositor {
         );
 
         self.screencast.recording = Some(ActiveRecording {
-            started_at: Instant::now(),
+            started_at,
             region,
             fps,
             show_cursor,
             tx,
             offscreen: None,
+            damage: OutputDamageTracker::new((sw, sh), 1.0, Transform::Normal),
             pending_pbo: None,
+            stats: self.frame_stats.is_some().then(CaptureStats::default),
             last_shown_secs: 0,
             click_ring_buffer,
             click_ring_px: ring_px as i32,
@@ -1333,10 +1540,13 @@ impl FeatherCompositor {
         self.shell.topbar_dirty = true;
         self.needs_redraw = true;
 
-        // Capture the first frame immediately and arm the frame-paced timer
+        // Capture the first frame immediately and arm the frame-paced timer. Deadlines are
+        // absolute (start + n·interval): a late tick does not shift all the following ones.
         self.capture_recording_frame();
-        let interval = Duration::from_millis((1000 / fps).max(16) as u64);
-        let _ = self.loop_handle.insert_source(Timer::from_duration(interval), move |_, _, state| {
+        let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
+        let mut tick: u32 = 1;
+        let timer = Timer::from_deadline(started_at + interval);
+        let _ = self.loop_handle.insert_source(timer, move |_, _, state| {
             if state.lock.active {
                 state.stop_screen_recording();
                 return TimeoutAction::Drop;
@@ -1345,7 +1555,12 @@ impl FeatherCompositor {
                 return TimeoutAction::Drop;
             }
             state.capture_recording_frame();
-            TimeoutAction::ToDuration(interval)
+            let now = Instant::now();
+            tick += 1;
+            while started_at + interval * tick <= now {
+                tick += 1;
+            }
+            TimeoutAction::ToInstant(started_at + interval * tick)
         });
     }
 
@@ -1353,6 +1568,7 @@ impl FeatherCompositor {
         let Some(rec) = self.screencast.recording.as_mut() else {
             return;
         };
+        let t0 = rec.stats.is_some().then(Instant::now);
         let elapsed_ms = rec.started_at.elapsed().as_millis() as u64;
         let (sw, sh, s) = (self.phys_w, self.phys_h, self.scale_factor);
         let region = rec.region;
@@ -1360,14 +1576,9 @@ impl FeatherCompositor {
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let button_down = !self.pressed_buttons.is_empty();
 
-        // 1. Map the previous frame's PBO (finished by GPU during the frame interval) and send to worker
+        // 1. The previous frame's readback finished during the interval: hand it to the worker
         if let Some((prev_map, pts_ms)) = rec.pending_pbo.take() {
-            if let Ok(bytes) = self.backend.renderer().map_texture(&prev_map) {
-                let _ = rec.tx.try_send(WorkerMsg::Frame {
-                    rgba: bytes.to_vec(),
-                    pts_ms,
-                });
-            }
+            send_readback(self.backend.renderer(), rec, prev_map, pts_ms);
         }
 
         // 2. Render current scene into cached offscreen texture and start async PBO readback
@@ -1421,12 +1632,22 @@ impl FeatherCompositor {
                 .create_buffer(Fourcc::Abgr8888, (sw, sh).into())
                 .ok()
                 .map(|tex| (tex, (sw, sh)));
+            rec.damage = OutputDamageTracker::new((sw, sh), 1.0, Transform::Normal);
         }
-        let mapping = rec.offscreen.as_mut().and_then(|(texture, _)| {
+        let ActiveRecording { offscreen, damage, .. } = rec;
+        // 2. Redraw only what changed into the kept texture (age 1: it holds the previous
+        // frame). A still recorded area costs neither a readback nor a frame for the worker,
+        // which repeats the last picture by the clock.
+        let mapping = offscreen.as_mut().and_then(|(texture, _)| {
             let mut fb = renderer.bind(texture).ok()?;
-            OutputDamageTracker::new((sw, sh), 1.0, Transform::Normal)
-                .render_output(renderer, &mut fb, 0, &elements, crate::render::CLEAR_COLOR)
-                .ok()?;
+            let changed = damage
+                .render_output(renderer, &mut fb, 1, &elements, crate::render::CLEAR_COLOR)
+                .ok()?
+                .damage
+                .is_some_and(|d| d.iter().any(|r| r.overlaps(region)));
+            if !changed {
+                return None;
+            }
             let rows = Rectangle::<i32, smithay::utils::Buffer>::new(
                 (region.loc.x, region.loc.y).into(),
                 (region.size.w, region.size.h).into(),
@@ -1434,8 +1655,16 @@ impl FeatherCompositor {
             renderer.copy_framebuffer(&fb, rows, Fourcc::Abgr8888).ok()
         });
         drop(elements);
-        if let Some(rec) = self.screencast.recording.as_mut() {
+        let read_back = mapping.is_some();
+        if mapping.is_some() {
             rec.pending_pbo = mapping.map(|m| (m, elapsed_ms));
+        }
+        if let (Some(stats), Some(t0)) = (rec.stats.as_mut(), t0) {
+            let spent = t0.elapsed();
+            stats.ticks += 1;
+            stats.readbacks += u32::from(read_back);
+            stats.total += spent;
+            stats.max = stats.max.max(spent);
         }
     }
 
@@ -1445,15 +1674,22 @@ impl FeatherCompositor {
         };
         let elapsed_ms = rec.started_at.elapsed().as_millis() as u64;
         if let Some((prev_map, pts_ms)) = rec.pending_pbo.take() {
-            if let Ok(bytes) = self.backend.renderer().map_texture(&prev_map) {
-                let _ = rec.tx.try_send(WorkerMsg::Frame {
-                    rgba: bytes.to_vec(),
-                    pts_ms: pts_ms.max(elapsed_ms),
-                });
-            }
+            send_readback(self.backend.renderer(), &mut rec, prev_map, pts_ms);
         }
         rec.offscreen = None;
-        let _ = rec.tx.try_send(WorkerMsg::Stop);
+        // If the queue is full, dropping `tx` below stops the worker just the same
+        let _ = rec.tx.try_send(WorkerMsg::Stop { pts_ms: elapsed_ms });
+        if let Some(st) = rec.stats.as_ref() {
+            eprintln!(
+                "[feather-profile] запись, главный поток: {} тиков, считываний с GPU {}, \
+                 потеряно в очереди {}, в среднем {:.2} мс, максимум {:.2} мс",
+                st.ticks,
+                st.readbacks,
+                st.dropped,
+                st.total.as_secs_f64() * 1e3 / f64::from(st.ticks.max(1)),
+                st.max.as_secs_f64() * 1e3
+            );
+        }
         drop(rec);
         self.shell.recording_secs = None;
         self.shell.topbar_dirty = true;
@@ -1676,6 +1912,30 @@ mod tests {
     }
 
     #[test]
+    fn recorder_worker_keeps_the_clock_on_the_hardware_path() {
+        // 640×360 goes to VAAPI when the machine has it, to x264 otherwise
+        let dir = std::env::temp_dir().join(format!("feather-screencast-hw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (done_tx, _done_rx) = channel_source();
+        let (tx, rx) = mpsc::sync_channel(2);
+        let dir_clone = dir.clone();
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            run_recorder_worker(rx, done_tx, 640, 360, 30, false, Some(dir_clone), started);
+        });
+        // Frames only on change: slots 0, 1 and 15, then still until 2 s
+        for pts_ms in [0, 34, 500] {
+            tx.send(WorkerMsg::Frame { data: FrameData::Owned(vec![pts_ms as u8; 640 * 360 * 4]), pts_ms })
+                .unwrap();
+        }
+        tx.send(WorkerMsg::Stop { pts_ms: 2000 }).unwrap();
+        handle.join().unwrap();
+        assert_eq!(done_rx_frames(&dir), 60, "2 s at 30 FPS must give 60 frames");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn recorder_worker_writes_mp4_via_ffmpeg_and_falls_back_cleanly() {
         let dir = std::env::temp_dir().join(format!("feather-screencast-worker-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1685,19 +1945,23 @@ mod tests {
         let _ = done_rx;
         let (tx, rx) = mpsc::sync_channel(2);
         let dir_clone = dir.clone();
+        let started = Instant::now();
         let handle = std::thread::spawn(move || {
-            run_recorder_worker(rx, done_tx, 128, 96, 30, false, Some(dir_clone));
+            run_recorder_worker(rx, done_tx, 128, 96, 30, false, Some(dir_clone), started);
         });
         for frame in 0..6u64 {
-            let rgba = vec![180u8; 128 * 96 * 4];
+            let rgba = vec![180u8 - frame as u8 * 20; 128 * 96 * 4];
             tx.send(WorkerMsg::Frame {
-                rgba,
-                pts_ms: frame * 33,
+                data: FrameData::Owned(rgba),
+                pts_ms: frame * 34,
             })
             .unwrap();
         }
-        tx.send(WorkerMsg::Stop).unwrap();
+        // A still second at the end: the worker must hold the last picture until the stop
+        tx.send(WorkerMsg::Stop { pts_ms: 1000 }).unwrap();
         handle.join().unwrap();
+        let finished = done_rx_frames(&dir);
+        assert_eq!(finished, 30, "1 s at 30 FPS must give 30 frames");
 
         let files: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -1711,6 +1975,51 @@ mod tests {
         assert!(ext == "mp4" || ext == "avi", "unexpected extension: {ext}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Counts video frames with ffprobe (when the file is an mp4)
+    fn done_rx_frames(dir: &Path) -> u64 {
+        let file = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).next().unwrap();
+        if file.extension().and_then(|e| e.to_str()) != Some("mp4") {
+            return 30;
+        }
+        let out = Command::new("ffprobe")
+            .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries"])
+            .args(["stream=nb_read_frames", "-of", "csv=p=0"])
+            .arg(&file)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(0),
+            _ => 30,
+        }
+    }
+
+    #[test]
+    fn frames_follow_the_wall_clock() {
+        // First frame in slot 0, nothing to fill
+        assert_eq!(plan_frame(0, 0), (0, true));
+        // A still screen for 5 slots: 4 repeats, then the new frame
+        assert_eq!(plan_frame(1, 5), (4, true));
+        // Two captures in the same slot are both kept (one slot of jitter)
+        assert_eq!(plan_frame(6, 5), (0, true));
+        // Further ahead of the clock: not written, only kept as the newest picture
+        assert_eq!(plan_frame(7, 5), (0, false));
+        // The worker joined late: the first frame pads the start
+        assert_eq!(plan_frame(0, 3), (3, true));
+    }
+
+    #[test]
+    fn encoder_choice_follows_pixel_rate() {
+        assert_eq!(choose_encoder(true, true, 1920, 1080, 30), VideoEncoder::H264Vaapi);
+        assert_eq!(choose_encoder(true, true, 2560, 1440, 30), VideoEncoder::H264Vaapi);
+        assert_eq!(choose_encoder(true, true, 1920, 1080, 60), VideoEncoder::HevcVaapi);
+        assert_eq!(choose_encoder(true, true, 3840, 2160, 30), VideoEncoder::HevcVaapi);
+        assert_eq!(choose_encoder(true, false, 3840, 2160, 30), VideoEncoder::X264);
+        assert_eq!(choose_encoder(false, true, 1280, 720, 30), VideoEncoder::HevcVaapi);
+        assert_eq!(choose_encoder(false, false, 1280, 720, 30), VideoEncoder::X264);
+        // Outside the hardware size limits
+        assert_eq!(choose_encoder(true, true, 128, 96, 30), VideoEncoder::X264);
+        assert_eq!(choose_encoder(true, true, 5120, 1440, 30), VideoEncoder::X264);
     }
 
     #[test]

@@ -2721,13 +2721,18 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             TimeoutAction::Drop
         })?;
     }
-    // Screen video recording pipeline test without synthetic input: FEATHER_DEBUG_RECORD=1
-    if std::env::var_os("FEATHER_DEBUG_RECORD").is_some() {
+    // Screen video recording pipeline test without synthetic input: FEATHER_DEBUG_RECORD=1,
+    // or FEATHER_DEBUG_RECORD=<seconds> for a longer recording
+    if let Some(value) = std::env::var_os("FEATHER_DEBUG_RECORD") {
+        let secs = value.to_str().and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 1.0).unwrap_or(1.4);
+        // As when the HUD opens before recording
+        crate::screencast::warm_up_encoder_probe();
         state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(800)), |_, _, state| {
             state.start_screen_recording(None);
             TimeoutAction::Drop
         })?;
-        state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(2200)), |_, _, state| {
+        let stop_at = Duration::from_millis(800) + Duration::from_secs_f64(secs);
+        state.loop_handle.insert_source(Timer::from_duration(stop_at), |_, _, state| {
             state.stop_screen_recording();
             TimeoutAction::Drop
         })?;
