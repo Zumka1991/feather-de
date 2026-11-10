@@ -1151,6 +1151,18 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
                 assert_eq!(moved.x, rects[1].x, "{LOG} swapped");
                 let other = s.windows.iter().find(|w| w.id == on[1]).unwrap();
                 assert_eq!(other.x, rects[0].x, "{LOG} swapped");
+                // A banner over the Подложка takes its own clicks: × closes it, the Подложка stays
+                s.shell.toasts.clear();
+                s.shell.notify("Проверка", "Баннер поверх Подложки");
+                let r = s.shell.toast_rects()[0];
+                s.debug_pointer_motion((r.x + 100.0) as f64, (r.y + 20.0) as f64);
+                let c = crate::shell::MacShell::toast_close_rect(r);
+                let (cx, cy) = ((c.x + 10.0) as f64, (c.y + 10.0) as f64);
+                s.debug_pointer_motion(cx, cy);
+                s.debug_pointer_button(0x110, true);
+                s.debug_pointer_button(0x110, false);
+                assert!(s.shell.toasts.is_empty(), "{LOG} × closes a banner over it");
+                assert!(s.shell.scratch_open, "{LOG} and the Подложка stays");
                 // A click on the backdrop puts it away; a Dock activation brings it back
                 let free = s.windows.iter().find(|w| w.space == s.spaces.current && w.app_id == "feather-terminal").unwrap();
                 let free_id = free.id;

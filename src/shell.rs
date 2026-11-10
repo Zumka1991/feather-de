@@ -2594,7 +2594,7 @@ impl MacShell {
     }
 
     /// Banner rectangles, newest first, stacked down from the menu bar
-    fn toast_rects(&self) -> Vec<R> {
+    pub(crate) fn toast_rects(&self) -> Vec<R> {
         let x = self.screen_w as f32 - TOAST_W - 10.0;
         let mut y = TOP_BAR_HEIGHT as f32 + 8.0;
         self.toasts.iter().map(|t| {
@@ -2604,7 +2604,7 @@ impl MacShell {
         }).collect()
     }
 
-    fn toast_close_rect(r: R) -> R { R::new(r.x - 6.0, r.y - 6.0, 20.0, 20.0) }
+    pub(crate) fn toast_close_rect(r: R) -> R { R::new(r.x - 6.0, r.y - 6.0, 20.0, 20.0) }
 
     fn toast_button_rects(t: &NotificationToast, r: R) -> Vec<(usize, R)> {
         let buttons: Vec<_> = t.buttons().map(|(i, _)| i).collect();
@@ -2614,6 +2614,11 @@ impl MacShell {
         buttons.into_iter().enumerate()
             .map(|(k, i)| (i, R::new(x0 + k as f32 * (bw + 8.0), r.y + TOAST_H, bw, TOAST_BUTTON_H)))
             .collect()
+    }
+
+    /// A banner (or its close button) under the point: such a click belongs to the shell
+    pub fn toast_contains(&self, x: f64, y: f64) -> bool {
+        self.toast_at(x as f32, y as f32).is_some()
     }
 
     fn toast_at(&self, x: f32, y: f32) -> Option<(usize, ToastPart)> {

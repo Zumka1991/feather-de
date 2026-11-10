@@ -1699,8 +1699,9 @@ impl FeatherCompositor {
         let over_bar=pos.y<(primary.y+TOP_BAR_HEIGHT) as f64;
         let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen&&!(w.larvis&&over_bar))||self.shell.scratch_open;
         if !primary.contains(pos.x,pos.y)&&self.shell.launchpad.is_some(){self.shell.launchpad=None;self.needs_redraw=true;}
-        // Over the Подложка the menu bar and the Dock are gone: a passing banner must not revive them
-        let panels=if self.shell.scratch_open {self.shell.has_open_panel()} else {self.shell.has_visible_overlay()};
+        // Over the Подложка the menu bar and the Dock are gone: a passing banner must not revive
+        // them, but a click on the banner itself (its body, buttons, close) is the banner's
+        let panels=if self.shell.scratch_open {self.shell.has_open_panel()||self.shell.toast_contains(pos.x,pos.y)} else {self.shell.has_visible_overlay()};
         if (!fullscreen_top || panels) && self.shell.launchpad.is_none() {
             if let Some((item,_))=self.shell.tray_hit(pos.x,pos.y).map(|(i,r)|(i.clone(),r)) {
                 let action=match button {
