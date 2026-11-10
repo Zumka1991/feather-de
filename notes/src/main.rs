@@ -80,6 +80,8 @@ struct Notes {
     copy_source: Option<(CopyPasteSource, String)>,
     window: Window,
     pool: SlotPool,
+    /// Real damage of each frame instead of the whole buffer
+    diff: feather_ui::draw::FrameDiff,
     rgba: bool,
     scale: i32,
     fractional: Option<f64>,
@@ -168,6 +170,7 @@ fn main() {
         data_device: None,
         copy_source: None,
         pool: SlotPool::new(920 * 620 * 4, &shm).expect("пул wl_shm"),
+        diff: Default::default(),
         compositor,
         shm,
         window,
@@ -351,6 +354,7 @@ impl Notes {
                 px.swap(0, 2);
             }
         }
+        let (dx, dy, dw, dh) = self.diff.damage(canvas, pw, ph);
         let surface = self.window.wl_surface();
         match &self.viewport {
             Some(viewport) if self.fractional.is_some() => {
@@ -359,10 +363,11 @@ impl Notes {
             }
             _ => surface.set_buffer_scale(scale as i32),
         }
-        surface.damage_buffer(0, 0, pw, ph);
+        surface.damage_buffer(dx, dy, dw, dh);
         surface.frame(qh, surface.clone());
         self.window.set_window_geometry(0, 0, w as u32, h as u32);
         if buffer.attach_to(surface).is_err() {
+            self.diff.reset();
             return false;
         }
         self.window.commit();

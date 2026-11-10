@@ -1302,24 +1302,24 @@ impl FeatherCompositor {
                     let (mut x0, mut y0, w, h) = panel.region;
                     let (mut x1, mut y1) = (x0 + w, y0 + h);
                     if left {
-                        x0 = px.clamp(0.0, x1 - min_size).round();
+                        x0 = px.clamp(0.0, (x1 - min_size).max(0.0)).round();
                     }
                     if right {
-                        x1 = px.clamp(x0 + min_size, sw).round();
+                        x1 = px.clamp(x0 + min_size, sw.max(x0 + min_size)).round();
                     }
                     if top {
-                        y0 = py.clamp(0.0, y1 - min_size).round();
+                        y0 = py.clamp(0.0, (y1 - min_size).max(0.0)).round();
                     }
                     if bottom {
-                        y1 = py.clamp(y0 + min_size, sh).round();
+                        y1 = py.clamp(y0 + min_size, sh.max(y0 + min_size)).round();
                     }
                     panel.region = (x0, y0, x1 - x0, y1 - y0);
                 }
                 RegionDrag::New { anchor_x, anchor_y } => {
-                    let x0 = anchor_x.min(px).clamp(0.0, sw - min_size).round();
-                    let y0 = anchor_y.min(py).clamp(0.0, sh - min_size).round();
-                    let x1 = anchor_x.max(px).clamp(x0 + min_size, sw).round();
-                    let y1 = anchor_y.max(py).clamp(y0 + min_size, sh).round();
+                    let x0 = anchor_x.min(px).clamp(0.0, (sw - min_size).max(0.0)).round();
+                    let y0 = anchor_y.min(py).clamp(0.0, (sh - min_size).max(0.0)).round();
+                    let x1 = anchor_x.max(px).clamp(x0 + min_size, sw.max(x0 + min_size)).round();
+                    let y1 = anchor_y.max(py).clamp(y0 + min_size, sh.max(y0 + min_size)).round();
                     panel.region = (x0, y0, x1 - x0, y1 - y0);
                 }
             }

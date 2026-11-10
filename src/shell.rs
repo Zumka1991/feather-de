@@ -3394,7 +3394,9 @@ impl MacShell {
                         let ly = (r.y + r.h * 0.5 - 12.0).clamp(min_along, (buf_w - 28.0).max(min_along));
                         if map.edge == crate::theme::DockEdge::Left { (r.x + r.w + 12.0, ly) } else { (r.x - lw - 12.0, ly) }
                     } else {
-                        ((slot.x + slot.size * 0.5 - lw * 0.5).clamp(4.0, buf_w - lw - 4.0), slot.y - 34.0)
+                        // A name wider than the Dock: `clamp` panics when its bounds cross, and that
+                        // panic took the whole session down (drm.log, 2026-10-29)
+                        ((slot.x + slot.size * 0.5 - lw * 0.5).clamp(4.0, (buf_w - lw - 4.0).max(4.0)), slot.y - 34.0)
                     }
                     ;
                     draw_glass_panel(&mut pm, lx, ly, lw, 24.0, 8.0, true);

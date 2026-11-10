@@ -245,6 +245,8 @@ pub struct FeatherCompositor {
     pub idle_frame_heads: Option<Vec<String>>,
     /// Recent worst composition cost (decaying), for the DRM render deadline
     pub frame_cost: Duration,
+    /// Names what held the loop for longer than a frame (see `SlowSteps`)
+    pub slow_steps: SlowSteps,
     pub render_deadline_armed: Option<Instant>,
     pub frame_pending: bool,
     pub frame_seq: u64,
@@ -1990,6 +1992,39 @@ fn tune_malloc() {
     }
 }
 
+/// The loop is single-threaded: a step longer than a frame is a visible stutter (and libinput's
+/// "event processing lagging behind" in the log). Such a step is named in the log, at most once
+/// in five seconds, so that a stutter seen in a real session can be traced to its cause.
+/// Costs one comparison per step otherwise.
+#[derive(Default)]
+pub struct SlowSteps {
+    reported: Option<Instant>,
+    skipped: u32,
+}
+
+impl SlowSteps {
+    const LIMIT: Duration = Duration::from_millis(16);
+    const QUIET: Duration = Duration::from_secs(5);
+
+    pub fn note(&mut self, took: Duration, what: std::fmt::Arguments<'_>) {
+        if took < Self::LIMIT {
+            return;
+        }
+        let now = Instant::now();
+        if self.reported.is_some_and(|at| now.duration_since(at) < Self::QUIET) {
+            self.skipped += 1;
+            return;
+        }
+        tracing::warn!(
+            "Долгий шаг цикла: {what} — {:.1} мс (ещё таких с прошлого сообщения: {})",
+            took.as_secs_f64() * 1e3,
+            self.skipped
+        );
+        self.reported = Some(now);
+        self.skipped = 0;
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tune_malloc();
     let args_os:Vec<_>=std::env::args_os().collect();
@@ -2212,10 +2247,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Generic::new(display, Interest::READ, Mode::Level),
         |_, display, state| {
             // SAFETY: the display is never dropped while the event loop runs
+            let started = Instant::now();
             let res = unsafe { display.get_mut().dispatch_clients(state) };
             if let Err(err) = res {
                 tracing::warn!("Ошибка обработки клиентов: {err}");
             }
+            state.slow_steps.note(started.elapsed(), format_args!("запросы клиентов"));
             Ok(PostAction::Continue)
         },
     )?;
@@ -2312,6 +2349,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         idle_heads: Vec::new(),
         idle_frame_heads: None,
         frame_cost: Duration::ZERO,
+        slow_steps: SlowSteps::default(),
         render_deadline_armed: None,
         frame_pending: false,
         frame_seq: 0,

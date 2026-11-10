@@ -334,7 +334,9 @@ pub fn init(
                 }
                 _ => {}
             }
+            let started = std::time::Instant::now();
             state.handle_input(event);
+            state.slow_steps.note(started.elapsed(), format_args!("событие ввода"));
         },
     )?;
     handle.insert_source(drm_notifier, |event, metadata, state| match event {

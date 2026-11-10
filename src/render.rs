@@ -1004,6 +1004,14 @@ impl FeatherCompositor {
             self.frame_heads = heads;
         }
         let gpu_time = t_gpu.elapsed();
+        self.slow_steps.note(
+            cpu_time + gpu_time,
+            format_args!(
+                "кадр (CPU-буферы {:.1} мс, сцена и GL {:.1} мс)",
+                cpu_time.as_secs_f64() * 1e3,
+                gpu_time.as_secs_f64() * 1e3
+            ),
+        );
         // Recent worst cost, decaying: how early the next DRM frame has to start
         self.frame_cost = (cpu_time + gpu_time).max(self.frame_cost.mul_f64(0.95));
         let swap_time = match presented {

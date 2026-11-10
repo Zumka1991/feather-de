@@ -127,6 +127,155 @@ pub fn copy_shm_pixels(slot: &mut [u8], pixels: &[u8], rgba: bool) {
     }
 }
 
+/// What changed between two consecutive frames of a window.
+///
+/// Our programs repaint the whole window, but a compositor uploads to the GPU only what the
+/// surface says changed. Damaging the whole buffer makes it copy every pixel of a maximized
+/// 4K window (33 MB) on each caret blink; with the real rectangle it copies a few rows.
+/// Blocks of `DIFF_BLOCK_W`×`DIFF_BLOCK_H` pixels are hashed, so only ~8 bytes per block are
+/// kept instead of a copy of the previous frame.
+#[derive(Default)]
+pub struct FrameDiff {
+    size: (i32, i32),
+    hashes: Vec<u64>,
+    scratch: Vec<u64>,
+}
+
+const DIFF_BLOCK_W: usize = 128;
+const DIFF_BLOCK_H: usize = 8;
+
+/// One row segment folded into a block hash. Every step is a bijection of the state, so a
+/// change of a single word always changes the hash; four lanes keep the multiplies parallel.
+#[inline]
+fn diff_fold(seed: u64, bytes: &[u8]) -> u64 {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    let mut lanes = [seed, seed ^ K, seed.rotate_left(17), seed.rotate_left(41) ^ K];
+    let mut wide = bytes.chunks_exact(32);
+    for chunk in &mut wide {
+        for (lane, word) in lanes.iter_mut().zip(chunk.chunks_exact(8)) {
+            let word = u64::from_le_bytes([word[0], word[1], word[2], word[3], word[4], word[5], word[6], word[7]]);
+            *lane = (lane.rotate_left(5) ^ word).wrapping_mul(K);
+        }
+    }
+    let mut h = lanes[0];
+    for lane in &lanes[1..] {
+        h = (h.rotate_left(5) ^ lane).wrapping_mul(K);
+    }
+    for px in wide.remainder().chunks_exact(4) {
+        let word = u32::from_le_bytes([px[0], px[1], px[2], px[3]]) as u64;
+        h = (h.rotate_left(5) ^ word).wrapping_mul(K);
+    }
+    h
+}
+
+impl FrameDiff {
+    /// The frame just measured never reached the compositor: the next one is damaged in full
+    pub fn reset(&mut self) {
+        self.size = (0, 0);
+        self.hashes.clear();
+    }
+
+    /// Bounding rectangle `(x, y, w, h)` of the pixels that differ from the previous call, for
+    /// `wl_surface.damage_buffer`. The first frame and a frame of another size are damaged in
+    /// full. It is never empty: an unchanged frame gives one pixel, so the commit still
+    /// behaves like every other one (frame callback included) on any compositor.
+    pub fn damage(&mut self, pixels: &[u8], w: i32, h: i32) -> (i32, i32, i32, i32) {
+        if w <= 0 || h <= 0 || pixels.len() < w as usize * h as usize * 4 {
+            self.size = (0, 0);
+            self.hashes.clear();
+            return (0, 0, w.max(1), h.max(1));
+        }
+        let (uw, uh) = (w as usize, h as usize);
+        let cols = uw.div_ceil(DIFF_BLOCK_W);
+        let rows = uh.div_ceil(DIFF_BLOCK_H);
+        self.scratch.clear();
+        self.scratch.resize(cols * rows, 0);
+        let stride = uw * 4;
+        for (y, line) in pixels.chunks_exact(stride).take(uh).enumerate() {
+            let band = &mut self.scratch[(y / DIFF_BLOCK_H) * cols..][..cols];
+            for (hash, segment) in band.iter_mut().zip(line.chunks(DIFF_BLOCK_W * 4)) {
+                *hash = diff_fold(*hash, segment);
+            }
+        }
+        let full = self.size != (w, h) || self.hashes.len() != self.scratch.len();
+        let mut bounds: Option<(usize, usize, usize, usize)> = None;
+        if !full {
+            for (i, (new, old)) in self.scratch.iter().zip(&self.hashes).enumerate() {
+                if new != old {
+                    let (c, r) = (i % cols, i / cols);
+                    bounds = Some(match bounds {
+                        None => (c, r, c, r),
+                        Some((c0, r0, c1, r1)) => (c0.min(c), r0.min(r), c1.max(c), r1.max(r)),
+                    });
+                }
+            }
+        }
+        std::mem::swap(&mut self.hashes, &mut self.scratch);
+        self.size = (w, h);
+        if full {
+            return (0, 0, w, h);
+        }
+        match bounds {
+            None => (0, 0, 1, 1),
+            Some((c0, r0, c1, r1)) => {
+                let (x0, y0) = (c0 * DIFF_BLOCK_W, r0 * DIFF_BLOCK_H);
+                let x1 = ((c1 + 1) * DIFF_BLOCK_W).min(uw);
+                let y1 = ((r1 + 1) * DIFF_BLOCK_H).min(uh);
+                (x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::FrameDiff;
+
+    fn frame(w: usize, h: usize) -> Vec<u8> {
+        (0..w * h * 4).map(|i| (i * 31 % 251) as u8).collect()
+    }
+
+    #[test]
+    fn damage_is_full_first_then_covers_exactly_what_changed() {
+        let (w, h) = (1001usize, 77usize);
+        let mut diff = FrameDiff::default();
+        let mut px = frame(w, h);
+        assert_eq!(diff.damage(&px, w as i32, h as i32), (0, 0, w as i32, h as i32), "first frame");
+        assert_eq!(diff.damage(&px, w as i32, h as i32), (0, 0, 1, 1), "nothing changed");
+        // Every single pixel on its own: the rectangle must contain it
+        for (x, y) in [(0, 0), (127, 7), (128, 8), (500, 40), (1000, 76), (999, 0), (0, 76)] {
+            px[(y * w + x) * 4 + 1] ^= 0x40;
+            let (dx, dy, dw, dh) = diff.damage(&px, w as i32, h as i32);
+            assert!(dx <= x as i32 && (x as i32) < dx + dw && dy <= y as i32 && (y as i32) < dy + dh, "({x},{y}) outside {:?}", (dx, dy, dw, dh));
+            assert!(dx >= 0 && dy >= 0 && dx + dw <= w as i32 && dy + dh <= h as i32, "inside the buffer");
+            assert!(dw <= 128 && dh <= 8, "one block for one pixel");
+        }
+        // Two far corners: the bounding rectangle spans both
+        px[0] ^= 1;
+        let last = px.len() - 1;
+        px[last] ^= 1;
+        assert_eq!(diff.damage(&px, w as i32, h as i32), (0, 0, w as i32, h as i32));
+        // Swapped pixels (same sum, same xor) are still a change
+        px.swap(4 * 300, 4 * 301);
+        px.swap(4 * 300 + 1, 4 * 301 + 1);
+        assert_ne!(diff.damage(&px, w as i32, h as i32), (0, 0, 1, 1));
+    }
+
+    #[test]
+    fn a_resized_or_broken_frame_is_damaged_in_full() {
+        let mut diff = FrameDiff::default();
+        let a = frame(300, 20);
+        diff.damage(&a, 300, 20);
+        // Same byte length, other shape
+        assert_eq!(diff.damage(&a, 200, 30), (0, 0, 200, 30));
+        assert_eq!(diff.damage(&a, 200, 30), (0, 0, 1, 1));
+        // Too short a slice never panics and asks for everything
+        assert_eq!(diff.damage(&a[..16], 200, 30), (0, 0, 200, 30));
+        assert_eq!(diff.damage(&a, 200, 30), (0, 0, 200, 30), "state was dropped");
+        assert_eq!(diff.damage(&[], 0, 0), (0, 0, 1, 1));
+    }
+}
+
 #[cfg(test)]
 mod shm_tests {
     use super::*;
