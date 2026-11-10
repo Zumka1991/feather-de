@@ -127,6 +127,78 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-game-x11-check] scaled geometry, input coordinates, anonymous helper, separate games, Dock activation, X11 client resize, RMB warp-lock and Alt+Tab keyboard refocus passed");
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_RESIZE").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only { return Err("resize check requires isolated windowed input".into()); }
+        fn rect(st: &FeatherCompositor, pick: fn(&crate::window::ManagedWindow) -> bool) -> (u64, i32, i32, i32, i32) {
+            let w = st.windows.iter().find(|w| pick(w) && w.mapped).expect("window for the resize check is missing");
+            (w.id, w.x, w.y, w.width, w.total_height())
+        }
+        fn notes(w: &crate::window::ManagedWindow) -> bool { w.app_id == "builtin.notes" }
+        fn foot(w: &crate::window::ManagedWindow) -> bool { w.app_id == "foot" }
+        let start: Rc<Cell<(i32, i32, i32, i32)>> = Rc::new(Cell::new((0, 0, 0, 0)));
+        at(state, 600, |st| {
+            st.open_or_focus_builtin(crate::apps::BuiltinWindowKind::QuickNotes);
+            let (id, ..) = rect(st, notes);
+            if let Some(w) = st.windows.iter_mut().find(|w| w.id == id) { w.x = 300; w.y = 200; }
+        })?;
+        let s1 = start.clone();
+        at(state, 900, move |st| {
+            // 2 px inside the left edge, 12 px below the top: the corner, not a click in the window
+            let (_, x, y, w, h) = rect(st, notes);
+            s1.set((x, y, w, h));
+            st.debug_pointer_motion(x as f64 + 2.0, y as f64 + 12.0);
+            assert_eq!(st.compositor_cursor, Some(smithay::input::pointer::CursorIcon::NwResize));
+            st.debug_pointer_button(0x110, true);
+            assert!(matches!(st.active_drag, Some(crate::DragOperation::ResizeWindow { edges, .. }) if edges.left && edges.top));
+            st.debug_pointer_motion(x as f64 - 48.0, y as f64 - 28.0);
+            st.debug_pointer_button(0x110, false);
+            let (_, nx, ny, nw, nh) = rect(st, notes);
+            assert_eq!((nx, ny, nw, nh), (x - 50, y - 40, w + 50, h + 40), "built-in corner resize");
+            // Dragging the top edge far up stops at the top bar
+            st.debug_pointer_motion(nx as f64 + 100.0, ny as f64 - 4.0);
+            st.debug_pointer_button(0x110, true);
+            st.debug_pointer_motion(nx as f64 + 100.0, -500.0);
+            st.debug_pointer_button(0x110, false);
+            let (_, _, ty, _, th) = rect(st, notes);
+            assert_eq!((ty, ty + th), (crate::theme::TOP_BAR_HEIGHT, ny + nh), "top edge passed the top bar");
+        })?;
+        let s2 = start.clone();
+        at(state, 1800, move |st| {
+            let (id, ..) = rect(st, foot);
+            st.execute_shell_action(ShellClickAction::FocusWindow(id));
+            if let Some(w) = st.windows.iter_mut().find(|w| w.id == id) { w.x = 500; w.y = 300; }
+            let (_, x, y, w, h) = rect(st, foot);
+            s2.set((x, y, w, h));
+            // Bottom edge, 10 px from the right: still the corner
+            let (px, py) = ((x + w - 10) as f64, (y + h + 3) as f64);
+            st.debug_pointer_motion(px, py);
+            st.debug_pointer_button(0x110, true);
+            assert!(matches!(st.active_drag, Some(crate::DragOperation::ResizeWindow { edges, .. }) if edges.right && edges.bottom), "foot corner grab");
+            st.debug_pointer_motion(px + 120.0, py + 90.0);
+        })?;
+        at(state, 2300, |st| st.debug_pointer_button(0x110, false))?;
+        let s3 = start.clone();
+        at(state, 2700, move |st| {
+            let (x, y, w, h) = s3.get();
+            let (_, nx, ny, nw, nh) = rect(st, foot);
+            assert_eq!((nx, ny), (x, y), "foot moved");
+            assert!(nw > w + 90 && nh > h + 60, "foot did not grow: {w}x{h} -> {nw}x{nh}");
+            // Now from the left: the right edge must stay where it was
+            let right = nx + nw;
+            st.debug_pointer_motion(nx as f64 - 5.0, (ny + nh / 2) as f64);
+            st.debug_pointer_button(0x110, true);
+            st.debug_pointer_motion(nx as f64 - 105.0, (ny + nh / 2) as f64);
+            s3.set((right, ny, nw, nh));
+        })?;
+        at(state, 3100, |st| st.debug_pointer_button(0x110, false))?;
+        at(state, 3500, move |st| {
+            let (right, y, w, _) = start.get();
+            let (_, nx, ny, nw, _) = rect(st, foot);
+            assert_eq!((nx + nw, ny), (right, y), "left resize did not keep the right edge");
+            assert!(nw > w + 80, "foot did not grow from the left: {w} -> {nw}");
+            eprintln!("[feather-resize-check] inner band, corner reach, top bar stop, client corner and left-edge resize passed");
+        })?;
+    }
     if std::env::var_os("FEATHER_DEBUG_X11_WM").is_some() {
         if state.backend.is_drm() || !state.debug_input_only { return Err("X11 WM check requires isolated windowed input".into()); }
         fn steam(st: &FeatherCompositor) -> &crate::window::ManagedWindow {

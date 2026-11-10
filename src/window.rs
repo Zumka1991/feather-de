@@ -27,8 +27,12 @@ use crate::theme::{
     TRAFFIC_RADIUS, WINDOW_CORNER_RADIUS,
 };
 
-/// Width of the invisible grab band around decorated windows used for edge resizing
-pub const RESIZE_BAND: i32 = 6;
+/// Width of the invisible grab band outside a window used for edge resizing
+pub const RESIZE_BAND: i32 = 8;
+/// How far the grab band reaches inside the window frame
+pub const RESIZE_BAND_INNER: i32 = 3;
+/// Length of a corner grab along each edge: near a corner the edge resizes diagonally
+pub const RESIZE_CORNER: i32 = 20;
 pub const MIN_WINDOW_W: i32 = 280;
 pub const MIN_WINDOW_H: i32 = 160;
 
@@ -68,6 +72,42 @@ impl Edges {
     pub fn any(&self) -> bool {
         self.left || self.right || self.top || self.bottom
     }
+}
+
+/// Edges grabbed at a point of the band around the frame `(x0, y0, x1, y1)`
+pub fn resize_edges_in_band(px: f64, py: f64, (x0, y0, x1, y1): (f64, f64, f64, f64)) -> Option<Edges> {
+    let (b, inner, corner) = (RESIZE_BAND as f64, RESIZE_BAND_INNER as f64, RESIZE_CORNER as f64);
+    if px < x0 - b || px >= x1 + b || py < y0 - b || py >= y1 + b {
+        return None;
+    }
+    let mut edges = Edges {
+        left: px < x0 + inner,
+        right: px >= x1 - inner,
+        top: py < y0 + inner,
+        bottom: py >= y1 - inner,
+    };
+    if !edges.any() {
+        return None;
+    }
+    // A narrow window: the nearer side wins
+    if edges.left && edges.right {
+        edges.right = px - x0 > x1 - px;
+        edges.left = !edges.right;
+    }
+    if edges.top && edges.bottom {
+        edges.bottom = py - y0 > y1 - py;
+        edges.top = !edges.bottom;
+    }
+    // Corners reach along the edges: aiming at the rounded corner itself is not needed
+    if edges.left || edges.right {
+        edges.top |= py < y0 + corner;
+        edges.bottom |= py >= y1 - corner && !edges.top;
+    }
+    if edges.top || edges.bottom {
+        edges.left |= px < x0 + corner;
+        edges.right |= px >= x1 - corner && !edges.left;
+    }
+    Some(edges)
 }
 
 /// Keeps the opposite edge of a window in place while it is resized from the left/top
@@ -561,27 +601,16 @@ impl ManagedWindow {
             && py < (self.y + self.total_height()) as f64
     }
 
-    /// Resize edges under the pointer in the invisible band around a decorated window
+    /// Resize edges under the pointer in the grab band around a window. Every window gets
+    /// the same band, whoever draws its decorations, so all of them resize alike: client
+    /// decorations (GTK, Chromium) would otherwise use their own, differently sized borders.
     pub fn resize_edges_at(&self, px: f64, py: f64) -> Option<Edges> {
-        // Satellite can give Wine its own decorations. Its outer resize band
-        // must remain available even when Feather does not draw a titlebar.
-        let x11 = self.wl_surface().is_some_and(crate::xwayland::is_xwayland_surface);
-        if !self.is_visible() || self.fullscreen || !(self.has_titlebar() || x11) || self.maximized {
+        if !self.is_visible() || self.fullscreen || self.maximized {
             return None;
         }
-        let b = RESIZE_BAND as f64;
         let (x0, y0) = (self.x as f64, self.y as f64);
         let (x1, y1) = (x0 + self.width as f64, y0 + self.total_height() as f64);
-        if px < x0 - b || px >= x1 + b || py < y0 - b || py >= y1 + b {
-            return None;
-        }
-        let edges = Edges {
-            left: px < x0,
-            right: px >= x1,
-            top: py < y0,
-            bottom: py >= y1,
-        };
-        edges.any().then_some(edges)
+        resize_edges_in_band(px, py, (x0, y0, x1, y1))
     }
 
     /// System Settings draws a unified toolbar: its traffic lights sit inside the inset sidebar.
@@ -925,6 +954,22 @@ impl ManagedWindow {
                 }
             }
         }
+    }
+
+    /// The client's own size limits (xdg_toplevel min/max size), combined with ours
+    pub fn size_limits(&self) -> ((i32, i32), (i32, i32)) {
+        let (mut min, mut max) = ((MIN_WINDOW_W, MIN_WINDOW_H), (i32::MAX, i32::MAX));
+        if let Some(surface) = self.wl_surface() {
+            let (cmin, cmax) = with_states(surface, |states| {
+                let mut cached = states.cached_state.get::<SurfaceCachedState>();
+                let c = cached.current();
+                (c.min_size, c.max_size)
+            });
+            min = (min.0.max(cmin.w), min.1.max(cmin.h));
+            if cmax.w > 0 { max.0 = cmax.w.max(min.0); }
+            if cmax.h > 0 { max.1 = cmax.h.max(min.1); }
+        }
+        (min, max)
     }
 
     pub fn set_resizing(&self, resizing: bool) {
@@ -1749,5 +1794,42 @@ mod settings_tests {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod resize_band_tests {
+    use super::*;
+
+    const FRAME: (f64, f64, f64, f64) = (100.0, 100.0, 500.0, 400.0);
+    fn at(x: f64, y: f64) -> Option<(bool, bool, bool, bool)> {
+        resize_edges_in_band(x, y, FRAME).map(|e| (e.left, e.right, e.top, e.bottom))
+    }
+
+    #[test]
+    fn edges_reach_outside_and_a_little_inside() {
+        assert_eq!(at(94.0, 250.0), Some((true, false, false, false)));
+        assert_eq!(at(101.0, 250.0), Some((true, false, false, false)));
+        assert_eq!(at(110.0, 250.0), None);
+        assert_eq!(at(91.0, 250.0), None);
+        assert_eq!(at(505.0, 250.0), Some((false, true, false, false)));
+        assert_eq!(at(300.0, 406.0), Some((false, false, false, true)));
+        assert_eq!(at(300.0, 95.0), Some((false, false, true, false)));
+    }
+
+    #[test]
+    fn corners_are_easy_to_hit() {
+        // Along the edges, not only in the tiny square past the rounded corner
+        assert_eq!(at(95.0, 112.0), Some((true, false, true, false)));
+        assert_eq!(at(115.0, 96.0), Some((true, false, true, false)));
+        assert_eq!(at(488.0, 405.0), Some((false, true, false, true)));
+        assert_eq!(at(503.0, 385.0), Some((false, true, false, true)));
+        assert_eq!(at(95.0, 390.0), Some((true, false, false, true)));
+    }
+
+    #[test]
+    fn narrow_frames_pick_the_nearer_side() {
+        let e = resize_edges_in_band(104.0, 250.0, (100.0, 100.0, 105.0, 400.0)).unwrap();
+        assert!(e.right && !e.left);
     }
 }

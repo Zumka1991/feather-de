@@ -90,6 +90,7 @@
 - [x] Игры: relative pointer, lock/confine, единый `wl_pointer.frame` (`POINTER_NORAW`), удержание `x11_warp_lock` при вращении камеры ПКМ в Wine/XWayland, снятие захвата, отпускание кнопок и очистка `forwarded_pressed_keys` / модификаторов при смене фокуса — [GAMING.md](GAMING.md)
 - [x] Proton Dock: немедленные title/app_id, отдельные игры и фильтрация безымянного служебного окна — [GAMING.md](GAMING.md)
 - [x] Resize XWayland с CSD: внешний край поверх нижнего окна, `Resizing`, настоящий размер X11-клиента — [GAMING.md](GAMING.md)
+- [x] Единый ресайз всех окон: полоса 8+3 px, углы на 20 px вдоль краёв, min/max клиента, упор в верхнюю панель — `FEATHER_DEBUG_RESIZE=1`
 - [x] Lineage II в DRM: масштаб/UI, ПКМ и камера, resize и переключение из Dock после повторного входа (проверено пользователем)
 - [x] Глобальное меню GTK (`org.gtk.Menus` / `org.gtk.Actions`, `gtk_shell1`) — [APPMENU.md](APPMENU.md#gtk)
 - [x] Единые светофоры: KDE server-decoration для GTK 3/4 без HeaderBar (наш заголовок), `gtk-3.0/gtk.css` для snap — [DECORATIONS.md](DECORATIONS.md)

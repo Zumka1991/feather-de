@@ -297,6 +297,9 @@ impl FeatherCompositor {
                 }
             }
         };
+        if let Some(edges) = edges {
+            self.set_compositor_cursor(crate::input::cursor_for_edges(edges));
+        }
         self.active_drag = Some(op);
 
         // Take the pointer away from the client for the duration of the move/resize, like a

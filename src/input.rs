@@ -23,7 +23,7 @@ use crate::{
     launchpad::LaunchpadHit,
     shell::{AppIcon, DockTarget, ShellClickAction},
     theme::{TITLEBAR_HEIGHT, TOP_BAR_HEIGHT},
-    window::{Edges, ResizeAnchor, WindowBackend, MIN_WINDOW_H, MIN_WINDOW_W},
+    window::{Edges, ResizeAnchor, WindowBackend},
     DragOperation, DragSource, FeatherCompositor,
 };
 
@@ -205,6 +205,15 @@ fn cycle_stack<T>(stack: &mut Vec<T>, matches: impl Fn(&T) -> bool, reverse: boo
 
 #[cfg(test)]
 mod cycle_tests {
+    #[test]
+    fn resized_extent_follows_the_grabbed_edge_within_limits() {
+        assert_eq!(super::resized_extent(400, 30, false, true, 280, i32::MAX), 430);
+        assert_eq!(super::resized_extent(400, 30, true, false, 280, i32::MAX), 370);
+        assert_eq!(super::resized_extent(400, 300, true, false, 280, i32::MAX), 280);
+        assert_eq!(super::resized_extent(400, 300, false, true, 280, 600), 600);
+        assert_eq!(super::resized_extent(400, 30, false, false, 280, 600), 400);
+    }
+
     use super::{GestureAction, GestureState};
 
     #[test]
@@ -262,9 +271,15 @@ mod cycle_tests {
     }
 }
 
+/// New length of one window side dragged by `d` from the `start` or `end` edge
+fn resized_extent(len: i32, d: i32, start: bool, end: bool, min: i32, max: i32) -> i32 {
+    let len = if end { len + d } else if start { len - d } else { len };
+    len.clamp(min, max)
+}
+
 const SWITCHER_SHOW_DELAY: std::time::Duration = std::time::Duration::from_millis(45);
 
-fn cursor_for_edges(edges: Edges) -> CursorIcon {
+pub(crate) fn cursor_for_edges(edges: Edges) -> CursorIcon {
     match (edges.left, edges.right, edges.top, edges.bottom) {
         (true, _, true, _) => CursorIcon::NwResize,
         (_, true, true, _) => CursorIcon::NeResize,
@@ -1280,7 +1295,7 @@ impl FeatherCompositor {
         self.on_pointer_button(button, state, time);
     }
 
-    fn set_compositor_cursor(&mut self, icon: CursorIcon) {
+    pub(crate) fn set_compositor_cursor(&mut self, icon: CursorIcon) {
         if self.compositor_cursor != Some(icon) {
             self.compositor_cursor = Some(icon);
             self.apply_cursor(CursorImageStatus::Named(icon));
@@ -1385,12 +1400,15 @@ impl FeatherCompositor {
             // The client sets its own cursor on enter
             self.compositor_cursor = None;
         } else {
+            // The topmost window under the pointer decides: a band of a lower window
+            // must not show through a built-in window on top of it
             let edges = self
                 .windows
                 .iter()
                 .rev()
                 .filter(|w| w.is_visible())
-                .find_map(|w| w.resize_edges_at(pos.x, pos.y));
+                .find(|w| w.contains_point(pos.x, pos.y) || w.resize_edges_at(pos.x, pos.y).is_some())
+                .and_then(|w| w.resize_edges_at(pos.x, pos.y));
             let icon = edges.map(cursor_for_edges).unwrap_or(CursorIcon::Default);
             self.set_compositor_cursor(icon);
         }
@@ -1451,34 +1469,25 @@ impl FeatherCompositor {
             } => {
                 let dx = (pos.x - start_cursor.0).round() as i32;
                 let dy = (pos.y - start_cursor.1).round() as i32;
-                let mut w = w0;
-                let mut h = h0;
-                if edges.right {
-                    w += dx;
-                }
-                if edges.left {
-                    w -= dx;
-                }
-                if edges.bottom {
-                    h += dy;
-                }
-                if edges.top {
-                    h -= dy;
-                }
-                let w = w.max(MIN_WINDOW_W);
-                let h = h.max(MIN_WINDOW_H);
                 let r=self.monitor_at(pos.x,pos.y);let top=r.y+if r.x==0&&r.y==0{TOP_BAR_HEIGHT}else{0};
-                if let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) {
-                    if win.is_builtin() {
-                        if edges.left {
-                            win.x = x0 + (w0 - w);
-                        }
-                        if edges.top {
-                            win.y = (y0 + (h0 - h)).max(top);
-                        }
-                    }
-                    win.resize_client(w, h);
+                let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) else { return };
+                let (min, max) = win.size_limits();
+                let w = resized_extent(w0, dx, edges.left, edges.right, min.0, max.0);
+                let mut h = resized_extent(h0, dy, edges.top, edges.bottom, min.1, max.1);
+                // The top edge stops at the top bar, the same for every kind of window
+                if edges.top {
+                    h = h.min(h0 + (y0 - top).max(0)).max(min.1);
                 }
+                // Built-in windows move at once; a client's frame follows its commit (`resize_anchor`)
+                if win.is_builtin() {
+                    if edges.left {
+                        win.x = x0 + (w0 - w);
+                    }
+                    if edges.top {
+                        win.y = y0 + (h0 - h);
+                    }
+                }
+                win.resize_client(w, h);
             }
         }
     }
@@ -1518,10 +1527,12 @@ impl FeatherCompositor {
             right: win.x + win.width,
             bottom: win.y + win.total_height(),
         });
+        let (win_id, start_rect) = (win.id, (win.x, win.y, win.width, win.height));
+        self.set_compositor_cursor(cursor_for_edges(edges));
         self.active_drag = Some(DragOperation::ResizeWindow {
-            win_id: win.id,
+            win_id,
             start_cursor: (pos.x, pos.y),
-            start_rect: (win.x, win.y, win.width, win.height),
+            start_rect,
             edges,
         });
     }
