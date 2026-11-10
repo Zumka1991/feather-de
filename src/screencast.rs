@@ -805,10 +805,9 @@ fn spawn_ffmpeg(
     let crop = "crop=trunc(iw/2)*2:trunc(ih/2)*2";
     if hardware {
         cmd.arg("-vf").arg(format!("{crop},{VAAPI_FILTER}"));
+        // No `-tag:v hvc1`: with it the mp4 keeps only the encoder's initial VPS/SPS/PPS, and
+        // radeonsi's real in-band ones differ, so players show a green picture (0.19.2)
         cmd.args(["-c:v", encoder.name(), "-rc_mode", "CQP", "-qp", "20"]);
-        if encoder == VideoEncoder::HevcVaapi {
-            cmd.args(["-tag:v", "hvc1"]);
-        }
     } else {
         cmd.arg("-vf").arg(format!("{crop},scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"));
         cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20"]);
@@ -1908,6 +1907,66 @@ mod tests {
         assert_eq!(total_frames, 6);
         assert!(bytes.windows(4).any(|w| w == b"idx1"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Decodes the first frame of `path` at (x, y) to RGB
+    fn decoded_pixel(path: &Path, x: u32, y: u32) -> Option<[u8; 3]> {
+        let out = Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args(["-frames:v", "1", "-vf"])
+            .arg(format!("crop=2:2:{x}:{y},format=rgb24"))
+            .args(["-f", "rawvideo", "-"])
+            .output()
+            .ok()?;
+        (out.status.success() && out.stdout.len() >= 3).then(|| [out.stdout[0], out.stdout[1], out.stdout[2]])
+    }
+
+    #[test]
+    fn every_available_encoder_keeps_the_picture() {
+        // Regression: 0.19.2 tagged HEVC as hvc1 and every player showed a green screen.
+        // The real command line is checked by decoding what it wrote.
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let caps = encoder_caps();
+        let dir = std::env::temp_dir().join(format!("feather-screencast-enc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h) = (640u32, 360u32);
+        let mut frame = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..w * h {
+            frame.extend_from_slice(&[224, 60, 40, 255]);
+        }
+        let encoders = [
+            (VideoEncoder::X264, true),
+            (VideoEncoder::H264Vaapi, caps.h264),
+            (VideoEncoder::HevcVaapi, caps.hevc),
+        ];
+        for (encoder, available) in encoders {
+            if !available {
+                continue;
+            }
+            let path = dir.join(format!("{}.mp4", encoder.name()));
+            let mut child = spawn_ffmpeg(&path, w, h, 30, encoder, caps.device.as_deref(), None).unwrap();
+            {
+                let stdin = child.stdin.as_mut().unwrap();
+                for _ in 0..30 {
+                    stdin.write_all(&frame).unwrap();
+                }
+            }
+            drop(child.stdin.take());
+            assert!(child.wait().unwrap().success(), "{} failed", encoder.name());
+            let px = decoded_pixel(&path, 300, 170).expect("decodable video");
+            for (got, want) in px.iter().zip([224u8, 60, 40]) {
+                assert!(
+                    got.abs_diff(want) <= 6,
+                    "{}: decoded {px:?}, expected about [224, 60, 40]",
+                    encoder.name()
+                );
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
