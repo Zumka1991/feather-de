@@ -36,12 +36,17 @@ fn config(title: String, o: &Options, mode: Mode) -> Result<Config, String> {
         .as_ref()
         .and_then(|f| filters.iter().position(|p| p == f))
         .unwrap_or(0);
-    let start = get::<Vec<u8>>(o, "current_folder").map(|mut p| {
-        if p.last() == Some(&0) {
-            p.pop();
-        }
-        p
-    });
+    // Electron passes a bare file name, which Chromium turns into the folder ".": a start
+    // that is not an absolute path is no start at all, never a reason to refuse the dialog
+    let absolute = |p: &Vec<u8>| p.starts_with(b"/") && !p.contains(&0);
+    let start = get::<Vec<u8>>(o, "current_folder")
+        .map(|mut p| {
+            if p.last() == Some(&0) {
+                p.pop();
+            }
+            p
+        })
+        .filter(absolute);
     let mut c = Config {
         title,
         accept: get::<String>(o, "accept_label")
@@ -73,7 +78,7 @@ fn config(title: String, o: &Options, mode: Mode) -> Result<Config, String> {
                 bytes.pop();
             }
             let path = PathBuf::from(std::ffi::OsString::from_vec(bytes));
-            c.start = path.parent().map(picker::path_bytes);
+            c.start = path.parent().map(picker::path_bytes).filter(absolute);
             if c.name.is_empty() {
                 c.name = path
                     .file_name()
@@ -81,6 +86,10 @@ fn config(title: String, o: &Options, mode: Mode) -> Result<Config, String> {
                     .unwrap_or_default();
             }
         }
+    }
+    if c.start.is_none() && mode == Mode::Save {
+        let downloads = feather_ui::fileops::user_dir("DOWNLOAD", "Downloads");
+        c.start = downloads.is_dir().then(|| picker::path_bytes(&downloads));
     }
     c.validate()?;
     Ok(c)
@@ -1117,6 +1126,14 @@ mod tests {
             value([picker::path_bytes(&root), vec![0]].concat()),
         );
         let c = config("Pick".into(), &o, Mode::Open).unwrap();
+        // Electron's `defaultPath: "image.png"` arrives as the folder "."
+        let mut relative = Options::new();
+        relative.insert("current_folder".into(), value(b".\0".to_vec()));
+        relative.insert("current_name".into(), value("image.png"));
+        let saved = config("Save".into(), &relative, Mode::Save).unwrap();
+        assert_eq!(saved.name, "image.png");
+        assert!(saved.start.is_none_or(|p| p.starts_with(b"/")));
+        assert!(config("Open".into(), &relative, Mode::Open).unwrap().start.is_none());
         assert!(c.matches(&root.join("photo.png"), 0));
         assert!(!c.matches(&root.join("photo.pdf"), 0));
         let r = result(
