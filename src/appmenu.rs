@@ -468,7 +468,37 @@ impl FeatherCompositor {
 #[derive(Default)]
 struct Registrar {
     windows: HashMap<u32, (String, OwnedObjectPath)>,
+    /// Registration order of the ids in `windows` (always the same set): the oldest one is
+    /// evicted when a long session reaches the limit
     order: std::collections::VecDeque<u32>,
+}
+
+impl Registrar {
+    const LIMIT: usize = 256;
+
+    fn insert(&mut self, window_id: u32, service: String, path: OwnedObjectPath) {
+        if !self.windows.contains_key(&window_id) {
+            while self.windows.len() >= Self::LIMIT {
+                let Some(oldest) = self.order.pop_front() else { break };
+                self.windows.remove(&oldest);
+            }
+            self.order.push_back(window_id);
+        }
+        self.windows.insert(window_id, (service, path));
+    }
+
+    fn remove(&mut self, window_id: u32) {
+        if self.windows.remove(&window_id).is_some() {
+            self.order.retain(|id| *id != window_id);
+        }
+    }
+
+    /// A client left the bus without UnregisterWindow
+    fn forget_service(&mut self, service: &str) {
+        self.windows.retain(|_, (s, _)| s != service);
+        let windows = &self.windows;
+        self.order.retain(|id| windows.contains_key(id));
+    }
 }
 
 #[zbus::interface(name = "com.canonical.AppMenu.Registrar")]
@@ -482,18 +512,7 @@ impl Registrar {
         let sender = header
             .sender()
             .ok_or_else(|| zbus::fdo::Error::InvalidArgs("Missing sender".into()))?;
-        if self.windows.len() >= 256 && !self.windows.contains_key(&window_id) {
-            while let Some(oldest) = self.order.pop_front() {
-                if self.windows.remove(&oldest).is_some() {
-                    break;
-                }
-            }
-        }
-        if !self.windows.contains_key(&window_id) {
-            self.order.push_back(window_id);
-        }
-        self.windows
-            .insert(window_id, (sender.to_string(), menu_object_path));
+        self.insert(window_id, sender.to_string(), menu_object_path);
         Ok(())
     }
     fn unregister_window(
@@ -506,7 +525,7 @@ impl Registrar {
             .get(&window_id)
             .is_some_and(|(service, _)| header.sender().is_some_and(|s| s.as_str() == service))
         {
-            self.windows.remove(&window_id);
+            self.remove(window_id);
         }
     }
     fn get_menu_for_window(&self, window_id: u32) -> zbus::fdo::Result<(String, OwnedObjectPath)> {
@@ -743,8 +762,7 @@ async fn worker(
                             interface
                                 .get_mut()
                                 .await
-                                .windows
-                                .retain(|_, (service, _)| service != &old);
+                                .forget_service(&old);
                         }
                     }
                     if name == active_service || old == active_service {
@@ -1097,5 +1115,38 @@ mod tests {
         assert!(wait_update(&source, Some(2)).is_none());
         drop(tx);
         thread.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod registrar_tests {
+    use super::*;
+
+    fn path() -> OwnedObjectPath {
+        OwnedObjectPath::try_from("/MenuBar/1").unwrap()
+    }
+
+    #[test]
+    fn order_tracks_windows_and_evicts_oldest() {
+        let mut r = Registrar::default();
+        // Many short-lived windows that unregister properly leave nothing behind
+        for id in 0..10_000 {
+            r.insert(id, ":1.5".into(), path());
+            r.remove(id);
+        }
+        assert!(r.windows.is_empty() && r.order.is_empty());
+        // Re-registering the same window does not duplicate it
+        r.insert(7, ":1.5".into(), path());
+        r.insert(7, ":1.5".into(), path());
+        assert_eq!(r.order.len(), 1);
+        // Over the limit the oldest registration goes, the set stays in sync
+        for id in 100..100 + Registrar::LIMIT as u32 {
+            r.insert(id, ":1.6".into(), path());
+        }
+        assert_eq!(r.windows.len(), Registrar::LIMIT);
+        assert_eq!(r.order.len(), Registrar::LIMIT);
+        assert!(!r.windows.contains_key(&7));
+        r.forget_service(":1.6");
+        assert!(r.windows.is_empty() && r.order.is_empty());
     }
 }

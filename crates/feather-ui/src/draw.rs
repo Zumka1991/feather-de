@@ -340,6 +340,35 @@ impl FrameDiff {
         if bands.is_empty() {
             return vec![(0, 0, 1, 1)];
         }
+        // The exact pairwise merge below is O(n³): a scattered frame (a 4K list scrolled under
+        // columns of text) can yield hundreds or thousands of spans. Collapse them linearly
+        // first into horizontal strips, then join the strips with the smallest row gap.
+        const EXACT_MERGE_MAX: usize = 48;
+        if bands.len() > EXACT_MERGE_MAX {
+            bands.sort_unstable_by_key(|b| b.1);
+            let mut strips: Vec<(usize, usize, usize, usize)> = Vec::with_capacity(rows.min(bands.len()));
+            for b in bands {
+                match strips.last_mut() {
+                    Some(s) if b.1 <= s.3 + 1 => {
+                        s.0 = s.0.min(b.0);
+                        s.2 = s.2.max(b.2);
+                        s.3 = s.3.max(b.3);
+                    }
+                    _ => strips.push(b),
+                }
+            }
+            while strips.len() > EXACT_MERGE_MAX {
+                let i = (0..strips.len() - 1)
+                    .min_by_key(|&i| strips[i + 1].1 - strips[i].3)
+                    .unwrap_or(0);
+                let b = strips.remove(i + 1);
+                let a = &mut strips[i];
+                a.0 = a.0.min(b.0);
+                a.2 = a.2.max(b.2);
+                a.3 = a.3.max(b.3);
+            }
+            bands = strips;
+        }
         while bands.len() > 12 {
             let mut best = (0usize, 1usize, usize::MAX);
             for i in 0..bands.len() {
@@ -437,6 +466,34 @@ mod diff_tests {
         assert_eq!(rects.len(), 2);
         let area: i64 = rects.iter().map(|r| r.2 as i64 * r.3 as i64).sum();
         assert!(area <= 2 * 128 * 8, "expected tiny rects, got {rects:?}");
+    }
+
+    #[test]
+    fn damage_rects_scattered_4k_frame_stays_fast_and_covers_every_change() {
+        use super::{DIFF_BLOCK_H, DIFF_BLOCK_W};
+        let (w, h) = (3840usize, 2160usize);
+        let mut diff = FrameDiff::default();
+        let mut px = frame(w, h);
+        diff.damage_rects(&px, w as i32, h as i32);
+        // One pixel in every third tile of every other tile row: ~1350 separate spans
+        let mut changed = Vec::new();
+        for ty in (0..h / DIFF_BLOCK_H).step_by(2) {
+            for tx in (0..w / DIFF_BLOCK_W).step_by(3) {
+                let (x, y) = (tx * DIFF_BLOCK_W + 5, ty * DIFF_BLOCK_H + 3);
+                px[(y * w + x) * 4] ^= 0xff;
+                changed.push((x as i32, y as i32));
+            }
+        }
+        let started = std::time::Instant::now();
+        let rects = diff.damage_rects(&px, w as i32, h as i32);
+        assert!(started.elapsed() < std::time::Duration::from_millis(250), "took {:?}", started.elapsed());
+        assert!(!rects.is_empty() && rects.len() <= 12, "{rects:?}");
+        for (x, y) in changed {
+            assert!(
+                rects.iter().any(|&(rx, ry, rw, rh)| x >= rx && x < rx + rw && y >= ry && y < ry + rh),
+                "({x}, {y}) not covered by {rects:?}"
+            );
+        }
     }
 }
 

@@ -1012,7 +1012,6 @@ impl FeatherCompositor {
             .then(|| self.shell.dock_insert_index(pos.x, pos.y));
         self.shell.set_dock_gap(gap);
         self.needs_redraw = true;
-        self.needs_redraw = true;
     }
 
     /// Button released: a click if the icon never moved, otherwise a drop
@@ -1716,6 +1715,7 @@ impl FeatherCompositor {
             if self.system_settings.page==crate::system_settings::Page::DateTime{self.mark_settings_dirty();}
         }
         self.prune_dead_windows();
+        crate::apps::trim_session_logs();
         self.next_housekeeping()
     }
 

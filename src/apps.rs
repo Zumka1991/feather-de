@@ -847,8 +847,17 @@ fn enqueue_reap(mut child: std::process::Child, line: String) {
 /// Output of launched programs: ~/.local/state/feather-de/apps.log, so a program that will
 /// not start leaves its reason somewhere. The previous login's log is kept as apps.log.old.
 fn app_log() -> (Stdio, Stdio) {
+    let path = app_log_path();
+    let file = path.as_ref().and_then(|p| fs::OpenOptions::new().create(true).append(true).open(p).ok());
+    match file.and_then(|f| Some((f.try_clone().ok()?, f))) {
+        Some((out, err)) => (out.into(), err.into()),
+        None => (Stdio::null(), Stdio::null()),
+    }
+}
+
+fn app_log_path() -> &'static Option<PathBuf> {
     static PATH: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    let path = PATH.get_or_init(|| {
+    PATH.get_or_init(|| {
         let dir = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?
@@ -857,17 +866,70 @@ fn app_log() -> (Stdio, Stdio) {
         let path = dir.join("apps.log");
         let _ = fs::rename(&path, dir.join("apps.log.old"));
         Some(path)
-    });
-    if let Some(p) = path.as_ref() {
-        if fs::metadata(p).is_ok_and(|m| m.len() > 4 * 1024 * 1024) {
-            let _ = fs::rename(p, p.with_extension("log.old"));
+    })
+}
+
+/// Session logs stay under this size during a long session
+const LOG_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// Keeps apps.log and the compositor's own drm.log bounded during a multi-day session.
+/// Renaming does not help: Chromium/Electron and the compositor keep writing into their
+/// inherited O_APPEND descriptors. So the content moves to `<name>.old` and the file is
+/// truncated in place; those descriptors continue at its new end. Called from the minute
+/// housekeeping tick: two `stat`s inline, the copy on a short-lived thread.
+pub fn trim_session_logs() {
+    static BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    {
+        let Ok(mut last) = LAST.lock() else { return };
+        if last.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(55)) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    let mut logs: Vec<PathBuf> = Vec::new();
+    if let Some(p) = app_log_path() {
+        logs.push(p.clone());
+    }
+    // drm.log: our stderr, only when it is a regular file opened for appending (`>>`):
+    // truncating a descriptor without O_APPEND would leave its offset past the end
+    let append = unsafe { libc::fcntl(2, libc::F_GETFL) };
+    if append >= 0 && append & libc::O_APPEND != 0 {
+        if let Ok(p) = fs::read_link("/proc/self/fd/2") {
+            if !logs.contains(&p) {
+                logs.push(p);
+            }
         }
     }
-    let file = path.as_ref().and_then(|p| fs::OpenOptions::new().create(true).append(true).open(p).ok());
-    match file.and_then(|f| Some((f.try_clone().ok()?, f))) {
-        Some((out, err)) => (out.into(), err.into()),
-        None => (Stdio::null(), Stdio::null()),
+    logs.retain(|p| fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() > LOG_LIMIT));
+    if logs.is_empty() || BUSY.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
     }
+    let spawned = std::thread::Builder::new()
+        .name("feather-logtrim".into())
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            for p in logs {
+                if let Err(e) = trim_log(&p) {
+                    tracing::debug!("Не удалось обрезать {}: {e}", p.display());
+                }
+            }
+            BUSY.store(false, std::sync::atomic::Ordering::Release);
+        });
+    if spawned.is_err() {
+        BUSY.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn trim_log(path: &std::path::Path) -> std::io::Result<()> {
+    let mut old = path.as_os_str().to_owned();
+    old.push(".old");
+    let old = PathBuf::from(old);
+    let mut src = fs::File::open(path)?;
+    let mut dst = fs::File::create(&old)?;
+    std::io::copy(&mut src, &mut dst)?;
+    // Lines written between the copy and here are lost; acceptable for a log
+    fs::OpenOptions::new().write(true).open(path)?.set_len(0)
 }
 
 /// External polkit agent, used when Feather's own agent cannot register.
@@ -1622,5 +1684,25 @@ mod dock_pin_tests {
         // A new app (Launchpad) dropped first, and with no place given
         assert_eq!(pin_position(&pins, &shown, "calc", Some(0)), 0);
         assert_eq!(pin_position(&pins, &shown, "calc", None), pins.len());
+    }
+}
+
+#[cfg(test)]
+mod log_trim_tests {
+    use std::io::Write;
+
+    #[test]
+    fn trim_keeps_append_descriptors_writing_at_the_new_end() {
+        let dir = std::env::temp_dir().join(format!("feather-logtrim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("apps.log");
+        // A long-lived program's inherited descriptor
+        let mut writer = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        writer.write_all(&vec![b'x'; 10_000]).unwrap();
+        super::trim_log(&path).unwrap();
+        writer.write_all(b"after\n").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"after\n");
+        assert_eq!(std::fs::metadata(dir.join("apps.log.old")).unwrap().len(), 10_000);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
