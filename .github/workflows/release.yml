@@ -89,8 +89,12 @@ jobs:
 
       - name: Зависимости сборки
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential pkg-config dpkg-dev \
+          if [ -f /etc/apt/apt-mirrors.txt ] && ! curl -fsSI --max-time 4 http://azure.archive.ubuntu.com/ubuntu/dists/noble/InRelease >/dev/null 2>&1; then
+            echo "Зеркало azure.archive.ubuntu.com недоступно — переключаемся на archive.ubuntu.com"
+            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 install -y --no-install-recommends build-essential pkg-config dpkg-dev \
             libdrm-dev libgbm-dev libinput-dev libseat-dev libudev-dev libxkbcommon-dev \
             libwayland-dev libegl-dev libgles-dev libpam0g-dev libpipewire-0.3-dev \
             libxcb1-dev libxcb-cursor-dev libclang-dev clang
