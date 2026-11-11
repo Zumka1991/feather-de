@@ -36,6 +36,9 @@ fi
 
 while true; do
     rm -f /tmp/feather-restart
+    if [[ -f "$LOG_DIR/drm.log" ]] && (( $(stat -c%s "$LOG_DIR/drm.log" 2>/dev/null || echo 0) > 4194304 )); then
+        mv -f "$LOG_DIR/drm.log" "$LOG_DIR/drm.log.old"
+    fi
     echo "=== $(date) ===" >> "$LOG_DIR/drm.log"
     RUST_LOG="${RUST_LOG:-feather_de=info,warn}" "$BIN" --drm --standalone "$@" >> "$LOG_DIR/drm.log" 2>&1
     # reload-binary.sh asks for a restart with the freshly built binary

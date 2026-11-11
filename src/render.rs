@@ -435,6 +435,14 @@ pub(crate) fn build_scene(
         mem(&mut out, at(ring.rect()), &g.base, None, disc);
     }
     if shell.has_visible_overlay() {
+        if let Some(r) = shell.mission_title_region() {
+            mem(&mut out, (r.loc.x as f64, r.loc.y as f64), &shell.mission_title_buffer,
+                None, crate::animation::Visual::default());
+        }
+        if let Some(r) = shell.toast_region() {
+            mem(&mut out, (r.loc.x as f64, r.loc.y as f64), &shell.toast_buffer,
+                None, crate::animation::Visual::default());
+        }
         if let Some(r) = shell.overlay_region() {
             mem(&mut out, (r.loc.x as f64, r.loc.y as f64), &shell.overlay_buffer,
                 None, animations.overlay(shell));
@@ -1312,7 +1320,11 @@ impl FeatherCompositor {
         &mut self,
         monitor: &str,
         cursor: bool,
-        target: &mut Option<(smithay::backend::renderer::gles::GlesTexture, (i32, i32))>,
+        target: &mut Option<(
+            smithay::backend::renderer::gles::GlesTexture,
+            smithay::backend::renderer::damage::OutputDamageTracker,
+            (i32, i32),
+        )>,
     ) -> Option<smithay::backend::renderer::gles::GlesMapping> {
         use smithay::backend::{
             allocator::Fourcc,
@@ -1356,14 +1368,22 @@ impl FeatherCompositor {
             ));
             output_elements(e, info.rect, scale)
         };
-        if target.as_ref().is_none_or(|(_, s)| *s != size) {
-            *target = renderer.create_buffer(Fourcc::Abgr8888, size.into()).ok().map(|t| (t, size));
+        let fresh = target.as_ref().is_none_or(|(_, _, s)| *s != size);
+        if fresh {
+            *target = renderer.create_buffer(Fourcc::Abgr8888, size.into()).ok().map(|t| {
+                (
+                    t,
+                    OutputDamageTracker::new(size, 1.0, smithay::utils::Transform::Normal),
+                    size,
+                )
+            });
         }
-        let (texture, _) = target.as_mut()?;
+        let (texture, tracker, _) = target.as_mut()?;
         let mut fb = renderer.bind(texture).ok()?;
         let clear = if blank || self.lock.active { Color32F::new(0.0, 0.0, 0.0, 1.0) } else { CLEAR_COLOR };
-        OutputDamageTracker::new(size, 1.0, smithay::utils::Transform::Normal)
-            .render_output(renderer, &mut fb, 0, &elements, clear)
+        let age = if fresh { 0 } else { 1 };
+        tracker
+            .render_output(renderer, &mut fb, age, &elements, clear)
             .ok()?;
         let rect = smithay::utils::Rectangle::<i32, smithay::utils::Buffer>::from_size(size.into());
         renderer.copy_framebuffer(&fb, rect, Fourcc::Abgr8888).ok()

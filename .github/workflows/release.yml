@@ -112,6 +112,12 @@ jobs:
       - name: Пакет .deb
         run: ./packaging/build-deb.sh --out dist
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-deb
+          path: dist/*.deb
+          retention-days: 14
+
       - uses: actions/download-artifact@v4
         with:
           name: arch-repo
@@ -158,3 +164,18 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/*.deb feather-de_amd64.deb \
             arch-repo/x86_64/feather-de-*.pkg.tar.zst \
             --title "Пёрышко $GITHUB_REF_NAME" --generate-notes
+
+      - name: GitHub Pre-release (ветка)
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="ci-$(printf '%s' "$GITHUB_REF_NAME" | tr '/' '-')"
+          cp dist/feather-de_*_amd64.deb feather-de_amd64.deb
+          gh release delete "$tag" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$tag" dist/*.deb feather-de_amd64.deb \
+            arch-repo/x86_64/feather-de-*.pkg.tar.zst \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Пёрышко — сборка ветки $GITHUB_REF_NAME" \
+            --notes "Тестовая сборка ветки \`$GITHUB_REF_NAME\` (\`$GITHUB_SHA\`) для Ubuntu (\`.deb\`) и Arch Linux (\`.pkg.tar.zst\`). Пакет также опубликован в APT-репозитории Пёрышка."

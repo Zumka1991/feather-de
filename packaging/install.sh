@@ -119,6 +119,9 @@ fi
 # Домашние папки (Документы, Загрузки, Изображения…): на сервере их никто не создаёт
 command -v xdg-user-dirs-update >/dev/null && xdg-user-dirs-update >/dev/null 2>&1
 unset WAYLAND_DISPLAY DISPLAY
+if [[ -f "$LOG_DIR/drm.log" ]] && (( $(stat -c%s "$LOG_DIR/drm.log" 2>/dev/null || echo 0) > 4194304 )); then
+    mv -f "$LOG_DIR/drm.log" "$LOG_DIR/drm.log.old"
+fi
 exec feather-de --drm --standalone "$@" >> "$LOG_DIR/drm.log" 2>&1
 EOF
 chmod 755 "$BIN_DEST/feather-session"

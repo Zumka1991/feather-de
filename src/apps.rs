@@ -745,32 +745,103 @@ pub fn spawn_wayland_app(cmd_line: &str, wayland_socket: &str) -> Option<i32> {
     tracing::info!("Запуск: {line}");
     feather_ui::process::new_session(&mut command)
         .spawn()
-        .map(|mut child| {
+        .map(|child| {
             feather_ui::process::remember_session(&child);
             let pid = child.id() as i32;
-            let line = line.clone();
-            // Reap the child when it exits; otherwise every closed app stays a zombie
-            // until the compositor itself exits
-            let _ = std::thread::Builder::new()
-                .name("feather-reaper".into())
-                .stack_size(32 * 1024)
-                .spawn(move || {
-                    let started = std::time::Instant::now();
-                    let status = child.wait();
-                    // Gone right away is the "does not launch" case: an error, or a
-                    // single-instance app that handed itself to an instance already running
-                    let secs = started.elapsed().as_secs_f32();
-                    match status {
-                        _ if secs >= 15.0 => {}
-                        Ok(s) if s.success() => tracing::info!("Программа вышла через {secs:.1} с: {line}"),
-                        Ok(s) => tracing::warn!("Программа завершилась через {secs:.1} с ({s}): {line}; вывод в apps.log"),
-                        Err(e) => tracing::warn!("Программа: {e}: {line}"),
-                    }
-                });
+            enqueue_reap(child, line.clone());
             pid
         })
         .inspect_err(|e| tracing::warn!("Не удалось запустить {line}: {e}"))
         .ok()
+}
+
+/// Single lazy reaper thread for all launched apps: sleeps in `poll(2)` via `pidfd_open`
+/// (0 % CPU in idle, one 32 KiB thread regardless of how many programs are running).
+fn enqueue_reap(mut child: std::process::Child, line: String) {
+    use std::io::{Read, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    struct Reaper {
+        tx: std::sync::mpsc::Sender<(std::process::Child, std::time::Instant, String)>,
+        wake: std::sync::Mutex<std::io::PipeWriter>,
+    }
+    static REAPER: std::sync::OnceLock<Option<Reaper>> = std::sync::OnceLock::new();
+    let reaper = REAPER.get_or_init(|| {
+        let (mut wake_r, wake_w) = std::io::pipe().ok()?;
+        unsafe {
+            let flags = libc::fcntl(wake_r.as_raw_fd(), libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(wake_r.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<(std::process::Child, std::time::Instant, String)>();
+        std::thread::Builder::new()
+            .name("feather-reaper".into())
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let mut active: Vec<(std::process::Child, Option<OwnedFd>, std::time::Instant, String)> = Vec::new();
+                let mut fds = Vec::new();
+                let mut scratch = [0u8; 64];
+                loop {
+                    while let Ok((c, started, cmd)) = rx.try_recv() {
+                        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, c.id() as libc::pid_t, 0) };
+                        let pidfd = (raw >= 0).then(|| unsafe { OwnedFd::from_raw_fd(raw as i32) });
+                        active.push((c, pidfd, started, cmd));
+                    }
+                    let mut i = 0;
+                    while i < active.len() {
+                        match active[i].0.try_wait() {
+                            Ok(Some(status)) => {
+                                let (_, _, started, cmd) = active.swap_remove(i);
+                                let secs = started.elapsed().as_secs_f32();
+                                if secs < 15.0 {
+                                    if status.success() {
+                                        tracing::info!("Программа вышла через {secs:.1} с: {cmd}");
+                                    } else {
+                                        tracing::warn!("Программа завершилась через {secs:.1} с ({status}): {cmd}; вывод в apps.log");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let (_, _, _, cmd) = active.swap_remove(i);
+                                tracing::warn!("Программа: {e}: {cmd}");
+                            }
+                            Ok(None) => i += 1,
+                        }
+                    }
+                    fds.clear();
+                    fds.push(libc::pollfd { fd: wake_r.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+                    let mut all_pidfd = true;
+                    for (_, pidfd, _, _) in &active {
+                        if let Some(fd) = pidfd {
+                            fds.push(libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+                        } else {
+                            all_pidfd = false;
+                        }
+                    }
+                    let timeout = if active.is_empty() || all_pidfd { -1 } else { 500 };
+                    let _ = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
+                    while matches!(wake_r.read(&mut scratch), Ok(n) if n > 0) {}
+                }
+            })
+            .ok()?;
+        Some(Reaper { tx, wake: std::sync::Mutex::new(wake_w) })
+    });
+    let started = std::time::Instant::now();
+    if let Some(r) = reaper {
+        if r.tx.send((child, started, line)).is_ok() {
+            if let Ok(mut w) = r.wake.lock() {
+                let _ = w.write_all(&[1]);
+            }
+            return;
+        }
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("feather-reaper".into())
+        .stack_size(32 * 1024)
+        .spawn(move || {
+            let _ = child.wait();
+        });
 }
 
 /// Output of launched programs: ~/.local/state/feather-de/apps.log, so a program that will
@@ -787,6 +858,11 @@ fn app_log() -> (Stdio, Stdio) {
         let _ = fs::rename(&path, dir.join("apps.log.old"));
         Some(path)
     });
+    if let Some(p) = path.as_ref() {
+        if fs::metadata(p).is_ok_and(|m| m.len() > 4 * 1024 * 1024) {
+            let _ = fs::rename(p, p.with_extension("log.old"));
+        }
+    }
     let file = path.as_ref().and_then(|p| fs::OpenOptions::new().create(true).append(true).open(p).ok());
     match file.and_then(|f| Some((f.try_clone().ok()?, f))) {
         Some((out, err)) => (out.into(), err.into()),

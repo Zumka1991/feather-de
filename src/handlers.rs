@@ -785,15 +785,20 @@ impl XdgActivationHandler for FeatherCompositor {
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        // Honour fresh tokens only, so background apps can't steal focus forever
-        if token_data.timestamp.elapsed().as_secs() < 10 {
+        // Prune abandoned tokens so XdgActivationState never accumulates unboundedly
+        self.xdg_activation_state
+            .retain_tokens(|_, d| d.timestamp.elapsed().as_secs() < 10);
+        // Honour fresh tokens only, never while locked or across other Spaces
+        if !self.lock.active && token_data.timestamp.elapsed().as_secs() < 10 {
             if let Some(idx) = self.window_index_for_toplevel(&surface) {
-                let mut win = self.windows.remove(idx);
-                win.minimized = false;
-                self.windows.push(win);
-                self.refresh_focus();
-                self.shell.dock_dirty = true;
-                self.needs_redraw = true;
+                if !self.windows[idx].off_space {
+                    let mut win = self.windows.remove(idx);
+                    win.minimized = false;
+                    self.windows.push(win);
+                    self.refresh_focus();
+                    self.shell.dock_dirty = true;
+                    self.needs_redraw = true;
+                }
             }
         }
         self.xdg_activation_state.remove_token(&token);

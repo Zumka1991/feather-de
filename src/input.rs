@@ -319,7 +319,6 @@ impl FeatherCompositor {
             return;
         }
         if activity { self.pointer_capture_suspended = false; }
-        self.needs_redraw = true;
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => {
@@ -346,7 +345,9 @@ impl FeatherCompositor {
                 self.on_pointer_motion(pos, Event::time_msec(&event));
             }
             InputEvent::PointerButton { event } => {
+                self.needs_redraw = true;
                 self.on_pointer_button(event.button_code(), event.state(), Event::time_msec(&event));
+                self.sync_modal_keyboard_focus();
             }
             InputEvent::PointerAxis { event } => self.on_pointer_axis::<B>(event),
             InputEvent::GestureSwipeBegin { event } => {
@@ -382,6 +383,7 @@ impl FeatherCompositor {
         if self.lock.active || self.auth.is_open() {
             return;
         }
+        self.needs_redraw = true;
         self.close_ring();
         match action {
             GestureAction::SpaceStep(delta) => {
@@ -574,6 +576,7 @@ impl FeatherCompositor {
                         let caps = self.keyboard.modifier_state().caps_lock;
                         self.lock.status_changed(caps);
                     }
+                    self.needs_redraw = true;
                 }
             }
         }
@@ -675,7 +678,7 @@ impl FeatherCompositor {
                 repeat_candidate = st.repeat_candidate(repeat_sym, repeat_latin, mods);
             }
             let layout_idx = keysym_handle.xkb().lock().unwrap().active_layout().0;
-            if st.active_layout_index!=layout_idx as usize{st.refresh_input_source(layout_idx as usize);}
+            if st.active_layout_index!=layout_idx as usize{st.refresh_input_source(layout_idx as usize);st.needs_redraw=true;}
             // Nothing in the desktop (including emergency quit and screenshots) runs locked.
             if st.lock.active {
                 if key_state==KeyState::Pressed && mods.ctrl && mods.alt {
@@ -872,6 +875,9 @@ impl FeatherCompositor {
 
 
             if key_state != KeyState::Pressed {
+                if st.shell.spotlight_open || st.shell.launchpad.is_some() || st.mission_open() {
+                    return FilterResult::Intercept(());
+                }
                 return FilterResult::Forward;
             }
 
@@ -965,6 +971,9 @@ impl FeatherCompositor {
         if intercepted && key_state == KeyState::Released {
             self.clear_forwarded_pressed_key(keycode, serial, time, is_modifier);
         }
+        if intercepted || deferred.is_some() || super_tapped {
+            self.needs_redraw = true;
+        }
 
         if deferred.is_none() {
             if let Some(candidate) = repeat_candidate { self.arm_key_repeat(candidate); }
@@ -1044,6 +1053,7 @@ impl FeatherCompositor {
         if super_tapped {
             self.super_tapped();
         }
+        self.sync_modal_keyboard_focus();
     }
 
     pub(crate) fn edit_builtin_key(&mut self, sym: smithay::input::keyboard::Keysym, latin_sym: smithay::input::keyboard::Keysym,
@@ -1313,11 +1323,19 @@ impl FeatherCompositor {
     }
 
     fn on_pointer_motion_unlocked(&mut self, pos: Point<f64, Logical>, time: u32) -> bool {
+        if self.pointer_location != pos
+            && (self.backend.is_drm() || (self.larvis_desktop && !self.larvis_manual_input))
+        {
+            self.needs_redraw = true;
+        }
         self.pointer_location = pos;
         if self.mission_open() {
             self.mission_motion(pos.x, pos.y);
             // The Dock stays usable (magnification follows the pointer)
             self.shell.update_pointer_hover(pos.x, pos.y);
+            if self.shell.dock_dirty || self.shell.overlay_dirty || self.shell.topbar_dirty {
+                self.needs_redraw = true;
+            }
             self.pointer_focus_dirty = true;
             return false;
         }
@@ -1383,10 +1401,17 @@ impl FeatherCompositor {
 
         if !self.shell.scratch_open || self.shell.has_visible_overlay() {
             self.shell.update_pointer_hover(pos.x, pos.y);
+            if self.shell.topbar_dirty || self.shell.overlay_dirty || self.shell.dock_dirty {
+                self.needs_redraw = true;
+            }
         }
         for win in &mut self.windows {
             if win.is_visible() {
+                let was = win.dirty;
                 win.update_hover(pos.x, pos.y);
+                if !was && win.dirty {
+                    self.needs_redraw = true;
+                }
             }
         }
         self.green_button_motion(pos.x, pos.y);
@@ -1452,13 +1477,19 @@ impl FeatherCompositor {
                     }
                     self.active_drag = Some(DragOperation::MoveWindow { win_id, start_cursor: (pos.x, pos.y), start_pos: (win.x, win.y) });
                     self.tile_drag_motion(win_id, pos.x, pos.y);
+                    self.needs_redraw = true;
                     return;
                 }
                 self.tile_drag_motion(win_id, pos.x, pos.y);
                 let r=self.monitor_at(pos.x,pos.y);let top=r.y+if r.x==0&&r.y==0{TOP_BAR_HEIGHT}else{0};
                 if let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) {
-                    win.x = start_pos.0 + dx;
-                    win.y = (start_pos.1 + dy).max(top);
+                    let nx = start_pos.0 + dx;
+                    let ny = (start_pos.1 + dy).max(top);
+                    if win.x != nx || win.y != ny {
+                        win.x = nx;
+                        win.y = ny;
+                        self.needs_redraw = true;
+                    }
                 }
             }
             DragOperation::ResizeWindow {
@@ -1486,6 +1517,7 @@ impl FeatherCompositor {
                     if edges.top {
                         win.y = y0 + (h0 - h);
                     }
+                    self.needs_redraw = true;
                 }
                 win.resize_client(w, h);
             }
@@ -2076,6 +2108,7 @@ impl FeatherCompositor {
                 Some(v) => self.ring_scroll(v, true),
                 None => self.ring_scroll(event.amount(Axis::Vertical).unwrap_or(0.0), false),
             }
+            self.needs_redraw = true;
             return;
         }
         let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|w.fullscreen&&!w.larvis);
@@ -2090,7 +2123,7 @@ impl FeatherCompositor {
         }
         let menu_delta = event.amount(Axis::Vertical).unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0));
         if self.shell.control_center_open && self.shell.cc.page!=crate::control_panel::Page::Main {
-            self.shell.cc.scroll(menu_delta); self.shell.overlay_dirty=true; return;
+            self.shell.cc.scroll(menu_delta); self.shell.overlay_dirty=true; self.needs_redraw=true; return;
         }
         if self.shell.scroll_center(self.pointer_location.x as f32, self.pointer_location.y as f32, menu_delta) {
             self.needs_redraw |= self.shell.overlay_dirty;

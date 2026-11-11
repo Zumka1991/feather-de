@@ -1403,6 +1403,7 @@ impl FeatherCompositor {
             return;
         }
         self.lock.active = true;
+        self.session_locked.store(true, std::sync::atomic::Ordering::Release);
         self.lock.login_mode = false;
         self.lock.display_protected = false;
         self.lock.protected_frame = false;
@@ -1464,6 +1465,7 @@ impl FeatherCompositor {
         }
         self.cancel_scene_input();
         self.lock.active = false;
+        self.session_locked.store(false, std::sync::atomic::Ordering::Release);
         self.lock.login_mode = false;
         self.lock.generation += 1;
         self.lock.retired_owner = self.lock.owner.take();
@@ -1566,6 +1568,7 @@ impl FeatherCompositor {
     }
 
     pub fn refresh_lock(&mut self) {
+        self.session_locked.store(self.lock.active, std::sync::atomic::Ordering::Release);
         if self.lock.active && self.lock.was_external && !self.lock.external() {
             self.lock.was_external = false;
             self.lock.dirty = true;

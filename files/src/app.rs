@@ -854,7 +854,9 @@ impl App {
             Ok(()) => {
                 // Insert now so rename starts immediately; the watcher re-read keeps it in place
                 let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                self.entries.push(Entry { name: name.clone(), path: path.clone(), kind: Kind::Folder, is_dir: true, hidden: false, size: 0, modified: Some(std::time::SystemTime::now()), ext: String::new() });
+                let modified = Some(std::time::SystemTime::now());
+                let modified_label = fsops::human_date(modified);
+                self.entries.push(Entry { name: name.clone(), path: path.clone(), kind: Kind::Folder, is_dir: true, hidden: false, size: 0, modified, modified_label, size_label: "—".into(), ext: String::new() });
                 fsops::sort_entries_by(&mut self.entries, self.sort);
                 self.search.clear();
                 self.refilter();
@@ -2392,15 +2394,19 @@ impl App {
             if y > cy + ch || y + CELL_H < cy {
                 continue;
             }
-            let e = self.entry(i).clone();
-            let selected = self.selected.contains(&e.path) || self.drop_target.as_ref() == Some(&e.path);
+            let idx = self.visible[i];
+            let (selected, hidden, icon, renaming) = {
+                let e = &self.entries[idx];
+                let selected = self.selected.contains(&e.path) || self.drop_target.as_ref() == Some(&e.path);
+                let icon = self.icon_for(e);
+                let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
+                (selected, e.hidden, icon, renaming)
+            };
             let icon_x = x + (w - GRID_ICON) * 0.5;
             if selected {
                 theme::fill_rrect(pm, icon_x - 6.0, y + 2.0, GRID_ICON + 12.0, GRID_ICON + 8.0, 8.0, colors::selected_gray());
             }
-            let icon = self.icon_for(&e);
             self.icons.draw(pm, &mut self.fonts, &icon, icon_x, y + 6.0, GRID_ICON);
-            let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
             let name_y = y + 10.0 + GRID_ICON;
             if let Some(name) = renaming {
                 theme::fill_rrect(pm, x + 5.0, name_y - 2.0, w - 10.0, 19.0, 4.0, colors::window());
@@ -2408,14 +2414,14 @@ impl App {
                 name.draw(pm, &mut self.fonts, x + 9.0, name_y, w - 18.0, 12.0, false, colors::text(), true, colors::accent());
                 continue;
             }
-            let lines = self.fonts.wrap_two_lines(&e.name, w - 10.0, 12.0, false);
+            let lines = self.fonts.wrap_two_lines(&self.entries[idx].name, w - 10.0, 12.0, false);
             for (k, line) in lines.iter().enumerate() {
                 let ly = name_y + k as f32 * 15.0;
                 let tw = self.fonts.measure_text(line, 12.0, false);
                 let ink = if selected {
                     theme::fill_rrect(pm, x + (w - tw) * 0.5 - 4.0, ly - 1.0, tw + 8.0, 16.0, 4.0, if self.focused { colors::accent() } else { colors::inactive_selection() });
                     if self.focused { rgba(255, 255, 255, 255) } else { colors::text() }
-                } else if e.hidden {
+                } else if hidden {
                     colors::secondary()
                 } else {
                     colors::text()
@@ -2438,8 +2444,14 @@ impl App {
             if y + ROW_H < cy + HEADER_H || y > cy + ch {
                 continue;
             }
-            let e = self.entry(i).clone();
-            let selected = self.selected.contains(&e.path) || self.drop_target.as_ref() == Some(&e.path);
+            let idx = self.visible[i];
+            let (selected, hidden, icon, renaming) = {
+                let e = &self.entries[idx];
+                let selected = self.selected.contains(&e.path) || self.drop_target.as_ref() == Some(&e.path);
+                let icon = self.icon_for(e);
+                let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
+                (selected, e.hidden, icon, renaming)
+            };
             if selected {
                 let fill = if self.focused { colors::accent() } else { colors::inactive_selection() };
                 theme::fill_rrect(pm, cx + 8.0, y, cw - 16.0, ROW_H, 6.0, fill);
@@ -2449,11 +2461,10 @@ impl App {
             let (ink, sub) = if selected && self.focused {
                 (rgba(255, 255, 255, 255), rgba(255, 255, 255, 220))
             } else {
-                (if e.hidden { colors::secondary() } else { colors::text() }, colors::secondary())
+                (if hidden { colors::secondary() } else { colors::text() }, colors::secondary())
             };
-            let icon = self.icon_for(&e);
             self.icons.draw(pm, &mut self.fonts, &icon, cx + 18.0, y + 4.0, 18.0);
-            let renaming = self.rename.as_ref().filter(|(p, _)| *p == e.path).map(|(_, n)| n.clone());
+            let e = &self.entries[idx];
             if let Some(name) = renaming {
                 theme::fill_rrect(pm, cx + 40.0, y + 3.0, name_w - 30.0, ROW_H - 6.0, 4.0, colors::window());
                 theme::stroke_rrect(pm, cx + 40.0, y + 3.0, name_w - 30.0, ROW_H - 6.0, 4.0, 2.0, with_alpha(colors::accent(), 160));
@@ -2461,10 +2472,8 @@ impl App {
             } else {
                 self.fonts.draw_text_clipped(pm, &e.name, cx + 44.0, y + 5.5, name_w - 30.0, 13.0, ink, false);
             }
-            let date = fsops::human_date(e.modified);
-            self.fonts.draw_text_clipped(pm, &date, col_date, y + 5.5, date_w - 10.0, 12.0, sub, false);
-            let size = if e.is_dir { "—".to_string() } else { fsops::human_size(e.size) };
-            self.fonts.draw_text_right(pm, &size, col_size + size_w - 18.0, y + 5.5, 12.0, sub, false);
+            self.fonts.draw_text_clipped(pm, &e.modified_label, col_date, y + 5.5, date_w - 10.0, 12.0, sub, false);
+            self.fonts.draw_text_right(pm, &e.size_label, col_size + size_w - 18.0, y + 5.5, 12.0, sub, false);
             if kind_w > 0.0 {
                 self.fonts.draw_text_clipped(pm, e.kind.label(), col_kind, y + 5.5, kind_w - 10.0, 12.0, sub, false);
             }

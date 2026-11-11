@@ -1476,10 +1476,10 @@ impl FeatherCompositor {
                 Rectangle::<i32, Physical>::from_size((w, h).into())
             }
             Some((x, y, w, h)) => {
-                let x0 = ((x * s).round() as i32).clamp(0, sw - 16);
-                let y0 = ((y * s).round() as i32).clamp(0, sh - 16);
-                let raw_w = (((x + w) * s).round() as i32 - x0).clamp(16, sw - x0);
-                let raw_h = (((y + h) * s).round() as i32 - y0).clamp(16, sh - y0);
+                let x0 = ((x * s).round() as i32).clamp(0, (sw - 16).max(0));
+                let y0 = ((y * s).round() as i32).clamp(0, (sh - 16).max(0));
+                let raw_w = (((x + w) * s).round() as i32 - x0).clamp(16, (sw - x0).max(16));
+                let raw_h = (((y + h) * s).round() as i32 - y0).clamp(16, (sh - y0).max(16));
                 let even_w = (raw_w & !1).max(16);
                 let even_h = (raw_h & !1).max(16);
                 Rectangle::new((x0, y0).into(), (even_w, even_h).into())

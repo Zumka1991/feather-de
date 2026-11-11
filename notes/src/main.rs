@@ -354,7 +354,7 @@ impl Notes {
                 px.swap(0, 2);
             }
         }
-        let (dx, dy, dw, dh) = self.diff.damage(canvas, pw, ph);
+        let damage = self.diff.damage_rects(canvas, pw, ph);
         let surface = self.window.wl_surface();
         match &self.viewport {
             Some(viewport) if self.fractional.is_some() => {
@@ -363,7 +363,9 @@ impl Notes {
             }
             _ => surface.set_buffer_scale(scale as i32),
         }
-        surface.damage_buffer(dx, dy, dw, dh);
+        for (dx, dy, dw, dh) in damage {
+            surface.damage_buffer(dx, dy, dw, dh);
+        }
         surface.frame(qh, surface.clone());
         self.window.set_window_geometry(0, 0, w as u32, h as u32);
         if buffer.attach_to(surface).is_err() {

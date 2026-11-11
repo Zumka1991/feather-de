@@ -90,6 +90,7 @@ struct Store {
     serial: u32,
     mods: Modifiers,
     tx: channel::Sender<Msg>,
+    icon_worker: Option<std::sync::mpsc::Sender<Vec<(usize, std::path::PathBuf)>>>,
     handle: LoopHandle<'static, Store>,
     conn: Connection,
     pointer_pos: (f32, f32),
@@ -192,6 +193,7 @@ fn main() {
         serial: 0,
         mods: Modifiers::default(),
         tx,
+        icon_worker: None,
         handle: handle.clone(),
         conn,
         pointer_pos: (0.0, 0.0),
@@ -278,17 +280,31 @@ impl Store {
         }
     }
 
-    /// Icons the last frame showed without having them: decoded on a worker thread
+    /// Icons the last frame showed without having them: decoded on a single persistent worker thread
     fn load_icons(&mut self) {
         let wanted = self.app.take_icon_queue();
         if wanted.is_empty() {
             return;
         }
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let icons = wanted.into_iter().map(|(i, path)| (i, tiny_skia::Pixmap::load_png(path).ok())).collect();
-            let _ = tx.send(Msg::Icons(icons));
+        let sender = self.icon_worker.get_or_insert_with(|| {
+            let (work_tx, work_rx) = std::sync::mpsc::channel::<Vec<(usize, std::path::PathBuf)>>();
+            let tx = self.tx.clone();
+            let _ = std::thread::Builder::new()
+                .name("store-icons".into())
+                .spawn(move || {
+                    while let Ok(batch) = work_rx.recv() {
+                        let icons = batch
+                            .into_iter()
+                            .map(|(i, path)| (i, tiny_skia::Pixmap::load_png(path).ok()))
+                            .collect();
+                        if tx.send(Msg::Icons(icons)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            work_tx
         });
+        let _ = sender.send(wanted);
     }
 
     fn draw(&mut self, qh: &QueueHandle<Self>) -> bool {
@@ -314,7 +330,7 @@ impl Store {
                 px.swap(0, 2);
             }
         }
-        let (dx, dy, dw, dh) = self.diff.damage(canvas, pw, ph);
+        let damage = self.diff.damage_rects(canvas, pw, ph);
         let surface = self.window.wl_surface();
         match &self.viewport {
             Some(viewport) if self.fractional.is_some() => {
@@ -323,7 +339,9 @@ impl Store {
             }
             _ => surface.set_buffer_scale(scale as i32),
         }
-        surface.damage_buffer(dx, dy, dw, dh);
+        for (dx, dy, dw, dh) in damage {
+            surface.damage_buffer(dx, dy, dw, dh);
+        }
         surface.frame(qh, surface.clone());
         self.window.set_window_geometry(0, 0, w as u32, h as u32);
         if buffer.attach_to(surface).is_err() {

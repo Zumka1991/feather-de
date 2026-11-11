@@ -207,7 +207,8 @@ pub struct FeatherCompositor {
     pub controls: Option<crate::controls::Controls>,
     /// «Сейчас исполняется» and media keys (MPRIS2 players)
     pub mpris: Option<crate::mpris::Mpris>,
-    controls_password_focus: bool,
+    modal_keyboard_focus: bool,
+    pub session_locked: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub auth: crate::auth_dialog::AuthUi,
     pub polkit: Option<crate::polkit_agent::Agent>,
     pub lock: crate::session_lock::Lock,
@@ -410,8 +411,9 @@ impl FeatherCompositor {
                 w.set_activated(!self.lock.active && !desktop && Some(i) == top);
             }
         }
-        let password = self.auth.is_open() || (self.shell.control_center_open && self.shell.cc.page==crate::control_panel::Page::Password);
-        let target = if self.lock.active {self.lock_focus()} else if password || self.shell.switcher.is_some() || self.shell.ring.is_some() {None} else if let Some(layer) = self.layer_keyboard_target() {Some(layer)} else if desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
+        let modal = self.auth.is_open() || self.modal_keyboard_wanted();
+        self.modal_keyboard_focus = self.modal_keyboard_wanted();
+        let target = if self.lock.active {self.lock_focus()} else if modal || self.shell.switcher.is_some() || self.shell.ring.is_some() {None} else if let Some(layer) = self.layer_keyboard_target() {Some(layer)} else if desktop {None} else {top.and_then(|i| self.windows[i].wl_surface().cloned())};
         let keyboard = self.keyboard.clone();
         if keyboard.current_focus() != target {
             self.clear_all_forwarded_pressed_keys();
@@ -425,6 +427,22 @@ impl FeatherCompositor {
         self.sync_appmenu_focus();
         self.api_sync();
         self.foreign_sync();
+    }
+
+    pub fn modal_keyboard_wanted(&self) -> bool {
+        (self.shell.control_center_open
+            && self.shell.cc.page == crate::control_panel::Page::Password)
+            || self.shell.spotlight_open
+            || self.shell.launchpad.is_some()
+            || self.mission_open()
+    }
+
+    pub fn sync_modal_keyboard_focus(&mut self) {
+        let want = self.modal_keyboard_wanted();
+        if want != self.modal_keyboard_focus {
+            self.modal_keyboard_focus = want;
+            self.refresh_focus();
+        }
     }
 
     pub fn mark_builtin_windows_dirty(&mut self) {
@@ -993,6 +1011,7 @@ impl FeatherCompositor {
         let gap = (can_pin && self.shell.dock_in_drop_zone(pos.x, pos.y))
             .then(|| self.shell.dock_insert_index(pos.x, pos.y));
         self.shell.set_dock_gap(gap);
+        self.needs_redraw = true;
         self.needs_redraw = true;
     }
 
@@ -2062,8 +2081,19 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let mut seat = seat_state.new_wl_seat(&dh, "feather-seat");
     let data_device_state = DataDeviceState::new::<FeatherCompositor>(&dh);
     let primary_selection_state = PrimarySelectionState::new::<FeatherCompositor>(&dh);
-    let ext_data_control_state = smithay::wayland::selection::ext_data_control::DataControlState::new::<FeatherCompositor, _>(&dh, Some(&primary_selection_state), |_| true);
-    let wlr_data_control_state = smithay::wayland::selection::wlr_data_control::DataControlState::new::<FeatherCompositor, _>(&dh, Some(&primary_selection_state), |_| true);
+    let session_locked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let locked_ext = session_locked.clone();
+    let locked_wlr = session_locked.clone();
+    let ext_data_control_state = smithay::wayland::selection::ext_data_control::DataControlState::new::<FeatherCompositor, _>(
+        &dh,
+        Some(&primary_selection_state),
+        move |_| !locked_ext.load(std::sync::atomic::Ordering::Acquire),
+    );
+    let wlr_data_control_state = smithay::wayland::selection::wlr_data_control::DataControlState::new::<FeatherCompositor, _>(
+        &dh,
+        Some(&primary_selection_state),
+        move |_| !locked_wlr.load(std::sync::atomic::Ordering::Acquire),
+    );
     let layer_shell_state = smithay::wayland::shell::wlr_layer::WlrLayerShellState::new::<FeatherCompositor>(&dh);
     let foreign_list_state = smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<FeatherCompositor>(&dh);
     dh.create_global::<FeatherCompositor, smithay::reexports::wayland_protocols_wlr::foreign_toplevel::v1::server::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, _>(3, ());
@@ -2294,7 +2324,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         larvis_shown: false,
         controls: None,
         mpris: None,
-        controls_password_focus: false,
+        modal_keyboard_focus: false,
+        session_locked,
         auth: Default::default(),
         polkit: None,
         lock: Default::default(),
@@ -2312,7 +2343,13 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         loop_handle: handle,
         loop_signal: event_loop.get_signal(),
         backend,
-        cursor: crate::cursor::CursorManager::new(saved.pointer.cursor_theme.as_deref(), saved.pointer.cursor_size),
+        cursor: {
+            let mut cm = crate::cursor::CursorManager::new(saved.pointer.cursor_theme.as_deref(), saved.pointer.cursor_size);
+            if use_drm || larvis_desktop {
+                cm.preload(init_scale);
+            }
+            cm
+        },
         pointer_config: saved.pointer.clone(),
         show_about: !larvis_desktop && saved.show_about,
         pointer_managed: false,
@@ -2948,8 +2985,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             controls.sync(state.shell.control_center_open, wifi_open, bluetooth_open);
         }
         if !state.shell.control_center_open {state.shell.cc.close();}
-        let password=state.shell.control_center_open && state.shell.cc.page==crate::control_panel::Page::Password;
-        if password!=state.controls_password_focus {state.controls_password_focus=password;state.refresh_focus();}
+        state.sync_modal_keyboard_focus();
         state.flush_appmenu_commands();
         if let Some(tray)=&mut state.tray{tray.sync_menu(state.shell.tray_open_ids());}
         if state.pointer_focus_dirty {

@@ -706,15 +706,19 @@ fn save_positions(positions: &HashMap<String, Cell>) {
     if cfg!(test) {
         return;
     }
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let Some(path) = positions_path() else { return };
     let text = format_positions(positions);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let _ = std::thread::Builder::new().name("feather-desktop-save".into()).spawn(move || {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let tmp = path.with_extension("conf.tmp");
+        let tmp = path.with_extension(format!("conf.tmp.{}.{seq}", std::process::id()));
         if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(tmp, path);
+            let _ = std::fs::rename(&tmp, path);
+        } else {
+            let _ = std::fs::remove_file(&tmp);
         }
     });
 }
@@ -1232,8 +1236,14 @@ impl FeatherCompositor {
     pub fn open_desktop_selection(&mut self) {
         let ours = crate::apps::files_command() != "dolphin";
         for path in self.shell.desktop.selected_paths() {
-            let launcher = self.shell.desktop.items.iter().find(|i| i.path == path).and_then(|i| i.launcher.clone());
-            if let Some(l) = launcher {
+            let item_info = self
+                .shell
+                .desktop
+                .items
+                .iter()
+                .find(|i| i.path == path)
+                .map(|i| (i.is_dir, i.launcher.clone()));
+            if let Some((_, Some(l))) = item_info {
                 if l.executable {
                     self.spawn(&launcher_command(&l.exec));
                 } else {
@@ -1241,7 +1251,8 @@ impl FeatherCompositor {
                 }
                 continue;
             }
-            if path.is_dir() && ours {
+            let is_dir = item_info.map(|(d, _)| d).unwrap_or_else(|| path.is_dir());
+            if is_dir && ours {
                 self.files(&shell_quote(&path));
             } else if matches!(
                 path.extension()

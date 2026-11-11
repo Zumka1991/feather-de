@@ -33,6 +33,8 @@ pub struct FontSystem {
     fallback: Vec<std::sync::Arc<Font>>,
     cache: HashMap<GlyphKey, Glyph>,
     cache_bytes: usize,
+    prev_cache: HashMap<GlyphKey, Glyph>,
+    prev_bytes: usize,
 }
 
 /// Font families in order of preference: Apple's SF Pro if the user installed it, then Inter
@@ -438,6 +440,8 @@ impl FontSystem {
             fallback,
             cache: HashMap::with_capacity(256),
             cache_bytes: 0,
+            prev_cache: HashMap::new(),
+            prev_bytes: 0,
         }
     }
 
@@ -449,6 +453,8 @@ impl FontSystem {
             fallback: self.fallback.clone(),
             cache: HashMap::new(),
             cache_bytes: 0,
+            prev_cache: HashMap::new(),
+            prev_bytes: 0,
         }
     }
 
@@ -459,54 +465,44 @@ impl FontSystem {
             bold: is_bold,
         };
         if !self.cache.contains_key(&key) {
-            let primary = if is_bold { &self.bold } else { &self.regular };
-            let fallback = if primary.lookup_glyph_index(ch) == 0 {
-                self.fallback.iter().find(|fb| fb.lookup_glyph_index(ch) != 0)
+            let glyph = if let Some(g) = self.prev_cache.remove(&key) {
+                self.prev_bytes = self.prev_bytes.saturating_sub(g.bitmap.len());
+                g
             } else {
-                None
-            };
-            let (font, from_fallback) = match fallback {
-                Some(fb) => (fb, true),
-                None => (primary, false),
-            };
-            let (metrics, bitmap) = font.rasterize(ch, phys_size);
-            // Bounded per-thread bitmap cache; a scale change or arbitrary labels
-            // cannot retain every glyph size ever seen. Typical visible text fits.
-            if self.cache_bytes + bitmap.len() > 1024 * 1024 || self.cache.len() >= 4096 {
-                self.cache.clear();
-                self.cache_bytes = 0;
-            }
-            self.cache_bytes += bitmap.len();
-            self.cache.insert(
-                key,
+                let primary = if is_bold { &self.bold } else { &self.regular };
+                let fallback = if primary.lookup_glyph_index(ch) == 0 {
+                    self.fallback.iter().find(|fb| fb.lookup_glyph_index(ch) != 0)
+                } else {
+                    None
+                };
+                let (font, from_fallback) = match fallback {
+                    Some(fb) => (fb, true),
+                    None => (primary, false),
+                };
+                let (metrics, bitmap) = font.rasterize(ch, phys_size);
                 Glyph {
                     metrics,
                     bitmap,
                     from_fallback,
-                },
-            );
+                }
+            };
+            // Two-generation bounded per-thread bitmap cache (2 × 512 KiB / 2048 entries ≤ 1 MiB):
+            // overflow retires cold glyphs without wiping hot ASCII/Cyrillic glyphs mid-frame.
+            if self.cache_bytes + glyph.bitmap.len() > 512 * 1024 || self.cache.len() >= 2048 {
+                self.prev_cache.clear();
+                std::mem::swap(&mut self.cache, &mut self.prev_cache);
+                self.prev_bytes = std::mem::replace(&mut self.cache_bytes, 0);
+            }
+            self.cache_bytes += glyph.bitmap.len();
+            self.cache.insert(key, glyph);
         }
         self.cache.get(&key).unwrap()
     }
 
-    fn kern(&self, prev: char, ch: char, phys_size: f32, is_bold: bool) -> f32 {
+    #[inline]
+    fn kern_pair(&self, prev_idx: u16, curr_idx: u16, phys_size: f32, is_bold: bool) -> f32 {
         let font = if is_bold { &self.bold } else { &self.regular };
-        if font.kern_data.is_none() {
-            return 0.0;
-        }
-        let key = |ch| GlyphKey {
-            ch,
-            size_tenths: (phys_size * 10.0).round() as u16,
-            bold: is_bold,
-        };
-        // Both glyphs were measured just before kerning. Their cached indices
-        // avoid reparsing an entire TTC face for each pair in the label.
-        let index = |ch| {
-            self.cache
-                .get(&key(ch))
-                .map_or_else(|| font.lookup_glyph_index(ch), |g| g.metrics.index)
-        };
-        font.kern_indices(GlyphId(index(prev)), GlyphId(index(ch)), phys_size)
+        font.kern_indices(GlyphId(prev_idx), GlyphId(curr_idx), phys_size)
             .unwrap_or(0.0)
     }
 
@@ -514,18 +510,19 @@ impl FontSystem {
     fn advance_phys(&mut self, text: &str, phys_size: f32, is_bold: bool) -> f32 {
         let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Metrics);
         let mut width = 0.0;
-        let mut prev: Option<(char, bool)> = None;
+        let mut prev: Option<(u16, bool)> = None;
         for ch in text.chars() {
             let glyph = self.get_glyph(ch, phys_size, is_bold);
             let adv = glyph.metrics.advance_width;
+            let idx = glyph.metrics.index;
             let fb = glyph.from_fallback;
-            if let Some((p, pfb)) = prev {
+            if let Some((p_idx, pfb)) = prev {
                 if !fb && !pfb {
-                    width += self.kern(p, ch, phys_size, is_bold);
+                    width += self.kern_pair(p_idx, idx, phys_size, is_bold);
                 }
             }
             width += adv;
-            prev = Some((ch, fb));
+            prev = Some((idx, fb));
         }
         width
     }
@@ -615,52 +612,52 @@ impl FontSystem {
         let cg = (color.green() * 255.0) as u32;
         let cb = (color.blue() * 255.0) as u32;
 
-        let mut prev: Option<(char, bool)> = None;
+        let primary_font = if is_bold { self.bold.clone() } else { self.regular.clone() };
+        let mut prev: Option<(u16, bool)> = None;
         for ch in text.chars() {
-            let from_fallback = self.get_glyph(ch, phys_size, is_bold).from_fallback;
-            if let Some((p, pfb)) = prev {
-                if !from_fallback && !pfb {
-                    pen_x += self.kern(p, ch, phys_size, is_bold);
-                }
-            }
-            prev = Some((ch, from_fallback));
-
             let glyph = self.get_glyph(ch, phys_size, is_bold);
             let metrics = glyph.metrics;
+            let from_fallback = glyph.from_fallback;
+            if let Some((p_idx, pfb)) = prev {
+                if !from_fallback && !pfb {
+                    pen_x += primary_font
+                        .kern_indices(GlyphId(p_idx), GlyphId(metrics.index), phys_size)
+                        .unwrap_or(0.0);
+                }
+            }
+            prev = Some((metrics.index, from_fallback));
+
             let gx0 = (pen_x + metrics.xmin as f32).round() as i32;
             let gy0 = (baseline_y - metrics.height as f32 - metrics.ymin as f32).round() as i32;
             let gw = metrics.width as i32;
             let gh = metrics.height as i32;
             let data = pixmap.data_mut();
+            let col_start = 0.max(-gx0);
+            let col_end = gw.min(pw - gx0);
+            if col_start < col_end {
+                for row in 0.max(-gy0)..gh.min(ph - gy0) {
+                    let py = gy0 + row;
+                    let src = &glyph.bitmap[(row * gw) as usize..((row + 1) * gw) as usize];
+                    for col in col_start..col_end {
+                        let cov = src[col as usize] as u32;
+                        if cov == 0 {
+                            continue;
+                        }
+                        let alpha = (cov * ca) / 255;
+                        if alpha == 0 {
+                            continue;
+                        }
+                        let sr = (cr * alpha) / 255;
+                        let sg = (cg * alpha) / 255;
+                        let sb = (cb * alpha) / 255;
+                        let inv_a = 255 - alpha;
 
-            for row in 0..gh {
-                let py = gy0 + row;
-                if py < 0 || py >= ph {
-                    continue;
-                }
-                for col in 0..gw {
-                    let px = gx0 + col;
-                    if px < 0 || px >= pw {
-                        continue;
+                        let idx = ((py * pw + gx0 + col) * 4) as usize;
+                        data[idx] = (sr + (data[idx] as u32 * inv_a) / 255).min(255) as u8;
+                        data[idx + 1] = (sg + (data[idx + 1] as u32 * inv_a) / 255).min(255) as u8;
+                        data[idx + 2] = (sb + (data[idx + 2] as u32 * inv_a) / 255).min(255) as u8;
+                        data[idx + 3] = (alpha + (data[idx + 3] as u32 * inv_a) / 255).min(255) as u8;
                     }
-                    let cov = glyph.bitmap[(row * gw + col) as usize] as u32;
-                    if cov == 0 {
-                        continue;
-                    }
-                    let alpha = (cov * ca) / 255;
-                    if alpha == 0 {
-                        continue;
-                    }
-                    let sr = (cr * alpha) / 255;
-                    let sg = (cg * alpha) / 255;
-                    let sb = (cb * alpha) / 255;
-                    let inv_a = 255 - alpha;
-
-                    let idx = ((py * pw + px) * 4) as usize;
-                    data[idx] = (sr + (data[idx] as u32 * inv_a) / 255).min(255) as u8;
-                    data[idx + 1] = (sg + (data[idx + 1] as u32 * inv_a) / 255).min(255) as u8;
-                    data[idx + 2] = (sb + (data[idx + 2] as u32 * inv_a) / 255).min(255) as u8;
-                    data[idx + 3] = (alpha + (data[idx + 3] as u32 * inv_a) / 255).min(255) as u8;
                 }
             }
 
@@ -738,19 +735,19 @@ impl FontSystem {
         let limit = max_width * scale - self.advance_phys("…", phys_size, is_bold);
         let mut out = String::new();
         let mut width = 0.0;
-        let mut prev: Option<(char, bool)> = None;
+        let mut prev: Option<(u16, bool)> = None;
         for ch in text.chars() {
             let glyph = self.get_glyph(ch, phys_size, is_bold);
-            let (advance, fallback) = (glyph.metrics.advance_width, glyph.from_fallback);
+            let (advance, idx, fallback) = (glyph.metrics.advance_width, glyph.metrics.index, glyph.from_fallback);
             let kerning = prev
                 .filter(|(_, fb)| !*fb && !fallback)
-                .map_or(0.0, |(p, _)| self.kern(p, ch, phys_size, is_bold));
+                .map_or(0.0, |(p_idx, _)| self.kern_pair(p_idx, idx, phys_size, is_bold));
             width += kerning + advance;
             if width > limit {
                 break;
             }
             out.push(ch);
-            prev = Some((ch, fallback));
+            prev = Some((idx, fallback));
         }
         out.push('…');
         out
@@ -772,24 +769,37 @@ impl FontSystem {
         if self.measure_raw(text, size, is_bold) <= width {
             return vec![text.to_string()];
         }
-        let chars: Vec<char> = text.chars().collect();
+        let s = ui_scale();
+        let phys_size = size * text_scale() * s;
+        let chars: Vec<(usize, char)> = text.char_indices().collect();
         let mut split = 0;
-        for end in 1..=chars.len() {
-            let line: String = chars[..end].iter().collect();
-            if self.measure_raw(&line, size, is_bold) > width {
+        let mut acc = 0.0f32;
+        let mut prev: Option<(u16, bool)> = None;
+        for (i, &(_, ch)) in chars.iter().enumerate() {
+            let glyph = self.get_glyph(ch, phys_size, is_bold);
+            let (adv, idx, fb) = (glyph.metrics.advance_width, glyph.metrics.index, glyph.from_fallback);
+            if let Some((p_idx, pfb)) = prev {
+                if !fb && !pfb {
+                    acc += self.kern_pair(p_idx, idx, phys_size, is_bold);
+                }
+            }
+            acc += adv;
+            if acc / s > width {
                 break;
             }
-            split = end;
+            split = i + 1;
+            prev = Some((idx, fb));
         }
-        match chars[..split].iter().rposition(|c| matches!(c, ' ' | '-' | '_' | '.')) {
+        match chars[..split].iter().rposition(|(_, c)| matches!(c, ' ' | '-' | '_' | '.')) {
             Some(p) if p > split / 2 => split = p + 1,
             _ if chars.len() - split < 3 => split = chars.len().saturating_sub(3).max(1),
             _ => {}
         }
         let split = split.max(1);
-        let first: String = chars[..split].iter().collect();
-        let rest: String = chars[split..].iter().collect();
-        vec![first.trim_end().to_string(), self.ellipsize_raw(rest.trim_start(), width, size, is_bold)]
+        let byte_split = chars.get(split).map_or(text.len(), |&(b, _)| b);
+        let first = text[..byte_split].trim_end().to_string();
+        let rest = text[byte_split..].trim_start();
+        vec![first, self.ellipsize_raw(rest, width, size, is_bold)]
     }
 
     pub fn draw_text_clipped(
@@ -915,7 +925,8 @@ mod tests {
                 let before = fonts.cache_bytes;
                 fonts.get_glyph(ch, px, false);
                 trimmed |= fonts.cache_bytes < before;
-                assert!(fonts.cache_bytes <= 1024 * 1024);
+                assert!(fonts.cache_bytes + fonts.prev_bytes <= 1024 * 1024 + 64 * 1024);
+                assert!(fonts.cache_bytes <= 512 * 1024 + 64 * 1024);
             }
         }
         assert!(trimmed);
@@ -963,6 +974,51 @@ mod layout_tests {
                                 "{text} {scale} {bold} {max}"
                             );
                         }
+                    }
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn wrap_two_lines_matches_reference_measurement() {
+        let mut fonts = FontSystem::new();
+        for scale in [1.0, 1.5, 2.0] {
+            crate::scale::with_render_settings(scale, crate::scale::Appearance::Light, || {
+                for text in [
+                    "Коротко",
+                    "Снимок экрана 2026-11-11 в 12.15.33.png",
+                    "ОченьДлинноеИмяФайлаБезПробеловКотороеНужноАккуратноПеренестиНаВторуюСтроку.tar.zst",
+                    "AVATAR Toffee Folder Name With Spaces",
+                ] {
+                    for max_w in [40.0, 72.0, 110.0, 180.0] {
+                        let expected = if fonts.measure_raw(text, 12.0, false) <= max_w {
+                            vec![text.to_string()]
+                        } else {
+                            let chars: Vec<char> = text.chars().collect();
+                            let mut split = 0;
+                            for end in 1..=chars.len() {
+                                let line: String = chars[..end].iter().collect();
+                                if fonts.measure_raw(&line, 12.0, false) > max_w {
+                                    break;
+                                }
+                                split = end;
+                            }
+                            match chars[..split].iter().rposition(|c| matches!(c, ' ' | '-' | '_' | '.')) {
+                                Some(p) if p > split / 2 => split = p + 1,
+                                _ if chars.len() - split < 3 => split = chars.len().saturating_sub(3).max(1),
+                                _ => {}
+                            }
+                            let split = split.max(1);
+                            let first: String = chars[..split].iter().collect();
+                            let rest: String = chars[split..].iter().collect();
+                            vec![first.trim_end().to_string(), fonts.ellipsize_raw(rest.trim_start(), max_w, 12.0, false)]
+                        };
+                        assert_eq!(
+                            fonts.wrap_two_lines(text, max_w, 12.0, false),
+                            expected,
+                            "{text} {scale} {max_w}"
+                        );
                     }
                 }
             });

@@ -41,6 +41,7 @@ pub enum FromPw {
     /// Потребитель подключился (`true`) или приостановил поток
     Streaming { id: u64, on: bool },
     Failed { id: u64, reason: String },
+    BusDown(String),
 }
 
 struct Shared {
@@ -59,39 +60,29 @@ struct Cast {
     _listener: pw::stream::StreamListener<Rc<RefCell<Shared>>>,
 }
 
-/// Запускает поток PipeWire; `None`, если PipeWire недоступен
+/// Запускает поток PipeWire без ожидания в цикле событий композитора
 pub fn spawn(events: channel::Sender<FromPw>) -> Option<pw::channel::Sender<ToPw>> {
     let (tx, rx) = pw::channel::channel::<ToPw>();
-    let (ok_tx, ok_rx) = std::sync::mpsc::sync_channel::<bool>(1);
     let spawned = std::thread::Builder::new()
         .name("feather-pipewire".into())
         .stack_size(1024 * 1024)
         .spawn(move || {
-            if let Err(e) = run(rx, events, &ok_tx) {
+            if let Err(e) = run(rx, events.clone()) {
                 tracing::warn!("PipeWire: {e}");
-                let _ = ok_tx.try_send(false);
+                let _ = events.send(FromPw::BusDown(e.to_string()));
             }
         });
-    if spawned.is_err() {
-        return None;
-    }
-    // Only the connection is awaited (local socket), never a frame
-    match ok_rx.recv_timeout(std::time::Duration::from_secs(2)) {
-        Ok(true) => Some(tx),
-        _ => None,
-    }
+    spawned.ok().map(|_| tx)
 }
 
 fn run(
     rx: pw::channel::Receiver<ToPw>,
     events: channel::Sender<FromPw>,
-    ok: &std::sync::mpsc::SyncSender<bool>,
 ) -> Result<(), pw::Error> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
     let core = context.connect_rc(None)?;
-    let _ = ok.try_send(true);
 
     let casts: Rc<RefCell<HashMap<u64, Cast>>> = Rc::new(RefCell::new(HashMap::new()));
     let casts_in = casts.clone();
@@ -322,7 +313,7 @@ struct ActiveCast {
     streaming: bool,
     /// Монитор перерисовался после последнего снятого кадра
     dirty: bool,
-    offscreen: Option<(GlesTexture, (i32, i32))>,
+    offscreen: Option<(GlesTexture, smithay::backend::renderer::damage::OutputDamageTracker, (i32, i32))>,
     pending: Option<GlesMapping>,
     last: Option<Instant>,
 }
@@ -442,6 +433,19 @@ impl FeatherCompositor {
                     }
                 }
                 self.cast_stop(id);
+            }
+            FromPw::BusDown(reason) => {
+                self.casts.tx = None;
+                let mut casts = std::mem::take(&mut self.casts.casts);
+                for cast in &mut casts {
+                    if let Some(reply) = cast.reply.take() {
+                        reply.send(Err(feather_api::Error::Unavailable(format!("PipeWire недоступен: {reason}"))));
+                    }
+                }
+                if !casts.is_empty() {
+                    self.shell.topbar_dirty = true;
+                    self.needs_redraw = true;
+                }
             }
         }
     }

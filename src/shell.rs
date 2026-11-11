@@ -172,7 +172,7 @@ impl DockMap {
 }
 
 /// One desktop tile (or «+») of the Mission Control strip
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MissionTile {
     pub label: String,
     pub rect: R,
@@ -200,12 +200,11 @@ impl MissionOverlay {
     fn title_rect(r: R) -> R {
         R::new(r.x + r.w * 0.5 - 130.0, r.y + r.h + 8.0, 260.0, 26.0)
     }
-    /// Tile, its label below and the close button corner
-    fn rects(&self) -> Vec<R> {
+    /// Strip tiles and their labels/close corners (title pill has its own compact buffer)
+    fn strip_rects(&self) -> Vec<R> {
         self.tiles
             .iter()
             .map(|t| R::new(t.rect.x - 8.0, t.rect.y - 8.0, t.rect.w + 16.0, t.rect.h + 32.0))
-            .chain(self.title.iter().map(|(_, r)| Self::title_rect(*r)))
             .collect()
     }
 }
@@ -846,6 +845,8 @@ pub struct MacShell {
     topbar_hits: Vec<(f32, f32, TopbarItem)>,
     status_hover: Option<TopbarItem>,
     pub tray_items: Vec<crate::tray::Item>,
+    /// Pre-scaled tray tiles + `needs_chip` per `(index, px_size, bar_dark)`
+    tray_tile_cache: std::collections::HashMap<(usize, u32, bool), (tiny_skia::Pixmap, bool)>,
     /// Larvis's desktop: None without one, Some(shown) while it runs
     larvis: Option<bool>,
     /// Larvis's nested desktop draws no menu bar: the main session's bar covers its place
@@ -936,6 +937,19 @@ pub struct MacShell {
     overlay_painted: Vec<Rectangle<i32, Buffer>>,
     overlay_allocated: bool,
     overlay_geometry: Rectangle<i32, Buffer>,
+    /// Separate compact buffer for notification banners so top-left menus + top-right toasts
+    /// never merge into a 33 MiB 4K canvas.
+    pub toast_buffer: MemoryRenderBuffer,
+    toast_painted: Vec<Rectangle<i32, Buffer>>,
+    toast_allocated: bool,
+    toast_geometry: Rectangle<i32, Buffer>,
+    /// Separate compact buffer for the hovered window pill in Mission Control so moving the
+    /// pointer across windows never reallocates or repaints the desktop strip.
+    pub mission_title_buffer: MemoryRenderBuffer,
+    mission_title_allocated: bool,
+    mission_title_geometry: Rectangle<i32, Buffer>,
+    mission_title_cached: Option<(String, i32, i32)>,
+    mission_tiles_cached: Option<Vec<MissionTile>>,
 
     pub switcher: Option<Switcher>,
     pub switcher_keys: std::collections::HashSet<smithay::input::keyboard::Keycode>,
@@ -1006,6 +1020,7 @@ impl MacShell {
             topbar_dirty: true,
             topbar_hits: Vec::new(),status_hover:None,
             tray_items: Vec::new(),
+            tray_tile_cache: std::collections::HashMap::new(),
             larvis: None,
             topbar_hidden: false,
             input_sources: crate::settings::Keyboard::default().sources(),input_selected:0,input_shortcut:"Alt + Shift",
@@ -1070,6 +1085,15 @@ impl MacShell {
             overlay_painted: Vec::new(),
             overlay_allocated: false,
             overlay_geometry: Rectangle::from_size((1, 1).into()),
+            toast_buffer: new_buffer(1, 1),
+            toast_painted: Vec::new(),
+            toast_allocated: false,
+            toast_geometry: Rectangle::from_size((1, 1).into()),
+            mission_title_buffer: new_buffer(1, 1),
+            mission_title_allocated: false,
+            mission_title_geometry: Rectangle::from_size((1, 1).into()),
+            mission_title_cached: None,
+            mission_tiles_cached: None,
             switcher: None,
             switcher_keys: Default::default(),
             switcher_buffer: new_buffer(1, 1),
@@ -1498,6 +1522,10 @@ impl MacShell {
         }
         self.dock_painted.clear();
         self.overlay_painted.clear();
+        self.toast_painted.clear();
+        self.mission_title_cached = None;
+        self.mission_tiles_cached = None;
+        self.tray_tile_cache.clear();
         self.icons.clear_raster();
         self.desktop.invalidate();
     }
@@ -1523,6 +1551,10 @@ impl MacShell {
         self.dock_buffer = new_buffer(to_phys(bw), to_phys(bh));
         self.overlay_buffer = new_buffer(1, 1);
         self.overlay_allocated = false;
+        self.toast_buffer = new_buffer(1, 1);
+        self.toast_allocated = false;
+        self.mission_title_buffer = new_buffer(1, 1);
+        self.mission_title_allocated = false;
         self.switcher_rect = R::new(0.0, 0.0, 0.0, 0.0);
         // Кольцо стояло вокруг точки старого экрана
         self.ring = None;
@@ -1544,7 +1576,11 @@ impl MacShell {
     /// Something the housekeeping tick handles within a second: toasts expire, the open
     /// center's «N мин назад», the full-screen overlay buffer waiting to be freed
     pub fn needs_second_tick(&self) -> bool {
-        !self.toasts.is_empty() || self.center_open || self.overlay_allocated
+        !self.toasts.is_empty()
+            || self.center_open
+            || self.overlay_allocated
+            || self.toast_allocated
+            || self.mission_title_allocated
     }
 
     /// Periodic housekeeping (clock, RSS, toast expiry). Returns true if anything needs a redraw.
@@ -1577,11 +1613,24 @@ impl MacShell {
             self.overlay_dirty = true;
             self.to_history(t);
         }
-        if self.overlay_allocated && !self.has_visible_overlay() {
-            // Free the full-screen overlay buffer while nothing is shown
-            self.overlay_buffer = new_buffer(1, 1);
-            self.overlay_allocated = false;
-            self.overlay_painted.clear();
+        if !self.has_visible_overlay() {
+            // Free overlay buffers while nothing is shown
+            if self.overlay_allocated {
+                self.overlay_buffer = new_buffer(1, 1);
+                self.overlay_allocated = false;
+                self.overlay_painted.clear();
+                self.mission_tiles_cached = None;
+            }
+            if self.toast_allocated {
+                self.toast_buffer = new_buffer(1, 1);
+                self.toast_allocated = false;
+                self.toast_painted.clear();
+            }
+            if self.mission_title_allocated {
+                self.mission_title_buffer = new_buffer(1, 1);
+                self.mission_title_allocated = false;
+                self.mission_title_cached = None;
+            }
         }
         !was_dirty && (self.topbar_dirty || self.overlay_dirty)
     }
@@ -1648,6 +1697,7 @@ impl MacShell {
             self.menu_hovered = None;
             self.client_submenus.clear();
             self.client_hovered = None;
+            self.client_scroll.clear();
             self.control_center_open = false;
             self.spotlight_open = false;
             self.leave_picker();
@@ -1720,6 +1770,15 @@ impl MacShell {
     /// Crop cached transparent margins before GPU animation, limiting output damage.
     pub fn overlay_region(&self) -> Option<Rectangle<i32, Buffer>> {
         self.overlay_allocated.then_some(self.overlay_geometry)
+    }
+
+    pub fn toast_region(&self) -> Option<Rectangle<i32, Buffer>> {
+        (self.toast_allocated && self.toast_visible()).then_some(self.toast_geometry)
+    }
+
+    pub fn mission_title_region(&self) -> Option<Rectangle<i32, Buffer>> {
+        (self.mission_title_allocated && self.mission.as_ref().is_some_and(|m| m.title.is_some()))
+            .then_some(self.mission_title_geometry)
     }
 
     /// Identity and pivot of the modal overlay. Hover/query changes do not restart motion.
@@ -1943,7 +2002,9 @@ impl MacShell {
                 self.launchpad_bg_requested = None;
                 self.cc_backdrop = None;
                 self.cc_backdrop_requested = false;
-                self.dock_painted.clear(); self.overlay_painted.clear();
+                self.dock_painted.clear(); self.overlay_painted.clear(); self.toast_painted.clear();
+                self.mission_title_cached = None; self.mission_tiles_cached = None;
+                self.tray_tile_cache.clear();
                 self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true; self.ring_dirty = true;
             }
             crate::raster::Asset::Frosted(key, buffer) => {
@@ -1953,7 +2014,7 @@ impl MacShell {
                 self.launchpad_bg = buffer;
             }
             crate::raster::Asset::Icon(key, pixmap) => {
-                if !self.tray_items.is_empty(){self.topbar_dirty=true;}
+                if !self.tray_items.is_empty(){self.topbar_dirty=true;self.tray_tile_cache.clear();}
                 self.icons.install(key, pixmap);
                 self.dock_dirty = true; self.overlay_dirty = true; self.switcher_dirty = true; self.ring_dirty = true; self.ghost_dirty = true;
             }
@@ -2158,6 +2219,7 @@ impl MacShell {
     pub fn set_client_menu(&mut self, generation: u64, root: Option<std::sync::Arc<crate::appmenu::MenuNode>>) -> bool {
         if self.client_generation == generation && self.client_menu == root { return false; }
         if generation != self.client_generation || root.is_none() {
+            self.client_scroll.clear();
             if matches!(self.open_menu, Some(TopMenu::Client(_))) { self.close_menus(); }
         }
         self.client_generation = generation;
@@ -2221,7 +2283,7 @@ impl MacShell {
         if self.tray_menu.as_ref().is_some_and(|m|!items.iter().any(|i|i.key==m.0)){self.close_menus();}
         if self.tray_items!=items{
             if self.dock_menu.as_ref().is_some_and(|m|m.items.iter().any(|(_,a)|matches!(a,DockMenuAction::Tray(_)))){self.close_menus();}
-            self.tray_items=items;self.topbar_dirty=true;
+            self.tray_items=items;self.tray_tile_cache.clear();self.topbar_dirty=true;
         }
     }
     pub fn prepare_tray_menu(&mut self,key:String,generation:u64,x:f32){
@@ -3047,6 +3109,7 @@ impl MacShell {
         }
 
         let icons=&mut self.icons;
+        let tray_tile_cache=&mut self.tray_tile_cache;
         let mut ctx = self.topbar_buffer.render();
         let _ = ctx.draw(|buf| {
             // Tahoe: fill the menu bar tint directly in a single pass instead of
@@ -3161,11 +3224,20 @@ impl MacShell {
                     }else{None};
                     let source=icon.or(item.pixels.as_deref());
                     if let Some(image)=source {
-                        // An icon that would vanish into the wallpaper gets a soft chip
+                        // An icon that would vanish into the wallpaper gets a soft chip;
+                        // cache resampled tile + alpha contrast check across hover/clock redraws.
                         let size=(18.0*ui_scale()).round().max(1.0);
-                        if let Some(mut tile)=tiny_skia::Pixmap::new(size as u32,size as u32) {
-                            tile.draw_pixmap(0,0,image.as_ref(),&tiny_skia::PixmapPaint{quality:tiny_skia::FilterQuality::Bilinear,..Default::default()},tiny_skia::Transform::from_scale(size/image.width() as f32,size/image.height() as f32),None);
-                            if tray_icon_needs_chip(&tile,bar.dark) {
+                        let px_size=size as u32;
+                        let cache_key=(index,px_size,bar.dark);
+                        if !tray_tile_cache.contains_key(&cache_key) {
+                            if let Some(mut tile)=tiny_skia::Pixmap::new(px_size,px_size) {
+                                tile.draw_pixmap(0,0,image.as_ref(),&tiny_skia::PixmapPaint{quality:tiny_skia::FilterQuality::Bilinear,..Default::default()},tiny_skia::Transform::from_scale(size/image.width() as f32,size/image.height() as f32),None);
+                                let chip=tray_icon_needs_chip(&tile,bar.dark);
+                                tray_tile_cache.insert(cache_key,(tile,chip));
+                            }
+                        }
+                        if let Some((tile,needs_chip))=tray_tile_cache.get(&cache_key) {
+                            if *needs_chip {
                                 // A soft disc, like a macOS status item's selection, not a box
                                 fill_rounded_rect(&mut pm,x-2.0,y-2.0,22.0,22.0,11.0,bar.chip);
                             }
@@ -3412,7 +3484,8 @@ impl MacShell {
         self.update_dock_menu_anchor();
     }
 
-    /// Logical rectangles of all currently visible overlay panels
+    /// Logical rectangles of the primary modal overlay (toasts and Mission title pill live in
+    /// their own right-sized buffers so opposite corners never merge into a 4K canvas).
     fn overlay_panel_rects(&self, registry: &AppRegistry) -> Vec<R> {
         let mut rects = Vec::with_capacity(4);
         rects.extend(self.menu_panels().into_iter().map(|(r, _, _)| r));
@@ -3426,15 +3499,12 @@ impl MacShell {
                 rects.push(l);
             }
         }
-        if self.toast_visible() {
-            rects.extend(self.toast_rects());
-        }
         if self.center_open {
             rects.push(self.calendar_rect());
             rects.push(self.center_layout().0);
         }
         if let Some(m) = &self.mission {
-            rects.extend(m.rects());
+            rects.extend(m.strip_rects());
         }
         if let Some(m) = &self.dock_menu {
             rects.push(m.rect);
@@ -3443,20 +3513,139 @@ impl MacShell {
     }
 
     pub fn ensure_overlay_rendered(&mut self, fonts: &mut FontSystem, registry: &AppRegistry, _active_layout: &str) {
-        if self.overlay_allocated && !self.overlay_dirty {
+        let any_allocated = self.overlay_allocated || self.toast_allocated || self.mission_title_allocated;
+        if any_allocated && !self.overlay_dirty {
             return;
         }
         self.overlay_dirty = false;
 
         let screen_pw = to_phys(self.screen_w);
         let screen_ph = to_phys(self.screen_h);
+
+        // 1. Independent compact buffer for notification banners (top-right stack)
+        let toast_current: Vec<_> = if self.toast_visible() {
+            self.toast_rects()
+                .into_iter()
+                .filter_map(|r| r.grow(16.0).to_buffer(screen_pw, screen_ph))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if let Some(t_bounds) = toast_current.iter().copied().reduce(|a, b| a.merge(b)) {
+            let t_fresh = !self.toast_allocated || self.toast_geometry != t_bounds;
+            if t_fresh {
+                self.toast_buffer = new_buffer(t_bounds.size.w, t_bounds.size.h);
+                self.toast_geometry = t_bounds;
+                self.toast_allocated = true;
+                self.toast_painted.clear();
+            }
+            let (tpw, tph) = (t_bounds.size.w, t_bounds.size.h);
+            let mut t_damage = std::mem::take(&mut self.toast_painted);
+            t_damage.extend(toast_current.iter().copied());
+            self.toast_painted = toast_current;
+            for rect in &mut t_damage {
+                rect.loc -= t_bounds.loc;
+            }
+            let t_clear = if t_fresh { Vec::new() } else { t_damage.clone() };
+            let (tox, toy) = (t_bounds.loc.x as f32 / ui_scale(), t_bounds.loc.y as f32 / ui_scale());
+            let t_local = |mut r: R| { r.x -= tox; r.y -= toy; r };
+            let toasts: Vec<_> = self
+                .toasts
+                .iter()
+                .cloned()
+                .zip(self.toast_rects().into_iter().map(t_local))
+                .collect();
+            let toast_hover = self.toast_hover;
+            let icons = &mut self.icons;
+            crate::theme::set_glass_origin(tox, toy);
+            let mut t_ctx = self.toast_buffer.render();
+            let _ = t_ctx.draw(|buf| {
+                clear_rects(buf, tpw, &t_clear);
+                if let Some(mut pm) = PixmapMut::from_bytes(buf, tpw as u32, tph as u32) {
+                    // Bottom of the stack first: the newest banner's close button overlaps its neighbour.
+                    for (i, (t, r)) in toasts.iter().enumerate().rev() {
+                        let hover = toast_hover.filter(|(h, _)| *h == i).map(|(_, part)| part);
+                        Self::draw_toast(&mut pm, fonts, icons, t, *r, hover, "сейчас", true);
+                    }
+                }
+                Result::<_, ()>::Ok(t_damage)
+            });
+        } else if self.toast_allocated {
+            self.toast_buffer = new_buffer(1, 1);
+            self.toast_allocated = false;
+            self.toast_painted.clear();
+        }
+
+        // 2. Independent tiny buffer for Mission Control's hovered window title pill
+        if let Some((title, win_rect)) = self.mission.as_ref().and_then(|m| m.title.clone()) {
+            let pill_global = MissionOverlay::title_rect(win_rect);
+            if let Some(m_bounds) = pill_global.grow(16.0).to_buffer(screen_pw, screen_ph) {
+                let m_size_changed = !self.mission_title_allocated || self.mission_title_geometry.size != m_bounds.size;
+                if m_size_changed {
+                    self.mission_title_buffer = new_buffer(m_bounds.size.w, m_bounds.size.h);
+                    self.mission_title_allocated = true;
+                }
+                self.mission_title_geometry = m_bounds;
+                let key = (title.clone(), m_bounds.loc.x, m_bounds.loc.y);
+                if m_size_changed || self.mission_title_cached.as_ref() != Some(&key) {
+                    self.mission_title_cached = Some(key);
+                    let (mpw, mph) = (m_bounds.size.w, m_bounds.size.h);
+                    let (mox, moy) = (m_bounds.loc.x as f32 / ui_scale(), m_bounds.loc.y as f32 / ui_scale());
+                    let pill = R::new(pill_global.x - mox, pill_global.y - moy, pill_global.w, pill_global.h);
+                    let p = palette();
+                    crate::theme::set_glass_origin(mox, moy);
+                    let full = vec![Rectangle::from_size((mpw, mph).into())];
+                    let clear = if m_size_changed { Vec::new() } else { full.clone() };
+                    let mut m_ctx = self.mission_title_buffer.render();
+                    let _ = m_ctx.draw(|buf| {
+                        clear_rects(buf, mpw, &clear);
+                        if let Some(mut pm) = PixmapMut::from_bytes(buf, mpw as u32, mph as u32) {
+                            draw_glass_panel(&mut pm, pill.x, pill.y, pill.w, pill.h, 13.0, true);
+                            fonts.draw_text_clipped_centered(&mut pm, &title, pill.x + pill.w * 0.5, pill.y + 5.0, pill.w - 20.0, 12.5, p.text, true);
+                        }
+                        Result::<_, ()>::Ok(full)
+                    });
+                }
+            } else if self.mission_title_allocated {
+                self.mission_title_buffer = new_buffer(1, 1);
+                self.mission_title_allocated = false;
+                self.mission_title_cached = None;
+            }
+        } else if self.mission_title_allocated {
+            self.mission_title_buffer = new_buffer(1, 1);
+            self.mission_title_allocated = false;
+            self.mission_title_cached = None;
+        }
+
+        // 3. Primary modal panel buffer (Menu / CC / Spotlight / Center / DockMenu / Mission strip)
         let current: Vec<_> = self
             .overlay_panel_rects(registry)
             .into_iter()
             .filter_map(|r| r.grow(16.0).to_buffer(screen_pw, screen_ph))
             .collect();
-        let Some(bounds) = current.iter().copied().reduce(|a, b| a.merge(b)) else { return };
+        let Some(bounds) = current.iter().copied().reduce(|a, b| a.merge(b)) else {
+            if self.overlay_allocated {
+                self.overlay_buffer = new_buffer(1, 1);
+                self.overlay_allocated = false;
+                self.overlay_painted.clear();
+                self.mission_tiles_cached = None;
+            }
+            return;
+        };
+        let mission_only = self.mission.is_some()
+            && self.open_menu.is_none()
+            && !self.control_center_open
+            && !self.spotlight_open
+            && !self.center_open
+            && self.dock_menu.is_none();
         let fresh = !self.overlay_allocated || self.overlay_geometry != bounds;
+        if !fresh
+            && mission_only
+            && self.mission_tiles_cached.as_ref() == self.mission.as_ref().map(|m| &m.tiles)
+        {
+            return;
+        }
+        self.mission_tiles_cached = self.mission.as_ref().map(|m| m.tiles.clone());
         if fresh {
             // Cache only the painted panels, never a screen-sized transparent canvas.
             self.overlay_buffer = new_buffer(bounds.size.w, bounds.size.h);
@@ -3470,7 +3659,7 @@ impl MacShell {
         self.overlay_painted = current;
         for rect in &mut damage { rect.loc -= bounds.loc; }
         // MemoryRenderBuffer::new is already transparent. Do not fault in and
-        // clear a second time the large menu+toast canvas on its first paint.
+        // clear a second time the panel canvas on its first paint.
         let clear = if fresh { Vec::new() } else { damage.clone() };
         let (ox, oy) = (bounds.loc.x as f32 / ui_scale(), bounds.loc.y as f32 / ui_scale());
         let local = |mut r: R| { r.x -= ox; r.y -= oy; r };
@@ -3489,15 +3678,8 @@ impl MacShell {
         } else {
             (R::new(0.0, 0.0, 0.0, 0.0), None, 0, false)
         };
-        let toasts: Vec<_> = if self.toast_visible() {
-            self.toasts.iter().cloned().zip(self.toast_rects().into_iter().map(local)).collect()
-        } else {
-            Vec::new()
-        };
-        let toast_hover = self.toast_hover;
         let mission = self.mission.clone().map(|mut m| {
             for t in &mut m.tiles { t.rect = local(t.rect); }
-            if let Some((_, r)) = m.title.as_mut() { *r = local(*r); }
             m
         });
         let center_hover = self.center_hover;
@@ -3749,12 +3931,6 @@ impl MacShell {
                 }
             }
 
-            // Bottom of the stack first: the newest banner's close button overlaps its neighbour.
-            for (i, (t, r)) in toasts.iter().enumerate().rev() {
-                let hover = toast_hover.filter(|(h, _)| *h == i).map(|(_, part)| part);
-                Self::draw_toast(&mut pm, fonts, icons, t, *r, hover, "сейчас", true);
-            }
-
             if let Some(m) = mission.as_ref() {
                 for t in &m.tiles {
                     let r = t.rect;
@@ -3788,11 +3964,6 @@ impl MacShell {
                             fill_rounded_rect(&mut pm, x - 4.0, r.y + 22.0, 8.0, 8.0, 2.0, rgba(255, 255, 255, 210));
                         }
                     }
-                }
-                if let Some((title, r)) = m.title.as_ref() {
-                    let pill = MissionOverlay::title_rect(*r);
-                    draw_glass_panel(&mut pm, pill.x, pill.y, pill.w, pill.h, 13.0, true);
-                    fonts.draw_text_clipped_centered(&mut pm, title, pill.x + pill.w * 0.5, pill.y + 5.0, pill.w - 20.0, 12.5, p.text, true);
                 }
             }
 
@@ -4809,5 +4980,48 @@ mod cc_backdrop_tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn disjoint_popups_toasts_and_mission_title_stay_in_compact_buffers() {
+        let registry = AppRegistry::new();
+        let mut fonts = FontSystem::new();
+        crate::theme::with_render_settings(2.0, Appearance::Dark, || {
+            // 4K logical 1920x1080 @ 2x (= 3840x2160 physical)
+            let mut shell = MacShell::new(1920, 1080);
+
+            // 1. Top-left Feather menu + top-right notification toast must not merge into a 3840px wide buffer.
+            shell.open_menu = Some(TopMenu::Feather);
+            shell.notify("Обновление", "Готово к проверке");
+            shell.overlay_dirty = true;
+            shell.ensure_overlay_rendered(&mut fonts, &registry, "RU");
+            assert!(shell.overlay_geometry.size.w > 0 && shell.overlay_geometry.size.w < 850);
+            assert!(shell.toast_geometry.size.w > 0 && shell.toast_geometry.size.w < 850);
+            assert!(shell.toast_geometry.loc.x > 2800);
+
+            // 2. Mission Control top strip + bottom window title pill must stay in separate compact buffers.
+            shell.close_menus();
+            shell.toasts.clear();
+            shell.mission = Some(MissionOverlay {
+                tiles: vec![MissionTile {
+                    label: "Рабочий стол 1".into(),
+                    rect: R::new(860.0, 20.0, 200.0, 112.0),
+                    space: Some(0),
+                    removable: false,
+                    remove_hover: false,
+                    current: true,
+                    hover: false,
+                    add: false,
+                    larvis: false,
+                    windows: 2,
+                }],
+                title: Some(("Терминал — Пёрышко".into(), R::new(760.0, 620.0, 400.0, 280.0))),
+            });
+            shell.overlay_dirty = true;
+            shell.ensure_overlay_rendered(&mut fonts, &registry, "RU");
+            assert!(shell.overlay_geometry.size.h > 0 && shell.overlay_geometry.size.h < 450);
+            assert!(shell.mission_title_geometry.size.h > 0 && shell.mission_title_geometry.size.h < 160);
+            assert!(shell.mission_title_geometry.loc.y > 1750);
+        });
     }
 }

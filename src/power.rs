@@ -502,18 +502,26 @@ async fn logind_connected(
                 events.send(Event::Lock)?;
             }
             Next::Sleep(Some(msg)) => {
-                let value: bool = msg.body().deserialize()?;
+                let value: bool = match msg.body().deserialize() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!("PrepareForSleep: {e}");
+                        continue;
+                    }
+                };
                 sleeping = value;
                 events.send(Event::Sleep(value))?;
                 if !value {
-                    inhibitor = Some(
-                        manager
-                            .call(
-                                "Inhibit",
-                                &("sleep", "Пёрышко", "Блокировка экрана перед сном", "delay"),
-                            )
-                            .await?,
-                    );
+                    match manager
+                        .call(
+                            "Inhibit",
+                            &("sleep", "Пёрышко", "Блокировка экрана перед сном", "delay"),
+                        )
+                        .await
+                    {
+                        Ok(fd) => inhibitor = Some(fd),
+                        Err(e) => tracing::warn!("Не удалось обновить sleep-ингибитор logind: {e}"),
+                    }
                 }
             }
             Next::Command(Ok(Command::Protected)) => {
@@ -522,10 +530,14 @@ async fn logind_connected(
                 }
             }
             Next::Command(Ok(Command::Locked(value))) => {
-                let _: () = session.call("SetLockedHint", &(value,)).await?;
+                if let Err(e) = session.call::<_, _, ()>("SetLockedHint", &(value,)).await {
+                    tracing::warn!("SetLockedHint({value}): {e}");
+                }
             }
             Next::Command(Ok(Command::Idle(value))) => {
-                let _: () = session.call("SetIdleHint", &(value,)).await?;
+                if let Err(e) = session.call::<_, _, ()>("SetIdleHint", &(value,)).await {
+                    tracing::warn!("SetIdleHint({value}): {e}");
+                }
             }
             Next::Command(Ok(Command::Suspend)) => {
                 // Suspend may answer only after resume. Keep processing PrepareForSleep meanwhile.

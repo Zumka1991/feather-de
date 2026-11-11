@@ -1268,6 +1268,9 @@ impl crate::FeatherCompositor {
         self.input_devices = devices;
         let p = self.pointer_config.clone();
         self.cursor.configure(p.cursor_theme.as_deref(), p.cursor_size);
+        if self.backend.is_drm() || self.larvis_desktop {
+            self.cursor.preload(self.scale_factor);
+        }
         crate::apps::set_cursor_env(crate::cursor::theme_name(p.cursor_theme.as_deref()), p.cursor_size);
         if !self.backend.is_drm() {
             // Inside the labwc kiosk session labwc owns libinput and the cursor

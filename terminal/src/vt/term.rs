@@ -110,7 +110,9 @@ impl Row {
     fn trimmed(mut self) -> Self {
         let keep = self.cells.iter().rposition(|c| !c.is_blank()).map_or(0, |i| i + 1);
         self.cells.truncate(keep);
-        self.cells.shrink_to_fit();
+        if self.cells.capacity() > keep.saturating_add(32) {
+            self.cells.shrink_to_fit();
+        }
         self
     }
 
@@ -471,11 +473,21 @@ impl Term {
         let (top, bottom) = (self.top, self.bottom);
         let n = n.min(bottom - top + 1);
         for _ in 0..n {
-            let row = self.screen.remove(top);
-            if top == 0 && !self.alt_active {
-                push_scrollback(&mut self.scrollback, row, self.max_scrollback, &mut self.scrolled_out);
-            }
-            self.screen.insert(bottom, Row::new(self.cols, self.pen.bg));
+            let mut row = self.screen.remove(top);
+            let recycled = if top == 0 && !self.alt_active {
+                push_scrollback(&mut self.scrollback, row, self.max_scrollback, &mut self.scrolled_out)
+            } else {
+                row.reset(self.cols, self.pen.bg);
+                Some(row)
+            };
+            let fresh = match recycled {
+                Some(mut r) => {
+                    r.reset(self.cols, self.pen.bg);
+                    r
+                }
+                None => Row::new(self.cols, self.pen.bg),
+            };
+            self.screen.insert(bottom, fresh);
         }
         self.touch_range(top, bottom);
     }
@@ -484,8 +496,9 @@ impl Term {
         let (top, bottom) = (self.top, self.bottom);
         let n = n.min(bottom - top + 1);
         for _ in 0..n {
-            self.screen.remove(bottom);
-            self.screen.insert(top, Row::new(self.cols, self.pen.bg));
+            let mut row = self.screen.remove(bottom);
+            row.reset(self.cols, self.pen.bg);
+            self.screen.insert(top, row);
         }
         self.touch_range(top, bottom);
     }
@@ -881,15 +894,18 @@ fn extended_color(params: &Params, i: usize) -> (Option<Color>, usize) {
     }
 }
 
-fn push_scrollback(scrollback: &mut VecDeque<Row>, row: Row, max: usize, counter: &mut u64) {
+fn push_scrollback(scrollback: &mut VecDeque<Row>, row: Row, max: usize, counter: &mut u64) -> Option<Row> {
     if max == 0 {
-        return;
+        return Some(row);
     }
-    if scrollback.len() >= max {
-        scrollback.pop_front();
-    }
+    let evicted = if scrollback.len() >= max {
+        scrollback.pop_front()
+    } else {
+        None
+    };
     scrollback.push_back(row.trimmed());
     *counter += 1;
+    evicted
 }
 
 /// DEC special graphics: the line-drawing set selected by `ESC ( 0`

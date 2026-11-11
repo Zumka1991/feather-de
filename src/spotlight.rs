@@ -361,12 +361,13 @@ impl FeatherCompositor {
                 _ => None,
             });
             for note in self.disk_search.found.notes.iter().filter(|_| notes_cmd.is_some()) {
+                let quoted_id = format!("'{}'", note.id.replace('\'', "'\\''"));
                 hits.push(Hit {
                     name: if note.title.is_empty() { feather_ui::i18n::tr("Заметка").into_owned() } else { note.title.clone() },
                     sub: note.line.clone(),
                     icon: AppIcon { kind: IconKind::Notes, name: None },
                     emoji: None,
-                    action: ShellClickAction::LaunchApp(AppAction::Exec(format!("{} --note {}", notes_cmd.as_deref().unwrap_or_default(), note.id)), feather_ui::i18n::tr("Заметки").into_owned()),
+                    action: ShellClickAction::LaunchApp(AppAction::Exec(format!("{} --note {}", notes_cmd.as_deref().unwrap_or_default(), quoted_id)), feather_ui::i18n::tr("Заметки").into_owned()),
                 });
             }
             for file in &self.disk_search.found.files {

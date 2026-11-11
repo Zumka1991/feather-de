@@ -226,8 +226,8 @@ impl FeatherCompositor {
                 m.hover = hover;
             }
             self.sync_mission_overlay();
+            self.needs_redraw = true;
         }
-        self.needs_redraw = true;
     }
 
     pub fn mission_button(&mut self, pressed: bool, x: f64, y: f64) {

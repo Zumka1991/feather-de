@@ -45,6 +45,24 @@ impl CursorManager {
         self.cache.clear();
     }
 
+    /// Preload common cursor shapes outside `render_drm()` so dragging/resizing never hits disk.
+    pub fn preload(&mut self, scale: f64) {
+        for icon in [
+            CursorIcon::Default,
+            CursorIcon::Pointer,
+            CursorIcon::Text,
+            CursorIcon::Grab,
+            CursorIcon::Grabbing,
+            CursorIcon::EwResize,
+            CursorIcon::NsResize,
+            CursorIcon::NwseResize,
+            CursorIcon::NeswResize,
+            CursorIcon::Crosshair,
+        ] {
+            let _ = self.named(icon, scale);
+        }
+    }
+
     /// Named cursor image for the current scale
     pub fn named(&mut self, icon: CursorIcon, scale: f64) -> Option<&(MemoryRenderBuffer, Point<i32, smithay::utils::Physical>)> {
         let size = (self.size_pt * scale).round() as u32;

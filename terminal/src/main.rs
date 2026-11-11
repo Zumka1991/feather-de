@@ -57,7 +57,10 @@ use smithay_client_toolkit::{
         },
         WaylandSurface,
     },
-    shm::{slot::SlotPool, Shm, ShmHandler},
+    shm::{
+        slot::{Slot, SlotPool},
+        Shm, ShmHandler,
+    },
 };
 use wayland_client::{
     globals::registry_queue_init,
@@ -106,8 +109,15 @@ struct Tab {
     /// Value of `term.scrolled_out` the view was last drawn for
     seen_scrolled: u64,
     title: String,
+    last_fg_poll: Option<Instant>,
     /// New output while in the background: a dot on its tab until it is shown
     activity: bool,
+}
+
+struct ShmSlot {
+    slot: Slot,
+    stale: Vec<(i32, i32, i32, i32)>,
+    fresh: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -165,7 +175,10 @@ struct App {
     palette: Palette,
     font_pt: f32,
     canvas: Option<tiny_skia::Pixmap>,
+    shm_slots: Vec<ShmSlot>,
+    shm_slots_size: (i32, i32),
     full_redraw: bool,
+    chrome_dirty: bool,
     /// Physical rectangles changed since the last frame
     damage: Vec<(i32, i32, i32, i32)>,
     selection: Option<Selection>,
@@ -337,7 +350,10 @@ fn main() {
         palette: if dark { Palette::dark() } else { Palette::light() },
         font_pt,
         canvas: None,
+        shm_slots: Vec::new(),
+        shm_slots_size: (0, 0),
         full_redraw: true,
+        chrome_dirty: true,
         damage: Vec::new(),
         selection: None,
         search: search::Search::default(),
@@ -489,7 +505,7 @@ impl App {
         let token = self.handle.insert_source(source, move |_, _, app| Ok(app.pty_ready(id))).ok();
         let mut term = Term::new(size.0, size.1);
         term.report_colors = (self.palette.fg, self.palette.bg);
-        self.tabs.push(Tab { id, term, parser: Parser::new(), pty, source: token, offset: 0, seen_scrolled: 0, title: String::new(), activity: false });
+        self.tabs.push(Tab { id, term, parser: Parser::new(), pty, source: token, offset: 0, seen_scrolled: 0, title: String::new(), last_fg_poll: None, activity: false });
         self.active = self.tabs.len() - 1;
         self.selection = None;
         self.relayout();
@@ -553,7 +569,18 @@ impl App {
                 let replies = std::mem::take(&mut tab.term.responses);
                 tab.pty.write(&replies);
             }
-            let title = tab.term.title.clone().filter(|t| !t.is_empty()).or_else(|| tab.pty.foreground_name()).unwrap_or_default();
+            let title = match tab.term.title.clone().filter(|t| !t.is_empty()) {
+                Some(t) => t,
+                None => {
+                    let now = Instant::now();
+                    if tab.title.is_empty() || tab.last_fg_poll.is_none_or(|t| now.duration_since(t) >= Duration::from_millis(200)) {
+                        tab.last_fg_poll = Some(now);
+                        tab.pty.foreground_name().unwrap_or_default()
+                    } else {
+                        tab.title.clone()
+                    }
+                }
+            };
             if title != tab.title {
                 tab.title = title;
                 retitled = true;
@@ -589,7 +616,7 @@ impl App {
     }
 
     fn damage_chrome(&mut self) {
-        self.full_redraw = true;
+        self.chrome_dirty = true;
         self.needs_draw = true;
     }
 
@@ -674,9 +701,10 @@ impl App {
         let Some(mut canvas) = self.canvas.take() else { return };
         let (origin, _, _) = self.layout();
         let (_, ch) = self.grid.cell_px();
+        let full = std::mem::take(&mut self.full_redraw);
+        let chrome = std::mem::take(&mut self.chrome_dirty) || full;
         {
             let mut pm = canvas.as_mut();
-            let full = std::mem::take(&mut self.full_redraw);
             let tab = &mut self.tabs[self.active];
             // New output while scrolled back keeps the same lines in view
             let delta = tab.term.scrolled_out - tab.seen_scrolled;
@@ -710,19 +738,73 @@ impl App {
             for (y, d) in dirty.iter().enumerate() {
                 if *d {
                     self.grid.draw_row(&mut pm, &frame, y);
-                    self.damage.push((0, origin.1 + y as i32 * ch, pw, ch));
+                    if !full {
+                        self.damage.push((0, origin.1 + y as i32 * ch, pw, ch));
+                    }
                 }
             }
-            if full {
+            if chrome {
                 self.paint_chrome(&mut pm, s);
+                let top_px = (self.chrome_h() * s).ceil() as i32;
+                if !full && top_px > 0 {
+                    self.damage.push((0, 0, pw, top_px.min(ph)));
+                }
             }
         }
+        if self.shm_slots_size != (pw, ph) {
+            self.shm_slots.clear();
+            self.shm_slots_size = (pw, ph);
+        }
         let format = if self.rgba { wl_shm::Format::Abgr8888 } else { wl_shm::Format::Argb8888 };
-        let Ok((buffer, shm)) = self.pool.create_buffer(pw, ph, pw * 4, format) else {
+        let byte_len = pw as usize * ph as usize * 4;
+        let idx = match self.shm_slots.iter().position(|entry| !entry.slot.has_active_buffers()) {
+            Some(i) => i,
+            None => {
+                let Ok(slot) = self.pool.new_slot(byte_len) else {
+                    self.canvas = Some(canvas);
+                    return;
+                };
+                self.shm_slots.push(ShmSlot { slot, stale: Vec::new(), fresh: true });
+                self.shm_slots.len() - 1
+            }
+        };
+        if full {
+            for (j, entry) in self.shm_slots.iter_mut().enumerate() {
+                if j != idx {
+                    entry.fresh = true;
+                    entry.stale.clear();
+                }
+            }
+        } else {
+            for (j, entry) in self.shm_slots.iter_mut().enumerate() {
+                if j != idx && !entry.fresh {
+                    if entry.stale.len() + self.damage.len() > 64 {
+                        entry.fresh = true;
+                        entry.stale.clear();
+                    } else {
+                        entry.stale.extend_from_slice(&self.damage);
+                    }
+                }
+            }
+        }
+        let copy_full = full || self.shm_slots[idx].fresh;
+        let stale = std::mem::take(&mut self.shm_slots[idx].stale);
+        self.shm_slots[idx].fresh = false;
+        let Some(shm) = self.pool.canvas(&self.shm_slots[idx].slot) else {
             self.canvas = Some(canvas);
             return;
         };
-        ui::copy_shm_pixels(shm, canvas.data(), self.rgba);
+        if copy_full {
+            ui::copy_shm_pixels(shm, canvas.data(), self.rgba);
+        } else {
+            ui::copy_shm_rects(shm, canvas.data(), pw, ph, &stale, self.rgba);
+            ui::copy_shm_rects(shm, canvas.data(), pw, ph, &self.damage, self.rgba);
+        }
+        let Ok(buffer) = self.pool.create_buffer_in(&self.shm_slots[idx].slot, pw, ph, pw * 4, format) else {
+            self.shm_slots[idx].fresh = true;
+            self.canvas = Some(canvas);
+            return;
+        };
         self.canvas = Some(canvas);
         let surface = self.window.wl_surface().clone();
         match &self.viewport {
@@ -900,13 +982,13 @@ impl App {
         let anchor=self.search.current.map(|s|s.start).unwrap_or((tab.term.scrolled_out as i64-tab.offset as i64,0));
         self.search.restart(&tab.term,anchor);
         self.search_reveal=reveal;
-        self.arm_search();self.damage_chrome();
+        self.arm_search();self.full_redraw=true;self.needs_draw=true;
     }
 
     fn navigate_search(&mut self, previous: bool) {
         let Some(tab)=self.tabs.get(self.active) else{return};
         self.search.navigate(&tab.term,previous);
-        self.search_reveal=true;self.arm_search();self.damage_chrome();
+        self.search_reveal=true;self.arm_search();self.full_redraw=true;self.needs_draw=true;
     }
 
     fn arm_search(&mut self) {
@@ -925,7 +1007,7 @@ impl App {
                     }
                 }
             }
-            app.damage_chrome();TimeoutAction::Drop
+            app.full_redraw=true;app.needs_draw=true;TimeoutAction::Drop
         });
         if inserted.is_err(){self.search_timer=false;}
     }

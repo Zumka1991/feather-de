@@ -684,11 +684,11 @@ impl App {
     }
 
     fn line_of(&self, pos: usize) -> usize {
-        self.layout.iter().rposition(|l| l.start <= pos).unwrap_or(0)
+        self.layout.partition_point(|l| l.start <= pos).saturating_sub(1)
     }
 
     fn x_of(&mut self, line: VisualLine, pos: usize) -> f32 {
-        let text = self.docs[self.active].text.clone();
+        let text = &self.docs[self.active].text;
         self.fonts.measure_text(
             &text[line.start..pos.clamp(line.start, line.end)],
             line.size,
@@ -697,10 +697,10 @@ impl App {
     }
 
     fn pos_at_x(&mut self, line: VisualLine, x: f32) -> usize {
-        let text = self.docs[self.active].text.clone();
+        let text = &self.docs[self.active].text;
         let soft = line.end < text.len() && text.as_bytes()[line.end] != b'\n';
         let last = if soft && line.end > line.start {
-            prev_boundary(&text, line.end)
+            prev_boundary(text, line.end)
         } else {
             line.end
         };
@@ -716,7 +716,7 @@ impl App {
             if i >= last {
                 break;
             }
-            i = next_boundary(&text, i);
+            i = next_boundary(text, i);
         }
         best
     }
@@ -2128,139 +2128,157 @@ impl App {
             theme::fill_rect(pm, gutter - 1.0, top, 1.0, view_h, colors::separator());
         }
 
-        let layout = self.layout.clone();
-        let text = self.doc().text.clone();
-        let matches = self.matches.clone();
-        let active_match = self.active_match;
+        let caret_line = self.line_of(caret);
+        let first_visible = self
+            .layout
+            .partition_point(|line| top + PAD_TOP + line.y + line.height - scroll < top);
 
-        for (li, line) in layout.iter().enumerate() {
-            let y = top + PAD_TOP + line.y - scroll;
-            if y + line.height < top || y > bottom {
-                continue;
-            }
+        {
+            let Self {
+                fonts,
+                docs,
+                active,
+                layout,
+                matches,
+                active_match,
+                w,
+                show_line_numbers,
+                font_size,
+                focused,
+                find_focus,
+                ..
+            } = self;
+            let text = &docs[*active].text;
+            let active_match = *active_match;
 
-            // Highlight active logical line
-            if line.logical_line == caret_logical_line {
-                theme::fill_rect(
-                    pm,
-                    gutter,
-                    y,
-                    self.w - gutter,
-                    line.height,
-                    rgba(128, 128, 140, 15),
-                );
-            }
+            for (offset, line) in layout[first_visible..].iter().enumerate() {
+                let li = first_visible + offset;
+                let y = top + PAD_TOP + line.y - scroll;
+                if y > bottom {
+                    break;
+                }
+                if y + line.height < top {
+                    continue;
+                }
 
-            // Line number in gutter
-            if self.show_line_numbers && line.first_of_logical {
-                let num_str = line.logical_line.to_string();
-                let is_curr = line.logical_line == caret_logical_line;
-                self.fonts.draw_text_right(
-                    pm,
-                    &num_str,
-                    gutter - 10.0,
-                    y + (line.height - line.size) * 0.35,
-                    (self.font_size - 2.0).clamp(9.5, 14.0),
-                    if is_curr {
-                        colors::text()
-                    } else {
-                        colors::tertiary()
-                    },
-                    is_curr,
-                );
-            }
-
-            // Search match highlights on this line
-            for (mi, &(ms, me)) in matches.iter().enumerate() {
-                let a = ms.max(line.start);
-                let b = me.min(line.end);
-                if a < b {
-                    let x0 = text_x
-                        + self
-                            .fonts
-                            .measure_text(&text[line.start..a], line.size, line.bold);
-                    let x1 = text_x
-                        + self
-                            .fonts
-                            .measure_text(&text[line.start..b], line.size, line.bold);
-                    let is_curr = mi == active_match;
-                    theme::fill_rrect(
+                // Highlight active logical line
+                if line.logical_line == caret_logical_line {
+                    theme::fill_rect(
                         pm,
-                        x0,
-                        y + 1.0,
-                        (x1 - x0).max(4.0),
-                        line.height - 2.0,
-                        4.0,
+                        gutter,
+                        y,
+                        *w - gutter,
+                        line.height,
+                        rgba(128, 128, 140, 15),
+                    );
+                }
+
+                // Line number in gutter
+                if *show_line_numbers && line.first_of_logical {
+                    let num_str = line.logical_line.to_string();
+                    let is_curr = line.logical_line == caret_logical_line;
+                    fonts.draw_text_right(
+                        pm,
+                        &num_str,
+                        gutter - 10.0,
+                        y + (line.height - line.size) * 0.35,
+                        (*font_size - 2.0).clamp(9.5, 14.0),
                         if is_curr {
-                            rgba(255, 159, 10, 120)
+                            colors::text()
                         } else {
-                            rgba(255, 214, 10, 85)
+                            colors::tertiary()
                         },
+                        is_curr,
                     );
                 }
-            }
 
-            // Selection highlight on this line
-            if let Some((sa, sb)) = sel {
-                let a = sa.max(line.start);
-                let b = sb.min(line.end);
-                if a < b || (sa <= line.start && sb > line.end) {
-                    let x0 = text_x
-                        + self
-                            .fonts
-                            .measure_text(&text[line.start..a], line.size, line.bold);
-                    let x1 = text_x
-                        + self
-                            .fonts
-                            .measure_text(&text[line.start..b], line.size, line.bold)
-                        + if sb > line.end { 6.0 } else { 0.0 };
-                    theme::fill_rrect(
-                        pm,
-                        x0,
-                        y + 1.0,
-                        (x1 - x0).max(4.0),
-                        line.height - 2.0,
-                        4.0,
-                        selection_color(),
-                    );
+                // Search match highlights on this line (binary-search to overlapping range)
+                let first_match = matches.partition_point(|&(_, me)| me <= line.start);
+                for (m_off, &(ms, me)) in matches[first_match..]
+                    .iter()
+                    .take_while(|&&(ms, _)| ms < line.end)
+                    .enumerate()
+                {
+                    let mi = first_match + m_off;
+                    let a = ms.max(line.start);
+                    let b = me.min(line.end);
+                    if a < b {
+                        let x0 = text_x + fonts.measure_text(&text[line.start..a], line.size, line.bold);
+                        let x1 = text_x + fonts.measure_text(&text[line.start..b], line.size, line.bold);
+                        let is_curr = mi == active_match;
+                        theme::fill_rrect(
+                            pm,
+                            x0,
+                            y + 1.0,
+                            (x1 - x0).max(4.0),
+                            line.height - 2.0,
+                            4.0,
+                            if is_curr {
+                                rgba(255, 159, 10, 120)
+                            } else {
+                                rgba(255, 214, 10, 85)
+                            },
+                        );
+                    }
                 }
-            }
 
-            // Syntax/Structure-aware text color
-            let fg = match line.style {
-                LineStyle::Heading => colors::accent(),
-                LineStyle::Subheading => colors::text(),
-                LineStyle::Comment => colors::secondary(),
-                LineStyle::Section => rgba(175, 82, 222, 255),
-                LineStyle::CodeOrQuote => rgba(48, 176, 199, 255),
-                LineStyle::Bullet => colors::text(),
-                LineStyle::Normal => colors::text(),
-            };
+                // Selection highlight on this line
+                if let Some((sa, sb)) = sel {
+                    let a = sa.max(line.start);
+                    let b = sb.min(line.end);
+                    if a < b || (sa <= line.start && sb > line.end) {
+                        let x0 = text_x + fonts.measure_text(&text[line.start..a], line.size, line.bold);
+                        let x1 = text_x
+                            + fonts.measure_text(&text[line.start..b], line.size, line.bold)
+                            + if sb > line.end { 6.0 } else { 0.0 };
+                        theme::fill_rrect(
+                            pm,
+                            x0,
+                            y + 1.0,
+                            (x1 - x0).max(4.0),
+                            line.height - 2.0,
+                            4.0,
+                            selection_color(),
+                        );
+                    }
+                }
 
-            let ty = y + (line.height - line.size) * 0.35;
-            self.fonts.draw_text(
-                pm,
-                &text[line.start..line.end],
-                text_x,
-                ty,
-                line.size,
-                fg,
-                line.bold,
-            );
+                // Syntax/Structure-aware text color
+                let fg = match line.style {
+                    LineStyle::Heading => colors::accent(),
+                    LineStyle::Subheading => colors::text(),
+                    LineStyle::Comment => colors::secondary(),
+                    LineStyle::Section => rgba(175, 82, 222, 255),
+                    LineStyle::CodeOrQuote => rgba(48, 176, 199, 255),
+                    LineStyle::Bullet => colors::text(),
+                    LineStyle::Normal => colors::text(),
+                };
 
-            // Caret
-            if self.focused
-                && self.find_focus == FindFocus::None
-                && sel.is_none()
-                && li == self.line_of(caret)
-            {
-                let cx = text_x
-                    + self.fonts.measure_text(
-                        &text[line.start..caret.clamp(line.start, line.end)],
-                        line.size,
-                        line.bold,
-                    );
-                theme::fill_rect(pm, cx, y + 2.0, 2.0, line.height - 4.0, colors::accent());
+                let ty = y + (line.height - line.size) * 0.35;
+                fonts.draw_text(
+                    pm,
+                    &text[line.start..line.end],
+                    text_x,
+                    ty,
+                    line.size,
+                    fg,
+                    line.bold,
+                );
+
+                // Caret
+                if *focused
+                    && *find_focus == FindFocus::None
+                    && sel.is_none()
+                    && li == caret_line
+                {
+                    let cx = text_x
+                        + fonts.measure_text(
+                            &text[line.start..caret.clamp(line.start, line.end)],
+                            line.size,
+                            line.bold,
+                        );
+                    theme::fill_rect(pm, cx, y + 2.0, 2.0, line.height - 4.0, colors::accent());
+                }
             }
         }
 

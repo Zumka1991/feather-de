@@ -468,6 +468,7 @@ impl FeatherCompositor {
 #[derive(Default)]
 struct Registrar {
     windows: HashMap<u32, (String, OwnedObjectPath)>,
+    order: std::collections::VecDeque<u32>,
 }
 
 #[zbus::interface(name = "com.canonical.AppMenu.Registrar")]
@@ -478,14 +479,19 @@ impl Registrar {
         menu_object_path: OwnedObjectPath,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<()> {
-        if self.windows.len() >= 256 && !self.windows.contains_key(&window_id) {
-            return Err(zbus::fdo::Error::LimitsExceeded(
-                "Too many registered menus".into(),
-            ));
-        }
         let sender = header
             .sender()
             .ok_or_else(|| zbus::fdo::Error::InvalidArgs("Missing sender".into()))?;
+        if self.windows.len() >= 256 && !self.windows.contains_key(&window_id) {
+            while let Some(oldest) = self.order.pop_front() {
+                if self.windows.remove(&oldest).is_some() {
+                    break;
+                }
+            }
+        }
+        if !self.windows.contains_key(&window_id) {
+            self.order.push_back(window_id);
+        }
         self.windows
             .insert(window_id, (sender.to_string(), menu_object_path));
         Ok(())

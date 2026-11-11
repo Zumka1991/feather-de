@@ -116,8 +116,8 @@ struct Files {
     data_devices: Option<DataDeviceManagerState>,
     data_device: Option<DataDevice>,
     copy_source: Option<(CopyPasteSource, ClipData)>,
-    /// Our drag: source, its files and the icon surface under the pointer
-    drag_source: Option<(DragSource, Vec<PathBuf>, wl_surface::WlSurface)>,
+    /// Our drag: source, its files, the icon surface under the pointer, and a dedicated small SHM pool
+    drag_source: Option<(DragSource, Vec<PathBuf>, wl_surface::WlSurface, Option<SlotPool>)>,
     /// A drop being read: finished once the files arrived
     drop_offer: Option<DragOffer>,
     /// Folder the current drag over the window would drop into
@@ -625,18 +625,22 @@ impl Files {
         let source = manager.create_drag_and_drop_source(&self.qh, [URI_LIST, "text/plain;charset=utf-8", "text/plain"], DndAction::Copy | DndAction::Move);
         let icon = self.compositor.create_surface(&self.qh);
         let scale = self.fractional.unwrap_or(self.scale as f64).ceil().max(1.0) as i32;
+        let mut icon_pool = None;
         if let Some((px, pixels)) = self.app.drag_image(&paths, scale as f32) {
             let format = if self.rgba { wl_shm::Format::Abgr8888 } else { wl_shm::Format::Argb8888 };
-            if let Ok((buffer, canvas)) = self.pool.create_buffer(px as i32, px as i32, px as i32 * 4, format) {
-                ui::copy_shm_pixels(canvas, &pixels, self.rgba);
-                icon.set_buffer_scale(scale);
-                let _ = buffer.attach_to(&icon);
-                icon.damage_buffer(0, 0, px as i32, px as i32);
-                icon.commit();
+            if let Ok(mut pool) = SlotPool::new((px as usize) * (px as usize) * 4, &self.shm) {
+                if let Ok((buffer, canvas)) = pool.create_buffer(px as i32, px as i32, px as i32 * 4, format) {
+                    ui::copy_shm_pixels(canvas, &pixels, self.rgba);
+                    icon.set_buffer_scale(scale);
+                    let _ = buffer.attach_to(&icon);
+                    icon.damage_buffer(0, 0, px as i32, px as i32);
+                    icon.commit();
+                    icon_pool = Some(pool);
+                }
             }
         }
         source.start_drag(device, self.window.wl_surface(), Some(&icon), self.serial);
-        self.drag_source = Some((source, paths, icon));
+        self.drag_source = Some((source, paths, icon, icon_pool));
     }
 
     /// Several inotify events in a burst (unpacking, copying) cause one re-read
@@ -705,7 +709,7 @@ impl Files {
                 px.swap(0, 2);
             }
         }
-        let (dx, dy, dw, dh) = self.diff.damage(canvas, pw, ph);
+        let damage = self.diff.damage_rects(canvas, pw, ph);
         let surface = self.window.wl_surface();
         match &self.viewport {
             Some(viewport) if self.fractional.is_some() => {
@@ -714,7 +718,9 @@ impl Files {
             }
             _ => surface.set_buffer_scale(scale as i32),
         }
-        surface.damage_buffer(dx, dy, dw, dh);
+        for (dx, dy, dw, dh) in damage {
+            surface.damage_buffer(dx, dy, dw, dh);
+        }
         surface.frame(qh, surface.clone());
         self.window.set_window_geometry(0, 0, w as u32, h as u32);
         if buffer.attach_to(surface).is_err() {
@@ -1043,7 +1049,7 @@ impl DataSourceHandler for Files {
     fn accept_mime(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: Option<String>) {}
 
     fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource, mime: String, pipe: WritePipe) {
-        let dragged = self.drag_source.as_ref().filter(|(s, _, _)| s.inner() == source).map(|(_, p, _)| p);
+        let dragged = self.drag_source.as_ref().filter(|(s, _, _, _)| s.inner() == source).map(|(_, p, _, _)| p);
         let copied = self.copy_source.as_ref().filter(|(s, _)| s.inner() == source).map(|(_, data)| data);
         if let Some(ClipData::Text(text)) = copied {
             let data = text.clone();
@@ -1071,7 +1077,7 @@ impl DataSourceHandler for Files {
     }
 
     fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
-        if self.drag_source.as_ref().is_some_and(|(s, _, _)| s.inner() == source) {
+        if self.drag_source.as_ref().is_some_and(|(s, _, _, _)| s.inner() == source) {
             self.drag_source = None;
         }
         if self.copy_source.as_ref().is_some_and(|(s, _)| s.inner() == source) {
@@ -1080,7 +1086,7 @@ impl DataSourceHandler for Files {
     }
     fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
     fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
-        if self.drag_source.as_ref().is_some_and(|(s, _, _)| s.inner() == source) {
+        if self.drag_source.as_ref().is_some_and(|(s, _, _, _)| s.inner() == source) {
             self.drag_source = None;
         }
     }

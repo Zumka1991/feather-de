@@ -127,6 +127,53 @@ pub fn copy_shm_pixels(slot: &mut [u8], pixels: &[u8], rgba: bool) {
     }
 }
 
+/// Copies only the damaged rectangles `(x, y, w, h)` from `pixels` into `slot`.
+pub fn copy_shm_rects(slot: &mut [u8], pixels: &[u8], pw: i32, ph: i32, rects: &[(i32, i32, i32, i32)], rgba: bool) {
+    if pw <= 0 || ph <= 0 {
+        return;
+    }
+    let (uw, uh) = (pw as usize, ph as usize);
+    let total = uw * uh * 4;
+    if slot.len() < total || pixels.len() < total {
+        return;
+    }
+    let stride = uw * 4;
+    for &(rx, ry, rw, rh) in rects {
+        if rw <= 0 || rh <= 0 {
+            continue;
+        }
+        let x0 = rx.max(0) as usize;
+        let y0 = ry.max(0) as usize;
+        let x1 = (rx.saturating_add(rw)).max(0) as usize;
+        let y1 = (ry.saturating_add(rh)).max(0) as usize;
+        let x1 = x1.min(uw);
+        let y1 = y1.min(uh);
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        if x0 == 0 && x1 == uw {
+            let range = (y0 * stride)..(y1 * stride);
+            slot[range.clone()].copy_from_slice(&pixels[range.clone()]);
+            if !rgba {
+                for p in slot[range].chunks_exact_mut(4) {
+                    p.swap(0, 2);
+                }
+            }
+        } else {
+            for y in y0..y1 {
+                let off = y * stride;
+                let range = (off + x0 * 4)..(off + x1 * 4);
+                slot[range.clone()].copy_from_slice(&pixels[range.clone()]);
+                if !rgba {
+                    for p in slot[range].chunks_exact_mut(4) {
+                        p.swap(0, 2);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// What changed between two consecutive frames of a window.
 ///
 /// Our programs repaint the whole window, but a compositor uploads to the GPU only what the
@@ -225,6 +272,106 @@ impl FrameDiff {
             }
         }
     }
+
+    /// Disjoint or compact rectangles `(x, y, w, h)` covering every changed pixel, so e.g. a
+    /// toolbar highlight at the top and a status-bar change at the bottom of a 4K window stay two
+    /// small uploads instead of spanning all 33 MB in between. Never empty.
+    pub fn damage_rects(&mut self, pixels: &[u8], w: i32, h: i32) -> Vec<(i32, i32, i32, i32)> {
+        if w <= 0 || h <= 0 || pixels.len() < w as usize * h as usize * 4 {
+            self.size = (0, 0);
+            self.hashes.clear();
+            return vec![(0, 0, w.max(1), h.max(1))];
+        }
+        let (uw, uh) = (w as usize, h as usize);
+        let cols = uw.div_ceil(DIFF_BLOCK_W);
+        let rows = uh.div_ceil(DIFF_BLOCK_H);
+        self.scratch.clear();
+        self.scratch.resize(cols * rows, 0);
+        let stride = uw * 4;
+        for (y, line) in pixels.chunks_exact(stride).take(uh).enumerate() {
+            let band = &mut self.scratch[(y / DIFF_BLOCK_H) * cols..][..cols];
+            for (hash, segment) in band.iter_mut().zip(line.chunks(DIFF_BLOCK_W * 4)) {
+                *hash = diff_fold(*hash, segment);
+            }
+        }
+        let full = self.size != (w, h) || self.hashes.len() != self.scratch.len();
+        let mut bands: Vec<(usize, usize, usize, usize)> = Vec::new();
+        if !full {
+            for r in 0..rows {
+                let row_off = r * cols;
+                let mut col = 0;
+                while col < cols {
+                    if self.scratch[row_off + col] == self.hashes[row_off + col] {
+                        col += 1;
+                        continue;
+                    }
+                    let c0 = col;
+                    let mut c1 = col;
+                    col += 1;
+                    while col < cols {
+                        if self.scratch[row_off + col] != self.hashes[row_off + col] {
+                            c1 = col;
+                            col += 1;
+                        } else if col + 1 < cols && self.scratch[row_off + col + 1] != self.hashes[row_off + col + 1] {
+                            c1 = col + 1;
+                            col += 2;
+                        } else {
+                            break;
+                        }
+                    }
+                    // Coalesce vertically adjacent overlapping/nearby spans
+                    if let Some(prev) = bands.iter_mut().rev().take(4).find(|b| {
+                        b.3 + 1 == r && c0 <= b.2 + 1 && b.0 <= c1 + 1
+                    }) {
+                        prev.0 = prev.0.min(c0);
+                        prev.2 = prev.2.max(c1);
+                        prev.3 = r;
+                    } else {
+                        bands.push((c0, r, c1, r));
+                    }
+                }
+            }
+        }
+        std::mem::swap(&mut self.hashes, &mut self.scratch);
+        self.size = (w, h);
+        if full {
+            return vec![(0, 0, w, h)];
+        }
+        if bands.is_empty() {
+            return vec![(0, 0, 1, 1)];
+        }
+        while bands.len() > 12 {
+            let mut best = (0usize, 1usize, usize::MAX);
+            for i in 0..bands.len() {
+                for j in (i + 1)..bands.len() {
+                    let (ac0, ar0, ac1, ar1) = bands[i];
+                    let (bc0, br0, bc1, br1) = bands[j];
+                    let mc0 = ac0.min(bc0);
+                    let mr0 = ar0.min(br0);
+                    let mc1 = ac1.max(bc1);
+                    let mr1 = ar1.max(br1);
+                    let merged = (mc1 - mc0 + 1) * (mr1 - mr0 + 1);
+                    let sum = (ac1 - ac0 + 1) * (ar1 - ar0 + 1) + (bc1 - bc0 + 1) * (br1 - br0 + 1);
+                    let waste = merged.saturating_sub(sum);
+                    if waste < best.2 {
+                        best = (i, j, waste);
+                    }
+                }
+            }
+            let (i, j, _) = best;
+            let b = bands.remove(j);
+            bands[i] = (bands[i].0.min(b.0), bands[i].1.min(b.1), bands[i].2.max(b.2), bands[i].3.max(b.3));
+        }
+        bands
+            .into_iter()
+            .map(|(c0, r0, c1, r1)| {
+                let (x0, y0) = (c0 * DIFF_BLOCK_W, r0 * DIFF_BLOCK_H);
+                let x1 = ((c1 + 1) * DIFF_BLOCK_W).min(uw);
+                let y1 = ((r1 + 1) * DIFF_BLOCK_H).min(uh);
+                (x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32)
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +420,23 @@ mod diff_tests {
         assert_eq!(diff.damage(&a[..16], 200, 30), (0, 0, 200, 30));
         assert_eq!(diff.damage(&a, 200, 30), (0, 0, 200, 30), "state was dropped");
         assert_eq!(diff.damage(&[], 0, 0), (0, 0, 1, 1));
+    }
+
+    #[test]
+    fn damage_rects_keeps_top_and_bottom_changes_separate() {
+        let (w, h) = (1920usize, 1080usize);
+        let mut diff = FrameDiff::default();
+        let mut px = frame(w, h);
+        assert_eq!(diff.damage_rects(&px, w as i32, h as i32), vec![(0, 0, w as i32, h as i32)]);
+        assert_eq!(diff.damage_rects(&px, w as i32, h as i32), vec![(0, 0, 1, 1)]);
+        // Top-left pixel + bottom-right pixel: two small rects instead of full 1920x1080
+        px[0] ^= 0xff;
+        let last = px.len() - 4;
+        px[last] ^= 0xff;
+        let rects = diff.damage_rects(&px, w as i32, h as i32);
+        assert_eq!(rects.len(), 2);
+        let area: i64 = rects.iter().map(|r| r.2 as i64 * r.3 as i64).sum();
+        assert!(area <= 2 * 128 * 8, "expected tiny rects, got {rects:?}");
     }
 }
 

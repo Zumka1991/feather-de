@@ -19,6 +19,9 @@ pub struct Entry {
     pub hidden: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
+    /// Preformatted date and size columns so `paint_list` never calls `chrono::Local` per row per frame
+    pub modified_label: String,
+    pub size_label: String,
     /// Lowercase extension (shown on document icons)
     pub ext: String,
 }
@@ -78,6 +81,7 @@ pub fn sort_entries_by(entries: &mut [Entry], sort: Sort) {
 /// Reads a folder (one `statx`-equivalent per entry); symlinks to folders count as folders
 pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
     let mut out = Vec::new();
+    let today = chrono::Local::now().date_naive();
     for item in std::fs::read_dir(dir)? {
         let Ok(item) = item else { continue };
         let name = item.file_name().to_string_lossy().into_owned();
@@ -90,6 +94,10 @@ pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
             },
         };
         let is_dir = meta.is_dir();
+        let size = if is_dir { 0 } else { meta.len() };
+        let modified = meta.modified().ok();
+        let modified_label = human_date_on(modified, today);
+        let size_label = if is_dir { "—".into() } else { human_size(size) };
         let (kind, ext) = kind_of(&name, is_dir, meta.mode() & 0o111 != 0);
         out.push(Entry {
             hidden: name.starts_with('.'),
@@ -97,8 +105,10 @@ pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
             path,
             kind,
             is_dir,
-            size: if is_dir { 0 } else { meta.len() },
-            modified: meta.modified().ok(),
+            size,
+            modified,
+            modified_label,
+            size_label,
             ext,
         });
     }
@@ -121,9 +131,12 @@ pub fn human_size(bytes: u64) -> String {
 }
 
 pub fn human_date(time: Option<SystemTime>) -> String {
+    human_date_on(time, chrono::Local::now().date_naive())
+}
+
+fn human_date_on(time: Option<SystemTime>, today: chrono::NaiveDate) -> String {
     let Some(time) = time else { return "—".into() };
     let dt: chrono::DateTime<chrono::Local> = time.into();
-    let today = chrono::Local::now().date_naive();
     let date = dt.date_naive();
     if date == today {
         format!("Сегодня, {}", dt.format("%H:%M"))
@@ -1266,6 +1279,8 @@ mod tests {
             hidden: false,
             size,
             modified: at(modified),
+            modified_label: human_date(at(modified)),
+            size_label: if dir { "—".into() } else { human_size(size) },
             ext: name.rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_default(),
         };
         let mut list = vec![
