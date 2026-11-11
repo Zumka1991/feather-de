@@ -1,6 +1,7 @@
-# Выпуск Пёрышка: тег v<версия из Cargo.toml> → пакет .deb в APT-репозитории на GitHub Pages
-# (ветка gh-pages) и в GitHub Release. Вручную (workflow_dispatch) — сборка +git<дата>.
-# Секрет APT_SIGNING_KEY: закрытый ключ GPG репозитория (gpg --armor --export-secret-keys).
+# Выпуск Пёрышка: тег v<версия из Cargo.toml> → пакет .deb в APT-репозитории и пакет pacman
+# в репозитории Arch Linux (arch/), оба на GitHub Pages (ветка gh-pages), и в GitHub Release.
+# Вручную (workflow_dispatch) — сборка +git<дата>.
+# Секрет APT_SIGNING_KEY: закрытый ключ GPG репозиториев (gpg --armor --export-secret-keys).
 name: Выпуск
 
 on:
@@ -16,7 +17,61 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Пакет для Arch Linux собирается в контейнере Arch: под его glibc и библиотеки
+  arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    env:
+      CARGO_HOME: /cargo
+      CARGO_TARGET_DIR: /cargo/target
+    steps:
+      - name: Зависимости сборки
+        run: |
+          pacman -Syu --noconfirm --needed git rust clang pkgconf
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /cargo/registry
+            /cargo/git
+            /cargo/target
+          key: cargo-arch-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-arch-
+
+      - name: Ключ подписи
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::error::Нет секрета APT_SIGNING_KEY"
+            exit 1
+          fi
+          printf '%s\n' "$APT_SIGNING_KEY" | sudo -u builder gpg --batch --import
+
+      - name: Пакет pacman
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          mkdir -p /cargo
+          chown -R builder: "$GITHUB_WORKSPACE" /cargo
+          key="$(sudo -u builder gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')"
+          cd packaging
+          sudo -u builder --preserve-env=CARGO_HOME,CARGO_TARGET_DIR \
+            makepkg --syncdeps --noconfirm --sign --key "$key"
+          sudo -u builder ./publish-arch.sh ../arch-repo feather-de-*.pkg.tar.zst --key "$key"
+          ls -la ../arch-repo/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-repo
+          path: arch-repo
+          retention-days: 7
+
   release:
+    needs: arch
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +112,11 @@ jobs:
       - name: Пакет .deb
         run: ./packaging/build-deb.sh --out dist
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: arch-repo
+          path: arch-repo
+
       - name: Ключ подписи
         env:
           APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
@@ -78,6 +138,9 @@ jobs:
           fi
           key="$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')"
           ./packaging/publish-apt.sh apt dist/*.deb --key "$key" --keep 3
+          # pacman-репозиторий Arch Linux из задания arch — целиком вместо прежнего
+          rm -rf apt/arch
+          cp -r arch-repo apt/arch
           # Один коммит без истории: старые пакеты не копятся в репозитории
           cd apt
           git checkout --orphan publish
@@ -93,4 +156,5 @@ jobs:
           # Постоянная ссылка для сайта: releases/latest/download/feather-de_amd64.deb
           cp dist/feather-de_*_amd64.deb feather-de_amd64.deb
           gh release create "$GITHUB_REF_NAME" dist/*.deb feather-de_amd64.deb \
+            arch-repo/x86_64/feather-de-*.pkg.tar.zst \
             --title "Пёрышко $GITHUB_REF_NAME" --generate-notes

@@ -17,8 +17,8 @@ changes to the scene; expensive asset preparation and system-service operations 
 outside the input and rendering loop. Files, Terminal, Notes, Preview, Text Editor,
 and Calculator are developed alongside the compositor.
 
-**Current version: 0.1.0, early testing stage.** Packaging is available for Arch Linux
-x86_64. Validation across GPUs, laptops, and physical displays is ongoing. Feather
+**Early testing stage.** Ready packages with updates exist for Ubuntu (APT) and Arch Linux
+(pacman). Validation across GPUs, laptops, and physical displays is ongoing. Feather
 currently ships as a desktop environment; this repository does not yet provide an
 installation image for a separate operating system.
 
@@ -349,18 +349,70 @@ of every budget in a real DRM session remains open. See the [specification](docs
 
 ### Arch Linux
 
-Clone the repository and build an installable package with `makepkg`:
+Feather installs as **one more session** next to your current desktop (KDE, GNOME, Hyprland,
+anything else): your desktop, its settings and your login screen stay as they are, and you
+pick between them at every login.
+
+**One command** (x86_64, run as a regular user — the script asks for sudo itself):
 
 ```bash
+curl -fsSL https://zumka1991.github.io/feather-de/arch/install.sh | bash
+```
+
+The script ([packaging/get-arch.sh](packaging/get-arch.sh)) adds the `[feather-de]` repository
+and its signing key, installs `feather-de` plus what Control Center needs (PipeWire,
+NetworkManager, BlueZ, emoji, xdg-desktop-portal, Poppler). NetworkManager is enabled only if
+nothing else manages the network yet. `| bash -s -- --minimal` installs Feather alone.
+
+**Manual setup.** Packages are signed with the same key as the APT repository
+(`D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4`):
+
+```bash
+curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo pacman-key --add -
+sudo pacman-key --lsign-key D5E6C2628719EF1D60685758C7F944C1485C5FC4
+```
+
+Append to `/etc/pacman.conf`:
+
+```ini
+[feather-de]
+SigLevel = Required
+Server = https://zumka1991.github.io/feather-de/arch/$arch
+```
+
+```bash
+sudo pacman -Syu feather-de
+```
+
+**Updates** arrive with the system: `sudo pacman -Syu`; log out of Feather and back in to run
+the new version. CI rebuilds the repository on every release (job `arch` in
+`.github/workflows/release.yml`, built in an Arch container).
+
+#### Running Feather as a second desktop
+
+1. Log out of your current session (or reboot).
+2. On the login screen pick the session **“Пёрышко (прямой вывод DRM/KMS)”** — SDDM: session
+   list bottom-left; GDM: select your user, then the gear bottom-right; LightDM: the session
+   menu; ly: the session line, ←/→; tuigreet: F3.
+3. Log in as usual. To go back, choose “Выйти из Пёрышка…” in the top-left menu and pick your
+   previous session.
+
+Without a display manager: log in on a free console (Ctrl+Alt+F3) and run `feather-session`.
+To try it inside your current desktop: `feather-de --windowed`. Never run it with sudo.
+Emergency exit: Ctrl+Alt+Backspace; log: `~/.local/state/feather-de/drm.log`. NVIDIA needs
+KMS (`nvidia-drm.modeset=1`, default since driver 560).
+
+**Removal:** `sudo pacman -Rns feather-de`, then delete the `[feather-de]` section from
+`/etc/pacman.conf`.
+
+**Building the package from source:**
+
+```bash
+sudo pacman -S --needed base-devel git rust clang
 git clone https://github.com/Zumka1991/feather-de.git
 cd feather-de/packaging
 makepkg -si
 ```
-
-You need `base-devel` and a current Rust/Cargo toolchain. The
-[PKGBUILD](packaging/PKGBUILD) declares glibc, gcc-libs, libinput, libxkbcommon,
-seatd, Mesa/EGL, PAM, systemd-libs, Wayland, fontconfig, Noto, D-Bus, and libpipewire dependencies.
-Current packaging specifies **glibc ≥ 2.44**.
 
 ### Ubuntu
 

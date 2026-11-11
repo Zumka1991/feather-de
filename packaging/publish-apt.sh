@@ -103,7 +103,7 @@ cat > index.html <<'EOF'
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;color:#1d1d1f}
 pre{background:#f5f5f7;padding:12px 14px;border-radius:10px;overflow-x:auto}h2{margin-top:32px}</style></head>
 <body><h1>Пёрышко (Feather DE)</h1>
-<p>Рабочий стол Wayland в стиле macOS для Ubuntu 24.04 и новее (amd64).</p>
+<p>Рабочий стол Wayland в стиле macOS для Ubuntu 24.04 и новее (amd64) и Arch Linux (x86_64).</p>
 <h2>Одной командой</h2>
 <p>Подходит и для Ubuntu Server без рабочего стола: ставит Пёрышко, его экран входа и всё нужное.
 Запускайте обычным пользователем, пароль sudo скрипт спросит сам.</p>
@@ -118,8 +118,19 @@ curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo tee /etc
 echo 'deb [signed-by=/etc/apt/keyrings/feather-de.asc] https://zumka1991.github.io/feather-de stable main' | sudo tee /etc/apt/sources.list.d/feather-de.list
 sudo apt-get update &amp;&amp; sudo apt-get install feather-de</pre>
 <p>Отпечаток ключа: <code>D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4</code>.
-Обновления приходят вместе с системой: <code>sudo apt upgrade</code>.
-Исходный код: <a href="https://github.com/Zumka1991/feather-de">github.com/Zumka1991/feather-de</a>.</p>
+Обновления приходят вместе с системой: <code>sudo apt upgrade</code>.</p>
+<h2>Arch Linux</h2>
+<p>Свой репозиторий pacman (x86_64), подписан тем же ключом. Ставит Пёрышко ещё одним сеансом
+рядом с вашим рабочим столом и подскажет, где выбрать его на экране входа:</p>
+<pre>curl -fsSL https://zumka1991.github.io/feather-de/arch/install.sh | bash</pre>
+<p>Или вручную:</p>
+<pre>curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo pacman-key --add -
+sudo pacman-key --lsign-key D5E6C2628719EF1D60685758C7F944C1485C5FC4
+printf '\n[feather-de]\nSigLevel = Required\nServer = https://zumka1991.github.io/feather-de/arch/$arch\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu feather-de</pre>
+<p>Дальше обновления — <code>sudo pacman -Syu</code>. Запуск: выйти из сеанса и на экране входа
+выбрать «Пёрышко (прямой вывод DRM/KMS)».</p>
+<p>Исходный код: <a href="https://github.com/Zumka1991/feather-de">github.com/Zumka1991/feather-de</a>.</p>
 </body></html>
 EOF
 echo "==> Репозиторий готов: $REPO ($(find pool -name '*.deb' | wc -l) пакетов, архитектуры: $ARCHES)"

@@ -1,16 +1,19 @@
 # Maintainer: Feather DE Team <feather@local>
 pkgname=feather-de
-pkgver=0.1.0
-pkgrel=2
+# Версия берётся из корневого Cargo.toml: PKGBUILD собирает текущее дерево исходников
+pkgver="$(sed -n 's/^version = "\(.*\)"$/\1/p' "${startdir:-$PWD}/../Cargo.toml" 2>/dev/null | head -n 1)"
+pkgver="${pkgver:-0.0.0}"
+pkgrel=1
 pkgdesc="Пёрышко (Feather DE) — сверхбыстрое окружение рабочего стола Wayland в стиле macOS Tahoe на Rust"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Zumka1991/feather-de"
 # Лицензия проекта ещё не выбрана автором; не объявляем MIT без LICENSE.
 license=()
 depends=(
-    'glibc>=2.44'
+    'glibc'
     'gcc-libs'
     'libinput'
+    'libdrm'
     'libxkbcommon'
     'seatd'
     'mesa'
@@ -22,11 +25,11 @@ depends=(
     'noto-fonts'
     'dbus'
     'libpipewire'
+    'xwayland-satellite'
 )
 optdepends=(
     'noto-fonts-emoji: значки панели эмодзи и эмодзи в программах'
     'labwc: запуск в режиме совместимости (nested/kiosk)'
-    'xwayland-satellite: поддержка X11-программ без корневого Xwayland'
     'xdg-desktop-portal: системные диалоги выбора файлов и захвата экрана'
     'pipewire: управление звуком в Центре управления'
     'libpulse: pactl для управления звуком'
@@ -37,12 +40,13 @@ optdepends=(
     'poppler: pdftoppm для полного рендеринга PDF в Просмотре'
     'unarchiver: ARJ, ACE, одиночный .gz, зашифрованный 7z в Файлах (RAR Файлы читают сами)'
 )
-makedepends=('cargo' 'rust' 'pkgconf')
+makedepends=('cargo' 'pkgconf' 'clang')
 options=('!debug' '!lto')
 backup=(
     'etc/pam.d/feather-lock'
     'etc/greetd/feather-greeter.toml'
 )
+install=feather-de.install
 source=()
 sha256sums=()
 

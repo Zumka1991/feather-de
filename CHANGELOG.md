@@ -2,6 +2,41 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-11 — Выпуск 0.19.7 (Claude)
+
+- Arch Linux: свой репозиторий pacman `[feather-de]` с обновлениями через `sudo pacman -Syu`
+  и установка одной командой
+  `curl -fsSL https://zumka1991.github.io/feather-de/arch/install.sh | bash`. Пёрышко
+  ставится ещё одним сеансом рядом с KDE/GNOME; после установки показывается, где выбрать его
+  на экране входа.
+- Пакет Arch получил верную версию и зависимость `xwayland-satellite` (X11-программы).
+- Для Ubuntu изменений нет.
+
+## 2026-11-11 — Репозиторий pacman для Arch Linux (Claude)
+
+- **Что.** Свой репозиторий `[feather-de]` для Arch Linux рядом с APT на GitHub Pages
+  (`https://zumka1991.github.io/feather-de/arch/$arch`): задание `arch` в
+  `.github/workflows/release.yml` собирает пакет в контейнере `archlinux:base-devel`, подписывает
+  пакет и базу тем же ключом GPG (`packaging/publish-arch.sh`), выпуск кладёт `arch/` в
+  gh-pages и `.pkg.tar.zst` в GitHub Release. Установка одной командой
+  `curl -fsSL …/arch/install.sh | bash` (`packaging/get-arch.sh`): ключ в pacman-key, секция в
+  pacman.conf, `pacman -Syu feather-de` и звук/Wi-Fi/Bluetooth/порталы, подсказка, где выбрать
+  сеанс на экране входа (по найденному SDDM/GDM/LightDM/ly/greetd).
+- PKGBUILD берёт версию из `Cargo.toml` (была застывшая 0.1.0), `glibc` без жёсткой
+  `>=2.44`, добавлены `libdrm`, `xwayland-satellite` (как в .deb) и `clang` для сборки;
+  `feather-de.install` после установки печатает, как запустить Пёрышко вторым рабочим столом.
+- README (рус./англ.): раздел Arch Linux переписан — установка, ручное подключение,
+  обновления, запуск вторым сеансом по экранам входа, без DM, NVIDIA, удаление. Страница
+  установки на Pages получила раздел Arch.
+- **Почему.** На Arch ставили только из исходников через `makepkg`, без обновлений, и не было
+  объяснения, как выбрать Пёрышко рядом с KDE/GNOME.
+- **Проверка.** Пакет собран `makepkg --sign` в чистом `archlinux:base-devel`, репозиторий
+  разложен `publish-arch.sh`; установка через `get-arch.sh` из этого репозитория в другом
+  чистом контейнере Arch: pacman принял подписи базы и пакета, у бинарника нет ненайденных
+  библиотек, сеанс появился в `wayland-sessions`, повторный запуск ничего не дублирует.
+  Найдено и исправлено: без локального мастер-ключа pacman (`pacman-key --init` не делали)
+  `--lsign-key` падал, теперь скрипт создаёт его сам. CI-задание на GitHub ещё не запускалось.
+
 ## 2026-11-10 — Выпуск 0.19.6 (Claude)
 
 - Скачивание файлов из Codex Desktop и других Electron-программ: диалог сохранения теперь

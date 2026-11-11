@@ -9,7 +9,11 @@ description: Выпуск новой версии Пёрышка (feather-de) в
 ~6–8 минут): собирает `.deb` на ubuntu-24.04 (вместе с xwayland-satellite), подписывает
 репозиторий секретом `APT_SIGNING_KEY`, публикует ветку `gh-pages`
 (https://zumka1991.github.io/feather-de: репозиторий, `install.sh`, страница установки)
-и создаёт GitHub Release с `feather-de_X.Y.Z_amd64.deb`, `feather-de_amd64.deb` и метапакетом
+Параллельно задание `arch` собирает пакет pacman в контейнере `archlinux:base-devel`
+(`packaging/PKGBUILD`, версия из `Cargo.toml`) и кладёт подписанный репозиторий в `arch/`
+той же ветки (`packaging/publish-arch.sh`, вместе с `arch/install.sh` из `get-arch.sh`);
+Arch-системы получают версию через `sudo pacman -Syu`. Release получает и
+`feather-de-X.Y.Z-1-x86_64.pkg.tar.zst`. Release также содержит `feather-de_X.Y.Z_amd64.deb`, `feather-de_amd64.deb` и метапакетом
 `feather-desktop_X.Y.Z_all.deb` (набор программ из `packaging/desktop-set.list`).
 Установленные системы получают версию через `sudo apt upgrade`. ISO Пёрышко OS (~/feather-os)
 пересобирать не нужно; его собирают отдельно (`./build-iso.sh`, Пёрышко берётся из
@@ -74,6 +78,10 @@ description: Выпуск новой версии Пёрышка (feather-de) в
    gpg --dearmor < packaging/apt/feather-de.asc > /tmp/k.gpg && gpgv --keyring /tmp/k.gpg InRelease
    curl -fsS https://zumka1991.github.io/feather-de/install.sh | cmp - packaging/get.sh
    gh release view vX.Y.Z --json assets -q '.assets[].name'
+   # Arch: в базе новая версия (строка feather-de-X.Y.Z-1/), подпись базы на месте
+   curl -fsS https://zumka1991.github.io/feather-de/arch/x86_64/feather-de.db | zstd -dc | tar -t
+   curl -fsSI https://zumka1991.github.io/feather-de/arch/x86_64/feather-de.db.sig | head -1
+   curl -fsS https://zumka1991.github.io/feather-de/arch/install.sh | cmp - packaging/get-arch.sh
    ```
    В Packages должна быть новая версия feather-de и feather-desktop (и до двух прошлых),
    подпись — «Действительная».
