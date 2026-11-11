@@ -70,8 +70,7 @@ jobs:
           path: arch-repo
           retention-days: 7
 
-  release:
-    needs: arch
+  deb:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -89,9 +88,18 @@ jobs:
 
       - name: Зависимости сборки
         run: |
-          if [ -f /etc/apt/apt-mirrors.txt ] && ! curl -fsSI --max-time 4 http://azure.archive.ubuntu.com/ubuntu/dists/noble/InRelease >/dev/null 2>&1; then
-            echo "Зеркало azure.archive.ubuntu.com недоступно — переключаемся на archive.ubuntu.com"
-            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            for mirror in \
+              "http://azure.archive.ubuntu.com/ubuntu/" \
+              "https://archive.ubuntu.com/ubuntu/" \
+              "https://mirrors.edge.kernel.org/ubuntu/" \
+              "https://ftp.osuosl.org/pub/ubuntu/"; do
+              if curl -fsSI --max-time 4 "${mirror}dists/noble/InRelease" >/dev/null 2>&1; then
+                echo "Используем живое зеркало Ubuntu: $mirror"
+                printf '%s\n' "$mirror" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+                break
+              fi
+            done
           fi
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 install -y --no-install-recommends build-essential pkg-config dpkg-dev \
@@ -121,6 +129,19 @@ jobs:
           name: ubuntu-deb
           path: dist/*.deb
           retention-days: 14
+
+  release:
+    needs: [arch, deb]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ubuntu-deb
+          path: dist
 
       - uses: actions/download-artifact@v4
         with:
