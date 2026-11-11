@@ -90,7 +90,7 @@
 - [x] Игры: relative pointer, lock/confine, единый `wl_pointer.frame` (`POINTER_NORAW`), удержание `x11_warp_lock` при вращении камеры ПКМ в Wine/XWayland, снятие захвата, отпускание кнопок и очистка `forwarded_pressed_keys` / модификаторов при смене фокуса — [GAMING.md](GAMING.md)
 - [x] Proton Dock: немедленные title/app_id, отдельные игры и фильтрация безымянного служебного окна — [GAMING.md](GAMING.md)
 - [x] Resize XWayland с CSD: внешний край поверх нижнего окна, `Resizing`, настоящий размер X11-клиента — [GAMING.md](GAMING.md)
-- [x] Единый ресайз всех окон: полоса 8+3 px, углы на 20 px вдоль краёв, min/max клиента, упор в верхнюю панель — `FEATHER_DEBUG_RESIZE=1`
+- [x] Единый ресайз всех окон: полоса 10+5 px (15 px), углы 24 px + 7 px внутри скругления, удержание курсора ресайза при уходе с поверхности клиента, предзагрузка угловых курсоров в DRM, min/max клиента, упор в верхнюю панель — `FEATHER_DEBUG_RESIZE=1`, [WINDOWS.md](WINDOWS.md#ресайз-окон-srcwindowrs-srcinputrs-srchandlersrs)
 - [x] Lineage II в DRM: масштаб/UI, ПКМ и камера, resize и переключение из Dock после повторного входа (проверено пользователем)
 - [x] Глобальное меню GTK (`org.gtk.Menus` / `org.gtk.Actions`, `gtk_shell1`) — [APPMENU.md](APPMENU.md#gtk)
 - [x] Единые светофоры: KDE server-decoration для GTK 3/4 без HeaderBar (наш заголовок), `gtk-3.0/gtk.css` для snap — [DECORATIONS.md](DECORATIONS.md)
@@ -206,7 +206,7 @@
   - [ ] Проверка на настоящем ноутбуке (проверяет пользователь)
 - [x] Кофеин: значок в строке меню, не дающий компьютеру уснуть и гасить экран — [LOCK_POWER.md](LOCK_POWER.md#кофеин)
   - [x] Значок — чашка на блюдце (контур / полная с паром), не путается с батареей
-- [x] Подложка: слой окон поверх столов по Super+S, плитки, перенос по Super+Shift+S, запоминание — [WINDOWS.md](WINDOWS.md#подложка-srcscratchrs)
+- [x] Подложка: слой окон поверх столов по Super+S, плитки с ресайзом перегородок и управлением клавишами (`Super+стрелки`, `Super+Shift+стрелки`, `Ctrl/Alt+Super+стрелки`, `Super+0`, `Super+F`), перенос по Super+Shift+S, запоминание — [WINDOWS.md](WINDOWS.md#подложка-srcscratchrs)
   - [ ] Проверка с Telegram и в DRM (проверяет пользователь)
 - [x] История буфера обмена (Super+Shift+V) и панель эмодзи (Super+.) — [SPOTLIGHT.md](SPOTLIGHT.md)
 - [x] «Сейчас исполняется» (MPRIS2) в Пункте управления, медиаклавиши, возврат окна плеера — [CONTROL_CENTER.md](CONTROL_CENTER.md)

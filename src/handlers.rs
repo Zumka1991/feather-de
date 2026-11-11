@@ -281,14 +281,22 @@ impl FeatherCompositor {
                 }
             }
             Some(edges) => {
+                if self.scratch_begin_resize(win_id, edges, false) {
+                    return;
+                }
                 let win = &mut self.windows[idx];
-                win.forget_tile();
-                win.set_resizing(true);
-                win.resize_anchor = Some(ResizeAnchor {
-                    edges,
-                    right: win.x + win.width,
-                    bottom: win.y + win.total_height(),
-                });
+                if win.space == crate::scratch::SCRATCH_SPACE {
+                    win.set_resizing(true);
+                    win.resize_anchor = None;
+                } else {
+                    win.forget_tile();
+                    win.set_resizing(true);
+                    win.resize_anchor = Some(ResizeAnchor {
+                        edges,
+                        right: win.x + win.width,
+                        bottom: win.y + win.total_height(),
+                    });
+                }
                 DragOperation::ResizeWindow {
                     win_id,
                     start_cursor: (pos.x, pos.y),
@@ -297,9 +305,6 @@ impl FeatherCompositor {
                 }
             }
         };
-        if let Some(edges) = edges {
-            self.set_compositor_cursor(crate::input::cursor_for_edges(edges));
-        }
         self.active_drag = Some(op);
 
         // Take the pointer away from the client for the duration of the move/resize, like a
@@ -320,6 +325,9 @@ impl FeatherCompositor {
             },
         );
         pointer.frame(self);
+        if let Some(edges) = edges {
+            self.set_compositor_cursor(crate::input::cursor_for_edges(edges));
+        }
     }
 }
 
@@ -768,7 +776,11 @@ impl SeatHandler for FeatherCompositor {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
-        self.apply_cursor(image);
+        if let Some(icon) = self.compositor_cursor {
+            self.apply_cursor(CursorImageStatus::Named(icon));
+        } else {
+            self.apply_cursor(image);
+        }
     }
 }
 

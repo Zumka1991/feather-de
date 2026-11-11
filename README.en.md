@@ -93,7 +93,9 @@ on top of an application's own decorations.
 
 - Tiling: halves and quarters at screen edges, in the green button's menu and with Ctrl+Super+arrows.
 - Window memory: programs reopen where they were, and the previous session returns at login.
-- A scratchpad layer over all workspaces on Super+S: one window fills the screen, more are tiled.
+- A scratchpad layer over all workspaces on Super+S: one window fills the screen, multiple windows
+  form a dynamic tiled grid with keyboard and mouse focus, swapping, axis rotation, live divider
+  resizing, equalizing, and single-tile zoom.
 - Move, resize, minimize, maximize, and fullscreen operations.
 - Alt+Tab / Super+Tab with most-recently-used ordering, mouse selection, and cancellation.
 - Cycling windows of the active application with Alt+` / Super+`.
@@ -577,6 +579,20 @@ many shell actions can be reassigned in System Settings.
 | Ctrl+Alt+↑ / ↓ | Window overview / close overview |
 | Super+L | Lock |
 | Print / Shift+Print / Alt+Print | Capture screen / region / window |
+
+### Tile management on the Scratchpad (`Super+S`)
+
+When two or more windows live on the Scratchpad, they form a tiled layout with adjustable split dividers:
+
+| Action | Keys / Mouse |
+|---|---|
+| Focus an adjacent tile | `Super+← / → / ↑ / ↓` |
+| Swap with an adjacent tile (or rotate the split axis left/right ↔ top/bottom when no neighbor exists along that direction) | `Super+Shift+← / → / ↑ / ↓`, or drag with `Super+LMB` onto another tile |
+| Resize the active tile (move its split divider, with key repeat while held) | `Ctrl+Super+← / → / ↑ / ↓` or `Alt+Super+← / → / ↑ / ↓` |
+| Resize dividers with the mouse | Drag an inner border between tiles with LMB, or `Super+RMB` anywhere inside a tile |
+| Reset splits back to 50/50 | `Super+0` (`Ctrl+Super+0`), or double-click an inner divider |
+| Zoom the active tile to full screen on the Scratchpad and back | `Super+F`, the green window button, or double-clicking the titlebar |
+| Dismiss the Scratchpad | `Super+S` or click the frosted margin around the tiles |
 
 In Files: Space for Quick Look, Ctrl+L for path entry, Ctrl+H for hidden files,
 F2 to rename, and Ctrl+Shift+N for a new folder. In Terminal: Ctrl+Shift+C/V for

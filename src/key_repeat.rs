@@ -17,6 +17,7 @@ pub(crate) enum Target {
     Settings(u64, crate::system_settings::Page, bool),
     Wifi,
     Audio,
+    ScratchResize(crate::tiling::Dir),
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Candidate {
@@ -25,6 +26,17 @@ pub(crate) struct Candidate {
     latin: Keysym,
     ctrl: bool,
     shift: bool,
+}
+impl Candidate {
+    pub(crate) fn scratch_resize(dir: crate::tiling::Dir) -> Self {
+        Self {
+            target: Target::ScratchResize(dir),
+            sym: Keysym::new(0),
+            latin: Keysym::new(0),
+            ctrl: false,
+            shift: false,
+        }
+    }
 }
 #[derive(Default)]
 pub struct Repeat {
@@ -131,10 +143,10 @@ impl FeatherCompositor {
         })
     }
     fn repeat_still_valid(&self, target: Target) -> bool {
-        if target == Target::Audio {
-            !self.lock.active
-        } else {
-            self.repeat_target() == Some(target)
+        match target {
+            Target::Audio => !self.lock.active,
+            Target::ScratchResize(_) => self.shell.scratch_open && !self.lock.active,
+            _ => self.repeat_target() == Some(target),
         }
     }
     pub fn cancel_key_repeat(&mut self) {
@@ -147,10 +159,10 @@ impl FeatherCompositor {
             return;
         }
         let delay = Duration::from_millis(self.keyboard_config.repeat_delay as u64);
-        let interval = if key.target == Target::Audio {
-            Duration::from_millis(80)
-        } else {
-            Duration::from_secs_f64(1.0 / self.keyboard_config.repeat_rate.max(1) as f64)
+        let interval = match key.target {
+            Target::Audio => Duration::from_millis(80),
+            Target::ScratchResize(_) => Duration::from_millis(55),
+            _ => Duration::from_secs_f64(1.0 / self.keyboard_config.repeat_rate.max(1) as f64),
         };
         if let Ok(token) =
             self.loop_handle
@@ -164,19 +176,26 @@ impl FeatherCompositor {
                         st.key_repeat.token = None;
                         return TimeoutAction::Drop;
                     }
-                    if key.target == Target::Audio {
-                        if let Some(key) = crate::controls::AudioKey::from_keysym(key.sym.raw()) {
-                            st.handle_audio_key(key);
+                    match key.target {
+                        Target::Audio => {
+                            if let Some(key) = crate::controls::AudioKey::from_keysym(key.sym.raw()) {
+                                st.handle_audio_key(key);
+                            }
                         }
-                    } else if key.target == Target::Wifi {
-                        let _ =
-                            st.shell
-                                .cc
-                                .key(key.sym.raw(), key.sym.key_char(), key.ctrl, key.shift);
-                        st.shell.overlay_dirty = true;
-                    } else {
-                        let mut action: Option<KeyAction> = None;
-                        st.edit_builtin_key(key.sym, key.latin, key.ctrl, key.shift, &mut action);
+                        Target::ScratchResize(dir) => {
+                            st.scratch_resize_step(dir);
+                        }
+                        Target::Wifi => {
+                            let _ =
+                                st.shell
+                                    .cc
+                                    .key(key.sym.raw(), key.sym.key_char(), key.ctrl, key.shift);
+                            st.shell.overlay_dirty = true;
+                        }
+                        _ => {
+                            let mut action: Option<KeyAction> = None;
+                            st.edit_builtin_key(key.sym, key.latin, key.ctrl, key.shift, &mut action);
+                        }
                     }
                     st.needs_redraw = true;
                     TimeoutAction::ToDuration(interval)

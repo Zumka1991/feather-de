@@ -495,12 +495,12 @@ impl FeatherCompositor {
         match image {
             CursorImageStatus::Hidden => window.set_cursor_visible(false),
             CursorImageStatus::Named(icon) => {
-                window.set_cursor_visible(true);
                 window.set_cursor(icon);
+                window.set_cursor_visible(true);
             }
             CursorImageStatus::Surface(_) => {
-                window.set_cursor_visible(true);
                 window.set_cursor(CursorIcon::Default);
+                window.set_cursor_visible(true);
             }
         }
     }

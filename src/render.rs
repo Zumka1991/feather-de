@@ -1536,6 +1536,57 @@ impl FeatherCompositor {
         }
     }
 
+    /// True when the compositor's own shell UI (modals, menus, top bar, visible Dock) owns the
+    /// pointer at `(px, py)` ahead of client windows and their outer resize bands.
+    pub(crate) fn shell_takes_pointer(&self, px: f64, py: f64) -> bool {
+        if self.mission.is_some()
+            || self.auth.is_open()
+            || (self.shell.launchpad.is_some()
+                && px >= 0.0
+                && px < self.shell.screen_w as f64
+                && py >= 0.0
+                && py < self.shell.screen_h as f64)
+            || self.shell.switcher.as_ref().is_some_and(|s| s.visible)
+            || self.shell.ring.is_some()
+            || self.icon_drag.as_ref().is_some_and(|d| d.active)
+            || self.shell.has_open_panel()
+            || self.shell.toast_contains(px, py)
+        {
+            return true;
+        }
+        let primary = self
+            .primary_monitor()
+            .map(|m| m.info.rect)
+            .unwrap_or_else(|| self.monitor_at(0.0, 0.0));
+        let over_bar = px >= primary.x as f64
+            && px < (primary.x + primary.w) as f64
+            && py >= primary.y as f64
+            && py < (primary.y + crate::theme::TOP_BAR_HEIGHT) as f64;
+        let fullscreen_top = self
+            .windows
+            .iter()
+            .rev()
+            .find(|w| {
+                w.is_visible()
+                    && crate::monitors::Rect {
+                        x: w.x,
+                        y: w.y,
+                        w: w.width,
+                        h: w.total_height(),
+                    }
+                    .intersection(primary)
+                        > 0
+            })
+            .is_some_and(|w| w.fullscreen && !(w.larvis && over_bar))
+            || self.shell.scratch_open;
+        if fullscreen_top {
+            return false;
+        }
+        over_bar
+            || self.shell.dock_contains(px, py)
+            || self.shell.dock_target_at(px, py).is_some()
+    }
+
     /// Topmost visible surface (popups first) under a logical point
     pub fn surface_under_pointer(
         &self,
@@ -1557,6 +1608,9 @@ impl FeatherCompositor {
             if let Some(hit) = self.layer_under(&[Layer::Overlay, Layer::Top], px, py) {
                 return Some(hit);
             }
+        }
+        if self.shell_takes_pointer(px, py) {
+            return None;
         }
         let pos = Point::<f64, smithay::utils::Logical>::from((px, py));
         for win in self.windows.iter().rev() {

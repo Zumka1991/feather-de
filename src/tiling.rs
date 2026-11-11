@@ -196,7 +196,7 @@ impl Preview {
         self.built_for = None;
     }
 
-    fn ensure(&mut self) {
+    pub(crate) fn ensure(&mut self) {
         let scale = ui_scale();
         let accent = palette().accent;
         let channel = |v: f32| (v * 255.0) as u8;
@@ -307,6 +307,10 @@ impl FeatherCompositor {
     /// Ctrl+Super+arrow on the front window
     pub fn tile_front_step(&mut self, dir: Dir) {
         let Some(idx) = self.windows.iter().rposition(|w| w.is_visible()) else { return };
+        if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
+            self.scratch_resize_step(dir);
+            return;
+        }
         let win = &self.windows[idx];
         let step = next_step(win.tiled, win.maximized, dir);
         self.apply_tile(idx, step);
@@ -321,6 +325,7 @@ impl FeatherCompositor {
     /// During a window drag: shows or moves the preview when the pointer reaches a zone
     pub fn tile_drag_motion(&mut self, win_id: u64, x: f64, y: f64) {
         if self.windows.iter().any(|w| w.id == win_id && w.space == crate::scratch::SCRATCH_SPACE) {
+            self.scratch_drag_preview(win_id, x, y);
             return;
         }
         let r = self.monitor_at(x, y);
@@ -364,7 +369,10 @@ impl FeatherCompositor {
                 .iter()
                 .rev()
                 .find(|w| w.is_visible() && w.contains_point(x, y))
-                .filter(|w| w.hit_test_traffic(x, y) == Some(crate::window::TrafficButton::Maximize))
+                .filter(|w| {
+                    w.space != crate::scratch::SCRATCH_SPACE
+                        && w.hit_test_traffic(x, y) == Some(crate::window::TrafficButton::Maximize)
+                })
                 .map(|w| w.id)
         } else {
             None

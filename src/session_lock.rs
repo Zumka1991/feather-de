@@ -1420,6 +1420,7 @@ impl FeatherCompositor {
         self.shell.ring_fading = None;
         self.icon_drag = None;
         self.screenshot_select = None;
+        self.compositor_cursor = None;
         self.apply_cursor(smithay::input::pointer::CursorImageStatus::default_named());
         self.refresh_focus();
         self.refresh_pointer_focus();

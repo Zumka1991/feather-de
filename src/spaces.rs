@@ -62,7 +62,7 @@ impl FeatherCompositor {
             w.off_space = if w.larvis {
                 !larvis
             } else if w.space == crate::scratch::SCRATCH_SPACE {
-                !scratch
+                !scratch || self.scratch.is_hidden_by_zoom(w.id)
             } else {
                 larvis || w.space != current
             };

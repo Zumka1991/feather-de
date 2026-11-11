@@ -164,14 +164,27 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
         let s2 = start.clone();
         at(state, 1800, move |st| {
+            use smithay::input::pointer::{CursorIcon, CursorImageStatus};
             let (id, ..) = rect(st, foot);
             st.execute_shell_action(ShellClickAction::FocusWindow(id));
             if let Some(w) = st.windows.iter_mut().find(|w| w.id == id) { w.x = 500; w.y = 300; }
             let (_, x, y, w, h) = rect(st, foot);
             s2.set((x, y, w, h));
+            // Enter the Wayland client surface first, then move into its inner resize band:
+            // pointer.motion(None) must NOT overwrite the resize cursor back to Default.
+            st.debug_pointer_motion((x + w / 2) as f64, (y + h / 2) as f64);
+            assert!(st.pointer.current_focus().is_some(), "foot should have pointer focus inside");
+            assert_eq!(st.compositor_cursor, None);
+            st.debug_pointer_motion((x + w - 2) as f64, (y + h / 2) as f64);
+            assert_eq!(st.compositor_cursor, Some(CursorIcon::EwResize));
+            assert_eq!(st.cursor.status, CursorImageStatus::Named(CursorIcon::EwResize), "leaving client surface into resize band must keep EwResize cursor");
+            // Rounded-corner inner reach (5 px inside bottom-right) must already offer SeResize
+            st.debug_pointer_motion((x + w - 5) as f64, (y + h - 5) as f64);
+            assert_eq!(st.cursor.status, CursorImageStatus::Named(CursorIcon::SeResize), "inner corner reach must show SeResize");
             // Bottom edge, 10 px from the right: still the corner
             let (px, py) = ((x + w - 10) as f64, (y + h + 3) as f64);
             st.debug_pointer_motion(px, py);
+            assert_eq!(st.cursor.status, CursorImageStatus::Named(CursorIcon::SeResize));
             st.debug_pointer_button(0x110, true);
             assert!(matches!(st.active_drag, Some(crate::DragOperation::ResizeWindow { edges, .. }) if edges.right && edges.bottom), "foot corner grab");
             st.debug_pointer_motion(px + 120.0, py + 90.0);
@@ -1223,6 +1236,48 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
                 assert_eq!(moved.x, rects[1].x, "{LOG} swapped");
                 let other = s.windows.iter().find(|w| w.id == on[1]).unwrap();
                 assert_eq!(other.x, rects[0].x, "{LOG} swapped");
+                // Keyboard focus (Super+Left), swap (Super+Shift+Right), resize (Ctrl+Super+Right),
+                // mouse divider drag, and equalize (Super+0)
+                let tap_super = |s: &mut FeatherCompositor, ctrl: bool, shift: bool, evdev: u32| {
+                    s.debug_keyboard_key(125, true);
+                    if ctrl { s.debug_keyboard_key(29, true); }
+                    if shift { s.debug_keyboard_key(42, true); }
+                    s.debug_keyboard_key(evdev, true);
+                    s.debug_keyboard_key(evdev, false);
+                    if shift { s.debug_keyboard_key(42, false); }
+                    if ctrl { s.debug_keyboard_key(29, false); }
+                    s.debug_keyboard_key(125, false);
+                };
+                // Focus left tile (on[1]) with Super+Left (evdev 105)
+                tap_super(s, false, false, 105);
+                assert_eq!(s.windows.iter().rev().find(|w| w.is_visible()).unwrap().id, on[1], "{LOG} Super+Left focus");
+                // Swap left tile right with Super+Shift+Right (evdev 106) -> on[0] is left again
+                tap_super(s, false, true, 106);
+                assert_eq!(s.windows.iter().find(|w| w.id == on[0]).unwrap().x, rects[0].x, "{LOG} Super+Shift+Right swap");
+                // Focus left tile (on[0]) and stretch it right with Ctrl+Super+Right
+                tap_super(s, false, false, 105);
+                tap_super(s, true, false, 106);
+                let right_after_key = s.windows.iter().find(|w| w.id == on[1]).unwrap().x;
+                assert!(right_after_key > rects[1].x + 20, "{LOG} Ctrl+Super+Right stretches divider");
+                // Equalize back with Super+0 (evdev 11)
+                tap_super(s, false, false, 11);
+                assert_eq!(s.windows.iter().find(|w| w.id == on[1]).unwrap().x, rects[1].x, "{LOG} Super+0 equalizes");
+                // Drag the inner divider by mouse: must keep ratio on release and NOT swap tiles
+                let div_x = (rects[0].x + rects[0].w + 2) as f64;
+                let div_y = (rects[0].y + rects[0].h / 2) as f64;
+                s.debug_pointer_motion(div_x, div_y);
+                assert_eq!(
+                    s.cursor.status,
+                    smithay::input::pointer::CursorImageStatus::Named(smithay::input::pointer::CursorIcon::EwResize),
+                    "{LOG} inner divider shows EwResize"
+                );
+                s.debug_pointer_button(0x110, true);
+                s.debug_pointer_motion(div_x - 140.0, div_y);
+                s.debug_pointer_button(0x110, false);
+                assert_eq!(s.windows.iter().find(|w| w.id == on[0]).unwrap().x, rects[0].x, "{LOG} mouse divider resize must not swap");
+                assert!(s.windows.iter().find(|w| w.id == on[1]).unwrap().x < rects[1].x - 100, "{LOG} mouse divider resize persists");
+                tap_super(s, false, false, 11);
+                assert_eq!(s.windows.iter().find(|w| w.id == on[1]).unwrap().x, rects[1].x, "{LOG} Super+0 restores after mouse resize");
                 // A banner over the Подложка takes its own clicks: × closes it, the Подложка stays
                 s.shell.toasts.clear();
                 s.shell.notify("Проверка", "Баннер поверх Подложки");

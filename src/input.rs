@@ -158,6 +158,9 @@ pub(crate) enum KeyAction {
     /// Super+S and Super+Shift+S
     ScratchToggle,
     ScratchMove,
+    ScratchFocus(crate::tiling::Dir),
+    ScratchSwap(crate::tiling::Dir),
+    ScratchEqualize,
     /// Alt/Super+Tab: open the app switcher or move the selection
     SwitcherStep { reverse: bool },
     SwitcherCommit,
@@ -899,6 +902,37 @@ impl FeatherCompositor {
             // Keys for the desktop icons when no window has the keyboard
             let shell_idle = st.shell.open_menu.is_none() && !st.shell.spotlight_open && st.shell.launchpad.is_none()
                 && !st.shell.control_center_open && st.shell.switcher.is_none();
+            if st.shell.scratch_open && shell_idle && !st.mission_open() && st.shell.ring.is_none() && mods.logo {
+                let dir = match sym.raw() {
+                    keysyms::KEY_Left => Some(crate::tiling::Dir::Left),
+                    keysyms::KEY_Right => Some(crate::tiling::Dir::Right),
+                    keysyms::KEY_Up => Some(crate::tiling::Dir::Up),
+                    keysyms::KEY_Down => Some(crate::tiling::Dir::Down),
+                    _ => None,
+                };
+                if let Some(dir) = dir {
+                    if (mods.ctrl || mods.alt) && !mods.shift {
+                        deferred = Some(KeyAction::Tile(dir));
+                        repeat_candidate = None;
+                        return FilterResult::Intercept(());
+                    }
+                    if mods.shift && !mods.ctrl && !mods.alt {
+                        deferred = Some(KeyAction::ScratchSwap(dir));
+                        repeat_candidate = None;
+                        return FilterResult::Intercept(());
+                    }
+                    if !mods.ctrl && !mods.alt && !mods.shift {
+                        deferred = Some(KeyAction::ScratchFocus(dir));
+                        repeat_candidate = None;
+                        return FilterResult::Intercept(());
+                    }
+                }
+                if !mods.alt && !mods.shift && matches!(latin_sym.raw(), keysyms::KEY_0 | keysyms::KEY_KP_0) {
+                    deferred = Some(KeyAction::ScratchEqualize);
+                    repeat_candidate = None;
+                    return FilterResult::Intercept(());
+                }
+            }
             if shell_idle && st.desktop_key(latin_sym.raw(), mods.ctrl) {
                 return FilterResult::Intercept(());
             }
@@ -1030,20 +1064,44 @@ impl FeatherCompositor {
             // Larvis's desktop is not a window of the user: Cmd+W and Cmd+M leave it
             Some(KeyAction::CloseTop | KeyAction::MinimizeTop) if self.larvis_shown => self.leave_larvis_desktop(),
             Some(KeyAction::ToggleMaximizeTop | KeyAction::Tile(_)) if self.larvis_shown => {}
-            Some(KeyAction::Tile(dir)) => self.tile_front_step(dir),
+            Some(KeyAction::Tile(dir)) => {
+                self.tile_front_step(dir);
+                if self.shell.scratch_open {
+                    self.arm_key_repeat(crate::key_repeat::Candidate::scratch_resize(dir));
+                }
+            }
             Some(KeyAction::Picker(mode)) => self.open_picker(mode),
             Some(KeyAction::ScratchToggle) => self.toggle_scratch(),
             Some(KeyAction::ScratchMove) => self.scratch_move_focused(),
+            Some(KeyAction::ScratchFocus(dir)) => self.scratch_focus_dir(dir),
+            Some(KeyAction::ScratchSwap(dir)) => self.scratch_swap_dir(dir),
+            Some(KeyAction::ScratchEqualize) => self.scratch_equalize(),
             Some(KeyAction::CloseTop) => self.close_top_window(),
             Some(KeyAction::MinimizeTop) => {
+                let mut was_scratch = false;
                 if let Some(top) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
+                    was_scratch = top.space == crate::scratch::SCRATCH_SPACE;
                     top.minimized = true;
                     self.shell.dock_dirty = true;
-                    self.refresh_focus();
                 }
+                if was_scratch {
+                    let ids = self.scratch_tiled();
+                    let area = self.scratch_area();
+                    self.scratch_apply(&ids, area);
+                }
+                self.refresh_focus();
             }
             Some(KeyAction::ToggleMaximizeTop) => {
-                if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()) {let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);}
+                if let Some(i) = self.windows.iter().rposition(|w| w.is_visible()) {
+                    if self.windows[i].space == crate::scratch::SCRATCH_SPACE {
+                        self.scratch_toggle_zoom();
+                    } else {
+                        let r = self.window_monitor(i);
+                        let w = &mut self.windows[i];
+                        w.resize_anchor = None;
+                        w.maximize_on(!w.maximized, r);
+                    }
+                }
             }
             None => {}
         }
@@ -1306,10 +1364,39 @@ impl FeatherCompositor {
     }
 
     pub(crate) fn set_compositor_cursor(&mut self, icon: CursorIcon) {
-        if self.compositor_cursor != Some(icon) {
+        if self.compositor_cursor != Some(icon)
+            || !matches!(self.cursor.status, CursorImageStatus::Named(c) if c == icon)
+        {
             self.compositor_cursor = Some(icon);
             self.apply_cursor(CursorImageStatus::Named(icon));
         }
+    }
+
+    pub(crate) fn clear_compositor_cursor(&mut self) {
+        if self.compositor_cursor.take().is_some() {
+            self.apply_cursor(CursorImageStatus::default_named());
+        }
+    }
+
+    pub(crate) fn compositor_hover_cursor(&self, px: f64, py: f64) -> CursorIcon {
+        if self.shell_takes_pointer(px, py) {
+            return CursorIcon::Default;
+        }
+        for w in self.windows.iter().rev() {
+            if !w.is_visible() {
+                continue;
+            }
+            if self.shell.scratch_open && w.space != crate::scratch::SCRATCH_SPACE {
+                break;
+            }
+            if w.contains_point(px, py) || w.resize_edges_at(px, py).is_some() {
+                return w
+                    .resize_edges_at(px, py)
+                    .map(cursor_for_edges)
+                    .unwrap_or(CursorIcon::Default);
+            }
+        }
+        CursorIcon::Default
     }
 
     pub(crate) fn on_pointer_motion(&mut self, pos: Point<f64, Logical>, time: u32) {
@@ -1336,6 +1423,7 @@ impl FeatherCompositor {
             if self.shell.dock_dirty || self.shell.overlay_dirty || self.shell.topbar_dirty {
                 self.needs_redraw = true;
             }
+            self.set_compositor_cursor(CursorIcon::Default);
             self.pointer_focus_dirty = true;
             return false;
         }
@@ -1349,10 +1437,12 @@ impl FeatherCompositor {
         }
 
         if self.shell.switcher.as_ref().is_some_and(|s|s.visible){
+            self.set_compositor_cursor(CursorIcon::Default);
             self.pointer_focus_dirty=true;return false;
         }
         if self.shell.ring.is_some() {
             self.ring_motion();
+            self.set_compositor_cursor(CursorIcon::Default);
             self.pointer_focus_dirty = true;
             return false;
         }
@@ -1422,26 +1512,14 @@ impl FeatherCompositor {
 
         let under = self.surface_under_pointer(pos.x, pos.y);
         if under.is_some() {
-            // The client sets its own cursor on enter
-            self.compositor_cursor = None;
-        } else {
-            // The topmost window under the pointer decides: a band of a lower window
-            // must not show through a built-in window on top of it
-            let edges = self
-                .windows
-                .iter()
-                .rev()
-                .filter(|w| w.is_visible())
-                .find(|w| w.contains_point(pos.x, pos.y) || w.resize_edges_at(pos.x, pos.y).is_some())
-                .and_then(|w| w.resize_edges_at(pos.x, pos.y));
-            let icon = edges.map(cursor_for_edges).unwrap_or(CursorIcon::Default);
-            self.set_compositor_cursor(icon);
+            // Clear compositor-owned border cursor before entering a client surface; if the client
+            // sets its own cursor on enter, SeatHandler::cursor_image applies it immediately.
+            self.clear_compositor_cursor();
         }
-
         let pointer = self.pointer.clone();
         pointer.motion(
             self,
-            under,
+            under.clone(),
             &MotionEvent {
                 location: pos,
                 serial: SERIAL_COUNTER.next_serial(),
@@ -1449,6 +1527,12 @@ impl FeatherCompositor {
             },
         );
         pointer.frame(self);
+        if under.is_none() {
+            // Apply AFTER pointer.motion(None): leaving a client surface makes Smithay reset the
+            // seat cursor to Default inside pointer.motion, which otherwise wipes out resize icons.
+            let icon = self.compositor_hover_cursor(pos.x, pos.y);
+            self.set_compositor_cursor(icon);
+        }
         true
     }
 
@@ -1481,8 +1565,13 @@ impl FeatherCompositor {
                     return;
                 }
                 self.tile_drag_motion(win_id, pos.x, pos.y);
-                let r=self.monitor_at(pos.x,pos.y);let top=r.y+if r.x==0&&r.y==0{TOP_BAR_HEIGHT}else{0};
+                let r = self.monitor_at(pos.x, pos.y);
                 if let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) {
+                    let top = if win.space == crate::scratch::SCRATCH_SPACE {
+                        r.y
+                    } else {
+                        r.y + if r.x == 0 && r.y == 0 { TOP_BAR_HEIGHT } else { 0 }
+                    };
                     let nx = start_pos.0 + dx;
                     let ny = (start_pos.1 + dy).max(top);
                     if win.x != nx || win.y != ny {
@@ -1500,6 +1589,9 @@ impl FeatherCompositor {
             } => {
                 let dx = (pos.x - start_cursor.0).round() as i32;
                 let dy = (pos.y - start_cursor.1).round() as i32;
+                if self.scratch_resize_drag(win_id, dx, dy, edges) {
+                    return;
+                }
                 let r=self.monitor_at(pos.x,pos.y);let top=r.y+if r.x==0&&r.y==0{TOP_BAR_HEIGHT}else{0};
                 let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) else { return };
                 let (min, max) = win.size_limits();
@@ -1549,17 +1641,26 @@ impl FeatherCompositor {
         }
     }
 
-    fn start_resize(&mut self, idx: usize, edges: Edges) {
+    fn start_resize(&mut self, idx: usize, edges: Edges, allow_double_click: bool) {
         let pos = self.pointer_location;
+        let win_id = self.windows[idx].id;
+        if self.scratch_begin_resize(win_id, edges, allow_double_click) {
+            return;
+        }
         let win = &mut self.windows[idx];
-        win.forget_tile();
-        win.set_resizing(true);
-        win.resize_anchor = Some(ResizeAnchor {
-            edges,
-            right: win.x + win.width,
-            bottom: win.y + win.total_height(),
-        });
-        let (win_id, start_rect) = (win.id, (win.x, win.y, win.width, win.height));
+        if win.space == crate::scratch::SCRATCH_SPACE {
+            win.set_resizing(true);
+            win.resize_anchor = None;
+        } else {
+            win.forget_tile();
+            win.set_resizing(true);
+            win.resize_anchor = Some(ResizeAnchor {
+                edges,
+                right: win.x + win.width,
+                bottom: win.y + win.total_height(),
+            });
+        }
+        let start_rect = (win.x, win.y, win.width, win.height);
         self.set_compositor_cursor(cursor_for_edges(edges));
         self.active_drag = Some(DragOperation::ResizeWindow {
             win_id,
@@ -1676,12 +1777,10 @@ impl FeatherCompositor {
             let drag = self.active_drag.take();
             if let Some(DragOperation::ResizeWindow { win_id, .. }) = drag {
                 if let Some(win) = self.windows.iter().find(|w| w.id == win_id) { win.set_resizing(false); }
+                self.scratch_end_resize();
             }
             if let Some(DragOperation::MoveWindow { win_id, .. }) = drag {
                 self.tile_drag_finish(win_id);
-                self.scratch_drop(win_id);
-            }
-            if let Some(DragOperation::ResizeWindow { win_id, .. }) = drag {
                 self.scratch_drop(win_id);
             }
             let was_dragging = drag.is_some();
@@ -1822,6 +1921,7 @@ impl FeatherCompositor {
                 .handle_pointer_click(pos.x, pos.y, &self.app_registry)
             {
                 self.consumed_buttons.push(button);
+                self.pointer_focus_dirty = true;
                 self.dismiss_popups_except(None);
                 if matches!(action, ShellClickAction::DockPress(_)) {
                     self.unfocus_desktop();
@@ -1884,20 +1984,36 @@ impl FeatherCompositor {
         if super_held && button == BTN_LEFT {
             self.start_move(idx);
         } else if super_held && button == BTN_RIGHT {
-            self.start_resize(idx, Edges::BOTTOM_RIGHT);
+            if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
+                if let Some(edges) = self.scratch_super_resize_edges(idx) {
+                    self.start_resize(idx, edges, false);
+                }
+            } else {
+                self.start_resize(idx, Edges::BOTTOM_RIGHT, false);
+            }
         } else if let Some(edges) = self.windows[idx].resize_edges_at(pos.x, pos.y) {
-            self.start_resize(idx, edges);
+            self.start_resize(idx, edges, true);
         } else if let Some(btn) = self.windows[idx].hit_test_traffic(pos.x, pos.y) {
             match btn {
                 crate::window::TrafficButton::Close => self.close_top_window(),
                 crate::window::TrafficButton::Minimize => {
+                    let was_scratch = self.windows[idx].space == crate::scratch::SCRATCH_SPACE;
                     self.windows[idx].minimized = true;
                     self.shell.dock_dirty = true;
+                    if was_scratch {
+                        let ids = self.scratch_tiled();
+                        let area = self.scratch_area();
+                        self.scratch_apply(&ids, area);
+                    }
                     self.refresh_focus();
                 }
                 crate::window::TrafficButton::Maximize => {
-                    self.windows[idx].resize_anchor = None;
-                    self.windows[idx].toggle_maximize_on(r);
+                    if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
+                        self.scratch_toggle_zoom();
+                    } else {
+                        self.windows[idx].resize_anchor = None;
+                        self.windows[idx].toggle_maximize_on(r);
+                    }
                 }
             }
         } else if self.windows[idx].in_titlebar(pos.x, pos.y) && button == BTN_LEFT {
@@ -1908,8 +2024,12 @@ impl FeatherCompositor {
                 .is_some_and(|(t, id)| id == win_id && now.duration_since(t).as_millis() < DOUBLE_CLICK_MS);
             if is_double {
                 self.last_titlebar_click = None;
-                self.windows[idx].resize_anchor = None;
-                self.windows[idx].toggle_maximize_on(r);
+                if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
+                    self.scratch_toggle_zoom();
+                } else {
+                    self.windows[idx].resize_anchor = None;
+                    self.windows[idx].toggle_maximize_on(r);
+                }
             } else {
                 self.last_titlebar_click = Some((now, win_id));
                 self.start_move(idx);
@@ -2009,15 +2129,23 @@ impl FeatherCompositor {
     /// Re-sends pointer focus for the current location (after stacking/geometry changes)
     pub fn refresh_pointer_focus(&mut self) {
         self.pointer_focus_dirty = false;
-        if self.active_drag.is_some() || self.pointer.is_grabbed() || self.pointer_locked() {
+        if self.active_drag.is_some()
+            || self.pointer.is_grabbed()
+            || self.pointer_locked()
+            || self.screenshot_select.is_some()
+            || self.screencast.is_open()
+        {
             return;
         }
         let pos = self.pointer_location;
         let under = self.surface_under_pointer(pos.x, pos.y);
+        if under.is_some() {
+            self.clear_compositor_cursor();
+        }
         let pointer = self.pointer.clone();
         pointer.motion(
             self,
-            under,
+            under.clone(),
             &MotionEvent {
                 location: pos,
                 serial: SERIAL_COUNTER.next_serial(),
@@ -2025,6 +2153,10 @@ impl FeatherCompositor {
             },
         );
         pointer.frame(self);
+        if under.is_none() {
+            let icon = self.compositor_hover_cursor(pos.x, pos.y);
+            self.set_compositor_cursor(icon);
+        }
     }
 
     /// The host window lost focus: whatever is held now will be released elsewhere and we

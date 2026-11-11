@@ -28,11 +28,13 @@ use crate::theme::{
 };
 
 /// Width of the invisible grab band outside a window used for edge resizing
-pub const RESIZE_BAND: i32 = 8;
+pub const RESIZE_BAND: i32 = 10;
 /// How far the grab band reaches inside the window frame
-pub const RESIZE_BAND_INNER: i32 = 3;
+pub const RESIZE_BAND_INNER: i32 = 5;
 /// Length of a corner grab along each edge: near a corner the edge resizes diagonally
-pub const RESIZE_CORNER: i32 = 20;
+pub const RESIZE_CORNER: i32 = 24;
+/// Extra diagonal reach right inside rounded window corners (`WINDOW_CORNER_RADIUS = 12`)
+pub const RESIZE_CORNER_INNER: i32 = 7;
 pub const MIN_WINDOW_W: i32 = 280;
 pub const MIN_WINDOW_H: i32 = 160;
 
@@ -52,6 +54,13 @@ pub struct Edges {
 }
 
 impl Edges {
+    pub const ALL: Edges = Edges {
+        left: true,
+        right: true,
+        top: true,
+        bottom: true,
+    };
+
     pub const BOTTOM_RIGHT: Edges = Edges {
         left: false,
         right: true,
@@ -75,16 +84,39 @@ impl Edges {
 }
 
 /// Edges grabbed at a point of the band around the frame `(x0, y0, x1, y1)`
-pub fn resize_edges_in_band(px: f64, py: f64, (x0, y0, x1, y1): (f64, f64, f64, f64)) -> Option<Edges> {
-    let (b, inner, corner) = (RESIZE_BAND as f64, RESIZE_BAND_INNER as f64, RESIZE_CORNER as f64);
+pub fn resize_edges_in_band(px: f64, py: f64, frame: (f64, f64, f64, f64)) -> Option<Edges> {
+    resize_edges_in_band_masked(px, py, frame, Edges::ALL)
+}
+
+/// Same as [`resize_edges_in_band`], restricted to `allowed` sides (used for inner tile splits).
+pub fn resize_edges_in_band_masked(
+    px: f64,
+    py: f64,
+    (x0, y0, x1, y1): (f64, f64, f64, f64),
+    allowed: Edges,
+) -> Option<Edges> {
+    let (b, inner, corner, c_in) = (
+        RESIZE_BAND as f64,
+        RESIZE_BAND_INNER as f64,
+        RESIZE_CORNER as f64,
+        RESIZE_CORNER_INNER as f64,
+    );
     if px < x0 - b || px >= x1 + b || py < y0 - b || py >= y1 + b {
         return None;
     }
+    let in_left_corner =
+        px < x0 + c_in && (allowed.top && py < y0 + c_in || allowed.bottom && py >= y1 - c_in);
+    let in_right_corner =
+        px >= x1 - c_in && (allowed.top && py < y0 + c_in || allowed.bottom && py >= y1 - c_in);
+    let in_top_corner =
+        py < y0 + c_in && (allowed.left && px < x0 + c_in || allowed.right && px >= x1 - c_in);
+    let in_bottom_corner =
+        py >= y1 - c_in && (allowed.left && px < x0 + c_in || allowed.right && px >= x1 - c_in);
     let mut edges = Edges {
-        left: px < x0 + inner,
-        right: px >= x1 - inner,
-        top: py < y0 + inner,
-        bottom: py >= y1 - inner,
+        left: allowed.left && (px < x0 + inner || in_left_corner),
+        right: allowed.right && (px >= x1 - inner || in_right_corner),
+        top: allowed.top && (py < y0 + inner || in_top_corner),
+        bottom: allowed.bottom && (py >= y1 - inner || in_bottom_corner),
     };
     if !edges.any() {
         return None;
@@ -100,12 +132,12 @@ pub fn resize_edges_in_band(px: f64, py: f64, (x0, y0, x1, y1): (f64, f64, f64, 
     }
     // Corners reach along the edges: aiming at the rounded corner itself is not needed
     if edges.left || edges.right {
-        edges.top |= py < y0 + corner;
-        edges.bottom |= py >= y1 - corner && !edges.top;
+        edges.top |= allowed.top && py < y0 + corner;
+        edges.bottom |= allowed.bottom && py >= y1 - corner && !edges.top;
     }
     if edges.top || edges.bottom {
-        edges.left |= px < x0 + corner;
-        edges.right |= px >= x1 - corner && !edges.left;
+        edges.left |= allowed.left && px < x0 + corner;
+        edges.right |= allowed.right && px >= x1 - corner && !edges.left;
     }
     Some(edges)
 }
@@ -295,6 +327,8 @@ pub struct ManagedWindow {
     pub remembered_space: Option<u32>,
     /// Goes to the Подложка when it first shows; true: without opening it
     pub remembered_scratch: Option<bool>,
+    /// Inner tile dividers on the Подложка that can be dragged to resize splits
+    pub scratch_resize_edges: Edges,
     pub resize_anchor: Option<ResizeAnchor>,
     pub hovered_traffic: Option<TrafficButton>,
     pub traffic_group_hovered: bool,
@@ -462,6 +496,7 @@ impl ManagedWindow {
             remembered_place: None,
             remembered_space: None,
             remembered_scratch: None,
+            scratch_resize_edges: Edges::default(),
             hovered_traffic: None,
             traffic_group_hovered: false,
             backend: WindowBackend::Wayland(surface),
@@ -520,6 +555,7 @@ impl ManagedWindow {
             remembered_place: None,
             remembered_space: None,
             remembered_scratch: None,
+            scratch_resize_edges: Edges::default(),
             hovered_traffic: None,
             traffic_group_hovered: false,
             backend: WindowBackend::Builtin(kind),
@@ -610,7 +646,14 @@ impl ManagedWindow {
         }
         let (x0, y0) = (self.x as f64, self.y as f64);
         let (x1, y1) = (x0 + self.width as f64, y0 + self.total_height() as f64);
-        resize_edges_in_band(px, py, (x0, y0, x1, y1))
+        if self.space == crate::scratch::SCRATCH_SPACE {
+            if !self.scratch_resize_edges.any() {
+                return None;
+            }
+            resize_edges_in_band_masked(px, py, (x0, y0, x1, y1), self.scratch_resize_edges)
+        } else {
+            resize_edges_in_band(px, py, (x0, y0, x1, y1))
+        }
     }
 
     /// System Settings draws a unified toolbar: its traffic lights sit inside the inset sidebar.
@@ -725,6 +768,7 @@ impl ManagedWindow {
 
     /// Leaves the Подложка: its own size and place again
     pub fn leave_scratch(&mut self, r: crate::monitors::Rect) {
+        self.scratch_resize_edges = Edges::default();
         self.set_tile_states(None);
         let (x, y, w, h) = self.tile_free.take().unwrap_or_else(|| {
             let (w, h) = Self::fallback_size(r.w, r.h);
@@ -1808,23 +1852,38 @@ mod resize_band_tests {
 
     #[test]
     fn edges_reach_outside_and_a_little_inside() {
-        assert_eq!(at(94.0, 250.0), Some((true, false, false, false)));
-        assert_eq!(at(101.0, 250.0), Some((true, false, false, false)));
+        assert_eq!(at(91.0, 250.0), Some((true, false, false, false)));
+        assert_eq!(at(104.0, 250.0), Some((true, false, false, false)));
         assert_eq!(at(110.0, 250.0), None);
-        assert_eq!(at(91.0, 250.0), None);
-        assert_eq!(at(505.0, 250.0), Some((false, true, false, false)));
-        assert_eq!(at(300.0, 406.0), Some((false, false, false, true)));
-        assert_eq!(at(300.0, 95.0), Some((false, false, true, false)));
+        assert_eq!(at(89.0, 250.0), None);
+        assert_eq!(at(509.0, 250.0), Some((false, true, false, false)));
+        assert_eq!(at(496.0, 250.0), Some((false, true, false, false)));
+        assert_eq!(at(300.0, 408.0), Some((false, false, false, true)));
+        assert_eq!(at(300.0, 92.0), Some((false, false, true, false)));
     }
 
     #[test]
     fn corners_are_easy_to_hit() {
-        // Along the edges, not only in the tiny square past the rounded corner
+        // Along the edges and right inside the rounded corner, without touching traffic lights
         assert_eq!(at(95.0, 112.0), Some((true, false, true, false)));
         assert_eq!(at(115.0, 96.0), Some((true, false, true, false)));
-        assert_eq!(at(488.0, 405.0), Some((false, true, false, true)));
-        assert_eq!(at(503.0, 385.0), Some((false, true, false, true)));
-        assert_eq!(at(95.0, 390.0), Some((true, false, false, true)));
+        assert_eq!(at(106.0, 106.0), Some((true, false, true, false)));
+        assert_eq!(at(116.0, 114.0), None, "close button stays clear of the corner grab");
+        assert_eq!(at(480.0, 405.0), Some((false, true, false, true)));
+        assert_eq!(at(503.0, 380.0), Some((false, true, false, true)));
+        assert_eq!(at(494.0, 394.0), Some((false, true, false, true)));
+        assert_eq!(at(95.0, 385.0), Some((true, false, false, true)));
+    }
+
+    #[test]
+    fn masked_edges_ignore_outer_sides() {
+        let right_only = Edges { left: false, right: true, top: false, bottom: false };
+        assert_eq!(resize_edges_in_band_masked(95.0, 250.0, FRAME, right_only), None);
+        assert_eq!(resize_edges_in_band_masked(490.0, 102.0, FRAME, right_only), None);
+        assert_eq!(
+            resize_edges_in_band_masked(498.0, 110.0, FRAME, right_only),
+            Some(right_only)
+        );
     }
 
     #[test]
