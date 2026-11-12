@@ -75,6 +75,15 @@ impl Scratch {
             .is_some_and(|z| z != win_id && self.order.len() > 1 && self.order.contains(&z))
     }
 
+    pub fn invalidate(&mut self) {
+        self.laid = None;
+    }
+
+    pub fn set_zoomed(&mut self, zoomed: Option<u64>) {
+        self.zoomed = zoomed;
+        self.laid = None;
+    }
+
     fn ensure_splits(&mut self, count: usize) {
         let needed = count.saturating_sub(1);
         if self.splits.len() > needed {

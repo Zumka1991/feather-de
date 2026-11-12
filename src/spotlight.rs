@@ -275,6 +275,32 @@ fn matches_page(page: Page, query: &str) -> bool {
     query.split_whitespace().all(|word| title.contains(word) || russian.contains(word) || page_words(page).contains(word))
 }
 
+fn space_mode_words(mode: crate::space_layout::SpaceMode) -> &'static str {
+    use crate::space_layout::SpaceMode;
+    match mode {
+        SpaceMode::Free => "режим стола рабочего свободные окна плавающие обычный macos floating free windows",
+        SpaceMode::Tile => "режим стола рабочего авто-плитка плитка тайлинг сетка bsp dwindle tile tiling",
+        SpaceMode::Tape => "режим стола рабочего бесконечная лента колонки прокрутка niri tape ribbon scroll",
+    }
+}
+
+fn matches_space_mode(mode: crate::space_layout::SpaceMode, query: &str) -> bool {
+    let title = feather_ui::i18n::tr(mode.label()).to_lowercase();
+    let russian = mode.label().to_lowercase();
+    let words = space_mode_words(mode);
+    query
+        .split_whitespace()
+        .all(|word| title.contains(word) || russian.contains(word) || words.contains(word))
+}
+
+fn matches_drop_shelf(query: &str) -> bool {
+    let title = feather_ui::i18n::tr("Полка перетаскивания").to_lowercase();
+    let words = "полка перетаскивания перетаскивание файлы буфер drop shelf dropover yoink dnd";
+    query
+        .split_whitespace()
+        .all(|word| title.contains(word) || "полка перетаскивания".contains(word) || words.contains(word))
+}
+
 /// Icon for a file by its extension; folders and everything else look like the file manager
 fn file_icon(file: &FoundFile) -> IconKind {
     if file.is_dir {
@@ -354,6 +380,28 @@ impl FeatherCompositor {
                     icon: AppIcon { kind: IconKind::Settings, name: None },
                     emoji: None,
                     action: ShellClickAction::OpenSettingsPage(page),
+                });
+            }
+            let mode_sub = feather_ui::i18n::tr("Режим рабочего стола").into_owned();
+            for mode in crate::space_layout::SpaceMode::ALL
+                .into_iter()
+                .filter(|m| matches_space_mode(*m, &query))
+            {
+                hits.push(Hit {
+                    name: feather_ui::i18n::tr(mode.label()).into_owned(),
+                    sub: mode_sub.clone(),
+                    icon: AppIcon { kind: IconKind::Launchpad, name: None },
+                    emoji: None,
+                    action: ShellClickAction::SetSpaceMode(mode),
+                });
+            }
+            if matches_drop_shelf(&query) {
+                hits.push(Hit {
+                    name: feather_ui::i18n::tr("Полка перетаскивания").into_owned(),
+                    sub: feather_ui::i18n::tr("Перетащите файлы сюда").into_owned(),
+                    icon: AppIcon { kind: IconKind::Finder, name: None },
+                    emoji: None,
+                    action: ShellClickAction::ToggleDropShelf,
                 });
             }
             let notes_cmd = self.app_registry.apps.iter().find_map(|a| match &a.action {

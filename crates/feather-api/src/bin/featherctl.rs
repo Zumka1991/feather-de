@@ -14,8 +14,10 @@ const HELP: &str = "featherctl — управление рабочим стол�
 Рабочие столы:
   space [list]                       список столов
   space N                            перейти на стол N
+  space-mode [free|tile|tape|next] [N] режим раскладки стола (N с 1; без N — текущий)
   mission [on|off]                   Mission Control
   launchpad [on|off]                 Launchpad
+  shelf [status|on|off|toggle|clear|add ПУТЬ...] полка перетаскивания
   larvis [status|on|off|toggle]      стол Ларвиса вместо твоих столов
 Приложения:
   app list                           приложения из .desktop
@@ -82,8 +84,14 @@ enum Command {
     MoveWindow(u64, u32),
     Spaces,
     SwitchSpace(u32),
+    GetSpaceMode(u32),
+    SetSpaceMode(u32, String),
     Mission(bool),
     Launchpad(bool),
+    ShelfStatus,
+    ShelfShow(Switch),
+    ShelfClear,
+    ShelfAdd(Vec<String>),
     LarvisStatus,
     Larvis(Switch),
     Apps,
@@ -151,6 +159,37 @@ fn mute(arg: Option<&str>) -> Result<Switch, String> {
     }
 }
 
+fn parse_space_mode(rest: &[&str]) -> Result<Command, String> {
+    match rest {
+        [] => Ok(Command::GetSpaceMode(0)),
+        [one] => {
+            if let Ok(n) = one.parse::<u32>() {
+                if n == 0 {
+                    return Err(bad("Рабочие столы нумеруются с 1"));
+                }
+                return Ok(Command::GetSpaceMode(n));
+            }
+            let m = one.to_ascii_lowercase();
+            if !matches!(m.as_str(), "free" | "tile" | "tape" | "next") {
+                return Err(bad(format!("Режим стола: free, tile, tape или next, а не {one}")));
+            }
+            Ok(Command::SetSpaceMode(0, m))
+        }
+        [mode, n] => {
+            let m = mode.to_ascii_lowercase();
+            if !matches!(m.as_str(), "free" | "tile" | "tape" | "next") {
+                return Err(bad(format!("Режим стола: free, tile, tape или next, а не {mode}")));
+            }
+            let space = number(n, "стола")?;
+            if space == 0 {
+                return Err(bad("Рабочие столы нумеруются с 1"));
+            }
+            Ok(Command::SetSpaceMode(space, m))
+        }
+        _ => Err(bad(format!("Лишний аргумент: {}", rest[2]))),
+    }
+}
+
 /// Разбор аргументов без `--json`
 fn parse(args: &[&str]) -> Result<Command, String> {
     let arg = |i: usize| args.get(i).copied();
@@ -180,10 +219,34 @@ fn parse(args: &[&str]) -> Result<Command, String> {
         "spaces" => no_more(1, Command::Spaces),
         "space" => match arg(1) {
             None | Some("list") => no_more(2, Command::Spaces),
+            Some("mode") => parse_space_mode(&args[2..]),
             Some(n) => no_more(2, Command::SwitchSpace(number(n, "стола")?)),
         },
+        "space-mode" => parse_space_mode(&args[1..]),
         "mission" => no_more(2, Command::Mission(switch(arg(1), Switch::On)? != Switch::Off)),
         "launchpad" => no_more(2, Command::Launchpad(switch(arg(1), Switch::On)? != Switch::Off)),
+        "shelf" => match arg(1) {
+            None | Some("status" | "list") => no_more(2, Command::ShelfStatus),
+            Some("clear") => no_more(2, Command::ShelfClear),
+            Some("open") => no_more(2, Command::ShelfShow(Switch::On)),
+            Some("close") => no_more(2, Command::ShelfShow(Switch::Off)),
+            Some("add") => {
+                if args.len() < 3 {
+                    return Err(bad("Укажите хотя бы один путь: featherctl shelf add ПУТЬ..."));
+                }
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let paths = args[2..]
+                    .iter()
+                    .map(|s| {
+                        let p = std::path::PathBuf::from(s);
+                        let abs = if p.is_absolute() { p } else { cwd.join(p) };
+                        abs.to_string_lossy().into_owned()
+                    })
+                    .collect();
+                Ok(Command::ShelfAdd(paths))
+            }
+            other => no_more(2, Command::ShelfShow(switch(other, Switch::Toggle)?)),
+        },
         "apps" => no_more(1, Command::Apps),
         "app" => match (arg(1), arg(2)) {
             (None | Some("list"), _) => no_more(2, Command::Apps),
@@ -314,8 +377,53 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
             }
         }
         Command::SwitchSpace(n) => proxy.switch_space(n)?,
+        Command::GetSpaceMode(n) => {
+            let mode = proxy.get_space_mode(n)?;
+            if json {
+                print_json(&serde_json::json!({"space": n, "mode": mode}));
+            } else {
+                println!("{mode}");
+            }
+        }
+        Command::SetSpaceMode(n, mode) => proxy.set_space_mode(n, &mode)?,
         Command::Mission(on) => proxy.show_mission_control(on)?,
         Command::Launchpad(on) => proxy.show_launchpad(on)?,
+        Command::ShelfStatus => {
+            let s = proxy.get_drop_shelf()?;
+            if json {
+                print_json(&s);
+            } else {
+                println!(
+                    "полка: {}, элементов: {}",
+                    if s.open { "открыта" } else { "скрыта" },
+                    s.items.len()
+                );
+                for item in s.items {
+                    if item.path.is_empty() {
+                        println!("  {:>3}  [{:<6}] {} — {}", item.id, item.kind, item.title, item.subtitle);
+                    } else {
+                        println!("  {:>3}  [{:<6}] {} ({})", item.id, item.kind, item.title, item.path);
+                    }
+                }
+            }
+        }
+        Command::ShelfShow(s) => {
+            let show = if s == Switch::Toggle {
+                !proxy.get_drop_shelf()?.open
+            } else {
+                s.resolve(false)
+            };
+            proxy.show_drop_shelf(show)?;
+        }
+        Command::ShelfClear => proxy.clear_drop_shelf()?,
+        Command::ShelfAdd(paths) => {
+            let added = proxy.add_to_drop_shelf(paths)?;
+            if json {
+                print_json(&serde_json::json!({"added": added}));
+            } else {
+                println!("{added}");
+            }
+        }
         Command::Apps => {
             let list = proxy.list_apps()?;
             if json {
@@ -469,8 +577,22 @@ mod tests {
         assert!(p("window focus 1 2").is_err(), "extra arguments are refused");
         assert_eq!(p("space"), Ok(Command::Spaces));
         assert_eq!(p("space 2"), Ok(Command::SwitchSpace(2)));
+        assert_eq!(p("space-mode"), Ok(Command::GetSpaceMode(0)));
+        assert_eq!(p("space-mode 2"), Ok(Command::GetSpaceMode(2)));
+        assert_eq!(p("space-mode tile"), Ok(Command::SetSpaceMode(0, "tile".into())));
+        assert_eq!(p("space-mode tape 3"), Ok(Command::SetSpaceMode(3, "tape".into())));
+        assert_eq!(p("space mode next"), Ok(Command::SetSpaceMode(0, "next".into())));
+        assert!(p("space-mode grid").is_err());
+        assert!(p("space-mode tile 0").is_err());
         assert_eq!(p("mission"), Ok(Command::Mission(true)));
         assert_eq!(p("launchpad off"), Ok(Command::Launchpad(false)));
+        assert_eq!(p("shelf"), Ok(Command::ShelfStatus));
+        assert_eq!(p("shelf toggle"), Ok(Command::ShelfShow(Switch::Toggle)));
+        assert_eq!(p("shelf open"), Ok(Command::ShelfShow(Switch::On)));
+        assert_eq!(p("shelf close"), Ok(Command::ShelfShow(Switch::Off)));
+        assert_eq!(p("shelf clear"), Ok(Command::ShelfClear));
+        assert_eq!(p("shelf add /tmp/a.txt"), Ok(Command::ShelfAdd(vec!["/tmp/a.txt".into()])));
+        assert!(p("shelf add").is_err());
     }
 
     #[test]

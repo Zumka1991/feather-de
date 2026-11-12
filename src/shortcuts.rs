@@ -107,6 +107,8 @@ actions! {
     NextSpace, "next-space", "Следующий стол", CTRL | ALT, k::KEY_Right;
     MovePrevious, "move-previous", "Окно на предыдущий стол", CTRL | ALT | SHIFT, k::KEY_Left;
     MoveNext, "move-next", "Окно на следующий стол", CTRL | ALT | SHIFT, k::KEY_Right;
+    SpaceMode, "space-mode", "Режим рабочего стола", CTRL | ALT, k::KEY_m;
+    DropShelf, "drop-shelf", "Полка перетаскивания", SUPER, k::KEY_d;
     ScratchToggle, "scratch", "Подложка", SUPER, k::KEY_s;
     ScratchMove, "scratch-move", "Окно на подложку и обратно", SUPER | SHIFT, k::KEY_s;
     ClipboardHistory, "clipboard-history", "История буфера обмена", SUPER | SHIFT, k::KEY_v;
@@ -393,6 +395,8 @@ impl crate::FeatherCompositor {
             Action::Maximize => A::ToggleMaximizeTop,
             Action::ScratchToggle => A::ScratchToggle,
             Action::ScratchMove => A::ScratchMove,
+            Action::SpaceMode => A::SpaceModeCycle,
+            Action::DropShelf => A::DropShelfToggle,
             Action::ClipboardHistory => A::Picker(crate::shell::SpotlightMode::Clipboard),
             Action::Emoji => A::Picker(crate::shell::SpotlightMode::Emoji),
             Action::TileLeft => A::Tile(crate::tiling::Dir::Left),

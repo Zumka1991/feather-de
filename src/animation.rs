@@ -123,12 +123,20 @@ struct RingMotion {
     selected: usize,
 }
 
+/// Бесконечная лента (`space_layout.rs`): сдвиг всей ленты к 0 без перерисовки окон
+struct TapeMotion {
+    space: u32,
+    spring: Spring,
+    fresh: bool,
+}
+
 #[derive(Default)]
 pub struct Animations {
     disabled: bool,
     /// Auto-hide Dock: 0 shown, 1 below the screen
     dock: Option<Spring>,
     slide: Option<Slide>,
+    tape: Option<TapeMotion>,
     mission: Option<MissionMotion>,
     windows: HashMap<u64, WindowMotion>,
     overlay_key: Option<OverlayKind>,
@@ -151,6 +159,7 @@ impl Animations {
         self.disabled = !enabled;
         self.windows.clear();
         self.slide = None;
+        self.tape = None;
         self.mission = None;
         self.overlay = None;
         self.launchpad = None;
@@ -263,6 +272,31 @@ impl Animations {
         self.slide = Some(Slide { spring: Spring::new(0.0, 1.0), fresh: true, from, to, dir, width });
     }
 
+    pub fn scroll_tape(&mut self, space: u32, delta: f64) {
+        if self.disabled || delta.abs() < 0.5 {
+            return;
+        }
+        match self.tape.as_mut() {
+            Some(t) if t.space == space => {
+                t.spring.value += delta;
+                t.spring.target = 0.0;
+            }
+            _ => {
+                self.tape = Some(TapeMotion {
+                    space,
+                    spring: Spring::quick(delta, 0.0),
+                    fresh: true,
+                });
+            }
+        }
+    }
+
+    pub fn clear_tape(&mut self, space: u32) {
+        if self.tape.as_ref().is_some_and(|t| t.space == space) {
+            self.tape = None;
+        }
+    }
+
     /// Called only for frames requested by events or a still-running spring.
     pub fn advance(&mut self, windows: &[ManagedWindow], shell: &MacShell, now: Instant) -> bool {
         if self.disabled {
@@ -349,6 +383,14 @@ impl Animations {
                 self.slide = None;
             }
         }
+        if let Some(t) = self.tape.as_mut() {
+            if !std::mem::take(&mut t.fresh) {
+                t.spring.advance(dt);
+            }
+            if !t.spring.active() {
+                self.tape = None;
+            }
+        }
         if let Some(d) = self.dock.as_mut() {
             d.advance(dt);
         }
@@ -367,6 +409,7 @@ impl Animations {
             }
         }
         let active = self.slide.is_some()
+            || self.tape.is_some()
             || self.scratch.is_some()
             || self.dock.as_ref().is_some_and(Spring::active)
             || self.mission.as_ref().is_some_and(|m| m.spring.active())
@@ -391,6 +434,13 @@ impl Animations {
         }
         if let Some(s) = self.scratch.as_ref().filter(|_| w.space == crate::scratch::SCRATCH_SPACE) {
             visual.offset.1 -= (1.0 - s.value) * self.scratch_travel;
+        }
+        if let Some(t) = self
+            .tape
+            .as_ref()
+            .filter(|t| t.space == w.space && w.managed_layout && !w.fullscreen && !w.maximized)
+        {
+            visual.offset.0 += t.spring.value * (1.0 - self.mission_progress());
         }
         if let Some(s) = self.slide.as_ref() {
             let p = s.spring.value;
@@ -429,10 +479,13 @@ impl Animations {
     }
 
     pub fn draws_window(&self, w: &ManagedWindow) -> bool {
-        // The desktop being left stays drawn while it slides out
-        let on_screen = !w.off_space
-            || self.slide.as_ref().is_some_and(|s| w.space == s.from || w.space == s.to)
-            || (w.space == crate::scratch::SCRATCH_SPACE && self.scratch.is_some());
+        // The desktop being left stays drawn while it slides out; scrolled-off columns
+        // of a `Tape` desktop stay culled so they don't walk across the neighbour desktop.
+        let on_screen = if let Some(s) = self.slide.as_ref().filter(|s| w.space == s.from || w.space == s.to) {
+            !w.managed_layout || (w.x + w.width > 0 && w.x < s.width as i32)
+        } else {
+            !w.off_space || (w.space == crate::scratch::SCRATCH_SPACE && self.scratch.is_some())
+        };
         w.mapped
             && on_screen
             && (!w.minimized

@@ -7,7 +7,7 @@ mod server;
 pub(crate) mod automation;
 
 use crate::{shell::ShellClickAction, FeatherCompositor};
-use feather_api::{AppInfo, AudioInfo, DisplayInfo, Error, MediaInfo, SpaceInfo, WindowInfo};
+use feather_api::{AppInfo, AudioInfo, DisplayInfo, Error, MediaInfo, ShelfInfo, ShelfItemInfo, SpaceInfo, WindowInfo};
 use smithay::reexports::calloop::{channel, LoopHandle};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,8 +26,16 @@ pub enum Call {
     MoveWindowToSpace(u64, u32),
     ListSpaces,
     SwitchSpace(u32),
+    /// `None` — текущий стол, `Some(i)` — индекс стола с 0
+    GetSpaceMode(Option<u32>),
+    /// `(стол, None = следующий режим по кругу)`
+    SetSpaceMode(Option<u32>, Option<crate::space_layout::SpaceMode>),
     MissionControl(bool),
     Launchpad(bool),
+    GetDropShelf,
+    ShowDropShelf(bool),
+    ClearDropShelf,
+    AddToDropShelf(Vec<String>),
     ListApps,
     LaunchApp(String),
     ActivateApp(String),
@@ -68,6 +76,8 @@ pub enum Reply {
     Done,
     Windows(Vec<WindowInfo>),
     Spaces(Vec<SpaceInfo>),
+    SpaceMode(String),
+    DropShelf(ShelfInfo),
     Apps(Vec<AppInfo>),
     Audio(AudioInfo),
     Display(DisplayInfo),
@@ -109,6 +119,30 @@ pub fn space_index(number: u32) -> Result<u32, Error> {
     number.checked_sub(1).ok_or_else(|| Error::InvalidArgs("Рабочие столы нумеруются с 1".into()))
 }
 
+/// Номер стола для режима раскладки: `0` — текущий, `1..=MAX_SPACES` — индекс `number - 1`
+pub fn space_target(number: u32) -> Result<Option<u32>, Error> {
+    if number == 0 {
+        return Ok(None);
+    }
+    if number > crate::spaces::MAX_SPACES {
+        return Err(Error::InvalidArgs(format!(
+            "Рабочие столы: 0 (текущий) или 1–{}",
+            crate::spaces::MAX_SPACES
+        )));
+    }
+    Ok(Some(number - 1))
+}
+
+pub fn space_mode_target(mode: &str) -> Result<Option<crate::space_layout::SpaceMode>, Error> {
+    let trimmed = mode.trim();
+    if matches!(trimmed, "next" | "cycle" | "toggle") {
+        return Ok(None);
+    }
+    crate::space_layout::SpaceMode::parse(trimmed)
+        .map(Some)
+        .ok_or_else(|| Error::InvalidArgs("Режим рабочего стола: free, tile, tape или next".into()))
+}
+
 pub fn screenshot_target(target: &str) -> Result<Shot, Error> {
     match target {
         "" | "screen" => Ok(Shot::Screen),
@@ -142,6 +176,7 @@ pub fn allowed_while_locked(call: &Call) -> bool {
         call,
         Call::ListWindows
             | Call::ListSpaces
+            | Call::GetSpaceMode(_)
             | Call::ListApps
             | Call::GetAudio
             | Call::GetDisplay
@@ -351,9 +386,7 @@ impl FeatherCompositor {
             Call::MaximizeWindow(id, on) => {
                 let i = self.api_window(id)?;
                 let r = self.window_monitor(i);
-                let w = &mut self.windows[i];
-                w.resize_anchor = None;
-                w.maximize_on(on, r);
+                self.set_window_maximized(i, on, r);
             }
             Call::FullscreenWindow(id, on) => {
                 let i = self.api_window(id)?;
@@ -372,7 +405,10 @@ impl FeatherCompositor {
                 }
                 self.spaces.count = count.max(space + 1);
                 self.windows[i].space = space;
-                self.spaces = crate::spaces::prune(self.spaces, |s| self.windows.iter().any(|w| w.mapped && w.space == s));
+                self.spaces = crate::spaces::prune(self.spaces, |s| {
+                    self.space_layouts.mode(s) != crate::space_layout::SpaceMode::Free
+                        || self.windows.iter().any(|w| w.mapped && w.space == s)
+                });
                 self.apply_space_visibility();
                 self.dock_model_dirty = true;
                 self.pointer_focus_dirty = true;
@@ -400,6 +436,23 @@ impl FeatherCompositor {
                     self.relayout_mission();
                 }
             }
+            Call::GetSpaceMode(space) => {
+                let s = space.unwrap_or(self.spaces.current);
+                if s >= self.spaces.count {
+                    return Err(not_found(format!("Нет рабочего стола {}: их {}", s + 1, self.spaces.count)));
+                }
+                return Ok(Reply::SpaceMode(self.space_layouts.mode(s).id().to_string()));
+            }
+            Call::SetSpaceMode(space, mode) => {
+                let s = space.unwrap_or(self.spaces.current);
+                let count = self.spaces.count;
+                if s > count || (s == count && count >= crate::spaces::MAX_SPACES) {
+                    return Err(not_found(format!("Нет рабочего стола {}: их {count}", s + 1)));
+                }
+                self.spaces.count = count.max(s + 1);
+                let next = mode.unwrap_or_else(|| self.space_layouts.mode(s).next());
+                self.set_space_mode(s, next, s == self.spaces.current);
+            }
             Call::MissionControl(show) => {
                 if show != self.mission_open() {
                     if show { self.open_mission() } else { self.close_mission(None) }
@@ -410,6 +463,49 @@ impl FeatherCompositor {
                     self.toggle_launchpad();
                     self.pointer_focus_dirty = true;
                 }
+            }
+            Call::GetDropShelf => {
+                let items = self
+                    .drop_shelf
+                    .items()
+                    .iter()
+                    .map(|item| ShelfItemInfo {
+                        id: item.id,
+                        kind: item.kind_name().to_string(),
+                        title: item.title.clone(),
+                        subtitle: item.subtitle.clone(),
+                        path: item
+                            .path()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    })
+                    .collect();
+                return Ok(Reply::DropShelf(ShelfInfo {
+                    open: self.drop_shelf.is_open(),
+                    items,
+                }));
+            }
+            Call::ShowDropShelf(show) => {
+                if show {
+                    self.open_drop_shelf();
+                } else {
+                    self.close_drop_shelf();
+                }
+            }
+            Call::ClearDropShelf => {
+                self.clear_drop_shelf();
+            }
+            Call::AddToDropShelf(raw_paths) => {
+                let paths: Vec<std::path::PathBuf> = raw_paths
+                    .into_iter()
+                    .map(std::path::PathBuf::from)
+                    .filter(|p| p.is_absolute())
+                    .collect();
+                if paths.is_empty() {
+                    return Err(Error::InvalidArgs("Пути должны быть абсолютными".into()));
+                }
+                let added = self.drop_shelf_add_paths(paths, true) as u32;
+                return Ok(Reply::Percent(added));
             }
             Call::ListApps => {
                 let running: std::collections::HashSet<usize> = self

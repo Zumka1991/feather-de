@@ -18,6 +18,7 @@ pub(crate) enum Target {
     Wifi,
     Audio,
     ScratchResize(crate::tiling::Dir),
+    SpaceLayoutResize(crate::tiling::Dir),
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Candidate {
@@ -31,6 +32,15 @@ impl Candidate {
     pub(crate) fn scratch_resize(dir: crate::tiling::Dir) -> Self {
         Self {
             target: Target::ScratchResize(dir),
+            sym: Keysym::new(0),
+            latin: Keysym::new(0),
+            ctrl: false,
+            shift: false,
+        }
+    }
+    pub(crate) fn space_layout_resize(dir: crate::tiling::Dir) -> Self {
+        Self {
+            target: Target::SpaceLayoutResize(dir),
             sym: Keysym::new(0),
             latin: Keysym::new(0),
             ctrl: false,
@@ -146,6 +156,7 @@ impl FeatherCompositor {
         match target {
             Target::Audio => !self.lock.active,
             Target::ScratchResize(_) => self.shell.scratch_open && !self.lock.active,
+            Target::SpaceLayoutResize(_) => self.current_space_managed() && !self.lock.active,
             _ => self.repeat_target() == Some(target),
         }
     }
@@ -161,7 +172,7 @@ impl FeatherCompositor {
         let delay = Duration::from_millis(self.keyboard_config.repeat_delay as u64);
         let interval = match key.target {
             Target::Audio => Duration::from_millis(80),
-            Target::ScratchResize(_) => Duration::from_millis(55),
+            Target::ScratchResize(_) | Target::SpaceLayoutResize(_) => Duration::from_millis(55),
             _ => Duration::from_secs_f64(1.0 / self.keyboard_config.repeat_rate.max(1) as f64),
         };
         if let Ok(token) =
@@ -184,6 +195,9 @@ impl FeatherCompositor {
                         }
                         Target::ScratchResize(dir) => {
                             st.scratch_resize_step(dir);
+                        }
+                        Target::SpaceLayoutResize(dir) => {
+                            st.space_layout_resize_step(dir);
                         }
                         Target::Wifi => {
                             let _ =

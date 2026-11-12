@@ -104,6 +104,25 @@ pub struct MediaInfo {
     pub playing: bool,
 }
 
+/// Элемент полки перетаскивания (`GetDropShelf`), D-Bus `(tssss)`
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ShelfItemInfo {
+    pub id: u64,
+    /// `"file"`, `"folder"`, `"image"`, `"url"`, `"text"`
+    pub kind: String,
+    pub title: String,
+    pub subtitle: String,
+    /// Путь к файлу или временному файлу изображения; пусто для текста/ссылки
+    pub path: String,
+}
+
+/// Состояние полки перетаскивания (`GetDropShelf`), D-Bus `(ba(tssss))`
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ShelfInfo {
+    pub open: bool,
+    pub items: Vec<ShelfItemInfo>,
+}
+
 /// Ошибки методов: `org.feather.Shell1.Error.<Вариант>` с описанием по-русски
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "org.feather.Shell1.Error")]
@@ -138,8 +157,17 @@ mod client {
 
         fn list_spaces(&self) -> Result<Vec<SpaceInfo>>;
         fn switch_space(&self, number: u32) -> Result<()>;
+        /// Режим раскладки стола (`0` — текущий, иначе с `1`): `"free"`, `"tile"` или `"tape"`
+        fn get_space_mode(&self, number: u32) -> Result<String>;
+        /// `"free"`, `"tile"`, `"tape"` или `"next"` (`0` — текущий, иначе с `1`)
+        fn set_space_mode(&self, number: u32, mode: &str) -> Result<()>;
         fn show_mission_control(&self, show: bool) -> Result<()>;
         fn show_launchpad(&self, show: bool) -> Result<()>;
+
+        fn get_drop_shelf(&self) -> Result<ShelfInfo>;
+        fn show_drop_shelf(&self, show: bool) -> Result<()>;
+        fn clear_drop_shelf(&self) -> Result<()>;
+        fn add_to_drop_shelf(&self, paths: Vec<String>) -> Result<u32>;
 
         fn list_apps(&self) -> Result<Vec<AppInfo>>;
         fn launch_app(&self, app_id: &str) -> Result<()>;
@@ -215,6 +243,8 @@ mod tests {
         assert_eq!(AudioInfo::SIGNATURE.to_string(), "(bsubbsub)");
         assert_eq!(DisplayInfo::SIGNATURE.to_string(), "(ibbb)");
         assert_eq!(MediaInfo::SIGNATURE.to_string(), "(bsssb)");
+        assert_eq!(ShelfItemInfo::SIGNATURE.to_string(), "(tssss)");
+        assert_eq!(ShelfInfo::SIGNATURE.to_string(), "(ba(tssss))");
     }
 
     #[test]

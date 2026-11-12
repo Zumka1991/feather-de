@@ -3666,6 +3666,7 @@ impl crate::FeatherCompositor {
             self.refit_window(idx);
         }
         self.scratch_sync();
+        self.space_layout_sync();
         self.dock_model_dirty = true;
         self.needs_redraw = true;
     }
@@ -4211,6 +4212,7 @@ impl crate::FeatherCompositor {
                 if crate::theme::accent_color() != color {
                     crate::theme::set_accent_color(color);
                     self.shell.invalidate_all();
+                    self.drop_shelf.mark_dirty();
                     self.mark_builtin_windows_dirty();
                     if self.own_session && self.gtk_theme {
                         crate::gtk_theme::apply(
@@ -4232,6 +4234,7 @@ impl crate::FeatherCompositor {
                 if crate::theme::text_size() != size {
                     crate::theme::set_text_size(size);
                     self.shell.invalidate_all();
+                    self.drop_shelf.mark_dirty();
                     self.mark_builtin_windows_dirty();
                     self.lock.repaint();
                     self.save_settings();
@@ -4240,6 +4243,7 @@ impl crate::FeatherCompositor {
             Action::HighContrast => {
                 crate::theme::set_high_contrast(!crate::theme::high_contrast());
                 self.shell.invalidate_all();
+                self.drop_shelf.mark_dirty();
                 self.mark_builtin_windows_dirty();
                 self.lock.repaint();
                 self.save_settings();
@@ -4247,6 +4251,7 @@ impl crate::FeatherCompositor {
             Action::ReduceTransparency => {
                 crate::theme::set_reduce_transparency(!crate::theme::reduce_transparency());
                 self.shell.invalidate_all();
+                self.drop_shelf.mark_dirty();
                 self.mark_builtin_windows_dirty();
                 self.lock.repaint();
                 self.save_settings();
@@ -4266,6 +4271,7 @@ impl crate::FeatherCompositor {
                     self.shell.last_clock_str = crate::shell::MacShell::format_ru_clock();
                     self.dock_model_dirty = true;
                     self.shell.invalidate_all();
+                    self.drop_shelf.mark_dirty();
                     self.mark_builtin_windows_dirty();
                     self.lock.repaint();
                     self.save_settings();

@@ -23,7 +23,7 @@ use smithay::{
 
 use crate::{
     shell::MacShell,
-    theme::{to_phys, ui_scale},
+    theme::ui_scale,
     window::{BuiltinContext, ManagedWindow},
     FeatherCompositor,
 };
@@ -146,6 +146,7 @@ render_elements! {
     Surface=RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Rounded=crate::rounded::RoundedSurfaceElement,
     Texture=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
+    Glass=crate::glass::GlassElement,
 }
 
 render_elements! {
@@ -163,7 +164,7 @@ fn output_elements(elements:Vec<FeatherElement>,rect:crate::monitors::Rect,scale
 }
 
 impl crate::animation::Visual {
-    fn element(self, element: SceneElement, scale: f64) -> FeatherElement {
+    pub(crate) fn element(self, element: SceneElement, scale: f64) -> FeatherElement {
         let pivot = ((self.center.0 * scale).round() as i32, (self.center.1 * scale).round() as i32).into();
         let offset = ((self.offset.0 * scale).round() as i32, (self.offset.1 * scale).round() as i32);
         FeatherElement::Animated(RelocateRenderElement::from_element(
@@ -336,6 +337,522 @@ fn to_phys_point(x: i32, y: i32, scale: f64) -> Point<i32, Physical> {
     Point::from(((x as f64 * scale).round() as i32, (y as f64 * scale).round() as i32))
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_glass_specs(
+    shell: &MacShell,
+    windows: &[ManagedWindow],
+    animations: &crate::animation::Animations,
+    view: crate::monitors::Rect,
+    banner: &crate::banner::Banner,
+    audio_hud: &crate::audio_hud::Hud,
+    screencast: &crate::screencast::ScreenRecorderState,
+    drop_shelf: &crate::drop_shelf::DropShelf,
+) -> Vec<crate::glass::GlassSpec> {
+    use crate::glass::*;
+    let primary = view.x == 0 && view.y == 0;
+    if !primary || !live_glass_active() {
+        return Vec::new();
+    }
+    let screen = (shell.screen_w, shell.screen_h);
+    let mut specs = Vec::with_capacity(12);
+
+    if let Some(s) = banner.glass_spec(screen) {
+        specs.push(s);
+    }
+    if let Some(s) = audio_hud.glass_spec(screen) {
+        specs.push(s);
+    }
+    if let Some(s) = screencast.glass_spec() {
+        specs.push(s);
+    }
+    if let Some(s) = drop_shelf.glass_spec(screen) {
+        specs.push(s);
+    }
+
+    let top = windows.iter().rev().find(|w| {
+        w.is_visible()
+            && crate::monitors::Rect {
+                x: w.x,
+                y: w.y,
+                w: w.width,
+                h: w.total_height(),
+            }
+            .intersection(view)
+                > 0
+    });
+    let fullscreen_top = top.is_some_and(|w| w.fullscreen && animations.window(w).identity());
+    let larvis_top = top.is_some_and(|w| w.larvis);
+
+    if shell.switcher.as_ref().is_some_and(|s| s.visible) {
+        let r = shell.switcher_rect;
+        specs.push(GlassSpec {
+            key: KEY_SWITCHER,
+            rect: crate::shell::R::new(r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0),
+            radius: 24.0,
+            strength: 1.0,
+            visual: crate::animation::Visual::default(),
+        });
+    }
+    if let Some(ring) = shell.ring_shown() {
+        let dr = crate::ring::disc_radius(ring.len());
+        specs.push(GlassSpec {
+            key: KEY_RING,
+            rect: crate::shell::R::new(
+                ring.center.0 - dr,
+                ring.center.1 - dr,
+                dr * 2.0,
+                dr * 2.0,
+            ),
+            radius: dr,
+            strength: 1.0,
+            visual: animations.ring(shell),
+        });
+    }
+    if shell.has_visible_overlay() {
+        if shell.mission_title_region().is_some() {
+            if let Some(pill) = shell.mission_title_glass {
+                specs.push(GlassSpec {
+                    key: KEY_MISSION_TITLE,
+                    rect: pill,
+                    radius: 13.0,
+                    strength: 0.9,
+                    visual: crate::animation::Visual::default(),
+                });
+            }
+        }
+        if shell.toast_region().is_some() {
+            for (idx, r) in shell.toast_rects().into_iter().enumerate() {
+                specs.push(GlassSpec {
+                    key: KEY_TOAST_BASE + idx as u64,
+                    rect: r,
+                    radius: 18.0,
+                    strength: 0.95,
+                    visual: crate::animation::Visual::default(),
+                });
+            }
+        }
+        if shell.overlay_region().is_some() {
+            let ov_vis = animations.overlay(shell);
+            for (idx, &(r, radius, strength)) in shell.overlay_glass.iter().enumerate() {
+                specs.push(GlassSpec {
+                    key: KEY_OVERLAY_BASE + idx as u64,
+                    rect: r,
+                    radius,
+                    strength,
+                    visual: ov_vis,
+                });
+            }
+        }
+    }
+
+    let launchpad_open = shell.launchpad.is_some();
+    if (!fullscreen_top || larvis_top) && !launchpad_open && !shell.topbar_hidden && !shell.scratch_open {
+        specs.push(GlassSpec {
+            key: KEY_TOPBAR,
+            rect: crate::shell::R::new(
+                0.0,
+                0.0,
+                shell.screen_w as f32,
+                crate::theme::TOP_BAR_HEIGHT as f32,
+            ),
+            radius: 0.0,
+            strength: 0.72,
+            visual: crate::animation::Visual::default(),
+        });
+    }
+    if (!fullscreen_top || launchpad_open) && !shell.scratch_open {
+        use crate::theme::DockEdge;
+        let edge = crate::theme::dock_edge();
+        let (sx, sy) = shell.dock_shown_origin();
+        let hide = animations.dock_hidden() * ((crate::theme::dock_icon() + 24.0) as f64 + 8.0);
+        let (hx, hy) = match edge {
+            DockEdge::Bottom => (0.0, hide),
+            DockEdge::Left => (-hide, 0.0),
+            DockEdge::Right => (hide, 0.0),
+        };
+        let ox = sx + hx as f32;
+        let oy = sy + hy as f32;
+        if let Some(&(b, radius)) = shell.dock_glass.first() {
+            specs.push(GlassSpec {
+                key: KEY_DOCK,
+                rect: crate::shell::R::new(b.x + ox, b.y + oy, b.w, b.h),
+                radius,
+                strength: 0.95,
+                visual: crate::animation::Visual::default(),
+            });
+        }
+        if let Some(&(lr, lrad)) = shell.dock_glass.get(1) {
+            specs.push(GlassSpec {
+                key: KEY_DOCK_LABEL,
+                rect: crate::shell::R::new(lr.x + ox, lr.y + oy, lr.w, lr.h),
+                radius: lrad,
+                strength: 0.9,
+                visual: crate::animation::Visual::default(),
+            });
+        }
+    }
+    specs
+}
+
+fn hash_surface_tree(surface: &WlSurface, h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    use smithay::backend::renderer::utils::{CommitCounter, RendererSurfaceStateUserData};
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, &()| TraversalAction::DoChildren(()),
+        |s, states, &()| {
+            smithay::backend::renderer::element::Id::from_wayland_resource(s).hash(h);
+            if let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() {
+                let data = data.lock().unwrap();
+                data.current_commit()
+                    .distance(Some(CommitCounter::default()))
+                    .unwrap_or(0)
+                    .hash(h);
+                data.buffer_size().map(|sz| (sz.w, sz.h)).hash(h);
+            }
+        },
+        |_, _, &()| true,
+    );
+}
+
+fn build_world_snap(
+    shell: &MacShell,
+    windows: &[ManagedWindow],
+    animations: &crate::animation::Animations,
+    view: crate::monitors::Rect,
+) -> crate::glass::WorldSnap {
+    use std::hash::{Hash, Hasher};
+    use smithay::wayland::shell::wlr_layer::Layer;
+    let primary = view.x == 0 && view.y == 0;
+    let mut gh = std::collections::hash_map::DefaultHasher::new();
+    view.x.hash(&mut gh);
+    view.y.hash(&mut gh);
+    view.w.hash(&mut gh);
+    view.h.hash(&mut gh);
+    shell.wallpaper_texture_size.hash(&mut gh);
+    if let Some(tb) = &shell.wallpaper_texture {
+        smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer(
+            (0.0, 0.0),
+            tb,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+        .id()
+        .hash(&mut gh);
+    } else {
+        0u8.hash(&mut gh);
+    }
+    if primary {
+        shell.desktop.visual_fingerprint().hash(&mut gh);
+        animations.mission_progress().to_bits().hash(&mut gh);
+    }
+    animations.scratch_progress().clamp(0.0, 1.0).to_bits().hash(&mut gh);
+    for item in shell
+        .layers
+        .iter()
+        .filter(|l| matches!(l.layer, Layer::Bottom | Layer::Background) && l.monitor == view)
+    {
+        item.loc.hash(&mut gh);
+        hash_surface_tree(&item.surface, &mut gh);
+        for (popup, offset) in PopupManager::popups_for_surface(&item.surface) {
+            offset.x.hash(&mut gh);
+            offset.y.hash(&mut gh);
+            hash_surface_tree(popup.wl_surface(), &mut gh);
+        }
+    }
+
+    let l0_size = crate::glass::head_l0_size(view);
+    let sx = l0_size.0 as f64 / view.w.max(1) as f64;
+    let sy = l0_size.1 as f64 / view.h.max(1) as f64;
+    let mut win_snaps = Vec::with_capacity(windows.len());
+    for win in windows.iter().rev() {
+        let v = animations.window(win);
+        if !animations.draws_window(win)
+            || (v.identity()
+                && crate::monitors::Rect {
+                    x: win.x,
+                    y: win.y,
+                    w: win.width,
+                    h: win.total_height(),
+                }
+                .intersection(view)
+                    == 0)
+        {
+            continue;
+        }
+        // In the blur pass we skip window shadows (`!blur_pass`), only padding slightly for CSD/popups
+        let pad = if win.client_shadow { 32.0 } else { 4.0 };
+        let fx = win.x as f64 - pad;
+        let fy = win.y as f64 - pad;
+        let fw = (win.width as f64 + pad * 2.0).max(1.0);
+        let fh = (win.total_height() as f64 + pad * 2.0).max(1.0);
+        let wx0 = v.center.0 + (fx - v.center.0) * v.scale + v.offset.0 - view.x as f64;
+        let wy0 = v.center.1 + (fy - v.center.1) * v.scale + v.offset.1 - view.y as f64;
+        let ww = (fw * v.scale).max(1.0);
+        let wh = (fh * v.scale).max(1.0);
+        let lx0 = ((wx0 * sx).floor() as i32).clamp(0, l0_size.0);
+        let ly0 = ((wy0 * sy).floor() as i32).clamp(0, l0_size.1);
+        let lx1 = (((wx0 + ww) * sx).ceil() as i32).clamp(0, l0_size.0);
+        let ly1 = (((wy0 + wh) * sy).ceil() as i32).clamp(0, l0_size.1);
+        let l0_rect = smithay::utils::Rectangle::new(
+            (lx0, ly0).into(),
+            ((lx1 - lx0).max(0), (ly1 - ly0).max(0)).into(),
+        );
+
+        let mut whash = std::collections::hash_map::DefaultHasher::new();
+        (
+            win.x,
+            win.y,
+            win.width,
+            win.total_height(),
+            win.fullscreen,
+            win.maximized,
+            win.ssd,
+            win.painted_focused,
+            win.deco_gen,
+            win.phys_buf_w,
+            win.phys_buf_h,
+        )
+            .hash(&mut whash);
+        (
+            v.scale.to_bits(),
+            v.alpha.to_bits(),
+            v.center.0.to_bits(),
+            v.center.1.to_bits(),
+            v.offset.0.to_bits(),
+            v.offset.1.to_bits(),
+        )
+            .hash(&mut whash);
+        if let Some(surface) = win.wl_surface() {
+            hash_surface_tree(surface, &mut whash);
+            for (popup, offset) in PopupManager::popups_for_surface(surface) {
+                offset.x.hash(&mut whash);
+                offset.y.hash(&mut whash);
+                hash_surface_tree(popup.wl_surface(), &mut whash);
+            }
+        }
+        win_snaps.push((win.id, l0_rect, whash.finish()));
+
+        if win.fullscreen
+            && !win.minimized
+            && v.identity()
+            && win.x <= view.x
+            && win.y <= view.y
+            && win.x + win.width >= view.x + view.w
+            && win.y + win.total_height() >= view.y + view.h
+        {
+            break;
+        }
+    }
+
+    crate::glass::WorldSnap {
+        globals_hash: gh.finish(),
+        windows: win_snaps,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_glass<'a>(
+    glass: Option<&mut crate::glass::GlassState>,
+    get_renderer: impl FnOnce() -> &'a mut GlesRenderer,
+    head_name: &str,
+    view: crate::monitors::Rect,
+    scale: f64,
+    shell: &MacShell,
+    windows: &[ManagedWindow],
+    rounded: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
+    animations: &crate::animation::Animations,
+    banner: &crate::banner::Banner,
+    audio_hud: &crate::audio_hud::Hud,
+    screencast: &crate::screencast::ScreenRecorderState,
+    drop_shelf: &crate::drop_shelf::DropShelf,
+) {
+    let Some(glass) = glass else { return };
+    if !crate::glass::live_glass_active() {
+        return;
+    }
+    let specs = collect_glass_specs(
+        shell, windows, animations, view, banner, audio_hud, screencast, drop_shelf,
+    );
+    if specs.is_empty() {
+        return;
+    }
+    let out_size = (
+        ((view.w as f64 * scale).round() as i32).max(1),
+        ((view.h as f64 * scale).round() as i32).max(1),
+    );
+    let snap = build_world_snap(shell, windows, animations, view);
+    glass.prepare(
+        head_name,
+        out_size,
+        view,
+        scale,
+        &specs,
+        snap,
+        get_renderer,
+        |r, blur_scale| {
+            let mut dummy_drawn = Vec::new();
+            let world = build_world_scene(
+                r,
+                shell,
+                windows,
+                blur_scale,
+                rounded,
+                animations,
+                view,
+                &mut dummy_drawn,
+                true,
+            );
+            output_elements(world, view, blur_scale)
+        },
+    );
+}
+
+/// Builds the world behind shell panels (windows, scratch backdrop, bottom/background layers,
+/// desktop icons and wallpaper) front-to-back.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_world_scene(
+    renderer: &mut GlesRenderer,
+    shell: &MacShell,
+    windows: &[ManagedWindow],
+    scale: f64,
+    rounded: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
+    animations: &crate::animation::Animations,
+    view: crate::monitors::Rect,
+    drawn: &mut Vec<u64>,
+    blur_pass: bool,
+) -> Vec<FeatherElement> {
+    let mut out: Vec<FeatherElement> = Vec::with_capacity(48);
+    let primary = view.x == 0 && view.y == 0;
+    let screen_scaled = (
+        ((shell.screen_w as f64 * scale).round() as i32).max(1),
+        ((shell.screen_h as f64 * scale).round() as i32).max(1),
+    );
+    let launchpad_open = primary && shell.launchpad.is_some();
+    if !blur_pass && launchpad_open && shell.launchpad_bg_key.is_some() {
+        // Opaque frosted wallpaper hides every window: nothing below needs drawing
+        let src = shell
+            .launchpad_bg_key
+            .map(|(_, w, h, _)| smithay::utils::Rectangle::from_size((w as f64, h as f64).into()));
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (0.0, 0.0),
+            &shell.launchpad_bg,
+            Some(animations.launchpad(shell).alpha),
+            src,
+            Some(screen_scaled.into()),
+            Kind::Unspecified,
+        ) {
+            out.push(SceneElement::Memory(e).into());
+        }
+        if animations.launchpad(shell).identity() {
+            return out;
+        }
+    }
+
+    let backdrop = animations.scratch_progress().clamp(0.0, 1.0);
+    let mut backdrop_due = backdrop > 0.0;
+    for win in windows.iter().rev() {
+        // Everything below the Подложка's windows is seen through its backdrop
+        if backdrop_due && win.space != crate::scratch::SCRATCH_SPACE {
+            backdrop_due = false;
+            push_scratch_backdrop(&mut out, renderer, shell, backdrop, view, scale);
+        }
+        if !animations.draws_window(win)
+            || (animations.window(win).identity()
+                && crate::monitors::Rect {
+                    x: win.x,
+                    y: win.y,
+                    w: win.width,
+                    h: win.total_height(),
+                }
+                .intersection(view)
+                    == 0)
+        {
+            continue;
+        }
+        let visual = animations.window(win);
+        push_window(&mut out, renderer, win, visual, scale, rounded, !blur_pass);
+        drawn.push(win.id);
+        if !blur_pass {
+            if let Some((id, frame, _)) = shell.tile_preview.target {
+                if id == win.id && frame.intersection(view) > 0 {
+                    out.extend(
+                        shell
+                            .tile_preview
+                            .elements(renderer, frame, scale)
+                            .into_iter()
+                            .map(|e| FeatherElement::from(SceneElement::Memory(e))),
+                    );
+                }
+            }
+        }
+
+        if win.fullscreen
+            && !win.minimized
+            && visual.identity()
+            && win.x <= view.x
+            && win.y <= view.y
+            && win.x + win.width >= view.x + view.w
+            && win.y + win.total_height() >= view.y + view.h
+        {
+            // Nothing below a fullscreen window is visible
+            return out;
+        }
+    }
+
+    if backdrop_due {
+        push_scratch_backdrop(&mut out, renderer, shell, backdrop, view, scale);
+    }
+    push_layers(&mut out, renderer, shell, smithay::wayland::shell::wlr_layer::Layer::Bottom, view, scale);
+
+    // Mission Control dims the desktop behind the spread windows
+    let dim = if primary { animations.mission_progress() } else { 0.0 };
+    if dim > 0.0 {
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            (0.0, 0.0),
+            &shell.mission_dim,
+            Some((0.35 * dim) as f32),
+            Some(smithay::utils::Rectangle::from_size((4.0, 4.0).into())),
+            Some(screen_scaled.into()),
+            Kind::Unspecified,
+        ) {
+            out.push(SceneElement::Memory(e).into());
+        }
+    }
+    if primary {
+        out.extend(shell.desktop.elements(renderer, (shell.screen_w, shell.screen_h), scale));
+    }
+    push_layers(&mut out, renderer, shell, smithay::wayland::shell::wlr_layer::Layer::Background, view, scale);
+    let wp_size = (
+        ((view.w as f64 * scale).round() as i32).max(1),
+        ((view.h as f64 * scale).round() as i32).max(1),
+    );
+    // The source rect must be the (low-res) buffer itself; by default Smithay would use the
+    // destination size and sample outside the texture
+    if let Some(texture) = &shell.wallpaper_texture {
+        let (w, h) = shell.wallpaper_texture_size;
+        out.push(
+            SceneElement::Texture(
+                smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer(
+                    (view.x as f64 * scale, view.y as f64 * scale),
+                    texture,
+                    None,
+                    Some(smithay::utils::Rectangle::from_size((w as f64, h as f64).into())),
+                    Some(wp_size.into()),
+                    Kind::Unspecified,
+                ),
+            )
+            .into(),
+        );
+    }
+    out
+}
+
 /// Builds the scene front-to-back (first element is on top), as the damage tracker expects.
 /// `drawn` gets the ids of the windows that are part of it (they get frame callbacks).
 #[allow(clippy::too_many_arguments)]
@@ -349,230 +866,363 @@ pub(crate) fn build_scene(
     animations: &crate::animation::Animations,
     view: crate::monitors::Rect,
     drawn: &mut Vec<u64>,
+    drop_shelf: &crate::drop_shelf::DropShelf,
+    mut glass: Option<(&mut crate::glass::GlassState, &str)>,
 ) -> Vec<FeatherElement> {
-    let mut out: Vec<FeatherElement> = Vec::with_capacity(64);
-    let primary=view.x==0&&view.y==0;
-    if primary {push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations, drawn);}
+    use crate::glass::*;
+    let mut out: Vec<FeatherElement> = Vec::with_capacity(72);
+    let primary = view.x == 0 && view.y == 0;
+    if primary {
+        push_space_thumbnails(&mut out, renderer, shell, windows, scale, rounded, animations, drawn);
+    }
     // Pictures of the hidden Подложка are uploaded as soon as its programs repaint, while nothing
     // moves: otherwise they all arrive in the first frame of its slide and cost it a frame
     if primary && shell.scratch_count > 0 && !shell.scratch_open && animations.scratch_progress() == 0.0 {
-        for surface in windows.iter().filter(|w| w.space == crate::scratch::SCRATCH_SPACE && w.mapped).filter_map(|w| w.wl_surface()) {
+        for surface in windows
+            .iter()
+            .filter(|w| w.space == crate::scratch::SCRATCH_SPACE && w.mapped)
+            .filter_map(|w| w.wl_surface())
+        {
             let _ = smithay::backend::renderer::utils::import_surface_tree(renderer, surface);
         }
     }
     if !shell.layers.is_empty() {
         use smithay::wayland::shell::wlr_layer::Layer;
         push_layers(&mut out, renderer, shell, Layer::Overlay, view, scale);
-        let covered = windows.iter().rev().find(|w| w.is_visible() && crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(view)>0).is_some_and(|w| w.fullscreen);
+        let covered = windows
+            .iter()
+            .rev()
+            .find(|w| {
+                w.is_visible()
+                    && crate::monitors::Rect {
+                        x: w.x,
+                        y: w.y,
+                        w: w.width,
+                        h: w.total_height(),
+                    }
+                    .intersection(view)
+                        > 0
+            })
+            .is_some_and(|w| w.fullscreen);
         if !covered {
             push_layers(&mut out, renderer, shell, Layer::Top, view, scale);
         }
     }
-    let mut mem = |out: &mut Vec<FeatherElement>, loc: (f64, f64), buf, src, visual: crate::animation::Visual| {
-        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            loc,
-            buf,
-            Some(visual.alpha),
-            src,
-            None,
-            Kind::Unspecified,
-        ) {
-            out.push(visual.element(SceneElement::Memory(e), scale));
-        }
-    };
-
-    let top = windows
-        .iter()
-        .rev()
-        .find(|w| w.is_visible() && crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(view)>0);
+    let top = windows.iter().rev().find(|w| {
+        w.is_visible()
+            && crate::monitors::Rect {
+                x: w.x,
+                y: w.y,
+                w: w.width,
+                h: w.total_height(),
+            }
+            .intersection(view)
+                > 0
+    });
     let fullscreen_top = top.is_some_and(|w| w.fullscreen && animations.window(w).identity());
     // Larvis's desktop is fullscreen under our menu bar (its item switches back); its own Dock stays
     let larvis_top = top.is_some_and(|w| w.larvis);
 
     if primary {
-    if shell.ghost.is_some() {
-        let half = crate::shell::GHOST_SIZE as f64 * 0.5;
-        mem(
-            &mut out,
-            (((pointer.0 - half) * scale).round(), ((pointer.1 - half) * scale).round()),
-            &shell.ghost_buffer,
-            None,
-            crate::animation::Visual::default(),
-        );
-    }
-    if shell.switcher.as_ref().is_some_and(|s| s.visible) {
-        let r = shell.switcher_rect;
-        mem(
-            &mut out,
-            ((r.x as f64 * scale).round(), (r.y as f64 * scale).round()),
-            &shell.switcher_buffer,
-            None,
-            crate::animation::Visual::default(),
-        );
-    }
-    if let Some(ring) = shell.ring_shown() {
-        // Спереди назад: подпись, иконки, подсветка с огоньком, стекло. Всё движение — GPU:
-        // буферы не перерисовываются, пока кольцо открывается, гаснет или подсветка едет.
-        let n = ring.len();
-        let open = animations.ring_open();
-        let disc = animations.ring(shell);
-        let at = |r: crate::shell::R| ((r.x as f64 * scale).round(), (r.y as f64 * scale).round());
-        let g = &shell.ring_gfx;
-        mem(&mut out, at(ring.label_rect()), &g.label, None, disc);
-        let c = (ring.center.0 as f64, ring.center.1 as f64);
-        for (i, buf) in g.icons.iter().enumerate().take(n) {
-            let (travel, s, alpha) = crate::ring::icon_motion(n, i, open, animations.ring_selected(i, ring.selected));
-            let (x, y) = ring.slot_center(i);
-            let (x, y) = (x as f64, y as f64);
-            let visual = crate::animation::Visual { scale: s, alpha, center: (x, y), offset: ((c.0 - x) * (1.0 - travel), (c.1 - y) * (1.0 - travel)) };
-            mem(&mut out, at(ring.icon_rect(i)), buf, None, visual);
-        }
-        let a = animations.ring_mark_angle().unwrap_or_else(|| crate::ring::angle(n, ring.selected));
-        let mark = crate::animation::Visual { alpha: disc.alpha * open.clamp(0.0, 1.0) as f32, ..disc };
-        mem(&mut out, at(ring.pip_rect_at(a)), &g.pip, None, mark);
-        mem(&mut out, at(ring.mark_rect_at(a)), &g.mark, None, mark);
-        mem(&mut out, at(ring.rect()), &g.base, None, disc);
-    }
-    if shell.has_visible_overlay() {
-        if let Some(r) = shell.mission_title_region() {
-            mem(&mut out, (r.loc.x as f64, r.loc.y as f64), &shell.mission_title_buffer,
-                None, crate::animation::Visual::default());
-        }
-        if let Some(r) = shell.toast_region() {
-            mem(&mut out, (r.loc.x as f64, r.loc.y as f64), &shell.toast_buffer,
-                None, crate::animation::Visual::default());
-        }
-        if let Some(r) = shell.overlay_region() {
-            mem(&mut out, (r.loc.x as f64, r.loc.y as f64), &shell.overlay_buffer,
-                None, animations.overlay(shell));
-        }
-    }
-    let launchpad_open = shell.launchpad.is_some();
-    if (!fullscreen_top || larvis_top) && !launchpad_open && !shell.topbar_hidden && !shell.scratch_open {
-        mem(&mut out, (0.0, 0.0), &shell.topbar_buffer, None, crate::animation::Visual::default());
-    }
-    if (!fullscreen_top || launchpad_open) && !shell.scratch_open {
-        use crate::theme::DockEdge;
-        let edge = crate::theme::dock_edge();
-        let (sx, sy) = shell.dock_shown_origin();
-        // Auto-hide: the bar slides beyond its screen edge (GPU offset of the same buffer)
-        let hide = animations.dock_hidden() * ((crate::theme::dock_icon() + 24.0) as f64 + 8.0);
-        let (hx, hy) = match edge { DockEdge::Bottom => (0.0, hide), DockEdge::Left => (-hide, 0.0), DockEdge::Right => (hide, 0.0) };
-        let (dock_x, dock_y) = (((sx as f64 + hx) * scale).round(), ((sy as f64 + hy) * scale).round());
-        if let Some(b) = shell.bounce.as_ref() {
-            if let Some((x, y, size)) = shell.dock_slot_global(b.target) {
-                let (lift, _) = b.offset(Instant::now());
-                // Keep the edge-dependent resting position, but always bounce upwards on screen.
-                let base_size = (b.px as f64 / scale).max(1.0);
-                let inset = (size as f64 - base_size) * 0.5;
-                let lift = lift as f64;
-                let (x, y) = (x as f64, y as f64);
-                let (lx, ly) = match edge {
-                    DockEdge::Bottom => (x + inset, y + inset * 2.0 - lift),
-                    DockEdge::Left => (x, y + inset - lift),
-                    DockEdge::Right => (x + inset * 2.0, y + inset - lift),
-                };
-                let src = smithay::utils::Rectangle::new((0.0, 0.0).into(), (b.px as f64, b.px as f64).into());
-                mem(&mut out, ((lx * scale).round(), (ly * scale).round()), &b.buffer, Some(src), crate::animation::Visual::default());
+        if shell.ghost.is_some() {
+            let half = crate::shell::GHOST_SIZE as f64 * 0.5;
+            if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                (((pointer.0 - half) * scale).round(), ((pointer.1 - half) * scale).round()),
+                &shell.ghost_buffer,
+                Some(1.0),
+                None,
+                None,
+                Kind::Unspecified,
+            ) {
+                out.push(SceneElement::Memory(e).into());
             }
         }
-        for (r, key) in &shell.dock_gpu_icons {
-            let Some(texture) = shell.dock_icon_textures.get(key) else { continue };
-            let loc = (dock_x + (r.x as f64 * scale).round(), dock_y + (r.y as f64 * scale).round());
-            let size = ((r.w as f64 * scale).round() as i32, (r.h as f64 * scale).round() as i32);
-            let src = smithay::utils::Rectangle::from_size((key.px as f64, key.px as f64).into());
-            out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer(
-                loc, texture, None, Some(src), Some(size.into()), Kind::Unspecified,
-            )).into());
-        }
-        mem(&mut out, (dock_x, dock_y), &shell.dock_buffer, None, crate::animation::Visual::default());
-    }
-    if let Some(lp) = shell.launchpad.as_ref() {
-        for ((x, y), buf) in lp.elements() {
+
+        let mut push_glass = |out: &mut Vec<FeatherElement>, spec: GlassSpec| {
+            if let Some((g, head)) = glass.as_mut() {
+                if let Some(el) = g.element(head, &spec, scale) {
+                    out.push(spec.visual.element(SceneElement::Glass(el), scale));
+                }
+            }
+        };
+
+        let mut mem = |out: &mut Vec<FeatherElement>,
+                       loc: (f64, f64),
+                       buf,
+                       src,
+                       visual: crate::animation::Visual| {
+            if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                loc,
+                buf,
+                Some(visual.alpha),
+                src,
+                None,
+                Kind::Unspecified,
+            ) {
+                out.push(visual.element(SceneElement::Memory(e), scale));
+            }
+        };
+
+        if shell.switcher.as_ref().is_some_and(|s| s.visible) {
+            let r = shell.switcher_rect;
             mem(
                 &mut out,
-                ((x as f64 * scale).round(), (y as f64 * scale).round()),
-                buf,
+                ((r.x as f64 * scale).round(), (r.y as f64 * scale).round()),
+                &shell.switcher_buffer,
                 None,
-                animations.launchpad(shell),
+                crate::animation::Visual::default(),
+            );
+            push_glass(
+                &mut out,
+                GlassSpec {
+                    key: KEY_SWITCHER,
+                    rect: crate::shell::R::new(r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0),
+                    radius: 24.0,
+                    strength: 1.0,
+                    visual: crate::animation::Visual::default(),
+                },
             );
         }
-    }
-    }
-    drop(mem);
-    let launchpad_open=primary && shell.launchpad.is_some();
-    if launchpad_open && shell.launchpad_bg_key.is_some() {
-        // Opaque frosted wallpaper hides every window: nothing below needs drawing
-        let size = (to_phys(shell.screen_w), to_phys(shell.screen_h));
-        let src = shell
-            .launchpad_bg_key
-            .map(|(_, w, h, _)| smithay::utils::Rectangle::from_size((w as f64, h as f64).into()));
-        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
-            renderer,
-            (0.0, 0.0),
-            &shell.launchpad_bg,
-            Some(animations.launchpad(shell).alpha),
-            src,
-            Some(size.into()),
-            Kind::Unspecified,
-        ) {
-            out.push(SceneElement::Memory(e).into());
+        if let Some(ring) = shell.ring_shown() {
+            // Спереди назад: подпись, иконки, подсветка с огоньком, стекло. Всё движение — GPU:
+            // буферы не перерисовываются, пока кольцо открывается, гаснет или подсветка едет.
+            let n = ring.len();
+            let open = animations.ring_open();
+            let disc = animations.ring(shell);
+            let at = |r: crate::shell::R| ((r.x as f64 * scale).round(), (r.y as f64 * scale).round());
+            let g = &shell.ring_gfx;
+            mem(&mut out, at(ring.label_rect()), &g.label, None, disc);
+            let c = (ring.center.0 as f64, ring.center.1 as f64);
+            for (i, buf) in g.icons.iter().enumerate().take(n) {
+                let (travel, s, alpha) =
+                    crate::ring::icon_motion(n, i, open, animations.ring_selected(i, ring.selected));
+                let (x, y) = ring.slot_center(i);
+                let (x, y) = (x as f64, y as f64);
+                let visual = crate::animation::Visual {
+                    scale: s,
+                    alpha,
+                    center: (x, y),
+                    offset: ((c.0 - x) * (1.0 - travel), (c.1 - y) * (1.0 - travel)),
+                };
+                mem(&mut out, at(ring.icon_rect(i)), buf, None, visual);
+            }
+            let a = animations
+                .ring_mark_angle()
+                .unwrap_or_else(|| crate::ring::angle(n, ring.selected));
+            let mark = crate::animation::Visual {
+                alpha: disc.alpha * open.clamp(0.0, 1.0) as f32,
+                ..disc
+            };
+            mem(&mut out, at(ring.pip_rect_at(a)), &g.pip, None, mark);
+            mem(&mut out, at(ring.mark_rect_at(a)), &g.mark, None, mark);
+            mem(&mut out, at(ring.rect()), &g.base, None, disc);
+            let dr = crate::ring::disc_radius(n);
+            push_glass(
+                &mut out,
+                GlassSpec {
+                    key: KEY_RING,
+                    rect: crate::shell::R::new(
+                        ring.center.0 - dr,
+                        ring.center.1 - dr,
+                        dr * 2.0,
+                        dr * 2.0,
+                    ),
+                    radius: dr,
+                    strength: 1.0,
+                    visual: disc,
+                },
+            );
         }
-        if animations.launchpad(shell).identity() { return out; }
-    }
-
-    let backdrop = animations.scratch_progress().clamp(0.0, 1.0);
-    let mut backdrop_due = backdrop > 0.0;
-    for win in windows.iter().rev() {
-        // Everything below the Подложка's windows is seen through its backdrop
-        if backdrop_due && win.space != crate::scratch::SCRATCH_SPACE {
-            backdrop_due = false;
-            push_scratch_backdrop(&mut out, renderer, shell, backdrop, view, scale);
-        }
-        if !animations.draws_window(win) || (animations.window(win).identity() && crate::monitors::Rect{x:win.x,y:win.y,w:win.width,h:win.total_height()}.intersection(view)==0) {
-            continue;
-        }
-        let visual = animations.window(win);
-        push_window(&mut out, renderer, win, visual, scale, rounded, true);
-        drawn.push(win.id);
-        if let Some((id, frame, _)) = shell.tile_preview.target {
-            if id == win.id && frame.intersection(view) > 0 {
-                out.extend(shell.tile_preview.elements(renderer, frame, scale).into_iter().map(|e| FeatherElement::from(SceneElement::Memory(e))));
+        if shell.has_visible_overlay() {
+            if let Some(r) = shell.mission_title_region() {
+                mem(
+                    &mut out,
+                    (r.loc.x as f64, r.loc.y as f64),
+                    &shell.mission_title_buffer,
+                    None,
+                    crate::animation::Visual::default(),
+                );
+                if let Some(pill) = shell.mission_title_glass {
+                    push_glass(
+                        &mut out,
+                        GlassSpec {
+                            key: KEY_MISSION_TITLE,
+                            rect: pill,
+                            radius: 13.0,
+                            strength: 0.9,
+                            visual: crate::animation::Visual::default(),
+                        },
+                    );
+                }
+            }
+            if let Some(r) = shell.toast_region() {
+                mem(
+                    &mut out,
+                    (r.loc.x as f64, r.loc.y as f64),
+                    &shell.toast_buffer,
+                    None,
+                    crate::animation::Visual::default(),
+                );
+                for (idx, tr) in shell.toast_rects().into_iter().enumerate() {
+                    push_glass(
+                        &mut out,
+                        GlassSpec {
+                            key: KEY_TOAST_BASE + idx as u64,
+                            rect: tr,
+                            radius: 18.0,
+                            strength: 0.95,
+                            visual: crate::animation::Visual::default(),
+                        },
+                    );
+                }
+            }
+            if let Some(r) = shell.overlay_region() {
+                let ov_vis = animations.overlay(shell);
+                mem(
+                    &mut out,
+                    (r.loc.x as f64, r.loc.y as f64),
+                    &shell.overlay_buffer,
+                    None,
+                    ov_vis,
+                );
+                for (idx, &(or, radius, strength)) in shell.overlay_glass.iter().enumerate() {
+                    push_glass(
+                        &mut out,
+                        GlassSpec {
+                            key: KEY_OVERLAY_BASE + idx as u64,
+                            rect: or,
+                            radius,
+                            strength,
+                            visual: ov_vis,
+                        },
+                    );
+                }
             }
         }
-
-        if win.fullscreen && !win.minimized && visual.identity() && win.x<=view.x && win.y<=view.y && win.x+win.width>=view.x+view.w && win.y+win.total_height()>=view.y+view.h {
-            // Nothing below a fullscreen window is visible
-            return out;
+        let launchpad_open = shell.launchpad.is_some();
+        if (!fullscreen_top || larvis_top) && !launchpad_open && !shell.topbar_hidden && !shell.scratch_open {
+            mem(&mut out, (0.0, 0.0), &shell.topbar_buffer, None, crate::animation::Visual::default());
+            push_glass(
+                &mut out,
+                GlassSpec {
+                    key: KEY_TOPBAR,
+                    rect: crate::shell::R::new(
+                        0.0,
+                        0.0,
+                        shell.screen_w as f32,
+                        crate::theme::TOP_BAR_HEIGHT as f32,
+                    ),
+                    radius: 0.0,
+                    strength: 0.72,
+                    visual: crate::animation::Visual::default(),
+                },
+            );
+        }
+        if (!fullscreen_top || launchpad_open) && !shell.scratch_open {
+            use crate::theme::DockEdge;
+            let edge = crate::theme::dock_edge();
+            let (sx, sy) = shell.dock_shown_origin();
+            // Auto-hide: the bar slides beyond its screen edge (GPU offset of the same buffer)
+            let hide = animations.dock_hidden() * ((crate::theme::dock_icon() + 24.0) as f64 + 8.0);
+            let (hx, hy) = match edge {
+                DockEdge::Bottom => (0.0, hide),
+                DockEdge::Left => (-hide, 0.0),
+                DockEdge::Right => (hide, 0.0),
+            };
+            let (dock_x, dock_y) = (((sx as f64 + hx) * scale).round(), ((sy as f64 + hy) * scale).round());
+            if let Some(b) = shell.bounce.as_ref() {
+                if let Some((x, y, size)) = shell.dock_slot_global(b.target) {
+                    let (lift, _) = b.offset(Instant::now());
+                    // Keep the edge-dependent resting position, but always bounce upwards on screen.
+                    let base_size = (b.px as f64 / scale).max(1.0);
+                    let inset = (size as f64 - base_size) * 0.5;
+                    let lift = lift as f64;
+                    let (x, y) = (x as f64, y as f64);
+                    let (lx, ly) = match edge {
+                        DockEdge::Bottom => (x + inset, y + inset * 2.0 - lift),
+                        DockEdge::Left => (x, y + inset - lift),
+                        DockEdge::Right => (x + inset * 2.0, y + inset - lift),
+                    };
+                    let src = smithay::utils::Rectangle::new((0.0, 0.0).into(), (b.px as f64, b.px as f64).into());
+                    mem(&mut out, ((lx * scale).round(), (ly * scale).round()), &b.buffer, Some(src), crate::animation::Visual::default());
+                }
+            }
+            for (r, key) in &shell.dock_gpu_icons {
+                let Some(texture) = shell.dock_icon_textures.get(key) else { continue };
+                let loc = (dock_x + (r.x as f64 * scale).round(), dock_y + (r.y as f64 * scale).round());
+                let size = ((r.w as f64 * scale).round() as i32, (r.h as f64 * scale).round() as i32);
+                let src = smithay::utils::Rectangle::from_size((key.px as f64, key.px as f64).into());
+                out.push(
+                    SceneElement::Texture(
+                        smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer(
+                            loc,
+                            texture,
+                            None,
+                            Some(src),
+                            Some(size.into()),
+                            Kind::Unspecified,
+                        ),
+                    )
+                    .into(),
+                );
+            }
+            mem(&mut out, (dock_x, dock_y), &shell.dock_buffer, None, crate::animation::Visual::default());
+            let ox = sx + hx as f32;
+            let oy = sy + hy as f32;
+            if let Some(&(lr, lrad)) = shell.dock_glass.get(1) {
+                push_glass(
+                    &mut out,
+                    GlassSpec {
+                        key: KEY_DOCK_LABEL,
+                        rect: crate::shell::R::new(lr.x + ox, lr.y + oy, lr.w, lr.h),
+                        radius: lrad,
+                        strength: 0.9,
+                        visual: crate::animation::Visual::default(),
+                    },
+                );
+            }
+            if let Some(&(b, radius)) = shell.dock_glass.first() {
+                push_glass(
+                    &mut out,
+                    GlassSpec {
+                        key: KEY_DOCK,
+                        rect: crate::shell::R::new(b.x + ox, b.y + oy, b.w, b.h),
+                        radius,
+                        strength: 0.95,
+                        visual: crate::animation::Visual::default(),
+                    },
+                );
+            }
+        }
+        out.extend(drop_shelf.elements(
+            renderer,
+            scale,
+            (shell.screen_w, shell.screen_h),
+            glass.as_mut().map(|(g, h)| (&mut **g, *h)),
+        ));
+        if let Some(lp) = shell.launchpad.as_ref() {
+            let lp_vis = animations.launchpad(shell);
+            for ((x, y), buf) in lp.elements() {
+                if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    ((x as f64 * scale).round(), (y as f64 * scale).round()),
+                    buf,
+                    Some(lp_vis.alpha),
+                    None,
+                    None,
+                    Kind::Unspecified,
+                ) {
+                    out.push(lp_vis.element(SceneElement::Memory(e), scale));
+                }
+            }
         }
     }
 
-    if backdrop_due {
-        push_scratch_backdrop(&mut out, renderer, shell, backdrop, view, scale);
-    }
-    push_layers(&mut out, renderer, shell, smithay::wayland::shell::wlr_layer::Layer::Bottom, view, scale);
-
-    // Mission Control dims the desktop behind the spread windows
-    let dim = if primary {animations.mission_progress()}else{0.0};
-    if dim > 0.0 {
-        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
-            renderer, (0.0, 0.0), &shell.mission_dim, Some((0.35 * dim) as f32),
-            Some(smithay::utils::Rectangle::from_size((4.0, 4.0).into())),
-            Some((to_phys(shell.screen_w), to_phys(shell.screen_h)).into()), Kind::Unspecified,
-        ) {
-            out.push(SceneElement::Memory(e).into());
-        }
-    }
-    if primary {out.extend(shell.desktop.elements(renderer, (shell.screen_w, shell.screen_h), scale));}
-    push_layers(&mut out, renderer, shell, smithay::wayland::shell::wlr_layer::Layer::Background, view, scale);
-    let wp_size = ((view.w as f64*scale).round() as i32,(view.h as f64*scale).round() as i32);
-    // The source rect must be the (low-res) buffer itself; by default Smithay would use the
-    // destination size and sample outside the texture
-    if let Some(texture)=&shell.wallpaper_texture{
-        let (w,h)=shell.wallpaper_texture_size;
-        out.push(SceneElement::Texture(smithay::backend::renderer::element::texture::TextureRenderElement::from_texture_buffer((view.x as f64*scale,view.y as f64*scale),texture,None,Some(smithay::utils::Rectangle::from_size((w as f64,h as f64).into())),Some(wp_size.into()),Kind::Unspecified)).into());
-    }
+    out.extend(build_world_scene(
+        renderer, shell, windows, scale, rounded, animations, view, drawn, false,
+    ));
     out
 }
 
@@ -674,15 +1324,24 @@ pub(crate) fn push_window(
     }
 
     if win.has_titlebar() {
-        let old=win.decoration_size();
-        let resized=win.app_id=="builtin.settings";
+        let old = win.decoration_size();
+        let resized = win.app_id == "builtin.settings"
+            || (scale - crate::theme::ui_scale() as f64).abs() > 0.005;
+        let deco_h = if win.is_builtin() {
+            win.total_height()
+        } else {
+            crate::theme::TITLEBAR_HEIGHT
+        };
         if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             ((win.x as f64 * scale).round(), (win.y as f64 * scale).round()),
             &win.decoration_buffer,
             Some(visual.alpha),
-            resized.then(||smithay::utils::Rectangle::from_size((old.0 as f64,old.1 as f64).into())),
-            resized.then(||((win.width as f64*scale).round() as i32,(win.total_height() as f64*scale).round() as i32).into()),
+            resized.then(|| smithay::utils::Rectangle::from_size((old.0 as f64, old.1 as f64).into())),
+            resized.then(|| (
+                ((win.width as f64 * scale).round() as i32).max(1),
+                ((deco_h as f64 * scale).round() as i32).max(1),
+            ).into()),
             Kind::Unspecified,
         ) {
             out.push(visual.element(SceneElement::Memory(e), scale));
@@ -720,16 +1379,22 @@ fn push_space_thumbnails(
         let space = tile.space.filter(|s| !animations.in_slide(*s));
         if space.is_none() && !tile.larvis { continue }
         let r = tile.rect;
-        let k = ((r.w as f64 - 8.0) / sw).min((r.h as f64 - 8.0) / sh);
-        let (ox, oy) = (r.x as f64 + (r.w as f64 - sw * k) * 0.5, r.y as f64 + (r.h as f64 - sh * k) * 0.5);
         let on_tile = |w: &&ManagedWindow| if tile.larvis { w.larvis } else { Some(w.space) == space };
+        let (mut x_min, mut x_max) = (0.0_f64, sw);
+        for win in windows.iter().filter(|w| w.mapped && !w.minimized).filter(on_tile) {
+            x_min = x_min.min(win.x as f64);
+            x_max = x_max.max((win.x + win.width) as f64);
+        }
+        let span_w = (x_max - x_min).max(1.0);
+        let k = ((r.w as f64 - 8.0) / span_w).min((r.h as f64 - 8.0) / sh);
+        let (ox, oy) = (r.x as f64 + (r.w as f64 - span_w * k) * 0.5, r.y as f64 + (r.h as f64 - sh * k) * 0.5);
         for win in windows.iter().rev().filter(|w| w.mapped && !w.minimized).filter(on_tile) {
             let center = (win.x as f64 + win.width as f64 * 0.5, win.y as f64 + win.total_height() as f64 * 0.5);
             let visual = crate::animation::Visual {
                 scale: k,
                 alpha: animations.mission_progress() as f32,
                 center,
-                offset: (ox + center.0 * k - center.0, oy + center.1 * k - center.1),
+                offset: (ox + (center.0 - x_min) * k - center.0, oy + center.1 * k - center.1),
             };
             push_window(out, renderer, win, visual, scale, rounded, false);
             drawn.push(win.id);
@@ -830,15 +1495,17 @@ pub fn send_frames_surface_tree(surface: &WlSurface, time: u32) {
 
 impl FeatherCompositor {
     /// Rasterizes dirty shell/decoration buffers on the CPU (only when something changed)
-    fn update_cpu_buffers(&mut self) {
+    pub(crate) fn update_cpu_buffers(&mut self) {
         let mut profile = crate::cpu_profile::Batch::new();
         if self.lock.splash.active {
             self.lock.splash.paint(&mut self.fonts, self.scale_factor);
             profile.step("boot-splash");
         }
         if self.lock.active {self.shell.ensure_wallpaper_rendered();let status=crate::session_lock::LockStatus::new(self.shell.battery,self.shell.cc.wifi.available.then_some(self.shell.wifi_enabled));self.lock.paint(&mut self.fonts,self.scale_factor,&self.active_layout_name,status,(self.shell.screen_w,self.shell.screen_h));profile.step("lock");return;}
-        self.audio_hud.paint(&mut self.fonts,self.scale_factor);
-        self.banner.paint(&mut self.fonts,self.scale_factor);
+        let screen = (self.shell.screen_w, self.shell.screen_h);
+        self.audio_hud.paint(&mut self.fonts, self.scale_factor, screen);
+        self.banner.paint(&mut self.fonts, self.scale_factor, screen);
+        self.drop_shelf.paint(&mut self.fonts, self.scale_factor, screen);
         // Kept while the Подложка has windows, so that it opens with its frosted glass at once
         self.shell.scratch_backdrop = self.animations.scratch_progress() > 0.0 || self.shell.scratch_count > 0;
         profile.step("audio-hud");
@@ -966,6 +1633,11 @@ impl FeatherCompositor {
         self.refresh_output_membership();
         self.needs_redraw = false;
         let t_cpu = Instant::now();
+        let shelf_anim = if !self.lock.active {
+            self.drop_shelf.advance(t_cpu, self.animations.enabled())
+        } else {
+            false
+        };
         self.shell.release_closed_launchpad();
         self.update_cpu_buffers();
         if self.shell.emoji.incomplete {
@@ -984,7 +1656,9 @@ impl FeatherCompositor {
                     worker.submit(crate::raster::Job::Reclaim);
                 }
             }
-            self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now()) || self.auth.animating();
+            self.needs_redraw = self.animations.advance(&self.windows, &self.shell, Instant::now())
+                || self.auth.animating()
+                || shelf_anim;
             self.finish_mission();
             self.finish_ring();
             self.advance_bounce();
@@ -1058,10 +1732,30 @@ impl FeatherCompositor {
         let view=self.monitors.iter().find(|m|self.preview_monitor.as_ref()==Some(&m.info.name)).or_else(||self.primary_monitor()).map(|m|m.info.clone())?;
 
         let draw_pointer = self.larvis_desktop && !self.larvis_manual_input && !self.pointer_locked();
+        let scale = self.scale_factor;
+        let now = Instant::now();
+        let splash_opaque = self.lock.splash.is_opaque(now);
+        if !self.power.blanked && !splash_opaque && !self.lock.active {
+            let backend = &mut self.backend;
+            prepare_glass(
+                self.glass.as_mut(),
+                || backend.renderer(),
+                &view.name,
+                view.rect,
+                scale,
+                &self.shell,
+                &self.windows,
+                self.rounded_program.as_ref(),
+                &self.animations,
+                &self.banner,
+                &self.audio_hud,
+                &self.screencast,
+                &self.drop_shelf,
+            );
+        }
         let crate::backend::Backend::Winit(backend) = &mut self.backend else {
             return None;
         };
-        let scale = self.scale_factor;
         let output = self.monitors.iter().find(|m| m.info.name == view.name).map(|m| m.output.clone());
         let mut feedback = None;
         // Smithay's target bind resizes the native window but leaves EGL surfaceless.
@@ -1105,19 +1799,22 @@ impl FeatherCompositor {
                 }
             } }
             let pointer = (self.pointer_location.x, self.pointer_location.y);
-            let now = Instant::now();
-            let splash_opaque = self.lock.splash.is_opaque(now);
             let mut drawn = Vec::new();
             let elements = if self.power.blanked || splash_opaque {Vec::new()} else if self.lock.active {
                 self.lock.monitor_elements(renderer,scale,&view,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size)))
             } else {
-                let mut elements = if view.primary {self.auth.elements(renderer, scale, (self.shell.screen_w, self.shell.screen_h), (self.phys_w, self.phys_h))}else{Vec::new()};
-                if view.primary {elements.extend(self.banner.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h)));elements.extend(self.audio_hud.elements(renderer,scale,(self.shell.screen_w,self.shell.screen_h)));}
+                let head_name = view.name.as_str();
+                let screen = (self.shell.screen_w, self.shell.screen_h);
+                let mut elements = if view.primary {self.auth.elements(renderer, scale, screen, (self.phys_w, self.phys_h))}else{Vec::new()};
+                if view.primary {
+                    elements.extend(self.banner.elements(renderer, scale, screen, self.glass.as_mut().map(|g| (g, head_name))));
+                    elements.extend(self.audio_hud.elements(renderer, scale, screen, self.glass.as_mut().map(|g| (g, head_name))));
+                }
                 if draw_pointer {
                     elements.extend(cursor_elements(renderer, &mut self.cursor, pointer, scale));
                 }
                 elements.extend(crate::screenshot::overlay(renderer, self.screenshot_select.as_ref(), pointer, scale, (self.phys_w, self.phys_h)));
-                elements.extend(crate::screencast::overlay(renderer, &self.screencast, scale, (self.phys_w, self.phys_h)));
+                elements.extend(crate::screencast::overlay(renderer, &self.screencast, scale, (self.phys_w, self.phys_h), self.glass.as_mut().map(|g| (g, head_name))));
                 drag_overlay(&mut elements, renderer, &self.shell, pointer, scale);
                 elements.extend(build_scene(
                     renderer,
@@ -1129,6 +1826,8 @@ impl FeatherCompositor {
                     &self.animations,
                     view.rect,
                     &mut drawn,
+                    &self.drop_shelf,
+                    self.glass.as_mut().map(|g| (g, head_name)),
                 ));
                 elements
             };
@@ -1207,6 +1906,9 @@ impl FeatherCompositor {
         };
         let t=Instant::now();let mut submitted=false;let mut direct_scanouts=0u32;
         self.shown_windows.retain(|(n,_)|d.heads.iter().any(|h|h.name==*n));
+        if let Some(g) = self.glass.as_mut() {
+            g.retain_heads(|name| d.heads.iter().any(|h| h.name == name));
+        }
         self.frame_heads.clear();
         self.idle_heads.clear();
         let start=Instant::now();
@@ -1221,6 +1923,7 @@ impl FeatherCompositor {
             let fullscreen_on_head = !self.lock.active
                 && !self.lock.splash.active
                 && !self.shell.has_visible_overlay()
+                && !self.drop_shelf.is_visible()
                 && self.shell.launchpad.is_none()
                 && self
                     .windows
@@ -1252,15 +1955,34 @@ impl FeatherCompositor {
                 e.extend(self.lock.monitor_elements(&mut d.renderer,scale,info,self.shell.wallpaper_texture.as_ref().map(|t|(t,self.shell.wallpaper_texture_size))));
                 output_elements(e,crate::monitors::Rect{x:0,y:0,..info.rect},scale)
             }else{
+                let d_renderer = &mut d.renderer;
+                prepare_glass(
+                    self.glass.as_mut(),
+                    || d_renderer,
+                    &head.name,
+                    info.rect,
+                    scale,
+                    &self.shell,
+                    &self.windows,
+                    self.rounded_program.as_ref(),
+                    &self.animations,
+                    &self.banner,
+                    &self.audio_hud,
+                    &self.screencast,
+                    &self.drop_shelf,
+                );
+                let head_name = head.name.as_str();
+                let screen = (self.shell.screen_w, self.shell.screen_h);
                 let mut e=if pointer_locked {Vec::new()} else {cursor_elements(&mut d.renderer,&mut self.cursor,pointer,scale)};
                 if info.primary {
-                    e.extend(self.auth.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h),(self.phys_w,self.phys_h)));
-                    e.extend(self.banner.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));e.extend(self.audio_hud.elements(&mut d.renderer,scale,(self.shell.screen_w,self.shell.screen_h)));
+                    e.extend(self.auth.elements(&mut d.renderer,scale,screen,(self.phys_w,self.phys_h)));
+                    e.extend(self.banner.elements(&mut d.renderer,scale,screen,self.glass.as_mut().map(|g|(g,head_name))));
+                    e.extend(self.audio_hud.elements(&mut d.renderer,scale,screen,self.glass.as_mut().map(|g|(g,head_name))));
                     e.extend(crate::screenshot::overlay(&mut d.renderer,self.screenshot_select.as_ref(),pointer,scale,(self.phys_w,self.phys_h)));
-                    e.extend(crate::screencast::overlay(&mut d.renderer,&self.screencast,scale,(self.phys_w,self.phys_h)));
+                    e.extend(crate::screencast::overlay(&mut d.renderer,&self.screencast,scale,(self.phys_w,self.phys_h),self.glass.as_mut().map(|g|(g,head_name))));
                 }
                 drag_overlay(&mut e,&mut d.renderer,&self.shell,pointer,scale);
-                e.extend(build_scene(&mut d.renderer,&self.shell,&self.windows,scale,pointer,self.rounded_program.as_ref(),&self.animations,info.rect,&mut drawn));
+                e.extend(build_scene(&mut d.renderer,&self.shell,&self.windows,scale,pointer,self.rounded_program.as_ref(),&self.animations,info.rect,&mut drawn,&self.drop_shelf,self.glass.as_mut().map(|g|(g,head_name))));
                 output_elements(e,info.rect,scale)
             };
             // A head still waiting for its vblank keeps the windows of its last frame
@@ -1336,6 +2058,24 @@ impl FeatherCompositor {
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let draw_cursor = cursor && !self.pointer_locked();
         let blank = self.power.blanked || self.lock.splash.is_opaque(Instant::now());
+        if !blank && !self.lock.active {
+            let backend = &mut self.backend;
+            prepare_glass(
+                self.glass.as_mut(),
+                || backend.renderer(),
+                &info.name,
+                info.rect,
+                scale,
+                &self.shell,
+                &self.windows,
+                self.rounded_program.as_ref(),
+                &self.animations,
+                &self.banner,
+                &self.audio_hud,
+                &self.screencast,
+                &self.drop_shelf,
+            );
+        }
         let renderer = self.backend.renderer();
         let elements = if blank {
             Vec::new()
@@ -1347,12 +2087,13 @@ impl FeatherCompositor {
                 scale,
             )
         } else {
+            let head_name = info.name.as_str();
             let mut e = if draw_cursor { cursor_elements(renderer, &mut self.cursor, pointer, scale) } else { Vec::new() };
             if info.primary {
                 let screen = (self.shell.screen_w, self.shell.screen_h);
                 e.extend(self.auth.elements(renderer, scale, screen, (self.phys_w, self.phys_h)));
-                e.extend(self.banner.elements(renderer, scale, screen));
-                e.extend(self.audio_hud.elements(renderer, scale, screen));
+                e.extend(self.banner.elements(renderer, scale, screen, self.glass.as_mut().map(|g| (g, head_name))));
+                e.extend(self.audio_hud.elements(renderer, scale, screen, self.glass.as_mut().map(|g| (g, head_name))));
             }
             drag_overlay(&mut e, renderer, &self.shell, pointer, scale);
             e.extend(build_scene(
@@ -1365,6 +2106,8 @@ impl FeatherCompositor {
                 &self.animations,
                 info.rect,
                 &mut Vec::new(),
+                &self.drop_shelf,
+                self.glass.as_mut().map(|g| (g, head_name)),
             ));
             output_elements(e, info.rect, scale)
         };
@@ -1551,6 +2294,7 @@ impl FeatherCompositor {
             || self.icon_drag.as_ref().is_some_and(|d| d.active)
             || self.shell.has_open_panel()
             || self.shell.toast_contains(px, py)
+            || self.drop_shelf.contains(px, py, (self.shell.screen_w, self.shell.screen_h))
         {
             return true;
         }

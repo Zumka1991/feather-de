@@ -3188,5 +3188,639 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-privacy-check] portal access policy, per-app rules, cursor mode and persistence passed");
         })?;
     }
+    if let Ok(mode) = std::env::var("FEATHER_DEBUG_SPACE_MODES") {
+        if state.backend.is_drm() || !state.debug_input_only {
+            return Err("space modes check requires isolated windowed input".into());
+        }
+        use crate::space_layout::{SpaceMode, TAPE_GAP, TAPE_PEEK, TILE_GAP};
+        const LOG: &str = "[feather-space-modes-check]";
+        fn tap_ctrl_alt_m(s: &mut FeatherCompositor) {
+            s.debug_keyboard_key(29, true);
+            s.debug_keyboard_key(56, true);
+            s.debug_keyboard_key(50, true);
+            s.debug_keyboard_key(50, false);
+            s.debug_keyboard_key(56, false);
+            s.debug_keyboard_key(29, false);
+        }
+        fn tap_super_combo(s: &mut FeatherCompositor, ctrl: bool, shift: bool, evdev: u32) {
+            s.debug_keyboard_key(125, true);
+            if ctrl { s.debug_keyboard_key(29, true); }
+            if shift { s.debug_keyboard_key(42, true); }
+            s.debug_keyboard_key(evdev, true);
+            s.debug_keyboard_key(evdev, false);
+            if shift { s.debug_keyboard_key(42, false); }
+            if ctrl { s.debug_keyboard_key(29, false); }
+            s.debug_keyboard_key(125, false);
+        }
+
+        if mode == "hold-tile" || mode == "hold-tape" || mode == "hold-mission" {
+            at(state, 1600, move |s| {
+                s.windows.retain(|w| w.app_id != "builtin.about");
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::QuickNotes);
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::AboutFeather);
+                match mode.as_str() {
+                    "hold-tile" => {
+                        s.set_space_mode(0, SpaceMode::Tile, true);
+                    }
+                    "hold-tape" => {
+                        s.set_space_mode(0, SpaceMode::Tape, true);
+                        let mid = s.space_layouts.order(0).get(1).copied();
+                        if let Some(id) = mid {
+                            s.execute_shell_action(ShellClickAction::FocusWindow(id));
+                        }
+                    }
+                    "hold-mission" => {
+                        s.spaces.count = 3;
+                        s.set_space_mode(0, SpaceMode::Tile, false);
+                        s.set_space_mode(1, SpaceMode::Tape, false);
+                        s.set_space_mode(2, SpaceMode::Free, false);
+                        s.open_mission();
+                        if let Some(t) = s.shell.mission.as_ref().and_then(|m| m.tiles.get(1)) {
+                            let pill = crate::mission::mode_pill_rect(t.rect);
+                            s.debug_pointer_motion((pill.x + pill.w * 0.5) as f64, (pill.y + pill.h * 0.5) as f64);
+                        }
+                    }
+                    _ => {}
+                }
+                s.needs_redraw = true;
+            })?;
+            return Ok(());
+        }
+
+        at(state, 350, move |s| {
+            if let Ok(exe) = std::env::current_exe() {
+                let te = exe.with_file_name("feather-textedit");
+                if te.exists() {
+                    s.execute_shell_action(ShellClickAction::LaunchApp(
+                        crate::apps::AppAction::Exec(format!("\"{}\"", te.display())),
+                        "TextEdit".into(),
+                    ));
+                }
+            }
+        })?;
+
+        let free_frames: Rc<Cell<[(u64, i32, i32, i32, i32); 3]>> = Rc::new(Cell::new([(0, 0, 0, 0, 0); 3]));
+        let ff1 = free_frames.clone();
+        at(state, 1800, move |s| {
+            // Remove startup About window if present so desktop 1 has exactly 3 windows
+            s.windows.retain(|w| w.app_id != "builtin.about");
+            while s.windows.iter().filter(|w| w.mapped && w.space == 0).count() < 3 {
+                let n = s.windows.iter().filter(|w| w.mapped && w.space == 0).count();
+                let kind = match n {
+                    0 => crate::apps::BuiltinWindowKind::SystemSettings,
+                    1 => crate::apps::BuiltinWindowKind::QuickNotes,
+                    _ => crate::apps::BuiltinWindowKind::ActivityMonitor,
+                };
+                s.open_or_focus_builtin(kind);
+            }
+            let mut ids: Vec<u64> = s.windows.iter().filter(|w| w.mapped && w.space == 0).map(|w| w.id).collect();
+            ids.truncate(3);
+            s.windows.retain(|w| w.space != 0 || ids.contains(&w.id));
+            for (k, &id) in ids.iter().enumerate() {
+                if let Some(w) = s.windows.iter_mut().find(|w| w.id == id) {
+                    w.x = 90 + k as i32 * 180;
+                    w.y = 70 + k as i32 * 50;
+                }
+            }
+            let mut snap = [(0, 0, 0, 0, 0); 3];
+            for (k, &id) in ids.iter().enumerate() {
+                let w = s.windows.iter().find(|w| w.id == id).unwrap();
+                snap[k] = (id, w.x, w.y, w.width, w.height);
+            }
+            ff1.set(snap);
+            assert_eq!(s.current_space_mode(), SpaceMode::Free);
+            assert_eq!(s.shell.space_mode, SpaceMode::Free);
+
+            // 1) Ctrl+Alt+M -> Tile
+            tap_ctrl_alt_m(s);
+            assert_eq!(s.current_space_mode(), SpaceMode::Tile, "{LOG} Ctrl+Alt+M -> Tile");
+            assert_eq!(s.shell.space_mode, SpaceMode::Tile, "{LOG} topbar synced to Tile");
+        })?;
+
+        let ff2 = free_frames.clone();
+        at(state, 2300, move |s| {
+            let snap = ff2.get();
+            let ids = [snap[0].0, snap[1].0, snap[2].0];
+            let area = s.desktop_work_area();
+            let slots = crate::space_layout::tile_slots(3, area, &[]);
+            for (slot_idx, &id) in ids.iter().enumerate() {
+                let w = s.windows.iter().find(|w| w.id == id).unwrap();
+                assert!(w.managed_layout, "{LOG} window managed in Tile");
+                assert_eq!((w.x, w.y, w.width, w.total_height()), (slots[slot_idx].rect.x, slots[slot_idx].rect.y, slots[slot_idx].rect.w, slots[slot_idx].rect.h), "{LOG} BSP slot {slot_idx}");
+            }
+            assert_eq!(slots[0].rect.x, area.x + TILE_GAP);
+
+            // Focus left master (ids[0]) via Super+Left, stretch divider via Ctrl+Super+Right
+            tap_super_combo(s, false, false, 105);
+            assert_eq!(s.windows.iter().rev().find(|w| w.is_visible()).unwrap().id, ids[0], "{LOG} Super+Left focus master");
+            tap_super_combo(s, true, false, 106);
+            let right_x = s.windows.iter().find(|w| w.id == ids[1]).unwrap().x;
+            assert!(right_x > slots[1].rect.x + 20, "{LOG} Ctrl+Super+Right shifted divider: {} -> {}", slots[1].rect.x, right_x);
+            tap_super_combo(s, false, false, 11);
+            assert_eq!(s.windows.iter().find(|w| w.id == ids[1]).unwrap().x, slots[1].rect.x, "{LOG} Super+0 equalized BSP");
+
+            // Super+F zooms focused tile across the whole desktop work area, and unzooms back
+            tap_super_combo(s, false, false, 33);
+            assert_eq!(s.space_layouts.zoomed(0), Some(ids[0]), "{LOG} Super+F zoomed");
+            assert!(!s.windows.iter().find(|w| w.id == ids[1]).unwrap().is_visible(), "{LOG} other tiles hidden while zoomed");
+            tap_super_combo(s, false, false, 33);
+            assert_eq!(s.space_layouts.zoomed(0), None, "{LOG} Super+F unzoomed");
+            assert!(s.windows.iter().find(|w| w.id == ids[1]).unwrap().is_visible(), "{LOG} other tiles visible again");
+
+            // 2) Ctrl+Alt+M -> Tape (Scrollable Ribbon)
+            tap_ctrl_alt_m(s);
+            assert_eq!(s.current_space_mode(), SpaceMode::Tape, "{LOG} Ctrl+Alt+M -> Tape");
+        })?;
+
+        let ff3 = free_frames.clone();
+        at(state, 2800, move |s| {
+            let snap = ff3.get();
+            let ids = [snap[0].0, snap[1].0, snap[2].0];
+            let area = s.desktop_work_area();
+            let inner = crate::space_layout::tape_inner(area);
+            let half_w = (inner.w - TAPE_GAP) / 2;
+
+            // Jump to first column with Super+Home (evdev 102)
+            tap_super_combo(s, false, false, 102);
+            assert_eq!(s.space_layouts.scroll(0), 0, "{LOG} Super+Home -> scroll 0");
+            let w0 = s.windows.iter().find(|w| w.id == ids[0]).unwrap();
+            let w1 = s.windows.iter().find(|w| w.id == ids[1]).unwrap();
+            assert_eq!(w0.width, half_w, "{LOG} default 1/2 column width");
+            assert_eq!(w0.width + TAPE_GAP + w1.width, inner.w, "{LOG} two 1/2 columns fill inner width pixel-perfectly");
+
+            // Super+Right focuses middle column -> ribbon scrolls to TAPE_PEEK so both neighbors peek
+            tap_super_combo(s, false, false, 106);
+            assert_eq!(s.windows.iter().rev().find(|w| w.is_visible()).unwrap().id, ids[1], "{LOG} Super+Right focused col 1");
+            assert_eq!(s.space_layouts.scroll(0), TAPE_PEEK, "{LOG} interior column shows neighbor peek");
+
+            // Clicking peeking right column's left resize border must NOT auto-scroll before grabbing ResizeWindow
+            let w2 = s.windows.iter().find(|w| w.id == ids[2]).unwrap();
+            let (bx, by) = (w2.x as f64 + 1.0, (w2.y + w2.total_height() / 2) as f64);
+            let scroll_before = s.space_layouts.scroll(0);
+            s.debug_pointer_motion(bx, by);
+            s.debug_pointer_button(0x110, true);
+            assert!(matches!(s.active_drag, Some(crate::DragOperation::ResizeWindow { .. })), "{LOG} peeking column resize border grabbed cleanly");
+            assert_eq!(s.space_layouts.scroll(0), scroll_before, "{LOG} resize click held ribbon scroll steady");
+            s.debug_pointer_button(0x110, false);
+
+            // Focus col 1 again and trigger Super+R preset cycle (1/2 -> 2/3)
+            s.execute_shell_action(ShellClickAction::FocusWindow(ids[1]));
+            tap_super_combo(s, false, false, 19);
+        })?;
+
+        let ff4 = free_frames.clone();
+        at(state, 3200, move |s| {
+            let snap = ff4.get();
+            let ids = [snap[0].0, snap[1].0, snap[2].0];
+            let inner = crate::space_layout::tape_inner(s.desktop_work_area());
+            let two_thirds = ((inner.w as f32) * (2.0 / 3.0) - (TAPE_GAP as f32) * (1.0 / 3.0)).round() as i32;
+            assert_eq!(s.windows.iter().find(|w| w.id == ids[1]).unwrap().width, two_thirds, "{LOG} Super+R -> 2/3 width committed by client");
+
+            // Super+0 resets widths back to 1/2, Super+Shift+Left swaps col 1 with col 0
+            tap_super_combo(s, false, false, 11);
+            tap_super_combo(s, false, true, 105);
+            assert_eq!(s.space_layouts.order(0)[0], ids[1], "{LOG} Super+Shift+Left swapped ribbon columns");
+
+            // Fullscreen enter -> focus refresh in Tape must hold background columns steady
+            let way_idx = s
+                .windows
+                .iter()
+                .rposition(|w| !w.is_builtin())
+                .expect("wayland client window in Tape");
+            let last = s.windows.len() - 1;
+            if way_idx != last {
+                let w = s.windows.remove(way_idx);
+                s.windows.push(w);
+            }
+            s.refresh_focus();
+            let top_idx = s.windows.len() - 1;
+            let r = s.window_monitor(top_idx);
+            s.set_window_fullscreen(top_idx, true, r);
+            s.refresh_focus();
+            assert!(s.windows[top_idx].fullscreen, "{LOG} Wayland client entered fullscreen in Tape");
+        })?;
+
+        at(state, 3550, move |s| {
+            let fs_idx = s.windows.iter().position(|w| w.fullscreen).expect("fullscreen window");
+            let r = s.window_monitor(fs_idx);
+            s.set_window_fullscreen(fs_idx, false, r);
+        })?;
+
+        at(state, 3950, move |s| {
+            let col0 = s.windows.iter().find(|w| w.id == s.space_layouts.order(0)[0]).unwrap();
+            let col1 = s.windows.iter().find(|w| w.id == s.space_layouts.order(0)[1]).unwrap();
+            assert_eq!(
+                col0.x + col0.width + TAPE_GAP,
+                col1.x,
+                "{LOG} fullscreen roundtrip in Tape must keep columns side-by-side without overlap (col0={}..{}, col1={}..{})",
+                col0.x,
+                col0.x + col0.width,
+                col1.x,
+                col1.x + col1.width,
+            );
+
+            // 3) Mission Control mode pill cycles desktop mode live (Tape -> Free)
+            s.open_mission();
+            assert!(s.mission_open());
+            assert_eq!(s.shell.mission.as_ref().unwrap().tiles[0].mode, Some(SpaceMode::Tape));
+            let pill = crate::mission::mode_pill_rect(s.shell.mission.as_ref().unwrap().tiles[0].rect);
+            s.debug_pointer_motion((pill.x + pill.w * 0.5) as f64, (pill.y + pill.h * 0.5) as f64);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_button(0x110, false);
+            assert!(s.mission_open(), "{LOG} clicking mode pill keeps Mission Control open");
+            assert_eq!(s.current_space_mode(), SpaceMode::Free, "{LOG} Mission Control pill cycled Tape -> Free");
+            assert_eq!(s.shell.mission.as_ref().unwrap().tiles[0].mode, Some(SpaceMode::Free));
+            s.close_mission(None);
+        })?;
+
+        at(state, 4450, move |s| {
+            // 4) Returning to Free restored original floating frames (including client buffer commit)
+            for (id, x, y, w, h) in free_frames.get() {
+                let win = s.windows.iter().find(|win| win.id == id).unwrap();
+                assert!(!win.managed_layout, "{LOG} unmanaged again in Free");
+                assert_eq!((win.x, win.y, win.width, win.height), (x, y, w, h), "{LOG} Free frame restored for window {id}");
+            }
+            eprintln!("{LOG} Free/Tile/Tape shortcuts, BSP resize, Niri ribbon scroll/peek/presets, fullscreen video roundtrip, Mission Control mode pill and Free frame restore passed");
+            s.loop_signal.stop();
+        })?;
+    }
+    if let Ok(mode) = std::env::var("FEATHER_DEBUG_GLASS") {
+        if state.backend.is_drm() || !state.debug_input_only {
+            return Err("glass check requires isolated windowed input".into());
+        }
+        const LOG: &str = "[feather-glass-check]";
+        fn paint_solid_window(
+            id: u64,
+            x: i32,
+            y: i32,
+            w: i32,
+            h: i32,
+            rgba: [u8; 4],
+        ) -> crate::window::ManagedWindow {
+            use smithay::backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer};
+            let mut win = crate::window::ManagedWindow::new_builtin(
+                id,
+                crate::apps::BuiltinWindowKind::QuickNotes,
+                x,
+                y,
+            );
+            win.ssd = true;
+            win.activated = false;
+            win.width = w;
+            win.height = (h - crate::theme::TITLEBAR_HEIGHT).max(1);
+            let pw = crate::theme::to_phys(win.width);
+            let ph = crate::theme::to_phys(crate::theme::TITLEBAR_HEIGHT + win.height);
+            let mut buf = MemoryRenderBuffer::new(
+                Fourcc::Abgr8888,
+                (pw, ph),
+                1,
+                smithay::utils::Transform::Normal,
+                None,
+            );
+            let _ = buf.render().draw(|bytes| {
+                for px in bytes.chunks_exact_mut(4) {
+                    px.copy_from_slice(&rgba);
+                }
+                Result::<_, ()>::Ok(vec![smithay::utils::Rectangle::from_size((pw, ph).into())])
+            });
+            win.decoration_buffer = buf;
+            win.phys_buf_w = pw;
+            win.phys_buf_h = ph;
+            win.dirty = false;
+            win.painted_focused = Some(false);
+            win
+        }
+
+        fn capture_offscreen(s: &mut FeatherCompositor) -> (i32, i32, Vec<u8>) {
+            use smithay::backend::{
+                allocator::Fourcc,
+                renderer::{damage::OutputDamageTracker, gles::GlesTexture, Bind, ExportMem, Offscreen},
+            };
+            s.update_cpu_buffers();
+            let scale = s.scale_factor;
+            let view = crate::monitors::Rect {
+                x: 0,
+                y: 0,
+                w: s.shell.screen_w,
+                h: s.shell.screen_h,
+            };
+            let sw = ((view.w as f64 * scale).round() as i32).max(1);
+            let sh = ((view.h as f64 * scale).round() as i32).max(1);
+            let backend = &mut s.backend;
+            crate::render::prepare_glass(
+                s.glass.as_mut(),
+                || backend.renderer(),
+                "debug-glass",
+                view,
+                scale,
+                &s.shell,
+                &s.windows,
+                s.rounded_program.as_ref(),
+                &s.animations,
+                &s.banner,
+                &s.audio_hud,
+                &s.screencast,
+                &s.drop_shelf,
+            );
+            let elements = crate::render::build_scene(
+                s.backend.renderer(),
+                &s.shell,
+                &s.windows,
+                scale,
+                (s.pointer_location.x, s.pointer_location.y),
+                s.rounded_program.as_ref(),
+                &s.animations,
+                view,
+                &mut Vec::new(),
+                &s.drop_shelf,
+                s.glass.as_mut().map(|g| (g, "debug-glass")),
+            );
+            let renderer = s.backend.renderer();
+            let mut tex: GlesTexture = renderer
+                .create_buffer(Fourcc::Abgr8888, (sw, sh).into())
+                .expect("offscreen glass texture");
+            let mapping = {
+                let mut fb = renderer.bind(&mut tex).expect("bind offscreen");
+                OutputDamageTracker::new((sw, sh), 1.0, smithay::utils::Transform::Normal)
+                    .render_output(renderer, &mut fb, 0, &elements, crate::render::CLEAR_COLOR)
+                    .expect("render offscreen");
+                renderer
+                    .copy_framebuffer(
+                        &fb,
+                        smithay::utils::Rectangle::from_size((sw, sh).into()),
+                        Fourcc::Abgr8888,
+                    )
+                    .expect("copy_framebuffer")
+            };
+            let bytes = renderer.map_texture(&mapping).expect("map_texture").to_vec();
+            (sw, sh, bytes)
+        }
+
+        if mode == "hold" {
+            at(state, 1500, move |s| {
+                s.windows.clear();
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
+                if let Some(w) = s.windows.last_mut() {
+                    w.x = 70;
+                    w.y = 8;
+                }
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::AboutFeather);
+                if let Some(w) = s.windows.last_mut() {
+                    w.x = (s.shell.screen_w - w.width - 40).max(40);
+                    w.y = 26;
+                }
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::QuickNotes);
+                if let Some(w) = s.windows.last_mut() {
+                    w.x = (s.shell.screen_w / 2 - w.width / 2).max(40);
+                    w.y = (s.shell.screen_h - w.total_height() - 10).max(40);
+                }
+                let dir = std::env::temp_dir().join(format!("feather-glass-hold-{}", std::process::id()));
+                let _ = std::fs::create_dir_all(&dir);
+                let p1 = dir.join("Презентация Tahoe.pdf");
+                let p2 = dir.join("Архитектура Пёрышка.rs");
+                let _ = std::fs::write(&p1, b"PDF demo");
+                let _ = std::fs::write(&p2, b"fn main() {}\n");
+                s.drop_shelf_add_paths(vec![p1, p2], true);
+                s.drop_shelf.add_text("https://feather-de.org/liquid-glass".into());
+                s.sync_drop_shelf_shell();
+                s.shell.control_center_open = false;
+                s.shell.spotlight_open = true;
+                s.shell.spotlight_query = "Полка".into();
+                s.shell.spotlight_input.set("Полка");
+                s.spotlight_query_changed();
+                s.needs_redraw = true;
+            })?;
+            return Ok(());
+        }
+
+        at(state, 1600, move |s| {
+            assert!(s.glass.is_some(), "{LOG} GlassState compiled");
+            assert!(crate::glass::live_glass_active(), "{LOG} live_glass_active() is true");
+            s.animations.set_enabled(false, &s.windows, &s.shell);
+            s.windows.clear();
+            let sw = s.shell.screen_w;
+            let sh = s.shell.screen_h;
+            let scale = s.scale_factor;
+
+            // Clear startup toast so Drop Shelf opens at top-right over Blue window (id 903)
+            s.shell.toasts.clear();
+            // Window 1: pure vivid Red under Topbar (top-center)
+            s.windows.push(paint_solid_window(901, 180, 0, 520, 140, [255, 12, 24, 255]));
+            // Window 2: pure vivid Green under Dock (full bottom span)
+            s.windows.push(paint_solid_window(902, 0, sh - 130, sw, 130, [12, 245, 48, 255]));
+            // Window 3: pure vivid Blue under Drop Shelf (top-right)
+            s.windows.push(paint_solid_window(903, sw - 310, 32, 300, 260, [18, 92, 255, 255]));
+            // Window 4: uncovered Yellow patch far away from every glass panel
+            s.windows.push(paint_solid_window(904, 36, sh / 2 - 60, 120, 120, [250, 220, 16, 255]));
+
+            s.open_drop_shelf();
+            let _ = s.drop_shelf.advance(std::time::Instant::now(), false);
+            let (pw, ph, rgba) = capture_offscreen(s);
+            let sample = |lx: i32, ly: i32| -> [u8; 4] {
+                let px = ((lx as f64 * scale).round() as i32).clamp(0, pw - 1);
+                let py = ((ly as f64 * scale).round() as i32).clamp(0, ph - 1);
+                let idx = ((py * pw + px) as usize) * 4;
+                [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]]
+            };
+
+            let topbar_px = sample(360, 14);
+            assert!(
+                topbar_px[0] > topbar_px[1].saturating_add(35) && topbar_px[0] > topbar_px[2].saturating_add(25),
+                "{LOG} Topbar live glass must transmit Red window underneath (upright Y), got {topbar_px:?}"
+            );
+
+            let (dock_ox, dock_oy) = s.shell.dock_shown_origin();
+            let (dock_b, _) = s.shell.dock_glass.first().copied().expect("dock_glass populated");
+            let dock_sample_x = (dock_ox + dock_b.x + 6.0).round() as i32;
+            let dock_sample_y = (dock_oy + dock_b.y + dock_b.h * 0.5).round() as i32;
+            let dock_px = sample(dock_sample_x, dock_sample_y);
+            assert!(
+                dock_px[1] > dock_px[0].saturating_add(25),
+                "{LOG} Dock live glass must transmit Green window underneath, got {dock_px:?} at ({dock_sample_x},{dock_sample_y})"
+            );
+
+            let shelf_rect = s.drop_shelf.panel_rect((sw, sh));
+            let shelf_px = sample(
+                (shelf_rect.x + 24.0).round() as i32,
+                (shelf_rect.y + shelf_rect.h - 22.0).round() as i32,
+            );
+            assert!(
+                shelf_px[2] > shelf_px[0].saturating_add(35),
+                "{LOG} Drop Shelf live glass must transmit Blue window underneath, got {shelf_px:?}"
+            );
+
+            // Budget invariant 1: damaging an uncovered window must trigger ZERO Kawase blur passes
+            let passes_before = s.glass.as_ref().unwrap().blur_passes;
+            if let Some(w4) = s.windows.iter_mut().find(|w| w.id == 904) {
+                let (bw, bh) = (w4.phys_buf_w, w4.phys_buf_h);
+                let _ = w4.decoration_buffer.render().draw(|bytes| {
+                    for px in bytes.chunks_exact_mut(4) {
+                        px.copy_from_slice(&[240, 60, 220, 255]);
+                    }
+                    Result::<_, ()>::Ok(vec![smithay::utils::Rectangle::from_size((bw, bh).into())])
+                });
+                w4.deco_gen += 1;
+            }
+            let _ = capture_offscreen(s);
+            let passes_uncovered = s.glass.as_ref().unwrap().blur_passes;
+            assert_eq!(
+                passes_uncovered, passes_before,
+                "{LOG} uncovered window damage must run 0 Kawase blur passes"
+            );
+
+            // Budget invariant 2: moving a window behind Topbar MUST refresh Topbar's Kawase blur
+            if let Some(w1) = s.windows.iter_mut().find(|w| w.id == 901) {
+                w1.x += 24;
+            }
+            let _ = capture_offscreen(s);
+            let passes_covered = s.glass.as_ref().unwrap().blur_passes;
+            assert!(
+                passes_covered > passes_uncovered,
+                "{LOG} moving window under Topbar must refresh Kawase blur"
+            );
+
+            // Budget invariant 3: fullscreen window with closed shell/shelf emits 0 glass specs (direct scanout preserved)
+            s.close_drop_shelf();
+            let _ = s.drop_shelf.advance(std::time::Instant::now(), false);
+            if let Some(w_top) = s.windows.last_mut() {
+                w_top.x = 0;
+                w_top.y = 0;
+                w_top.width = sw;
+                w_top.height = sh;
+                w_top.fullscreen = true;
+            }
+            let fs_specs = crate::render::collect_glass_specs(
+                &s.shell,
+                &s.windows,
+                &s.animations,
+                crate::monitors::Rect { x: 0, y: 0, w: sw, h: sh },
+                &s.banner,
+                &s.audio_hud,
+                &s.screencast,
+                &s.drop_shelf,
+            );
+            assert!(
+                fs_specs.is_empty(),
+                "{LOG} fullscreen window must emit 0 glass specs for direct KMS scanout, got {}",
+                fs_specs.len()
+            );
+
+            eprintln!("{LOG} Dual-Kawase live blur, upright UV refraction, 0-pass uncovered damage isolation and fullscreen scanout bypass passed");
+            s.loop_signal.stop();
+        })?;
+    }
+    if let Ok(mode) = std::env::var("FEATHER_DEBUG_SHELF") {
+        if state.backend.is_drm() || !state.debug_input_only {
+            return Err("drop shelf check requires isolated windowed input".into());
+        }
+        const LOG: &str = "[feather-shelf-check]";
+        if mode == "hold" {
+            at(state, 1500, move |s| {
+                s.shell.toasts.clear();
+                s.windows.retain(|w| w.app_id != "builtin.about");
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::AboutFeather);
+                if let Some(w) = s.windows.last_mut() {
+                    w.x = (s.shell.screen_w - w.width - 36).max(36);
+                    w.y = 46;
+                }
+                s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::QuickNotes);
+                if let Some(w) = s.windows.last_mut() {
+                    w.x = 96;
+                    w.y = 82;
+                }
+                let dir = std::env::temp_dir().join(format!("feather-shelf-hold-{}", std::process::id()));
+                let _ = std::fs::create_dir_all(&dir);
+                let f1 = dir.join("Дизайн-система Tahoe.pdf");
+                let f2 = dir.join("Сборка feather-de_0.19.deb");
+                let f3 = dir.join("Заметки релиза.md");
+                let _ = std::fs::write(&f1, vec![b'x'; 245_000]);
+                let _ = std::fs::write(&f2, vec![b'y'; 4_820_000]);
+                let _ = std::fs::write(&f3, b"# Release\nLiquid Glass & Drop Shelf\n");
+                s.drop_shelf_add_paths(vec![f3, f2, f1], true);
+                s.drop_shelf.add_text("https://feather-de.org/tahoe".into());
+                s.sync_drop_shelf_shell();
+                let screen = (s.shell.screen_w, s.shell.screen_h);
+                let r = s.drop_shelf.panel_rect(screen);
+                s.debug_pointer_motion((r.x + r.w * 0.5) as f64, (r.y + 62.0) as f64);
+                s.needs_redraw = true;
+            })?;
+            return Ok(());
+        }
+
+        let tmp_dir = std::env::temp_dir().join(format!("feather-shelf-check-{}", std::process::id()));
+        at(state, 1600, {
+            let tmp_dir = tmp_dir.clone();
+            move |s| {
+                assert!(!s.drop_shelf.is_open(), "{LOG} starts closed");
+                assert_eq!(s.shell.shelf_count, 0);
+
+                // 1) Simulate client drag + cursor shake -> summons Drop Shelf automatically
+                s.drop_shelf_client_drag_started(None, Some(42), true);
+                for &x in &[500.0, 565.0, 495.0, 570.0, 490.0] {
+                    s.debug_pointer_motion(x, 260.0);
+                }
+                assert!(s.drop_shelf.is_open(), "{LOG} cursor shake during drag summoned Drop Shelf");
+                assert!(s.shell.shelf_open, "{LOG} shell.shelf_open synced");
+
+                // Drop paths onto the hovered Drop Shelf
+                let _ = std::fs::create_dir_all(&tmp_dir);
+                let f1 = tmp_dir.join("отчёт.pdf");
+                let f2 = tmp_dir.join("снимок.png");
+                let _ = std::fs::write(&f1, b"hello pdf");
+                let _ = std::fs::write(&f2, b"not-a-real-png-but-a-file");
+                let screen = (s.shell.screen_w, s.shell.screen_h);
+                let rect = s.drop_shelf.panel_rect(screen);
+                s.debug_pointer_motion((rect.x + rect.w * 0.5) as f64, (rect.y + 70.0) as f64);
+                s.drop_shelf_client_drag_paths(
+                    42,
+                    &[f1.clone(), f2.clone()],
+                    &["https://example.org/feather".into()],
+                );
+                let captured = s.drop_shelf_client_drag_dropped(false);
+                assert!(captured, "{LOG} client drop over shelf captured payload");
+                assert_eq!(s.drop_shelf.items().len(), 3, "{LOG} 2 files + 1 URL added");
+                assert_eq!(s.shell.shelf_count, 3, "{LOG} topbar count synced to 3");
+
+                // Deduplication: re-adding f1 moves it to index 0 without growing count
+                s.drop_shelf_add_paths(vec![f1.clone()], true);
+                assert_eq!(s.drop_shelf.items().len(), 3, "{LOG} duplicate file deduplicated");
+                assert_eq!(s.drop_shelf.items()[0].path(), Some(f1.as_path()), "{LOG} deduplicated item moved to top");
+
+                // Add plain text snippet
+                assert!(s.drop_shelf.add_text("Привет из Полки перетаскивания!".into()));
+                s.sync_drop_shelf_shell();
+                assert_eq!(s.drop_shelf.items().len(), 4);
+
+                // 2) Super+D (evdev 125 + 32) toggles shelf closed while keeping items, then reopens
+                s.debug_keyboard_key(125, true);
+                s.debug_keyboard_key(32, true);
+                s.debug_keyboard_key(32, false);
+                s.debug_keyboard_key(125, false);
+                assert!(!s.drop_shelf.is_open(), "{LOG} Super+D closed shelf");
+                assert_eq!(s.drop_shelf.items().len(), 4, "{LOG} closing shelf preserves held items");
+                assert_eq!(s.shell.shelf_count, 4, "{LOG} topbar badge remains visible with 4 items");
+
+                s.debug_keyboard_key(125, true);
+                s.debug_keyboard_key(32, true);
+                s.debug_keyboard_key(32, false);
+                s.debug_keyboard_key(125, false);
+                assert!(s.drop_shelf.is_open(), "{LOG} Super+D reopened shelf");
+
+                // 3) Clear & close frees buffer in idle
+                s.clear_drop_shelf();
+                assert_eq!(s.drop_shelf.items().len(), 0, "{LOG} clear emptied shelf");
+                assert_eq!(s.shell.shelf_count, 0);
+                s.close_drop_shelf();
+                s.animations.set_enabled(false, &s.windows, &s.shell);
+                let _ = s.drop_shelf.advance(std::time::Instant::now(), false);
+                assert!(!s.drop_shelf.is_visible(), "{LOG} closed shelf becomes invisible");
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+
+                eprintln!("{LOG} cursor-shake summon, client DnD capture, deduplication, Super+D toggle and idle cleanup passed");
+                s.loop_signal.stop();
+            }
+        })?;
+    }
     Ok(())
 }

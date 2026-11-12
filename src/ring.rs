@@ -395,6 +395,13 @@ impl Default for RingGfx {
     }
 }
 
+impl RingGfx {
+    pub fn invalidate(&mut self) {
+        self.allocated = None;
+        self.label_for = None;
+    }
+}
+
 fn draw(buf: &mut MemoryRenderBuffer, pw: i32, ph: i32, f: impl FnOnce(&mut PixmapMut)) {
     let mut ctx = buf.render();
     let _ = ctx.draw(|px| {

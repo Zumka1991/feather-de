@@ -70,6 +70,8 @@
 | `AudioInfo` | `(bsubbsub)` | `available`, `output`, `volume`, `muted`, `mic_available`, `input`, `mic_volume`, `mic_muted` |
 | `DisplayInfo` | `(ibbb)` | `brightness` (-1 — не управляется), `night_shift`, `dark_mode`, `do_not_disturb` |
 | `MediaInfo` | `(bsssb)` | `available`, `player`, `title`, `artist`, `playing` |
+| `ShelfItemInfo` | `(tssss)` | `id`, `kind` (`"file"`, `"folder"`, `"image"`, `"url"`, `"text"`), `title`, `subtitle`, `path` (пустая строка для текста без файла) |
+| `ShelfInfo` | `(ba(tssss))` | `open` (открыта ли панель), `items` (список карточек сверху вниз) |
 
 В крейте `feather-api` это структуры с `serde`. `featherctl --json` печатает их в JSON.
 
@@ -93,8 +95,19 @@
 |---|---|---|
 | `ListSpaces` | → `a(ubu)` | столы по порядку |
 | `SwitchSpace` | `u number` | переходит на стол |
+| `GetSpaceMode` | `u number` → `s mode` | режим раскладки стола (`0` — текущий стол, `1…16` — номер стола): `"free"`, `"tile"` или `"tape"` (доступен и под блокировкой) |
+| `SetSpaceMode` | `u number, s mode` | задаёт режим стола (`"free"`, `"tile"`, `"tape"` или `"next"` по кругу; `0` — текущий стол, номер «последний + 1» создаёт новый стол) |
 | `ShowMissionControl` | `b show` | открывает или закрывает Mission Control |
 | `ShowLaunchpad` | `b show` | открывает или закрывает Launchpad |
+
+### Полка перетаскивания
+
+| Метод | Аргументы → ответ | Что делает |
+|---|---|---|
+| `GetDropShelf` | → `(ba(tssss))` | открыта ли Полка перетаскивания и список её карточек (`ShelfInfo`) |
+| `ShowDropShelf` | `b show` | открывает или закрывает Полку перетаскивания (содержимое при закрытии сохраняется) |
+| `ClearDropShelf` | | очищает все карточки Полки перетаскивания и удаляет временные файлы картинок |
+| `AddToDropShelf` | `as paths` → `u added` | добавляет существующие локальные файлы/папки на Полку, открывает её при `added > 0` и возвращает число добавленных путей |
 
 ### Стол Ларвиса
 
@@ -261,6 +274,8 @@ featherctl [--json] КОМАНДА
 | `featherctl window fullscreen active toggle` | `FullscreenWindow` |
 | `featherctl window move 12 2` | `MoveWindowToSpace(12, 2)` |
 | `featherctl space` / `featherctl space 2` | `ListSpaces` / `SwitchSpace(2)` |
+| `featherctl space-mode [free\|tile\|tape\|next] [N]` | `GetSpaceMode` / `SetSpaceMode` (`N` с 1; без `N` — текущий стол) |
+| `featherctl shelf [status\|on\|off\|toggle\|clear\|add ПУТЬ…]` | `GetDropShelf` / `ShowDropShelf` / `ClearDropShelf` / `AddToDropShelf` |
 | `featherctl mission [on\|off]`, `featherctl launchpad [on\|off]` | `ShowMissionControl`, `ShowLaunchpad` |
 | `featherctl larvis [status]` / `featherctl larvis on\|off\|toggle` | `GetLarvisDesktop` / `ShowLarvisDesktop` |
 | `featherctl app list` / `app launch firefox` / `app open firefox` | `ListApps` / `LaunchApp` / `ActivateApp` |

@@ -33,6 +33,8 @@ const LIFETIME: Duration = Duration::from_millis(2000);
 pub enum BannerIcon {
     Caffeine(bool),
     Scratch,
+    SpaceMode(crate::space_layout::SpaceMode),
+    DropShelf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,16 +49,30 @@ pub struct Banner {
     pub message: Option<Message>,
     timer: Option<RegistrationToken>,
     buffer: Option<MemoryRenderBuffer>,
-    painted: Option<(Message, Appearance, u64)>,
+    painted: Option<(Message, Appearance, u64, bool, bool)>,
 }
 
 impl Banner {
-    pub fn paint(&mut self, fonts: &mut crate::text::FontSystem, scale: f64) {
+    pub fn glass_spec(&self, screen: (i32, i32)) -> Option<crate::glass::GlassSpec> {
+        self.message?;
+        let (x, y) = ((screen.0 - W - 2 * M) / 2 + M, (screen.1 - H - 2 * M) / 2 + M);
+        Some(crate::glass::GlassSpec {
+            key: crate::glass::KEY_BANNER,
+            rect: crate::shell::R::new(x as f32, y as f32, W as f32, H as f32),
+            radius: 22.0,
+            strength: 0.95,
+            visual: crate::animation::Visual::default(),
+        })
+    }
+
+    pub fn paint(&mut self, fonts: &mut crate::text::FontSystem, scale: f64, screen: (i32, i32)) {
         let Some(message) = self.message else { return };
-        let key = (message, appearance(), scale.to_bits());
+        let key = (message, appearance(), scale.to_bits(), reduce_transparency(), crate::glass::live_glass_active());
         if self.painted == Some(key) {
             return;
         }
+        let (ox, oy) = ((screen.0 - W - 2 * M) / 2, (screen.1 - H - 2 * M) / 2);
+        set_glass_origin(ox as f32, oy as f32);
         let size = (((W + 2 * M) as f64 * scale).round() as i32, ((H + 2 * M) as f64 * scale).round() as i32);
         let buffer = self.buffer.get_or_insert_with(|| MemoryRenderBuffer::new(Fourcc::Abgr8888, size, 1, Transform::Normal, None));
         let mut ctx = buffer.render();
@@ -70,12 +86,13 @@ impl Banner {
                 let e = i as f32 * 1.6;
                 fill_rounded_rect(&mut pm, m - e, m - e + 4.0, W as f32 + 2.0 * e, H as f32 + 2.0 * e, 22.0 + e, rgba(0, 0, 0, 5));
             }
-            fill_rounded_rect(&mut pm, m, m, W as f32, H as f32, 22.0, p.window_bg);
-            stroke_rounded_rect(&mut pm, m + 0.5, m + 0.5, W as f32 - 1.0, H as f32 - 1.0, 21.5, 0.5, p.window_outline);
+            draw_glass_panel(&mut pm, m, m, W as f32, H as f32, 22.0, true);
             let (cx, cy) = (m + 44.0, m + H as f32 * 0.5);
             match message.icon {
                 BannerIcon::Caffeine(on) => draw_caffeine_icon(&mut pm, cx, cy + 1.0, 2.3, if on { p.accent } else { p.text_secondary }, on),
                 BannerIcon::Scratch => draw_scratch_icon(&mut pm, cx, cy, 2.3, p.accent),
+                BannerIcon::SpaceMode(mode) => draw_space_mode_icon(&mut pm, cx, cy, 2.3, p.accent, mode),
+                BannerIcon::DropShelf => draw_drop_shelf_icon(&mut pm, cx, cy, 2.2, p.accent),
             }
             fonts.draw_text(&mut pm, message.title, m + 80.0, m + 21.0, 15.0, p.text, true);
             fonts.draw_text(&mut pm, message.detail, m + 80.0, m + 46.0, 12.5, p.text_secondary, false);
@@ -84,16 +101,28 @@ impl Banner {
         self.painted = Some(key);
     }
 
-    pub fn elements(&self, renderer: &mut GlesRenderer, scale: f64, screen: (i32, i32)) -> Vec<FeatherElement> {
+    pub fn elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        scale: f64,
+        screen: (i32, i32),
+        mut glass: Option<(&mut crate::glass::GlassState, &str)>,
+    ) -> Vec<FeatherElement> {
         if self.message.is_none() {
             return Vec::new();
         }
         let Some(buffer) = self.buffer.as_ref() else { return Vec::new() };
         let (x, y) = ((screen.0 - W - 2 * M) / 2, (screen.1 - H - 2 * M) / 2);
-        MemoryRenderBufferRenderElement::from_buffer(renderer, ((x as f64 * scale).round(), (y as f64 * scale).round()), buffer, None, None, None, Kind::Unspecified)
-            .ok()
-            .map(|e| vec![SceneElement::Memory(e).into()])
-            .unwrap_or_default()
+        let mut out = Vec::with_capacity(2);
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(renderer, ((x as f64 * scale).round(), (y as f64 * scale).round()), buffer, None, None, None, Kind::Unspecified) {
+            out.push(SceneElement::Memory(e).into());
+        }
+        if let (Some((g, head)), Some(spec)) = (glass.as_mut(), self.glass_spec(screen)) {
+            if let Some(ge) = g.element(head, &spec, scale) {
+                out.push(SceneElement::Glass(ge).into());
+            }
+        }
+        out
     }
 }
 

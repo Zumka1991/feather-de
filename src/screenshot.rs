@@ -360,6 +360,34 @@ impl FeatherCompositor {
         }
         let pointer = (self.pointer_location.x, self.pointer_location.y);
         let profile = self.frame_stats.is_some().then(std::time::Instant::now);
+        let primary_head = self
+            .primary_monitor()
+            .map(|m| m.info.name.clone())
+            .unwrap_or_else(|| "primary".to_string());
+        let primary_rect = crate::monitors::Rect {
+            x: 0,
+            y: 0,
+            w: self.shell.screen_w,
+            h: self.shell.screen_h,
+        };
+        if window.is_none() {
+            let backend = &mut self.backend;
+            crate::render::prepare_glass(
+                self.glass.as_mut(),
+                || backend.renderer(),
+                &primary_head,
+                primary_rect,
+                s,
+                &self.shell,
+                &self.windows,
+                self.rounded_program.as_ref(),
+                &self.animations,
+                &self.banner,
+                &self.audio_hud,
+                &self.screencast,
+                &self.drop_shelf,
+            );
+        }
         let renderer = self.backend.renderer();
         let elements = if let Some((id, _)) = window {
             let Some(win) = self.windows.iter().find(|w| w.id == id) else { return };
@@ -371,7 +399,19 @@ impl FeatherCompositor {
             }
             elements
         } else {
-            crate::render::build_scene(renderer, &self.shell, &self.windows, s, pointer, self.rounded_program.as_ref(), &self.animations,crate::monitors::Rect{x:0,y:0,w:self.shell.screen_w,h:self.shell.screen_h},&mut Vec::new())
+            crate::render::build_scene(
+                renderer,
+                &self.shell,
+                &self.windows,
+                s,
+                pointer,
+                self.rounded_program.as_ref(),
+                &self.animations,
+                primary_rect,
+                &mut Vec::new(),
+                &self.drop_shelf,
+                self.glass.as_mut().map(|g| (g, primary_head.as_str())),
+            )
         };
         let (size, read_at, offset) = if window.is_some() {
             if i64::from(region.size.w) * i64::from(region.size.h) > 16_777_216 {

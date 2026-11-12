@@ -288,7 +288,7 @@ impl FeatherCompositor {
     pub fn apply_tile(&mut self, idx: usize, step: Step) {
         let r = self.window_monitor(idx);
         let win = &mut self.windows[idx];
-        if win.fullscreen || win.larvis || !win.mapped || win.space == crate::scratch::SCRATCH_SPACE {
+        if win.fullscreen || win.larvis || !win.mapped || win.space == crate::scratch::SCRATCH_SPACE || win.managed_layout {
             return;
         }
         win.resize_anchor = None;
@@ -311,6 +311,10 @@ impl FeatherCompositor {
             self.scratch_resize_step(dir);
             return;
         }
+        if self.windows[idx].managed_layout && self.current_space_managed() {
+            self.space_layout_resize_step(dir);
+            return;
+        }
         let win = &self.windows[idx];
         let step = next_step(win.tiled, win.maximized, dir);
         self.apply_tile(idx, step);
@@ -326,6 +330,10 @@ impl FeatherCompositor {
     pub fn tile_drag_motion(&mut self, win_id: u64, x: f64, y: f64) {
         if self.windows.iter().any(|w| w.id == win_id && w.space == crate::scratch::SCRATCH_SPACE) {
             self.scratch_drag_preview(win_id, x, y);
+            return;
+        }
+        if self.window_in_managed_space(win_id) {
+            self.space_layout_drag_preview(win_id, x, y);
             return;
         }
         let r = self.monitor_at(x, y);
@@ -354,6 +362,9 @@ impl FeatherCompositor {
 
     /// The button went up: drop into the zone, if any
     pub fn tile_drag_finish(&mut self, win_id: u64) {
+        if self.window_in_managed_space(win_id) {
+            return;
+        }
         let target = self.shell.tile_preview.target.take();
         self.shell.tile_preview.clear();
         if let Some((_, _, step)) = target.filter(|t| t.0 == win_id) {
@@ -371,6 +382,7 @@ impl FeatherCompositor {
                 .find(|w| w.is_visible() && w.contains_point(x, y))
                 .filter(|w| {
                     w.space != crate::scratch::SCRATCH_SPACE
+                        && !w.managed_layout
                         && w.hit_test_traffic(x, y) == Some(crate::window::TrafficButton::Maximize)
                 })
                 .map(|w| w.id)

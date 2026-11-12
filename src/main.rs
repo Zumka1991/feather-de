@@ -64,6 +64,9 @@ mod foreign_toplevel;
 mod layer_shell;
 mod emoji;
 mod scratch;
+mod space_layout;
+mod glass;
+mod drop_shelf;
 mod spotlight;
 mod theme;
 mod tiling;
@@ -182,6 +185,8 @@ pub struct FeatherCompositor {
     pub refresh_mhz: i32,
     /// GPU shader for rounded window corners (None if it failed to compile)
     pub rounded_program: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    pub glass: Option<crate::glass::GlassState>,
+    pub drop_shelf: crate::drop_shelf::DropShelf,
     pub damage_tracker: OutputDamageTracker,
     pub needs_redraw: bool,
     pub animations: crate::animation::Animations,
@@ -369,6 +374,7 @@ pub struct FeatherCompositor {
     pub audio_hud: crate::audio_hud::Hud,
     pub banner: crate::banner::Banner,
     pub scratch: crate::scratch::Scratch,
+    pub space_layouts: crate::space_layout::SpaceLayouts,
     pub activation_deferred: bool,
     pub preferences: Option<crate::settings::Worker>,
     pub wallpaper_picker: Option<crate::wallpaper::Picker>,
@@ -396,6 +402,7 @@ impl FeatherCompositor {
     pub fn refresh_focus(&mut self) {
         self.cancel_key_repeat();
         self.scratch_sync();
+        self.space_layout_sync();
         let top = self.windows.iter().rposition(|w| w.is_visible() && !self.auxiliary_game_window(w));
         // The desktop keeps the keyboard until another window comes to the front
         if self.shell.desktop.focused && top.map(|i| self.windows[i].id) != self.desktop_focus_top {
@@ -565,7 +572,7 @@ impl FeatherCompositor {
             self.windows.push(win);
         }
         self.shell.dock_dirty = true;
-        if !self.windows.is_empty(){
+        if !self.windows.is_empty() && !self.windows[self.windows.len() - 1].managed_layout {
             let i=self.windows.len()-1;let r=self.window_monitor(i);let win=&mut self.windows[i];
             win.resize_client(win.width.min(r.w-32),win.height.min(r.h-TOP_BAR_HEIGHT-48));
             win.x=win.x.clamp(r.x,(r.x+r.w-win.width).max(r.x));
@@ -769,8 +776,14 @@ impl FeatherCompositor {
 
     /// Snapshot of the frontmost app for the App / Window menus
     pub fn build_menu_context(&self) -> MenuContext {
+        let space_mode = self.current_space_mode();
+        let shelf_open = self.drop_shelf.is_open();
         let Some(top) = self.windows.iter().rev().find(|w| w.is_visible() && !w.larvis) else {
-            return MenuContext::default();
+            return MenuContext {
+                space_mode,
+                shelf_open,
+                ..MenuContext::default()
+            };
         };
         let key = self.app_key(top);
         let app_name = self.active_window_title();
@@ -790,6 +803,8 @@ impl FeatherCompositor {
             windows,
             focused_is_wayland: !top.is_builtin(),
             pinned,
+            space_mode,
+            shelf_open,
         }
     }
 
@@ -853,6 +868,7 @@ impl FeatherCompositor {
         }
         self.shell.theme = WallpaperTheme::for_appearance(next);
         self.shell.invalidate_all();
+        self.drop_shelf.mark_dirty();
         for w in &mut self.windows {
             w.dirty = true;
         }
@@ -1282,7 +1298,7 @@ impl FeatherCompositor {
             match action {
                 ShellClickAction::CloseFocused | ShellClickAction::MinimizeFocused => return self.leave_larvis_desktop(),
                 ShellClickAction::QuitFocusedApp | ShellClickAction::ZoomFocused | ShellClickAction::FullscreenFocused | ShellClickAction::TileFocused(_)
-                | ShellClickAction::TogglePinFocused => return,
+                | ShellClickAction::TogglePinFocused | ShellClickAction::CycleSpaceMode | ShellClickAction::SetSpaceMode(_) | ShellClickAction::CycleTapeWidth | ShellClickAction::EqualizeSpaceLayout | ShellClickAction::ToggleDropShelf => return,
                 _ => {}
             }
         }
@@ -1555,6 +1571,11 @@ impl FeatherCompositor {
             }
             ShellClickAction::ToggleCaffeine => self.toggle_caffeine(),
             ShellClickAction::ToggleScratch => self.toggle_scratch(),
+            ShellClickAction::CycleSpaceMode => self.cycle_current_space_mode(),
+            ShellClickAction::SetSpaceMode(mode) => self.set_space_mode(self.spaces.current, mode, true),
+            ShellClickAction::CycleTapeWidth => self.space_layout_cycle_tape_width(),
+            ShellClickAction::EqualizeSpaceLayout => self.space_layout_equalize(),
+            ShellClickAction::ToggleDropShelf => self.toggle_drop_shelf(),
             ShellClickAction::OpenSettingsPage(page) => {
                 self.open_or_focus_builtin(BuiltinWindowKind::SystemSettings);
                 self.apply_system_setting(crate::system_settings::Action::Page(page));
@@ -1564,7 +1585,15 @@ impl FeatherCompositor {
                 crate::apps::spawn_wayland_command(&format!("xdg-open '{quoted}'"), &self.wayland_socket_name);
             }
             ShellClickAction::ZoomFocused => {
-                if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);}
+                if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){
+                    if self.windows[i].space == crate::scratch::SCRATCH_SPACE {
+                        self.scratch_toggle_zoom();
+                    } else if self.windows[i].managed_layout && self.current_space_managed() {
+                        self.space_layout_toggle_zoom();
+                    } else {
+                        let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);
+                    }
+                }
             }
             ShellClickAction::FullscreenFocused => {
                 if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);self.windows[i].resize_anchor=None;let on=!self.windows[i].fullscreen;self.set_window_fullscreen(i,on,r);}
@@ -1686,6 +1715,7 @@ impl FeatherCompositor {
         self.app_registry = AppRegistry::new();
         self.shell.reload_count += 1;
         self.shell.invalidate_all();
+        self.drop_shelf.mark_dirty();
         self.dock_model_dirty = true;
         for w in &mut self.windows {
             w.dirty = true;
@@ -2170,6 +2200,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let rounded_program = crate::rounded::compile(backend.renderer());
+    let glass_enabled = !larvis_desktop
+        && std::env::var("FEATHER_GLASS")
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "off" | "false"))
+            .unwrap_or(true);
+    let glass = glass_enabled
+        .then(|| crate::glass::GlassState::compile(backend.renderer()))
+        .flatten();
+    crate::glass::set_live_glass_enabled(glass.is_some());
     let dmabuf_state = DmabufState::new();
     let node_hint = drm_info.as_ref().and_then(|i| i.4);
     let (dmabuf_state, dmabuf_global) = setup_dmabuf(dmabuf_state, backend.renderer(), node_hint, &dh);
@@ -2356,6 +2394,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         input_devices: Vec::new(),
         refresh_mhz,
         rounded_program,
+        glass,
+        drop_shelf: Default::default(),
         damage_tracker,
         needs_redraw: true,
         animations: crate::animation::Animations::default(),
@@ -2490,6 +2530,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         audio_hud: Default::default(),
         banner: Default::default(),
         scratch: Default::default(),
+        space_layouts: Default::default(),
         activation_deferred: false,
         preferences: None,
         wallpaper_picker: None,
@@ -2508,6 +2549,14 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     state.preferences=Some(crate::settings::Worker::new(&state.loop_handle)?);
+    if !state.larvis_desktop && !state.window_memory.space_modes.is_empty() {
+        let modes = state.window_memory.space_modes.clone();
+        if let Some(max_s) = modes.iter().map(|&(s, _)| s).max() {
+            state.spaces.count = state.spaces.count.max((max_s + 1).min(crate::spaces::MAX_SPACES));
+        }
+        state.space_layouts.load_modes(&modes);
+        state.space_layout_sync();
+    }
     state.wallpaper_picker=Some(crate::wallpaper::Picker::new(&state.loop_handle,state.wayland_socket_name.clone())?);
     state.shell.wallpaper_image=saved.wallpaper_image.clone();
     state.shell.wallpaper_prefs=saved.wallpaper_prefs;
@@ -2530,6 +2579,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         state.animations.set_dock_hidden(true);
     }
     state.start_desktop()?;
+    state.start_drop_shelf()?;
     state.start_trash()?;
     state.start_app_watch()?;
     crate::apps::set_cursor_env(
@@ -2657,7 +2707,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
                     state.shell.launchpad = Some(crate::launchpad::Launchpad::new(&state.app_registry, state.shell.screen_w, state.shell.screen_h));
                 } else {
                     match step % 3 {
-                        0 => { state.shell.theme = state.shell.theme.next(); state.shell.invalidate_all(); }
+                        0 => { state.shell.theme = state.shell.theme.next(); state.shell.invalidate_all(); state.drop_shelf.mark_dirty(); }
                         1 => state.apply_hidpi_scale(if step % 2 == 0 { 2.0 } else { 1.25 }),
                         _ => {
                             if state.shell.launchpad.is_some() { state.toggle_launchpad(); }

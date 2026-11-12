@@ -321,6 +321,8 @@ pub struct ManagedWindow {
     pub saved_rect: Option<(i32, i32, i32, i32)>,
     /// Tiled to a part of the screen, and the place to come back to
     pub tiled: Option<crate::tiling::Tile>,
+    /// Managed by a `Tile` or `Tape` desktop (`src/space_layout.rs`)
+    pub managed_layout: bool,
     pub tile_free: Option<(i32, i32, i32, i32)>,
     /// From the window memory, used when the window first shows
     pub remembered_place: Option<(i32, i32)>,
@@ -334,6 +336,7 @@ pub struct ManagedWindow {
     pub traffic_group_hovered: bool,
     pub backend: WindowBackend,
     pub decoration_buffer: MemoryRenderBuffer,
+    pub deco_gen: u64,
     pub phys_buf_w: i32,
     pub phys_buf_h: i32,
     pub shadow: ShadowSet,
@@ -457,6 +460,7 @@ impl ManagedWindow {
         if let Some(shadow) = shadow {
             self.shadow = shadow;
         }
+        self.deco_gen = self.deco_gen.wrapping_add(1);
         self.phys_buf_w = size.0;
         self.phys_buf_h = size.1;
         self.painted_focused = Some(self.activated);
@@ -492,6 +496,7 @@ impl ManagedWindow {
             saved_rect: None,
             resize_anchor: None,
             tiled: None,
+            managed_layout: false,
             tile_free: None,
             remembered_place: None,
             remembered_space: None,
@@ -501,6 +506,7 @@ impl ManagedWindow {
             traffic_group_hovered: false,
             backend: WindowBackend::Wayland(surface),
             decoration_buffer: empty_buffer(),
+            deco_gen: 0,
             phys_buf_w: 1,
             phys_buf_h: 1,
             shadow: ShadowSet::new(),
@@ -551,6 +557,7 @@ impl ManagedWindow {
             saved_rect: None,
             resize_anchor: None,
             tiled: None,
+            managed_layout: false,
             tile_free: None,
             remembered_place: None,
             remembered_space: None,
@@ -560,6 +567,7 @@ impl ManagedWindow {
             traffic_group_hovered: false,
             backend: WindowBackend::Builtin(kind),
             decoration_buffer: empty_buffer(),
+            deco_gen: 0,
             phys_buf_w: 1,
             phys_buf_h: 1,
             shadow: ShadowSet::new(),
@@ -581,6 +589,10 @@ impl ManagedWindow {
 
     pub fn is_builtin(&self) -> bool {
         matches!(self.backend, WindowBackend::Builtin(_))
+    }
+
+    pub fn has_parent(&self) -> bool {
+        self.toplevel().is_some_and(|t| t.parent().is_some())
     }
 
     /// Visible and able to receive input
@@ -646,7 +658,7 @@ impl ManagedWindow {
         }
         let (x0, y0) = (self.x as f64, self.y as f64);
         let (x1, y1) = (x0 + self.width as f64, y0 + self.total_height() as f64);
-        if self.space == crate::scratch::SCRATCH_SPACE {
+        if self.space == crate::scratch::SCRATCH_SPACE || self.managed_layout {
             if !self.scratch_resize_edges.any() {
                 return None;
             }
@@ -747,7 +759,7 @@ impl ManagedWindow {
 
     /// Joins the Подложка: remembers the free size and place, and tells the client it is tiled
     pub fn enter_scratch(&mut self) {
-        if self.tiled.is_none() {
+        if self.tiled.is_none() && !self.managed_layout {
             self.tile_free = if self.maximized {
                 self.saved_rect
             } else {
@@ -760,6 +772,7 @@ impl ManagedWindow {
             self.set_xdg_state(xdg_toplevel::State::Maximized, false);
         }
         self.tiled = None;
+        self.managed_layout = false;
         self.set_xdg_state(xdg_toplevel::State::TiledLeft, true);
         self.set_xdg_state(xdg_toplevel::State::TiledRight, true);
         self.set_xdg_state(xdg_toplevel::State::TiledTop, true);
@@ -768,6 +781,45 @@ impl ManagedWindow {
 
     /// Leaves the Подложка: its own size and place again
     pub fn leave_scratch(&mut self, r: crate::monitors::Rect) {
+        self.managed_layout = false;
+        self.scratch_resize_edges = Edges::default();
+        self.set_tile_states(None);
+        let (x, y, w, h) = self.tile_free.take().unwrap_or_else(|| {
+            let (w, h) = Self::fallback_size(r.w, r.h);
+            (r.x + (r.w - w) / 2, r.y + TOP_BAR_HEIGHT + 40, w, h)
+        });
+        self.x = x;
+        self.y = y;
+        self.resize_client(w, h);
+        self.dirty = true;
+    }
+
+    /// Joins a managed desktop (`Tile` or `Tape`): remembers the free size and place,
+    /// clears snap/maximize state, and tells the client its edges are tiled.
+    pub fn enter_managed_layout(&mut self) {
+        if self.tiled.is_none() && !self.managed_layout {
+            self.tile_free = if self.maximized {
+                self.saved_rect
+            } else {
+                (self.width > 0 && self.height > 0).then_some((self.x, self.y, self.width, self.height))
+            };
+        }
+        if self.maximized {
+            self.maximized = false;
+            self.saved_rect = None;
+            self.set_xdg_state(xdg_toplevel::State::Maximized, false);
+        }
+        self.tiled = None;
+        self.managed_layout = true;
+        self.set_xdg_state(xdg_toplevel::State::TiledLeft, true);
+        self.set_xdg_state(xdg_toplevel::State::TiledRight, true);
+        self.set_xdg_state(xdg_toplevel::State::TiledTop, true);
+        self.set_xdg_state(xdg_toplevel::State::TiledBottom, true);
+    }
+
+    /// Leaves a managed desktop back to `Free`: restores the remembered free size and place.
+    pub fn leave_managed_layout(&mut self, r: crate::monitors::Rect) {
+        self.managed_layout = false;
         self.scratch_resize_edges = Edges::default();
         self.set_tile_states(None);
         let (x, y, w, h) = self.tile_free.take().unwrap_or_else(|| {
@@ -1224,6 +1276,7 @@ impl ManagedWindow {
             bh
         };
 
+        self.deco_gen = self.deco_gen.wrapping_add(1);
         let mut render_ctx = self.decoration_buffer.render();
         let _ = render_ctx.draw(|buf| {
             let cr = ((r * ui_scale()).ceil() as usize + 2).min(bh as usize / 2);

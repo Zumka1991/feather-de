@@ -722,3 +722,29 @@ Super + S показывает и прячет подложку	Super + S shows 
 Режим повышенной бодрости выключен	Extra alertness mode is off	Modo de alerta desactivado	Wachmodus ist aus	Mode éveil désactivé	已关闭提神模式
 Компьютер не уснёт, экран не погаснет	The computer won’t sleep, the screen stays on	El equipo no dormirá y la pantalla seguirá encendida	Der Computer schläft nicht, der Bildschirm bleibt an	L’ordinateur ne dormira pas, l’écran reste allumé	电脑不会休眠，屏幕保持开启
 Сон и гашение экрана снова по расписанию	Sleep and screen off follow your schedule again	El reposo y el apagado vuelven a su horario	Ruhezustand und Abschalten wieder nach Zeitplan	Veille et extinction selon le réglage habituel	休眠和关屏恢复按计划执行
+# ── Per-Desktop Layout Modes (Free / Tile / Tape) ──
+Режим рабочего стола	Desktop Layout Mode	Modo del escritorio	Schreibtischmodus	Mode du bureau	桌面布局模式
+Свободные окна	Floating Windows	Ventanas libres	Freie Fenster	Fenêtres libres	自由窗口
+Авто-плитка	Auto-Tiling	Mosaico automático	Auto-Kacheln	Mosaïque automatique	自动平铺
+Бесконечная лента	Scrollable Ribbon	Cinta desplazable	Endlosband	Ruban déroulant	滚动长卷
+Окна	Free	Libre	Frei	Libre	自由
+Плитка	Tile	Mosaico	Kachel	Mosaïque	平铺
+Лента	Ribbon	Cinta	Band	Ruban	长卷
+Ширина колонки	Column Width	Ancho de columna	Spaltenbreite	Largeur de colonne	列宽预设
+Выровнять пропорции	Equalize Proportions	Igualar proporciones	Proportionen angleichen	Égaliser les proportions	均分比例
+Окна свободно перемещаются и прилипают к краям	Windows float freely and snap to screen edges	Las ventanas flotan libremente y se ajustan a los bordes	Fenster bewegen sich frei und rasten an Kanten ein	Les fenêtres flottent librement et s’aimantent aux bords	窗口自由移动并吸附屏幕边缘
+Окна делят стол автоматически · Super + стрелки	Windows share the desktop automatically · Super + Arrows	Las ventanas dividen el escritorio · Super + flechas	Fenster teilen den Schreibtisch automatisch · Super + Pfeile	Les fenêtres partagent le bureau · Super + flèches	窗口自动平铺桌面 · Super + 方向键
+Горизонтальная лента окон · Super + ←/→ и колесо	Horizontal window ribbon · Super + ←/→ and wheel	Cinta horizontal de ventanas · Super + ←/→ y rueda	Horizontales Fensterband · Super + ←/→ und Mausrad	Ruban horizontal de fenêtres · Super + ←/→ et molette	横向滚动窗口长卷 · Super + ←/→ 与滚轮
+# ── Glass Drop Shelf (Полка перетаскивания) ──
+Полка перетаскивания	Drop Shelf	Estante de arrastre	Ablageleiste	Étagère de dépôt	拖拽暂存架
+Полка	Shelf	Estante	Leiste	Étagère	暂存架
+Очистить	Clear	Vaciar	Leeren	Vider	清空
+Перетащите файлы сюда	Drop files here	Arrastra archivos aquí	Dateien hier ablegen	Déposez des fichiers ici	将文件拖放到此处
+или встряхните курсор	or shake the cursor	o sacude el cursor	oder Mauszeiger schütteln	ou secouez le curseur	或晃动鼠标指针
+Перетащить все	Drag All	Arrastrar todo	Alle ziehen	Tout glisser	全部拖出
+Скопировано в буфер	Copied to Clipboard	Copiado al portapapeles	In die Zwischenablage kopiert	Copié dans le presse-papiers	已复制到剪贴板
+Веб-ссылка	Web Link	Enlace web	Weblink	Lien web	网页链接
+Папка	Folder	Carpeta	Ordner	Dossier	文件夹
+Изображение	Image	Imagen	Bild	Image	图像
+Архив	Archive	Archivo comprimido	Archiv	Archive	压缩包
+Файл	File	Archivo	Datei	Fichier	文件

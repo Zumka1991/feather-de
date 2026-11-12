@@ -2,7 +2,7 @@
 //! событий через ограниченный calloop-канал и ждёт ответа на одноразовом канале. Цикл никогда
 //! не ждёт этот поток: запросы отправляются `try_send`, события — тоже.
 use super::{automation::Input, screenshot_target, space_index, Call, Event, Reply, Request, Responder};
-use feather_api::{AppInfo, AudioInfo, DisplayInfo, Error, MediaInfo, SpaceInfo, WindowInfo};
+use feather_api::{AppInfo, AudioInfo, DisplayInfo, Error, MediaInfo, ShelfInfo, SpaceInfo, WindowInfo};
 use smithay::reexports::calloop::channel;
 use zbus::{object_server::SignalEmitter, Connection};
 
@@ -79,11 +79,34 @@ impl Server {
     async fn switch_space(&self, number: u32) -> Result<(), Error> {
         self.done(Call::SwitchSpace(space_index(number)?)).await
     }
+    async fn get_space_mode(&self, number: u32) -> Result<String, Error> {
+        want!(self.call(Call::GetSpaceMode(super::space_target(number)?)).await, Reply::SpaceMode(m) => m)
+    }
+    async fn set_space_mode(&self, number: u32, mode: String) -> Result<(), Error> {
+        self.done(Call::SetSpaceMode(super::space_target(number)?, super::space_mode_target(&mode)?)).await
+    }
     async fn show_mission_control(&self, show: bool) -> Result<(), Error> {
         self.done(Call::MissionControl(show)).await
     }
     async fn show_launchpad(&self, show: bool) -> Result<(), Error> {
         self.done(Call::Launchpad(show)).await
+    }
+
+    // Полка перетаскивания
+    async fn get_drop_shelf(&self) -> Result<ShelfInfo, Error> {
+        want!(self.call(Call::GetDropShelf).await, Reply::DropShelf(s) => s)
+    }
+    async fn show_drop_shelf(&self, show: bool) -> Result<(), Error> {
+        self.done(Call::ShowDropShelf(show)).await
+    }
+    async fn clear_drop_shelf(&self) -> Result<(), Error> {
+        self.done(Call::ClearDropShelf).await
+    }
+    async fn add_to_drop_shelf(&self, paths: Vec<String>) -> Result<u32, Error> {
+        if paths.is_empty() || paths.len() > 64 {
+            return Err(Error::InvalidArgs("Укажите от 1 до 64 путей".into()));
+        }
+        self.percent(Call::AddToDropShelf(paths)).await
     }
 
     // Приложения

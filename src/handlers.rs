@@ -153,15 +153,73 @@ impl FeatherCompositor {
     /// window for it when the configure arrives
     pub fn set_window_fullscreen(&mut self, idx: usize, on: bool, r: crate::monitors::Rect) {
         let was = self.windows[idx].fullscreen;
+        if was == on || self.windows[idx].is_builtin() {
+            return;
+        }
         self.windows[idx].fullscreen = on;
         self.sync_window_scale(idx);
         self.windows[idx].fullscreen = was;
         self.windows[idx].fullscreen_on(on, r);
+        let space = self.windows[idx].space;
+        if space == crate::scratch::SCRATCH_SPACE {
+            self.scratch.invalidate();
+            self.scratch_sync();
+        } else if space < crate::spaces::MAX_SPACES {
+            self.space_layouts.invalidate_space(space);
+            self.space_layout_sync();
+        }
         if let Some(t) = self.windows[idx].toplevel() {
             if t.is_initial_configure_sent() {
                 t.send_pending_configure();
             }
         }
+        self.shell.topbar_dirty = true;
+        self.pointer_focus_dirty = true;
+        self.needs_redraw = true;
+        self.window_memory_changed();
+    }
+
+    pub fn set_window_maximized(&mut self, idx: usize, on: bool, r: crate::monitors::Rect) {
+        self.windows[idx].resize_anchor = None;
+        let space = self.windows[idx].space;
+        if self.windows[idx].mapped && space == crate::scratch::SCRATCH_SPACE {
+            let id = self.windows[idx].id;
+            let ids = self.scratch_tiled();
+            self.scratch
+                .set_zoomed((on && ids.len() >= 2 && ids.contains(&id)).then_some(id));
+            self.apply_space_visibility();
+            self.scratch_sync();
+            if let Some(t) = self.windows[idx].toplevel() {
+                if t.is_initial_configure_sent() {
+                    t.send_pending_configure();
+                }
+            }
+            self.refresh_focus();
+            return;
+        }
+        if self.windows[idx].mapped
+            && self.windows[idx].managed_layout
+            && space < crate::spaces::MAX_SPACES
+            && self.space_layouts.mode(space) != crate::space_layout::SpaceMode::Free
+        {
+            self.space_layout_set_zoom(idx, on);
+            if let Some(t) = self.windows[idx].toplevel() {
+                if t.is_initial_configure_sent() {
+                    t.send_pending_configure();
+                }
+            }
+            return;
+        }
+        self.windows[idx].maximize_on(on, r);
+        if let Some(t) = self.windows[idx].toplevel() {
+            if t.is_initial_configure_sent() {
+                t.send_pending_configure();
+            }
+        }
+        self.shell.topbar_dirty = true;
+        self.pointer_focus_dirty = true;
+        self.needs_redraw = true;
+        self.window_memory_changed();
     }
 
     fn handle_toplevel_commit(&mut self, surface: &WlSurface) {
@@ -201,6 +259,8 @@ impl FeatherCompositor {
             let remembered = self.windows[idx].remembered_scratch.take();
             if self.shell.scratch_open || remembered.is_some() {
                 self.scratch_adopt(idx);
+            } else {
+                self.space_layout_adopt(idx);
             }
             if remembered == Some(false) {
                 self.set_scratch_open(true);
@@ -284,8 +344,11 @@ impl FeatherCompositor {
                 if self.scratch_begin_resize(win_id, edges, false) {
                     return;
                 }
+                if self.space_layout_begin_resize(win_id, edges, false) {
+                    return;
+                }
                 let win = &mut self.windows[idx];
-                if win.space == crate::scratch::SCRATCH_SPACE {
+                if win.space == crate::scratch::SCRATCH_SPACE || win.managed_layout {
                     win.set_resizing(true);
                     win.resize_anchor = None;
                 } else {
@@ -396,6 +459,7 @@ impl XdgShellHandler for FeatherCompositor {
                 self.shell.tile_preview.clear();
             }
             self.scratch_sync();
+            self.space_layout_sync();
             self.shell.topbar_dirty = true;
             self.shell.dock_dirty = true;
             self.drop_keyboard_focus_if(surface.wl_surface());
@@ -450,11 +514,11 @@ impl XdgShellHandler for FeatherCompositor {
     }
 
     fn maximize_request(&mut self,surface:ToplevelSurface){
-        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.windows[i].resize_anchor=None;self.windows[i].maximize_on(true,r);}
+        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.set_window_maximized(i,true,r);}
         if surface.is_initial_configure_sent(){surface.send_pending_configure();}self.needs_redraw=true;
     }
     fn unmaximize_request(&mut self,surface:ToplevelSurface){
-        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.windows[i].maximize_on(false,r);}
+        if let Some(i)=self.window_index_for_toplevel(surface.wl_surface()){let r=self.window_monitor(i);self.set_window_maximized(i,false,r);}
         if surface.is_initial_configure_sent(){surface.send_pending_configure();}self.needs_redraw=true;
     }
     fn fullscreen_request(&mut self,surface:ToplevelSurface,output:Option<wl_output::WlOutput>){
@@ -609,19 +673,35 @@ impl ClientDndGrabHandler for FeatherCompositor {
     }
 }
 
-/// Desktop icons dragged into programs
+/// Desktop icons or Drop Shelf items dragged into programs
 impl ServerDndGrabHandler for FeatherCompositor {
     fn send(&mut self, mime_type: String, fd: OwnedFd, _seat: Seat<Self>) {
-        self.desktop_dnd_send(&mime_type, fd);
+        if self.drop_shelf_dnd_active() {
+            self.drop_shelf_dnd_send(&mime_type, fd);
+        } else {
+            self.desktop_dnd_send(&mime_type, fd);
+        }
     }
     fn dropped(&mut self, _seat: Seat<Self>) {
-        self.desktop_dnd_dropped();
+        if self.drop_shelf_dnd_active() {
+            self.drop_shelf_dnd_dropped();
+        } else {
+            self.desktop_dnd_dropped();
+        }
     }
     fn cancelled(&mut self, _seat: Seat<Self>) {
-        self.desktop_dnd_cancelled();
+        if self.drop_shelf_dnd_active() {
+            self.drop_shelf_dnd_cancelled();
+        } else {
+            self.desktop_dnd_cancelled();
+        }
     }
     fn finished(&mut self, _seat: Seat<Self>) {
-        self.desktop_dnd_finished();
+        if self.drop_shelf_dnd_active() {
+            self.drop_shelf_dnd_finished();
+        } else {
+            self.desktop_dnd_finished();
+        }
     }
 }
 

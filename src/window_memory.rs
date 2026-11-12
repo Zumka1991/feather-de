@@ -39,6 +39,8 @@ pub struct Place {
 #[derive(Default)]
 pub struct WindowMemory {
     places: HashMap<String, (u64, Place)>,
+    /// Per-desktop layout modes (`Tile` / `Tape`) persisted across sessions
+    pub space_modes: Vec<(u32, crate::space_layout::SpaceMode)>,
     /// Program ids open at the end of the previous session, to start again at login
     pub reopen: Vec<String>,
     /// Windows expected from the programs being reopened: they go back to their desktop
@@ -90,6 +92,17 @@ impl WindowMemory {
                         memory.reopen.push(id.to_string());
                     }
                 }
+                Some("space_mode") => {
+                    let (Some(s), Some(m)) = (fields.next(), fields.next()) else { continue };
+                    let (Ok(space), Some(mode)) = (s.parse::<u32>(), crate::space_layout::SpaceMode::parse(m)) else { continue };
+                    if space < crate::spaces::MAX_SPACES && mode != crate::space_layout::SpaceMode::Free {
+                        if let Some((_, prev)) = memory.space_modes.iter_mut().find(|(sp, _)| *sp == space) {
+                            *prev = mode;
+                        } else {
+                            memory.space_modes.push((space, mode));
+                        }
+                    }
+                }
                 Some("window") => {
                     let f: Vec<&str> = fields.collect();
                     // The last field came later: older files have none
@@ -107,10 +120,15 @@ impl WindowMemory {
         memory
     }
 
-    fn text(&self, open: &[String]) -> String {
+    fn text(&self, open: &[String], modes: &[(u32, crate::space_layout::SpaceMode)]) -> String {
         let mut rows: Vec<_> = self.places.iter().collect();
         rows.sort_by_key(|(_, (stamp, _))| *stamp);
         let mut text = String::with_capacity(rows.len() * 48 + 32);
+        for &(space, mode) in modes {
+            if mode != crate::space_layout::SpaceMode::Free {
+                text.push_str(&format!("space_mode\t{space}\t{}\n", mode.id()));
+            }
+        }
         for id in open {
             text.push_str(&format!("open\t{id}\n"));
         }
@@ -151,7 +169,7 @@ pub fn remembers(win: &ManagedWindow) -> bool {
 /// The window's size and place apart from any tile or maximized state
 pub fn place_of(win: &ManagedWindow) -> Option<Place> {
     let scratch = win.space == crate::scratch::SCRATCH_SPACE;
-    let (x, y, w, h) = if win.tiled.is_some() || scratch {
+    let (x, y, w, h) = if win.tiled.is_some() || scratch || win.managed_layout {
         win.tile_free?
     } else if win.maximized || win.fullscreen {
         win.saved_rect?
@@ -248,7 +266,9 @@ impl FeatherCompositor {
             self.window_memory.record(&app_id, place);
         }
         let open = self.reopenable_programs();
-        let text = self.window_memory.text(&open);
+        let modes = self.space_layouts.configured_modes();
+        self.window_memory.space_modes = modes.clone();
+        let text = self.window_memory.text(&open, &modes);
         let Some(file) = path() else { return };
         let _ = std::thread::Builder::new().name("feather-windows".into()).spawn(move || {
             let tmp = file.with_extension("conf.tmp");
@@ -305,11 +325,14 @@ mod tests {
 
     #[test]
     fn places_and_the_open_list_survive_the_file() {
+        use crate::space_layout::SpaceMode;
         let mut m = WindowMemory::default();
         m.record("firefox", Place { x: -40, y: 60, w: 900, h: 700, space: 2, maximized: false, tile: None, scratch: false });
         m.record("kate", Place { x: 10, y: 40, w: 640, h: 480, space: 0, maximized: true, tile: Some(Tile::TopLeft), scratch: true });
-        let back = WindowMemory::parse(&m.text(&["firefox.desktop".to_string()]));
+        let modes = [(1, SpaceMode::Tile), (2, SpaceMode::Tape)];
+        let back = WindowMemory::parse(&m.text(&["firefox.desktop".to_string()], &modes));
         assert_eq!(back.reopen, ["firefox.desktop"]);
+        assert_eq!(back.space_modes, modes);
         assert_eq!(back.place("firefox"), m.place("firefox"));
         assert_eq!(back.place("kate"), m.place("kate"));
     }

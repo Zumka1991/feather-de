@@ -56,7 +56,12 @@ impl FeatherCompositor {
     }
 
     pub fn apply_space_visibility(&mut self) {
-        let (current, larvis, scratch) = (self.spaces.current, self.larvis_shown, self.shell.scratch_open);
+        let (current, larvis, scratch, mission) = (
+            self.spaces.current,
+            self.larvis_shown,
+            self.shell.scratch_open,
+            self.mission_open(),
+        );
         for w in &mut self.windows {
             // Larvis's desktop replaces every desktop of the user while it is shown
             w.off_space = if w.larvis {
@@ -64,7 +69,9 @@ impl FeatherCompositor {
             } else if w.space == crate::scratch::SCRATCH_SPACE {
                 !scratch || self.scratch.is_hidden_by_zoom(w.id)
             } else {
-                larvis || w.space != current
+                larvis
+                    || w.space != current
+                    || (!mission && self.space_layouts.is_hidden_by_zoom(w.space, w.id))
             };
         }
     }
@@ -78,7 +85,10 @@ impl FeatherCompositor {
         }
         let from = self.spaces.current;
         self.spaces.current = target;
-        self.spaces = prune(self.spaces, |s| self.space_has_windows(s));
+        self.spaces = prune(self.spaces, |s| {
+            self.space_has_windows(s)
+                || self.space_layouts.mode(s) != crate::space_layout::SpaceMode::Free
+        });
         self.apply_space_visibility();
         self.animations.slide_spaces(from, target, self.shell.screen_w as f64);
         self.shell.close_menus();
@@ -106,7 +116,8 @@ impl FeatherCompositor {
             return;
         }
         let front = self.windows.iter().rposition(|w| w.is_visible());
-        let has = self.space_has_windows(self.spaces.current);
+        let has = self.space_has_windows(self.spaces.current)
+            || self.space_layouts.mode(self.spaces.current) != crate::space_layout::SpaceMode::Free;
         let Some(next) = step(self.spaces, delta, has) else { return };
         self.spaces.count = next.count;
         if carry {
@@ -137,7 +148,9 @@ impl FeatherCompositor {
             }
         }
         self.spaces = next;
+        self.space_layouts.on_space_removed(space);
         self.apply_space_visibility();
+        self.window_memory_changed();
         self.dock_model_dirty = true;
         self.pointer_focus_dirty = true;
         self.refresh_focus();

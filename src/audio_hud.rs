@@ -37,7 +37,7 @@ pub struct Hud {
     pub available: bool,
     timer: Option<RegistrationToken>,
     buffer: Option<MemoryRenderBuffer>,
-    painted: Option<(u8, bool, bool, Appearance, u64)>,
+    painted: Option<(u8, bool, bool, Appearance, u64, bool, bool)>,
 }
 impl Hud {
     fn origin(screen: (i32, i32)) -> (i32, i32) {
@@ -46,7 +46,20 @@ impl Hud {
             (screen.1 - dock_reserved() - H - 2 * M - 18).max(TOP_BAR_HEIGHT),
         )
     }
-    pub fn paint(&mut self, fonts: &mut crate::text::FontSystem, scale: f64) {
+    pub fn glass_spec(&self, screen: (i32, i32)) -> Option<crate::glass::GlassSpec> {
+        if !self.visible {
+            return None;
+        }
+        let (ox, oy) = Self::origin(screen);
+        Some(crate::glass::GlassSpec {
+            key: crate::glass::KEY_AUDIO_HUD,
+            rect: crate::shell::R::new((ox + M) as f32, (oy + M) as f32, W as f32, H as f32),
+            radius: 20.0,
+            strength: 0.95,
+            visual: crate::animation::Visual::default(),
+        })
+    }
+    pub fn paint(&mut self, fonts: &mut crate::text::FontSystem, scale: f64, screen: (i32, i32)) {
         if !self.visible {
             return;
         }
@@ -56,10 +69,14 @@ impl Hud {
             self.available,
             appearance(),
             scale.to_bits(),
+            reduce_transparency(),
+            crate::glass::live_glass_active(),
         );
         if self.painted == Some(key) {
             return;
         }
+        let (ox, oy) = Self::origin(screen);
+        set_glass_origin(ox as f32, oy as f32);
         let size = (
             (((W + 2 * M) as f64 * scale).round() as i32),
             (((H + 2 * M) as f64 * scale).round() as i32),
@@ -87,17 +104,7 @@ impl Hud {
                     rgba(0, 0, 0, 5),
                 );
             }
-            fill_rounded_rect(&mut pm, m, m, W as f32, H as f32, 20.0, p.window_bg);
-            stroke_rounded_rect(
-                &mut pm,
-                m + 0.5,
-                m + 0.5,
-                W as f32 - 1.0,
-                H as f32 - 1.0,
-                19.5,
-                0.5,
-                p.window_outline,
-            );
+            draw_glass_panel(&mut pm, m, m, W as f32, H as f32, 20.0, true);
             crate::control_panel::icon(
                 &mut pm,
                 crate::control_panel::Icon::Speaker,
@@ -151,6 +158,7 @@ impl Hud {
         renderer: &mut GlesRenderer,
         scale: f64,
         screen: (i32, i32),
+        mut glass: Option<(&mut crate::glass::GlassState, &str)>,
     ) -> Vec<FeatherElement> {
         if !self.visible {
             return Vec::new();
@@ -159,7 +167,8 @@ impl Hud {
             return Vec::new();
         };
         let (x, y) = Self::origin(screen);
-        MemoryRenderBufferRenderElement::from_buffer(
+        let mut out = Vec::with_capacity(2);
+        if let Ok(e) = MemoryRenderBufferRenderElement::from_buffer(
             renderer,
             ((x as f64 * scale).round(), (y as f64 * scale).round()),
             buffer,
@@ -167,10 +176,15 @@ impl Hud {
             None,
             None,
             Kind::Unspecified,
-        )
-        .ok()
-        .map(|e| vec![SceneElement::Memory(e).into()])
-        .unwrap_or_default()
+        ) {
+            out.push(SceneElement::Memory(e).into());
+        }
+        if let (Some((g, head)), Some(spec)) = (glass.as_mut(), self.glass_spec(screen)) {
+            if let Some(ge) = g.element(head, &spec, scale) {
+                out.push(SceneElement::Glass(ge).into());
+            }
+        }
+        out
     }
 }
 impl FeatherCompositor {

@@ -147,8 +147,8 @@ impl FeatherCompositor {
                     self.refresh_focus();
                 }
             },
-            R::SetMaximized => self.windows[idx].maximize_on(true, r),
-            R::UnsetMaximized => self.windows[idx].maximize_on(false, r),
+            R::SetMaximized => self.set_window_maximized(idx, true, r),
+            R::UnsetMaximized => self.set_window_maximized(idx, false, r),
             R::SetFullscreen { .. } => self.set_window_fullscreen(idx, true, r),
             R::UnsetFullscreen => self.set_window_fullscreen(idx, false, r),
             R::SetMinimized => {

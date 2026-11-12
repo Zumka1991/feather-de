@@ -388,6 +388,17 @@ impl ScreenRecorderState {
         }
     }
 
+    pub fn glass_spec(&self) -> Option<crate::glass::GlassSpec> {
+        let panel = self.panel.as_ref()?;
+        Some(crate::glass::GlassSpec {
+            key: crate::glass::KEY_SCREENCAST,
+            rect: panel.bar_rect,
+            radius: 18.0,
+            strength: 0.95,
+            visual: crate::animation::Visual::default(),
+        })
+    }
+
     pub fn is_open(&self) -> bool {
         self.panel.is_some()
     }
@@ -1581,6 +1592,32 @@ impl FeatherCompositor {
         }
 
         // 2. Render current scene into cached offscreen texture and start async PBO readback
+        let primary_head = self
+            .primary_monitor()
+            .map(|m| m.info.name.clone())
+            .unwrap_or_else(|| "primary".to_string());
+        let primary_rect = crate::monitors::Rect {
+            x: 0,
+            y: 0,
+            w: self.shell.screen_w,
+            h: self.shell.screen_h,
+        };
+        let backend = &mut self.backend;
+        crate::render::prepare_glass(
+            self.glass.as_mut(),
+            || backend.renderer(),
+            &primary_head,
+            primary_rect,
+            s,
+            &self.shell,
+            &self.windows,
+            self.rounded_program.as_ref(),
+            &self.animations,
+            &self.banner,
+            &self.audio_hud,
+            &self.screencast,
+            &self.drop_shelf,
+        );
         let renderer = self.backend.renderer();
         let mut elements: Vec<FeatherElement> = Vec::with_capacity(68);
         if show_cursor {
@@ -1616,13 +1653,10 @@ impl FeatherCompositor {
             pointer,
             self.rounded_program.as_ref(),
             &self.animations,
-            crate::monitors::Rect {
-                x: 0,
-                y: 0,
-                w: self.shell.screen_w,
-                h: self.shell.screen_h,
-            },
+            primary_rect,
             &mut Vec::new(),
+            &self.drop_shelf,
+            self.glass.as_mut().map(|g| (g, primary_head.as_str())),
         ));
 
         let rec = self.screencast.recording.as_mut().unwrap();
@@ -1776,11 +1810,12 @@ pub fn overlay(
     state: &ScreenRecorderState,
     scale: f64,
     screen_phys: (i32, i32),
+    mut glass: Option<(&mut crate::glass::GlassState, &str)>,
 ) -> Vec<FeatherElement> {
     let Some(panel) = state.panel.as_ref() else {
         return Vec::new();
     };
-    let mut out = Vec::with_capacity(20);
+    let mut out = Vec::with_capacity(21);
     let pad = 12.0;
     let bx = ((panel.bar_rect.x - pad) as f64 * scale).round();
     let by = ((panel.bar_rect.y - pad) as f64 * scale).round();
@@ -1794,6 +1829,11 @@ pub fn overlay(
         Kind::Unspecified,
     ) {
         out.push(crate::render::SceneElement::Memory(elem).into());
+    }
+    if let (Some((g, head)), Some(spec)) = (glass.as_mut(), state.glass_spec()) {
+        if let Some(ge) = g.element(head, &spec, scale) {
+            out.push(crate::render::SceneElement::Glass(ge).into());
+        }
     }
 
     if panel.mode.uses_area() {

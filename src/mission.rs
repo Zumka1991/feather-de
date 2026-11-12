@@ -19,11 +19,17 @@ const DRAG_START: f64 = 6.0;
 pub enum Hit {
     Window(u64),
     Space(u32),
+    /// Mode badge in the top-right corner of a user desktop tile
+    Mode(u32),
     /// Larvis's desktop, after the user's desktops
     Larvis,
     /// Close button of a desktop tile
     Remove(u32),
     Add,
+}
+
+pub fn mode_pill_rect(r: R) -> R {
+    R::new(r.x + (r.w - 112.0) * 0.5, r.y + r.h + 26.0, 112.0, 19.0)
 }
 
 #[derive(Debug, Default)]
@@ -129,6 +135,7 @@ impl FeatherCompositor {
         m.press = None;
         m.drag = None;
         self.mission = Some(m);
+        self.apply_space_visibility();
         self.relayout_mission();
         self.pointer_focus_dirty = true;
         self.needs_redraw = true;
@@ -147,7 +154,10 @@ impl FeatherCompositor {
         self.animations.set_mission(true, &targets);
         if let Some(m) = self.mission.as_mut() {
             m.targets = targets;
-            m.hover = None;
+        }
+        let hover = self.mission_hit(self.pointer_location.x, self.pointer_location.y);
+        if let Some(m) = self.mission.as_mut() {
+            m.hover = hover;
         }
         self.sync_mission_overlay();
     }
@@ -160,6 +170,7 @@ impl FeatherCompositor {
         m.press = None;
         m.hover = None;
         self.animations.set_mission(false, &[]);
+        self.apply_space_visibility();
         if let Some(id) = focus {
             self.execute_shell_action(crate::shell::ShellClickAction::FocusWindow(id));
         }
@@ -181,7 +192,7 @@ impl FeatherCompositor {
         let m = self.mission.as_ref()?;
         let (fx, fy) = (x as f32, y as f32);
         // The close button of the hovered tile, which sticks out of its corner
-        if let Some(s) = m.hover.and_then(|h| match h { Hit::Space(s) | Hit::Remove(s) => Some(s), _ => None }).filter(|_| self.spaces.count > 1) {
+        if let Some(s) = m.hover.and_then(|h| match h { Hit::Space(s) | Hit::Mode(s) | Hit::Remove(s) => Some(s), _ => None }).filter(|_| self.spaces.count > 1) {
             if let Some((_, r)) = self.mission_strip().into_iter().find(|(h, _)| *h == Hit::Space(s)) {
                 if R::new(r.x - 7.0, r.y - 7.0, 22.0, 22.0).contains(fx, fy) {
                     return Some(Hit::Remove(s));
@@ -189,6 +200,11 @@ impl FeatherCompositor {
             }
         }
         for (hit, r) in self.mission_strip() {
+            if let Hit::Space(s) = hit {
+                if mode_pill_rect(r).contains(fx, fy) {
+                    return Some(Hit::Mode(s));
+                }
+            }
             if r.contains(fx, fy) {
                 return Some(hit);
             }
@@ -254,7 +270,7 @@ impl FeatherCompositor {
                 .and_then(|(h, _)| match h {
                     Hit::Space(s) => Some(s),
                     Hit::Add => Some(self.spaces.count),
-                    Hit::Window(_) | Hit::Remove(_) | Hit::Larvis => None,
+                    Hit::Window(_) | Hit::Mode(_) | Hit::Remove(_) | Hit::Larvis => None,
                 });
             if let Some(space) = target_space.filter(|s| *s != self.spaces.current) {
                 if space >= self.spaces.count {
@@ -275,6 +291,10 @@ impl FeatherCompositor {
             Some(Hit::Space(s)) => {
                 self.switch_space(s);
                 self.close_mission(None);
+            }
+            Some(Hit::Mode(s)) => {
+                let next = self.space_mode(s).next();
+                self.set_space_mode(s, next, false);
             }
             Some(Hit::Larvis) => {
                 self.close_mission(None);
@@ -314,7 +334,7 @@ impl FeatherCompositor {
                     _ => "+".into(),
                 };
                 let space = match hit { Hit::Space(s) => Some(s), _ => None };
-                let hovered_space = match m.hover { Some(Hit::Space(s) | Hit::Remove(s)) => Some(s), _ => None };
+                let hovered_space = match m.hover { Some(Hit::Space(s) | Hit::Mode(s) | Hit::Remove(s)) => Some(s), _ => None };
                 let removable = space.is_some() && space == hovered_space && self.spaces.count > 1;
                 let count = match hit {
                     Hit::Space(s) => self.windows.iter().filter(|w| w.mapped && !w.minimized && w.space == s).count(),
@@ -324,10 +344,12 @@ impl FeatherCompositor {
                     label,
                     rect: r,
                     space,
+                    mode: space.map(|s| self.space_mode(s)),
+                    mode_hover: space.is_some_and(|s| m.hover == Some(Hit::Mode(s))),
                     removable,
                     remove_hover: space.is_some_and(|s| m.hover == Some(Hit::Remove(s))),
                     current: if self.larvis_shown { hit == Hit::Larvis } else { hit == Hit::Space(self.spaces.current) },
-                    hover: m.hover == Some(hit),
+                    hover: m.hover == Some(hit) || space.is_some_and(|s| m.hover == Some(Hit::Mode(s))),
                     add: hit == Hit::Add,
                     larvis: hit == Hit::Larvis,
                     windows: count,

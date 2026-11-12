@@ -285,6 +285,8 @@ impl crate::FeatherCompositor {
             if self.shell.screen_w != r.w || self.shell.screen_h != r.h {
                 self.shell.reallocate_buffers(r.w, r.h);
             }
+            self.drop_shelf.clamp_to_screen((self.shell.screen_w, self.shell.screen_h));
+            self.drop_shelf.mark_dirty();
         }
         let rects = self.monitor_rects();
         let old_rects: Vec<_> = old.iter().map(|m| m.rect).collect();
@@ -357,6 +359,7 @@ impl crate::FeatherCompositor {
         self.refresh_output_membership();
         self.sync_layers();
         self.scratch_sync();
+        self.space_layout_sync();
         self.refresh_display_choices();
         self.lock_resized();
         self.lock.display_protected = false;
@@ -411,7 +414,7 @@ impl crate::FeatherCompositor {
                 w.fit_maximized(r);
             } else if let Some(tile) = w.tiled {
                 w.fit_tile_frame(tile.frame(crate::tiling::work_area(r)));
-            } else {
+            } else if !w.managed_layout {
                 // Keep the titlebar reachable after a smaller mode or a disconnected screen.
                 w.x = w.x.clamp(r.x - w.width + 80, r.x + r.w - 80);
                 w.y = w.y.clamp(

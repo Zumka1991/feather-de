@@ -514,9 +514,9 @@ pub fn set_glass_origin(x: f32, y: f32) {
     GLASS_ORIGIN.with(|o| o.set((x, y)));
 }
 
-/// Frosted glass: the blurred wallpaper that is "behind" this rounded rect. Like Hyprland's
-/// xray blur it shows the desktop, not windows, and costs nothing per frame.
-pub fn fill_frosted(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32) {
+/// Frosted wallpaper sample for surfaces that explicitly depict the desktop wallpaper
+/// (Lock Screen controls, Mission Control miniature desktop strip).
+pub fn fill_wallpaper_frosted(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32) {
     if reduce_transparency() {
         fill_rounded_rect(pixmap, x, y, w, h, r, palette().glass_fill);
         return;
@@ -531,16 +531,53 @@ pub fn fill_frosted(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f
     });
 }
 
-/// Glass panel used by menus, Spotlight, Control Center and notifications: frosted desktop,
-/// translucent fill, bright inner edge (Liquid Glass highlight) and a hairline outline.
+/// Frosted glass: when GPU Live Liquid Glass is active, the `GlassElement` directly behind the
+/// panel supplies the blurred & refracted live backdrop, so the CPU buffer stays transparent here.
+/// Otherwise falls back to the static blurred wallpaper sample (`GLASS_BG`).
+pub fn fill_frosted(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32) {
+    if crate::glass::live_glass_active() {
+        return;
+    }
+    fill_wallpaper_frosted(pixmap, x, y, w, h, r);
+}
+
+fn live_glass_tint(strong: bool) -> Color {
+    let hc = high_contrast();
+    match appearance() {
+        Appearance::Light => {
+            if strong {
+                rgba(250, 250, 252, if hc { 205 } else { 156 })
+            } else {
+                rgba(246, 246, 248, if hc { 188 } else { 130 })
+            }
+        }
+        Appearance::Dark => {
+            if strong {
+                rgba(38, 38, 43, if hc { 208 } else { 160 })
+            } else {
+                rgba(34, 34, 39, if hc { 190 } else { 134 })
+            }
+        }
+    }
+}
+
+/// Glass panel used by menus, Spotlight, Control Center, notifications and Drop Shelf:
+/// translucent tint over GPU Live Liquid Glass (or static frosted desktop fallback),
+/// bright inner edge (Liquid Glass highlight) and a hairline outline.
 pub fn draw_glass_panel(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32, strong: bool) {
     let p = palette();
-    let tint = if strong { p.glass_fill_strong } else { p.glass_fill };
-    let Some(path) = rounded_rect_path(x, y, w, h, r) else { return };
-    let origin = GLASS_ORIGIN.with(|o| o.get());
-    let painted = if reduce_transparency() {
-        false
+    let live = crate::glass::live_glass_active();
+    let tint = if live {
+        live_glass_tint(strong)
+    } else if strong {
+        p.glass_fill_strong
     } else {
+        p.glass_fill
+    };
+    let painted = if live || reduce_transparency() {
+        false
+    } else if let Some(path) = rounded_rect_path(x, y, w, h, r) {
+        let origin = GLASS_ORIGIN.with(|o| o.get());
         GLASS_BG.with(|g| {
             if let Some((bg, sx, sy)) = g.borrow().as_ref() {
                 let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Frosted);
@@ -548,6 +585,8 @@ pub fn draw_glass_panel(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, 
                 true
             } else { false }
         })
+    } else {
+        return;
     };
     if !painted { fill_rounded_rect(pixmap, x, y, w, h, r, tint); }
     stroke_rounded_rect(pixmap, x + 0.75, y + 0.75, w - 1.5, h - 1.5, r - 0.75, 1.0, p.glass_edge);
@@ -837,6 +876,60 @@ pub fn draw_scratch_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, k: f32, color
     fill_rounded_rect(pixmap, x + half + gap, y + tile + gap, half, tile, r, color);
 }
 
+/// Per-desktop layout mode glyph (`Free` overlapping windows, `Tile` Bento grid, `Tape` ribbon)
+pub fn draw_space_mode_icon(
+    pixmap: &mut PixmapMut,
+    cx: f32,
+    cy: f32,
+    k: f32,
+    color: Color,
+    mode: crate::space_layout::SpaceMode,
+) {
+    use crate::space_layout::SpaceMode;
+    match mode {
+        SpaceMode::Free => {
+            stroke_rounded_rect(
+                pixmap,
+                cx - 6.6 * k,
+                cy - 5.2 * k,
+                9.2 * k,
+                7.0 * k,
+                1.8 * k,
+                1.2 * k,
+                with_alpha(color, 0.65),
+            );
+            fill_rounded_rect(
+                pixmap,
+                cx - 2.6 * k,
+                cy - 1.8 * k,
+                9.2 * k,
+                7.0 * k,
+                1.8 * k,
+                color,
+            );
+        }
+        SpaceMode::Tile => {
+            let (x, y, w, h) = (cx - 7.0 * k, cy - 5.5 * k, 14.0 * k, 11.0 * k);
+            let gap = 1.4 * k;
+            let r = 1.5 * k;
+            let row = (h - gap) * 0.5;
+            let wide = (w - gap) * 0.62;
+            let narrow = w - gap - wide;
+            fill_rounded_rect(pixmap, x, y, wide, row, r, color);
+            fill_rounded_rect(pixmap, x + wide + gap, y, narrow, row, r, color);
+            fill_rounded_rect(pixmap, x, y + row + gap, narrow, row, r, color);
+            fill_rounded_rect(pixmap, x + narrow + gap, y + row + gap, wide, row, r, color);
+        }
+        SpaceMode::Tape => {
+            let (y, h, r) = (cy - 5.5 * k, 11.0 * k, 1.5 * k);
+            fill_rounded_rect(pixmap, cx - 3.8 * k, y, 7.6 * k, h, r, color);
+            let side = with_alpha(color, 0.58);
+            fill_rounded_rect(pixmap, cx - 7.4 * k, y + 1.0 * k, 2.3 * k, h - 2.0 * k, 1.1 * k, side);
+            fill_rounded_rect(pixmap, cx + 5.1 * k, y + 1.0 * k, 2.3 * k, h - 2.0 * k, 1.1 * k, side);
+        }
+    }
+}
+
 /// The battery of the menu bar: `cx` is the middle of its body
 pub fn draw_battery_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, color: Color, percent: u8, plugged: bool, low: bool) {
     let (w, h) = (21.0f32, 10.5f32);
@@ -908,6 +1001,25 @@ pub fn draw_wifi_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, color: Color, en
         let _ = i;
     }
     fill_circle(pixmap, cx, cy + 3.6, 1.3, color);
+}
+
+/// Drop Shelf ("Полка перетаскивания") glyph: rounded tray pocket with an inward arrow/card
+pub fn draw_drop_shelf_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, scale: f32, color: Color) {
+    let w = 13.0 * scale;
+    let h = 11.5 * scale;
+    let sw = (1.35 * scale).max(1.1);
+    // Outer rounded tray
+    stroke_rounded_rect(pixmap, cx - w * 0.5, cy - h * 0.5 + 0.5 * scale, w, h, 3.0 * scale, sw, color);
+    // Inner shelf lip near the bottom
+    let lip_y = cy + 1.4 * scale;
+    stroke_line(pixmap, cx - w * 0.5 + 1.2 * scale, lip_y, cx - 2.2 * scale, lip_y, sw, color);
+    stroke_line(pixmap, cx + 2.2 * scale, lip_y, cx + w * 0.5 - 1.2 * scale, lip_y, sw, color);
+    // Downward arrow stem & chevron into the tray
+    let top_y = cy - h * 0.5 - 1.0 * scale;
+    let tip_y = cy + 0.6 * scale;
+    stroke_line(pixmap, cx, top_y, cx, tip_y, sw, color);
+    stroke_line(pixmap, cx - 2.4 * scale, tip_y - 2.3 * scale, cx, tip_y, sw, color);
+    stroke_line(pixmap, cx + 2.4 * scale, tip_y - 2.3 * scale, cx, tip_y, sw, color);
 }
 
 /// Blurred, darkened wallpaper for full-screen surfaces like Launchpad (macOS hides windows

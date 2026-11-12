@@ -177,6 +177,7 @@ pub struct TilePixels {
 
 struct Tile {
     name: String,
+    size: (i32, i32),
     plain: TextureBuffer<GlesTexture>,
     selected: TextureBuffer<GlesTexture>,
 }
@@ -187,8 +188,8 @@ pub type Cell = (usize, usize);
 /// Results of short desktop threads
 pub enum Msg {
     Listed { generation: u64, items: Vec<Item>, positions: HashMap<String, Cell> },
-    /// Paths offered by a program that started a drag (read when the drag begins)
-    DragPaths { drag: u64, paths: Vec<PathBuf> },
+    /// Paths and HTTP(S) URLs offered by a program that started a drag (read when the drag begins)
+    DragPaths { drag: u64, paths: Vec<PathBuf>, urls: Vec<String> },
     /// Files read from the clipboard for "Вставить"
     Paste(Vec<PathBuf>),
 }
@@ -512,10 +513,30 @@ impl Desktop {
             };
             if let (Some(plain), Some(selected)) = (import(&pixels.plain, renderer), import(&pixels.selected, renderer)) {
                 self.requested.remove(&pixels.path);
-                self.tiles.insert(pixels.path, Tile { name: pixels.name, plain, selected });
+                self.tiles.insert(pixels.path, Tile { name: pixels.name, size: pixels.size, plain, selected });
             }
         }
         self.requested.is_empty()
+    }
+
+    pub fn visual_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.generation.hash(&mut h);
+        self.tiles.len().hash(&mut h);
+        self.selected.len().hash(&mut h);
+        self.hover_folder.hash(&mut h);
+        self.cells.len().hash(&mut h);
+        if let Some(((ax, ay), (bx, by))) = self.rubber {
+            1u8.hash(&mut h);
+            ax.to_bits().hash(&mut h);
+            ay.to_bits().hash(&mut h);
+            bx.to_bits().hash(&mut h);
+            by.to_bits().hash(&mut h);
+        } else {
+            0u8.hash(&mut h);
+        }
+        h.finish()
     }
 
     pub fn elements(&self, renderer: &mut GlesRenderer, screen: (i32, i32), scale: f64) -> Vec<FeatherElement> {
@@ -538,13 +559,22 @@ impl Desktop {
         }
         // A folder under a drag lights up as the drop target
         let target = self.drop_target_folder();
+        let rescaled = (scale - ui_scale() as f64).abs() > 0.005;
+        let dst_size = rescaled.then(|| {
+            (
+                ((CELL_W as f64 * scale).round() as i32).max(1),
+                ((CELL_H as f64 * scale).round() as i32).max(1),
+            )
+                .into()
+        });
         for (i, item) in self.items.iter().enumerate() {
             let Some(tile) = self.tiles.get(&item.path) else { continue };
             let (x, y) = self.position(i, screen);
             let lit = self.selected.contains(&item.path) || target.as_ref() == Some(&item.path);
             let buffer = if lit { &tile.selected } else { &tile.plain };
             let loc = ((x * scale).round(), (y * scale).round());
-            out.push(SceneElement::Texture(TextureRenderElement::from_texture_buffer(loc, buffer, None, None, None, ElementKind::Unspecified)).into());
+            let src = rescaled.then(|| Rectangle::from_size((tile.size.0 as f64, tile.size.1 as f64).into()));
+            out.push(SceneElement::Texture(TextureRenderElement::from_texture_buffer(loc, buffer, None, src, dst_size, ElementKind::Unspecified)).into());
         }
         out
     }
@@ -574,6 +604,10 @@ impl Desktop {
 
 // The drop-target highlight is computed on motion (needs the pointer and screen)
 impl Desktop {
+    pub fn is_dragging(&self) -> bool {
+        self.drag.as_ref().is_some_and(|d| d.active)
+    }
+
     /// A Launchpad app dropped on a program that has not answered yet (keeps its registry index)
     pub fn launcher_drop_pending(&self) -> bool {
         self.dropped.as_ref().is_some_and(|d| d.launcher_app.is_some())
@@ -777,10 +811,18 @@ fn drop_files(paths: Vec<PathBuf>, dir: PathBuf) {
     });
 }
 
-fn read_pipe(mut file: std::fs::File) -> Vec<PathBuf> {
+fn read_pipe(mut file: std::fs::File) -> (Vec<PathBuf>, Vec<String>) {
     let mut text = String::new();
     let _ = Read::by_ref(&mut file).take(1 << 20).read_to_string(&mut text);
-    fileops::parse_uri_list(&text)
+    let paths = fileops::parse_uri_list(&text);
+    let urls: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| l.starts_with("https://") || l.starts_with("http://"))
+        .map(str::to_string)
+        .collect();
+    (paths, urls)
 }
 
 impl FeatherCompositor {
@@ -819,7 +861,8 @@ impl FeatherCompositor {
                     self.needs_redraw = true;
                 }
             }
-            Msg::DragPaths { drag, paths } => {
+            Msg::DragPaths { drag, paths, urls } => {
+                self.drop_shelf_client_drag_paths(drag, &paths, &urls);
                 let Some(client) = self.shell.desktop.client_drag.as_mut().filter(|d| d.id == drag) else { return };
                 client.paths = Some(paths);
                 self.finish_client_drop();
@@ -1095,11 +1138,30 @@ impl FeatherCompositor {
         self.needs_redraw = true;
     }
 
-    /// No program took the icons: a desktop folder takes them, or they move on the grid
+    /// Folder icon under `(x, y)` on the desktop, or the desktop folder itself
+    pub fn desktop_drop_dir_at(&mut self, x: f64, y: f64) -> PathBuf {
+        let screen = self.screen();
+        let desktop = &mut self.shell.desktop;
+        desktop.ensure_layout(screen);
+        desktop
+            .item_at(x, y, screen)
+            .map(|i| &desktop.items[i])
+            .filter(|i| i.is_dir)
+            .map(|i| i.path.clone())
+            .unwrap_or_else(|| desktop.dir.clone())
+    }
+
+    /// No program took the icons: the Drop Shelf, a desktop folder, or the grid takes them
     pub fn desktop_dnd_cancelled(&mut self) {
         self.shell.set_ghost(None);
+        self.drop_shelf_motion();
         let Some(drag) = self.shell.desktop.dropped.take() else { return };
         let p = (self.pointer_location.x, self.pointer_location.y);
+        let screen = self.screen();
+        if self.drop_shelf.accepts_drop_at(p.0, p.1, screen) && !drag.paths.is_empty() {
+            self.drop_shelf_add_paths(drag.paths, false);
+            return;
+        }
         // A Launchpad app no program took: the Dock pins it, the desktop gets a launcher
         if let Some(app) = drag.launcher_app {
             if self.shell.dock_in_drop_zone(p.0, p.1) {
@@ -1119,7 +1181,6 @@ impl FeatherCompositor {
         if !self.over_bare_desktop(p.0, p.1) {
             return;
         }
-        let screen = self.screen();
         let desktop = &mut self.shell.desktop;
         desktop.ensure_layout(screen);
         match desktop.item_at(p.0, p.1, screen).map(|i| desktop.items[i].clone()) {
@@ -1150,29 +1211,39 @@ impl FeatherCompositor {
     /// more once a drop nobody accepted cancels it)
     pub fn client_drag_started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>) {
         self.shell.desktop.dnd_icon = icon;
-        let Some(source) = source else { return };
+        let Some(source) = source else {
+            self.drop_shelf_client_drag_started(None, None, false);
+            return;
+        };
         let offers_files = with_source_metadata(&source, |m| m.mime_types.iter().any(|t| t == URI_LIST)).unwrap_or(false);
         if !offers_files {
+            self.drop_shelf_client_drag_started(Some(&source), None, false);
             return;
         }
         let Ok((read, write)) = std::io::pipe() else { return };
         self.shell.desktop.next_drag += 1;
         let id = self.shell.desktop.next_drag;
         self.shell.desktop.client_drag = Some(ClientDrag { id, paths: None, drop_into: None });
+        self.drop_shelf_client_drag_started(Some(&source), Some(id), true);
         source.send(URI_LIST.into(), write.as_fd());
         drop(write);
         let Some(tx) = self.desktop_tx.clone() else { return };
         let _ = std::thread::Builder::new().name("feather-dnd-read".into()).spawn(move || {
             let file = std::fs::File::from(std::os::fd::OwnedFd::from(read));
-            let _ = tx.send(Msg::DragPaths { drag: id, paths: read_pipe(file) });
+            let (paths, urls) = read_pipe(file);
+            let _ = tx.send(Msg::DragPaths { drag: id, paths, urls });
         });
     }
 
-    /// A program's drag ended; with no window under the pointer the desktop takes the files
+    /// A program's drag ended; the Drop Shelf, Dock Trash, or Desktop takes the drop if no window did
     pub fn client_drag_dropped(&mut self, target: Option<WlSurface>) {
         self.shell.desktop.dnd_icon = None;
         self.shell.desktop.hover_folder = None;
         self.needs_redraw = true;
+        if self.drop_shelf_client_drag_dropped(target.is_some()) {
+            self.shell.desktop.client_drag = None;
+            return;
+        }
         let p = (self.pointer_location.x, self.pointer_location.y);
         if target.is_none() && self.over_dock_trash(p.0, p.1) {
             if let Some(client) = self.shell.desktop.client_drag.as_mut() {
@@ -1384,7 +1455,7 @@ impl FeatherCompositor {
         let Some(tx) = self.desktop_tx.clone() else { return };
         let _ = std::thread::Builder::new().name("feather-paste-read".into()).spawn(move || {
             let file = std::fs::File::from(std::os::fd::OwnedFd::from(read));
-            let _ = tx.send(Msg::Paste(read_pipe(file)));
+            let _ = tx.send(Msg::Paste(read_pipe(file).0));
         });
     }
 

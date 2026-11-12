@@ -178,6 +178,9 @@ pub struct MissionTile {
     pub rect: R,
     /// Desktop index; None for «+»
     pub space: Option<u32>,
+    /// Layout mode of a user desktop (`Some(...)` for user desktops, `None` for Larvis / «+»)
+    pub mode: Option<crate::space_layout::SpaceMode>,
+    pub mode_hover: bool,
     /// The close button is shown (hovered tile, more than one desktop)
     pub removable: bool,
     pub remove_hover: bool,
@@ -204,7 +207,7 @@ impl MissionOverlay {
     fn strip_rects(&self) -> Vec<R> {
         self.tiles
             .iter()
-            .map(|t| R::new(t.rect.x - 8.0, t.rect.y - 8.0, t.rect.w + 16.0, t.rect.h + 32.0))
+            .map(|t| R::new(t.rect.x - 8.0, t.rect.y - 8.0, t.rect.w + 16.0, t.rect.h + 50.0))
             .collect()
     }
 }
@@ -225,7 +228,7 @@ impl R {
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
-    fn grow(&self, m: f32) -> Self {
+    pub(crate) fn grow(&self, m: f32) -> Self {
         Self::new(self.x - m, self.y - m, self.w + 2.0 * m, self.h + 2.0 * m)
     }
     /// Physical buffer rectangle clamped to `(pw, ph)`
@@ -572,6 +575,8 @@ enum TopbarItem {
     Clock,
     Caffeine,
     Scratch,
+    DropShelf,
+    SpaceMode,
     Battery,
     Tray(usize),
     TrayOverflow,
@@ -648,6 +653,11 @@ pub enum ShellClickAction {
     TileFocused(crate::tiling::Step),
     ToggleCaffeine,
     ToggleScratch,
+    ToggleDropShelf,
+    CycleSpaceMode,
+    SetSpaceMode(crate::space_layout::SpaceMode),
+    CycleTapeWidth,
+    EqualizeSpaceLayout,
     OpenSettingsPage(crate::system_settings::Page),
     /// A file or folder, in the program it opens with
     OpenPath(std::path::PathBuf),
@@ -724,6 +734,8 @@ pub struct MenuContext {
     pub focused_is_wayland: bool,
     /// Some(pinned?) when the frontmost app has a .desktop entry and can be kept in the Dock
     pub pinned: Option<bool>,
+    pub space_mode: crate::space_layout::SpaceMode,
+    pub shelf_open: bool,
 }
 
 const MENU_ITEM_H: f32 = 22.0;
@@ -788,9 +800,36 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
                 ),
                 Separator,
             ];
-            for (label, step) in crate::tiling::menu_steps().into_iter().skip(1) {
-                rows.push(item(label, "", on(has_window, ShellClickAction::TileFocused(step))));
+            for (idx, mode) in crate::space_layout::SpaceMode::ALL.into_iter().enumerate() {
+                rows.push(MenuRow::Item {
+                    label: mode.label().into(),
+                    shortcut: if idx == 0 { "⌃⌥M".into() } else { String::new() },
+                    action: Some(ShellClickAction::SetSpaceMode(mode)),
+                    checked: ctx.space_mode == mode,
+                    radio: true,
+                    submenu: None,
+                });
             }
+            if ctx.space_mode == crate::space_layout::SpaceMode::Tape {
+                rows.push(item("Ширина колонки", "⌘R", on(has_window, ShellClickAction::CycleTapeWidth)));
+            }
+            if ctx.space_mode != crate::space_layout::SpaceMode::Free {
+                rows.push(item("Выровнять пропорции", "⌘0", on(has_window, ShellClickAction::EqualizeSpaceLayout)));
+            } else {
+                rows.push(Separator);
+                for (label, step) in crate::tiling::menu_steps().into_iter().skip(1) {
+                    rows.push(item(label, "", on(has_window, ShellClickAction::TileFocused(step))));
+                }
+            }
+            rows.push(Separator);
+            rows.push(MenuRow::Item {
+                label: "Полка перетаскивания".into(),
+                shortcut: "⌘D".into(),
+                action: Some(ShellClickAction::ToggleDropShelf),
+                checked: ctx.shelf_open,
+                radio: false,
+                submenu: None,
+            });
             if !ctx.windows.is_empty() {
                 rows.push(Separator);
                 for (id, title, focused, minimized) in &ctx.windows {
@@ -871,6 +910,8 @@ pub struct MacShell {
     dock_painted: Vec<Rectangle<i32, Buffer>>,
     /// Magnified icons, drawn by the GPU over the shelf: rect in the Dock buffer and icon
     pub dock_gpu_icons: Vec<(R, crate::icons::IconKey)>,
+    /// Glass capsules inside `dock_buffer` in local Dock logical coords: `(rect, radius)`
+    pub dock_glass: Vec<(R, f32)>,
     /// Their textures, kept while the pointer is over the Dock (see `upload_dock_icons`)
     pub dock_icon_textures: std::collections::HashMap<crate::icons::IconKey, smithay::backend::renderer::element::texture::TextureBuffer<smithay::backend::renderer::gles::GlesTexture>>,
     dock_icon_uploads: Vec<(crate::icons::IconKey, tiny_skia::Pixmap)>,
@@ -883,6 +924,11 @@ pub struct MacShell {
     pub scratch_open: bool,
     pub scratch_count: usize,
     pub scratch_backdrop: bool,
+    /// Полка перетаскивания (`drop_shelf.rs`): shown in front and number of stashed items
+    pub shelf_open: bool,
+    pub shelf_count: usize,
+    /// Layout mode of the current user desktop (`space_layout.rs`)
+    pub space_mode: crate::space_layout::SpaceMode,
     /// Layer surfaces of other programs, front first (`layer_shell.rs`)
     pub layers: Vec<crate::layer_shell::LayerItem>,
     /// None on a machine without a battery
@@ -949,7 +995,10 @@ pub struct MacShell {
     mission_title_allocated: bool,
     mission_title_geometry: Rectangle<i32, Buffer>,
     mission_title_cached: Option<(String, i32, i32)>,
+    pub mission_title_glass: Option<R>,
     mission_tiles_cached: Option<Vec<MissionTile>>,
+    /// Global logical glass capsules inside `overlay_buffer`: `(rect, radius, strength)`
+    pub overlay_glass: Vec<(R, f32, f32)>,
 
     pub switcher: Option<Switcher>,
     pub switcher_keys: std::collections::HashSet<smithay::input::keyboard::Keycode>,
@@ -1038,6 +1087,7 @@ impl MacShell {
             dock_slot_gap: DOCK_ICON_GAP,
             dock_painted: Vec::new(),
             dock_gpu_icons: Vec::new(),
+            dock_glass: Vec::new(),
             dock_icon_textures: Default::default(),
             dock_icon_uploads: Vec::new(),
             dock_gpu_failed: false,
@@ -1045,6 +1095,9 @@ impl MacShell {
             scratch_open: false,
             scratch_count: 0,
             scratch_backdrop: false,
+            shelf_open: false,
+            shelf_count: 0,
+            space_mode: crate::space_layout::SpaceMode::Free,
             layers: Vec::new(),
             battery: None,
             spotlight_open: false,
@@ -1093,7 +1146,9 @@ impl MacShell {
             mission_title_allocated: false,
             mission_title_geometry: Rectangle::from_size((1, 1).into()),
             mission_title_cached: None,
+            mission_title_glass: None,
             mission_tiles_cached: None,
+            overlay_glass: Vec::new(),
             switcher: None,
             switcher_keys: Default::default(),
             switcher_buffer: new_buffer(1, 1),
@@ -1516,6 +1571,7 @@ impl MacShell {
         self.overlay_dirty = true;
         self.switcher_dirty = true;
         self.ring_dirty = true;
+        self.ring_gfx.invalidate();
         // Launchpad tiles are rasterized for one scale/size/appearance: rebuild them lazily
         if let Some(lp) = self.launchpad.as_mut() {
             lp.invalidate(self.screen_w, self.screen_h);
@@ -2544,6 +2600,9 @@ impl MacShell {
     }
 
     pub fn ensure_cc_backdrop(&mut self) {
+        if crate::glass::live_glass_active() {
+            return;
+        }
         if self.cc_backdrop.is_none() && !self.cc_backdrop_requested && crate::theme::has_glass_background() {
             if self.raster.as_ref().is_some_and(|r| r.submit(crate::raster::Job::CcBackdrop { screen: (self.screen_w, self.screen_h) })) {
                 self.cc_backdrop_requested = true;
@@ -2649,7 +2708,13 @@ impl MacShell {
         }
         if hover.is_some() {
             let c = Self::toast_close_rect(r);
-            draw_glass_panel(pm, c.x, c.y, c.w, c.h, c.w * 0.5, false);
+            if crate::glass::live_glass_active() {
+                fill_rounded_rect(pm, c.x, c.y, c.w, c.h, c.w * 0.5, p.glass_fill_strong);
+                stroke_rounded_rect(pm, c.x + 0.5, c.y + 0.5, c.w - 1.0, c.h - 1.0, c.w * 0.5 - 0.5, 0.75, p.glass_edge);
+                stroke_rounded_rect(pm, c.x - 0.25, c.y - 0.25, c.w + 0.5, c.h + 0.5, c.w * 0.5 + 0.25, 0.5, p.glass_outline);
+            } else {
+                draw_glass_panel(pm, c.x, c.y, c.w, c.h, c.w * 0.5, false);
+            }
             let col = if hover == Some(ToastPart::Close) { p.text } else { p.text_secondary };
             fonts.draw_text_centered(pm, "×", c.x + c.w * 0.5, c.y + 1.0, 14.0, col, true);
         }
@@ -2836,6 +2901,8 @@ impl MacShell {
                 Some(TopbarItem::Clock)=>{ if !was.3 { self.toggle_center(); } }
                 Some(TopbarItem::Caffeine) => return Some(ShellClickAction::ToggleCaffeine),
                 Some(TopbarItem::Scratch) => return Some(ShellClickAction::ToggleScratch),
+                Some(TopbarItem::DropShelf) => return Some(ShellClickAction::ToggleDropShelf),
+                Some(TopbarItem::SpaceMode) => return Some(ShellClickAction::CycleSpaceMode),
                 Some(TopbarItem::Battery) => return Some(ShellClickAction::OpenSettingsPage(crate::system_settings::Page::Power)),
                 Some(TopbarItem::ControlCenter) | Some(TopbarItem::Wifi) => {
                     // From the speaker's panel straight to the whole Control Center
@@ -3101,6 +3168,8 @@ impl MacShell {
         let hover=self.status_hover;
         let (center_open,dnd,caffeine,battery)=(self.center_open,self.dnd_active(),self.caffeine,self.battery);
         let scratch=(self.scratch_open,self.scratch_count);
+        let shelf=(self.shelf_open,self.shelf_count);
+        let space_mode = self.space_mode;
         let mut menus = vec![(active_app_title.to_string(), TopMenu::App, true, true)];
         if let Some(root) = self.client_menu.as_ref().filter(|root| root.children.iter().any(|n| n.visible)) {
             menus.extend(root.children.iter().filter(|n| n.visible && !n.separator).map(|n| (n.label.clone(), TopMenu::Client(n.id), false, n.enabled)));
@@ -3132,7 +3201,13 @@ impl MacShell {
                 draw_feather_logo(&mut pm, 22.0, lh * 0.5, 0.95, bar.text);
                 hits.push((0.0, 38.0, TopbarItem::Menu(TopMenu::Feather)));
                 let mut x = 46.0;
-                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 222.0+tray_width+if battery.is_some(){72.0}else{0.0}+if scratch.1>0{46.0}else{0.0};
+                let mode_reserved = if space_mode != crate::space_layout::SpaceMode::Free {
+                    fonts.measure_text(space_mode.short_label(), 12.0, false) + 38.0
+                } else {
+                    0.0
+                };
+                let shelf_reserved = if shelf.1 > 0 { 46.0 } else if shelf.0 { 30.0 } else { 0.0 };
+                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 222.0+tray_width+if battery.is_some(){72.0}else{0.0}+if scratch.1>0{46.0}else{0.0}+shelf_reserved+mode_reserved;
                 for (label, menu, bold, enabled) in &menus {
                     let available = lw - right_reserved - x - 12.0;
                     if available < 24.0 { break; }
@@ -3164,6 +3239,37 @@ impl MacShell {
                     crate::theme::draw_scratch_icon(&mut pm,rx-width+15.0,lh*0.5,1.0,bar.text);
                     fonts.draw_text(&mut pm,&label,rx-width+27.0,text_y+0.5,12.0,bar.text,false);
                     hits.push((rx-width,rx,TopbarItem::Scratch));rx-=width;
+                }
+                if shelf.1 > 0 || shelf.0 {
+                    let width = if shelf.1 > 0 {
+                        let label = shelf.1.to_string();
+                        let w = fonts.measure_text(&label, 12.0, false) + 36.0;
+                        if shelf.0 || hover == Some(TopbarItem::DropShelf) {
+                            highlight(&mut pm, rx - w + 1.0, rx - 1.0);
+                        }
+                        crate::theme::draw_drop_shelf_icon(&mut pm, rx - w + 15.0, lh * 0.5, 1.0, bar.text);
+                        fonts.draw_text(&mut pm, &label, rx - w + 27.0, text_y + 0.5, 12.0, bar.text, false);
+                        w
+                    } else {
+                        if shelf.0 || hover == Some(TopbarItem::DropShelf) {
+                            highlight(&mut pm, rx - 29.0, rx - 1.0);
+                        }
+                        crate::theme::draw_drop_shelf_icon(&mut pm, rx - 15.0, lh * 0.5, 1.0, bar.text);
+                        30.0
+                    };
+                    hits.push((rx - width, rx, TopbarItem::DropShelf));
+                    rx -= width;
+                }
+                if space_mode != crate::space_layout::SpaceMode::Free {
+                    let label = space_mode.short_label();
+                    let width = fonts.measure_text(label, 12.0, false) + 38.0;
+                    if hover == Some(TopbarItem::SpaceMode) {
+                        highlight(&mut pm, rx - width + 1.0, rx - 1.0);
+                    }
+                    crate::theme::draw_space_mode_icon(&mut pm, rx - width + 15.0, lh * 0.5, 1.0, bar.text, space_mode);
+                    fonts.draw_text(&mut pm, label, rx - width + 28.0, text_y + 0.5, 12.0, bar.text, false);
+                    hits.push((rx - width, rx, TopbarItem::SpaceMode));
+                    rx -= width;
                 }
                 if let Some(b)=battery {
                     let label=format!("{}%",b.percent);
@@ -3419,16 +3525,49 @@ impl MacShell {
         let radius = (DOCK_RADIUS * fit).max(8.0);
         let sep_pad = (10.0 * fit).clamp(4.0, 10.0);
         let dot_scale = fit.clamp(0.5, 1.0);
+        let b = map.rect(bar);
+        let hovered_label = if let (Some(h), Some(label)) = (hovered, label.as_ref()) {
+            let slot = &slots[h];
+            let lw = fonts.measure_text(label, 13.0, false) + 20.0;
+            let (lx, ly) = if map.edge.vertical() {
+                // Beside the icon, on the screen's inner side
+                let r = map.rect(R::new(slot.x, slot.y, slot.size, slot.size));
+                let ly = (r.y + r.h * 0.5 - 12.0).clamp(min_along, (buf_w - 28.0).max(min_along));
+                if map.edge == crate::theme::DockEdge::Left { (r.x + r.w + 12.0, ly) } else { (r.x - lw - 12.0, ly) }
+            } else {
+                // A name wider than the Dock: `clamp` panics when its bounds cross, and that
+                // panic took the whole session down (drm.log, 2026-10-29)
+                ((slot.x + slot.size * 0.5 - lw * 0.5).clamp(4.0, (buf_w - lw - 4.0).max(4.0)), slot.y - 34.0)
+            };
+            Some((R::new(lx, ly, lw, 24.0), label.as_str()))
+        } else {
+            None
+        };
+        self.dock_glass.clear();
+        self.dock_glass.push((b, radius));
+        if let Some((lr, _)) = hovered_label {
+            self.dock_glass.push((lr, 8.0));
+        }
         let mut ctx = self.dock_buffer.render();
         let _ = ctx.draw(|buf| {
             clear_rects(buf, pw, &clear);
             if let Some(mut pm) = PixmapMut::from_bytes(buf, pw as u32, ph as u32) {
                 // Liquid-glass shelf over the frosted desktop (positions mapped for a side Dock)
-                let b = map.rect(bar);
                 let shadow = map.rect(R::new(bar.x, bar.y + 2.0, bar.w, bar.h));
                 fill_rounded_rect(&mut pm, shadow.x, shadow.y, shadow.w, shadow.h, radius, rgba(0, 0, 0, 22));
                 crate::theme::fill_frosted(&mut pm, b.x, b.y, b.w, b.h, radius);
-                fill_rounded_rect(&mut pm, b.x, b.y, b.w, b.h, radius, p.dock_fill);
+                let dock_tint = if crate::glass::live_glass_active() {
+                    if crate::theme::high_contrast() {
+                        if appearance() == Appearance::Dark { rgba(24, 24, 28, 190) } else { rgba(255, 255, 255, 196) }
+                    } else if appearance() == Appearance::Dark {
+                        rgba(28, 30, 36, 134)
+                    } else {
+                        rgba(255, 255, 255, 130)
+                    }
+                } else {
+                    p.dock_fill
+                };
+                fill_rounded_rect(&mut pm, b.x, b.y, b.w, b.h, radius, dock_tint);
                 stroke_rounded_rect(&mut pm, b.x + 0.75, b.y + 0.75, b.w - 1.5, b.h - 1.5, radius - 0.75, 1.0, p.glass_edge);
                 stroke_rounded_rect(&mut pm, b.x - 0.25, b.y - 0.25, b.w + 0.5, b.h + 0.5, radius + 0.25, 0.5, p.glass_outline);
 
@@ -3457,22 +3596,9 @@ impl MacShell {
                     }
                 }
 
-                if let (Some(h), Some(label)) = (hovered, label.as_ref()) {
-                    let slot = &slots[h];
-                    let lw = fonts.measure_text(label, 13.0, false) + 20.0;
-                    let (lx, ly) = if map.edge.vertical() {
-                        // Beside the icon, on the screen's inner side
-                        let r = map.rect(R::new(slot.x, slot.y, slot.size, slot.size));
-                        let ly = (r.y + r.h * 0.5 - 12.0).clamp(min_along, (buf_w - 28.0).max(min_along));
-                        if map.edge == crate::theme::DockEdge::Left { (r.x + r.w + 12.0, ly) } else { (r.x - lw - 12.0, ly) }
-                    } else {
-                        // A name wider than the Dock: `clamp` panics when its bounds cross, and that
-                        // panic took the whole session down (drm.log, 2026-10-29)
-                        ((slot.x + slot.size * 0.5 - lw * 0.5).clamp(4.0, (buf_w - lw - 4.0).max(4.0)), slot.y - 34.0)
-                    }
-                    ;
-                    draw_glass_panel(&mut pm, lx, ly, lw, 24.0, 8.0, true);
-                    fonts.draw_text(&mut pm, label, lx + 10.0, ly + 4.5, 13.0, p.text, false);
+                if let Some((lr, label)) = hovered_label {
+                    draw_glass_panel(&mut pm, lr.x, lr.y, lr.w, lr.h, 8.0, true);
+                    fonts.draw_text(&mut pm, label, lr.x + 10.0, lr.y + 4.5, 13.0, p.text, false);
                 }
             }
             Result::<_, ()>::Ok(damage)
@@ -3580,6 +3706,7 @@ impl MacShell {
         if let Some((title, win_rect)) = self.mission.as_ref().and_then(|m| m.title.clone()) {
             let pill_global = MissionOverlay::title_rect(win_rect);
             if let Some(m_bounds) = pill_global.grow(16.0).to_buffer(screen_pw, screen_ph) {
+                self.mission_title_glass = Some(pill_global);
                 let m_size_changed = !self.mission_title_allocated || self.mission_title_geometry.size != m_bounds.size;
                 if m_size_changed {
                     self.mission_title_buffer = new_buffer(m_bounds.size.w, m_bounds.size.h);
@@ -3610,11 +3737,17 @@ impl MacShell {
                 self.mission_title_buffer = new_buffer(1, 1);
                 self.mission_title_allocated = false;
                 self.mission_title_cached = None;
+                self.mission_title_glass = None;
+            } else {
+                self.mission_title_glass = None;
             }
         } else if self.mission_title_allocated {
             self.mission_title_buffer = new_buffer(1, 1);
             self.mission_title_allocated = false;
             self.mission_title_cached = None;
+            self.mission_title_glass = None;
+        } else {
+            self.mission_title_glass = None;
         }
 
         // 3. Primary modal panel buffer (Menu / CC / Spotlight / Center / DockMenu / Mission strip)
@@ -3624,6 +3757,7 @@ impl MacShell {
             .filter_map(|r| r.grow(16.0).to_buffer(screen_pw, screen_ph))
             .collect();
         let Some(bounds) = current.iter().copied().reduce(|a, b| a.merge(b)) else {
+            self.overlay_glass.clear();
             if self.overlay_allocated {
                 self.overlay_buffer = new_buffer(1, 1);
                 self.overlay_allocated = false;
@@ -3665,19 +3799,36 @@ impl MacShell {
         let local = |mut r: R| { r.x -= ox; r.y -= oy; r };
 
         let p = palette();
-        let menu_panels: Vec<_> = self.menu_panels().into_iter().map(|(r, rows, hovered)| (local(r), rows, hovered)).collect();
+        self.overlay_glass.clear();
+        let raw_menus = self.menu_panels();
+        for (r, _, _) in &raw_menus {
+            self.overlay_glass.push((*r, 12.0, 0.9));
+        }
+        let menu_panels: Vec<_> = raw_menus.into_iter().map(|(r, rows, hovered)| (local(r), rows, hovered)).collect();
         let cc = if self.control_center_open {
             let (panel, items) = self.cc_live();
+            self.overlay_glass.push((panel, 22.0, 1.0));
             (local(panel), items.into_iter().map(|(r, item)| (local(r), item)).collect::<Vec<_>>())
         } else {
             (R::new(0.0, 0.0, 0.0, 0.0), Vec::new())
         };
         let sp = if self.spotlight_open {
             let (bar, list, count, math) = self.spotlight_layout(registry);
+            self.overlay_glass.push((bar, bar.h * 0.5, 1.0));
+            if let Some(l) = list {
+                self.overlay_glass.push((l, 18.0, 0.95));
+            }
             (local(bar), list.map(local), count, math)
         } else {
             (R::new(0.0, 0.0, 0.0, 0.0), None, 0, false)
         };
+        if let Some(m) = &self.mission {
+            for t in &m.tiles {
+                if t.add {
+                    self.overlay_glass.push((t.rect, t.rect.w * 0.5, 0.9));
+                }
+            }
+        }
         let mission = self.mission.clone().map(|mut m| {
             for t in &mut m.tiles { t.rect = local(t.rect); }
             m
@@ -3685,11 +3836,14 @@ impl MacShell {
         let center_hover = self.center_hover;
         let center = self.center_open.then(|| {
             let (panel, rows, clear) = self.center_layout();
+            let cal_rect = self.calendar_rect();
+            self.overlay_glass.push((cal_rect, 18.0, 0.95));
+            self.overlay_glass.push((panel, 18.0, 0.95));
             let rows: Vec<_> = rows.into_iter().map(|(r, row)| (local(r), match row {
                 CenterRow::Group(i) => CenterItem::Group(i, self.history[i].app_label.clone()),
                 CenterRow::Card(i) => CenterItem::Card(i, self.history[i].clone()),
             })).collect();
-            (local(panel), rows, clear.filter(|_| !self.history.is_empty()).map(local), (local(self.calendar_rect()), self.calendar_month()))
+            (local(panel), rows, clear.filter(|_| !self.history.is_empty()).map(local), (local(cal_rect), self.calendar_month()))
         });
         let input_badges:Vec<_>=if self.open_menu==Some(TopMenu::Input){self.input_sources.iter().map(|s|s.badge).collect()}else{Vec::new()};
         let active_input_label=self.input_sources.get(self.input_selected).map_or("ABC",|s|s.label);
@@ -3710,8 +3864,14 @@ impl MacShell {
             Vec::new()
         };
         let mut dock_menu = self.dock_menu.clone();
-        if let Some(m) = dock_menu.as_mut() { m.rect = local(m.rect); }
-        let cc_backdrop = self.cc_backdrop.as_ref().filter(|_| menu_panels.is_empty() && !sp_open && dock_menu.is_none());
+        if let Some(m) = dock_menu.as_mut() {
+            self.overlay_glass.push((m.rect, 12.0, 0.9));
+            m.rect = local(m.rect);
+        }
+        let cc_backdrop = self
+            .cc_backdrop
+            .as_ref()
+            .filter(|_| !crate::glass::live_glass_active() && menu_panels.is_empty() && !sp_open && dock_menu.is_none());
         let icons = &mut self.icons;
         let emoji_cache = &mut self.emoji;
         let controls = &self.cc;
@@ -3940,16 +4100,40 @@ impl MacShell {
                         continue;
                     }
                     // A frosted piece of the wallpaper, like a desktop seen from afar
-                    crate::theme::fill_frosted(&mut pm, r.x, r.y, r.w, r.h, 10.0);
+                    crate::theme::fill_wallpaper_frosted(&mut pm, r.x, r.y, r.w, r.h, 10.0);
                     if t.hover { fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 10.0, rgba(255, 255, 255, 60)); }
                     stroke_rounded_rect(&mut pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, 9.5, if t.current { 2.5 } else { 1.0 }, if t.current { p.accent } else { rgba(255, 255, 255, 140) });
                     // Below the tile: window thumbnails cover its inside
                     let pill = R::new(r.x + 14.0, r.y + r.h + 4.0, r.w - 28.0, 20.0);
                     fill_rounded_rect(&mut pm, pill.x, pill.y, pill.w, pill.h, 10.0, rgba(0, 0, 0, 80));
                     fonts.draw_text_centered(&mut pm, &t.label, pill.x + pill.w * 0.5, pill.y + 3.0, 11.5, Color::WHITE, true);
+                    if let Some(mode) = t.mode {
+                        let mp = crate::mission::mode_pill_rect(r);
+                        let active = mode != crate::space_layout::SpaceMode::Free;
+                        let bg = match (active, t.mode_hover) {
+                            (true, true) => p.accent,
+                            (true, false) => with_alpha(p.accent, 0.86),
+                            (false, true) => rgba(255, 255, 255, 72),
+                            (false, false) => rgba(0, 0, 0, 96),
+                        };
+                        fill_rounded_rect(&mut pm, mp.x, mp.y, mp.w, mp.h, mp.h * 0.5, bg);
+                        let fg = if active { p.on_accent } else { rgba(255, 255, 255, 228) };
+                        let label = mode.short_label();
+                        let tw = fonts.measure_text(label, 11.0, true);
+                        let gx = mp.x + (mp.w - (15.0 + tw)) * 0.5;
+                        crate::theme::draw_space_mode_icon(&mut pm, gx + 5.5, mp.y + mp.h * 0.5, 0.78, fg, mode);
+                        fonts.draw_text(&mut pm, label, gx + 15.0, mp.y + 2.5, 11.0, fg, true);
+                    }
                     if t.removable {
                         let c = R::new(r.x - 7.0, r.y - 7.0, 22.0, 22.0);
-                        draw_glass_panel(&mut pm, c.x, c.y, c.w, c.h, c.w * 0.5, true);
+                        if crate::glass::live_glass_active() {
+                            fill_rounded_rect(&mut pm, c.x, c.y + 1.5, c.w, c.h, c.w * 0.5, rgba(0, 0, 0, 32));
+                            fill_rounded_rect(&mut pm, c.x, c.y, c.w, c.h, c.w * 0.5, p.glass_fill_strong);
+                            stroke_rounded_rect(&mut pm, c.x + 0.75, c.y + 0.75, c.w - 1.5, c.h - 1.5, c.w * 0.5 - 0.75, 1.0, p.glass_edge);
+                            stroke_rounded_rect(&mut pm, c.x - 0.25, c.y - 0.25, c.w + 0.5, c.h + 0.5, c.w * 0.5 + 0.25, 0.5, p.glass_outline);
+                        } else {
+                            draw_glass_panel(&mut pm, c.x, c.y, c.w, c.h, c.w * 0.5, true);
+                        }
                         fonts.draw_text_centered(&mut pm, "×", c.x + c.w * 0.5, c.y + 2.0, 14.0, if t.remove_hover { p.text } else { p.text_secondary }, true);
                     }
                     // Larvis's desktop in front is large below: its tile keeps his sign
@@ -5007,6 +5191,8 @@ mod cc_backdrop_tests {
                     label: "Рабочий стол 1".into(),
                     rect: R::new(860.0, 20.0, 200.0, 112.0),
                     space: Some(0),
+                    mode: Some(crate::space_layout::SpaceMode::Free),
+                    mode_hover: false,
                     removable: false,
                     remove_hover: false,
                     current: true,

@@ -765,7 +765,7 @@ impl Lock {
 
             // 1. Avatar: frosted disc with luminous ring & account initial
             let r = 34.0;
-            fill_frosted(&mut pm, cx - r, 6.0, r * 2.0, r * 2.0, r);
+            fill_wallpaper_frosted(&mut pm, cx - r, 6.0, r * 2.0, r * 2.0, r);
             fill_rounded_rect(
                 &mut pm,
                 cx - r,
@@ -812,7 +812,7 @@ impl Lock {
 
             // 3. Password field: frosted pill with submit arrow inside
             let (fx, fy, fw, fh) = FIELD;
-            fill_frosted(&mut pm, fx, fy, fw, fh, fh * 0.5);
+            fill_wallpaper_frosted(&mut pm, fx, fy, fw, fh, fh * 0.5);
             fill_rounded_rect(
                 &mut pm,
                 fx,
@@ -918,7 +918,7 @@ impl Lock {
             for ((idx, label), (acx, acy)) in actions.iter().zip(centers.iter()) {
                 let br = 16.0;
                 let hovered = self.hover_action == Some(*idx);
-                fill_frosted(&mut pm, acx - br, acy - br, br * 2.0, br * 2.0, br);
+                fill_wallpaper_frosted(&mut pm, acx - br, acy - br, br * 2.0, br * 2.0, br);
                 fill_rounded_rect(
                     &mut pm,
                     acx - br,
@@ -1030,7 +1030,7 @@ impl Lock {
             let mut pm =
                 tiny_skia::PixmapMut::from_bytes(buf, size.0 as u32, size.1 as u32).unwrap();
             let r = STATUS_H * 0.5;
-            fill_frosted(&mut pm, 0.0, 0.0, width, STATUS_H, r);
+            fill_wallpaper_frosted(&mut pm, 0.0, 0.0, width, STATUS_H, r);
             fill_rounded_rect(
                 &mut pm,
                 0.0,
