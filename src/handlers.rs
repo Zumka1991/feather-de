@@ -1,4 +1,10 @@
 use std::os::unix::io::OwnedFd;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use smithay::backend::renderer::sync::Fence;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
 use smithay::{
     backend::{
@@ -29,11 +35,11 @@ use smithay::{
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            add_blocker, add_pre_commit_hook, get_parent, with_states, CompositorClientState,
-            CompositorHandler, CompositorState,
+            add_blocker, add_pre_commit_hook, get_parent, with_states, Blocker, BlockerState,
+            CompositorClientState, CompositorHandler, CompositorState,
         },
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
-        drm_syncobj::{DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
+        drm_syncobj::{DrmSyncPoint, DrmSyncobjCachedState, DrmSyncobjHandler, DrmSyncobjState},
         fractional_scale::{self, FractionalScaleHandler},
         output::OutputHandler,
         selection::{
@@ -723,6 +729,25 @@ impl smithay::wayland::selection::wlr_data_control::DataControlHandler for Feath
     }
 }
 
+/// Acquire fence that is released when the timeline point is signaled, not only when
+/// the kernel eventfd wakes us. Smithay's blocker watches the eventfd alone. A point
+/// that is reached without that fd firing stays pending, and the window keeps the
+/// empty buffer it mapped first.
+struct AcquireBlocker {
+    point: DrmSyncPoint,
+    woken: Arc<AtomicBool>,
+}
+
+impl Blocker for AcquireBlocker {
+    fn state(&self) -> BlockerState {
+        if self.woken.load(Ordering::SeqCst) || self.point.is_signaled() {
+            BlockerState::Released
+        } else {
+            BlockerState::Pending
+        }
+    }
+}
+
 impl CompositorHandler for FeatherCompositor {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -734,7 +759,6 @@ impl CompositorHandler for FeatherCompositor {
 
     fn new_surface(&mut self, surface: &WlSurface) {
         add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
-            use smithay::backend::renderer::sync::Fence;
             let acquire_point = with_states(surface, |states| {
                 states
                     .cached_state
@@ -745,13 +769,12 @@ impl CompositorHandler for FeatherCompositor {
             });
             let Some(acquire_point) = acquire_point else { return };
             // The kernel signals an eventfd when the point is *reached*. A point that is
-            // already signaled (Firefox often finishes the GPU job before we see the commit)
-            // never notifies, the blocker stays pending, and the window keeps its first
-            // empty buffer: a black square that still receives keyboard input.
+            // already signaled never notifies, so blocking on it keeps the first empty
+            // buffer: a black square that still receives keyboard input.
             if acquire_point.is_signaled() {
                 return;
             }
-            let Ok((blocker, source)) = acquire_point.generate_blocker() else {
+            let Ok((_ignored, source)) = acquire_point.generate_blocker() else {
                 tracing::warn!("explicit sync: не удалось вооружить eventfd, кадр не блокируется");
                 return;
             };
@@ -759,19 +782,61 @@ impl CompositorHandler for FeatherCompositor {
                 return;
             }
             let Some(client) = surface.client() else { return };
-            // Arm the fd first. If it is already readable, the callback runs before the
-            // blocker exists and is a no-op; the blocker then sees the released flag.
+            let woken = Arc::new(AtomicBool::new(false));
+            let woken_fd = Arc::clone(&woken);
+            let client_fd = client.clone();
+            // If the fd is already readable, the callback runs inside insert_source,
+            // before the blocker exists. `woken` is then already set when we add it,
+            // and the commit applies the buffer instead of waiting forever.
             let inserted = state.loop_handle.insert_source(source, move |(), (), state| {
-                let dh = state.display_handle.clone();
-                if client.get_data::<ClientState>().is_some() {
-                    state.client_compositor_state(&client).blocker_cleared(state, &dh);
+                woken_fd.store(true, Ordering::SeqCst);
+                if client_fd.get_data::<ClientState>().is_some() {
+                    let dh = state.display_handle.clone();
+                    state.client_compositor_state(&client_fd).blocker_cleared(state, &dh);
                 }
                 state.needs_redraw = true;
                 Ok(())
             });
-            if inserted.is_ok() {
-                add_blocker(surface, blocker);
+            if inserted.is_err() {
+                return;
             }
+            add_blocker(
+                surface,
+                AcquireBlocker {
+                    point: acquire_point.clone(),
+                    woken: Arc::clone(&woken),
+                },
+            );
+            // Eventfd on this kernel does not always fire for a timeline point. Without a
+            // later poll the commit stays blocked and the window never leaves its first
+            // empty buffer. A few one-shot timers re-check the point, then release anyway.
+            let point = acquire_point;
+            let tries = Arc::new(AtomicU8::new(0));
+            let client_timer = client;
+            let _ = state.loop_handle.insert_source(
+                Timer::from_duration(Duration::from_millis(8)),
+                move |_, _, state| {
+                    let n = tries.fetch_add(1, Ordering::SeqCst);
+                    let signaled = point.is_signaled();
+                    let ready = woken.load(Ordering::SeqCst) || signaled || n >= 4;
+                    if !ready {
+                        return TimeoutAction::ToDuration(Duration::from_millis(8u64 << n.min(3)));
+                    }
+                    // The eventfd callback already applied the commit. Don't schedule
+                    // another frame just because this fallback woke up.
+                    let already = woken.swap(true, Ordering::SeqCst);
+                    if !already {
+                        if client_timer.get_data::<ClientState>().is_some() {
+                            let dh = state.display_handle.clone();
+                            state
+                                .client_compositor_state(&client_timer)
+                                .blocker_cleared(state, &dh);
+                        }
+                        state.needs_redraw = true;
+                    }
+                    TimeoutAction::Drop
+                },
+            );
         });
     }
 

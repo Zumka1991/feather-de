@@ -97,7 +97,10 @@ void main() {
     bool in_corner_x = p.x < radius || p.x > geo_size.x - radius;
     bool in_corner_y = p.y < radius || p.y > geo_size.y - radius;
     bool allowed = all_corners > 0.5 || p.y > geo_size.y * 0.5;
-    if (in_corner_x && in_corner_y && allowed) {
+    // radius 0 is the opaque-buffer path (no rounded clip). A zero radius still
+    // matches every pixel outside geo, and a scaled dst is larger than that geo,
+    // so the test would paint the overflow black.
+    if (radius > 0.5 && in_corner_x && in_corner_y && allowed) {
         vec2 c = clamp(p, vec2(radius), geo_size - vec2(radius));
         float d = distance(p, c);
         color *= clamp(radius - d + 0.5, 0.0, 1.0);

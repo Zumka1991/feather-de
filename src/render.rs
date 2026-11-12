@@ -205,11 +205,10 @@ pub(crate) fn push_surface_tree(
 /// Rotated or flipped buffers are left out (the corner shader assumes a normal transform).
 fn surface_tex_info(
     surface: &WlSurface,
-) -> Vec<(smithay::backend::renderer::element::Id, smithay::utils::Size<i32, smithay::utils::Buffer>, bool, bool)> {
-    // Returns (id, tex_size, has_alpha, is_dmabuf).
-    // is_dmabuf drives replace_alpha: the GL_OES_EGL_image_external sampler returns 0 in
-    // the alpha channel regardless of the buffer format (XRGB *and* ARGB), so any window
-    // drawn through it needs its alpha forced to 1.0 or it renders as a black rectangle.
+) -> Vec<(smithay::backend::renderer::element::Id, smithay::utils::Size<i32, smithay::utils::Buffer>, bool)> {
+    // Returns (id, tex_size, has_alpha).
+    // replace_alpha is only for opaque formats. Forcing alpha on an ARGB dmabuf turns a
+    // transparent parent (Firefox/Zen) into an opaque black plate over the content subsurface.
     use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
     let mut out = Vec::new();
     with_surface_tree_downward(
@@ -222,19 +221,14 @@ fn surface_tex_info(
                 if data.buffer_transform() == smithay::utils::Transform::Normal {
                     if let Some(size) = data.buffer_size() {
                         let scale = data.buffer_scale();
-                        let (has_alpha, is_dmabuf) = match data.buffer() {
-                            Some(buf) => {
-                                let is_dmabuf = smithay::wayland::dmabuf::get_dmabuf(buf).is_ok();
-                                let has_alpha = smithay::backend::renderer::buffer_has_alpha(buf).unwrap_or(true);
-                                (has_alpha, is_dmabuf)
-                            }
-                            None => (true, false),
+                        let has_alpha = match data.buffer() {
+                            Some(buf) => smithay::backend::renderer::buffer_has_alpha(buf).unwrap_or(true),
+                            None => true,
                         };
                         out.push((
                             smithay::backend::renderer::element::Id::from_wayland_resource(s),
                             (size.w * scale, size.h * scale).into(),
                             has_alpha,
-                            is_dmabuf,
                         ));
                     }
                 }
@@ -261,14 +255,11 @@ fn push_window_surfaces(
     let infos = if program.is_some() { surface_tex_info(surface) } else { Vec::new() };
     for elem in elems {
         let local = elem.geometry(Scale::from(1.0));
-        let info = infos.iter().find(|(id, _, _, _)| id == elem.id());
-        let tex = info.map(|(_, size, _, _)| *size);
-        // replace_alpha: the external dmabuf sampler (GL_OES_EGL_image_external) always
-        // returns 0 in the alpha channel, regardless of whether the format claims to have
-        // one (ARGB) or not (XRGB).  Without replace_alpha the window is a black square.
-        // Force it for all dmabuf surfaces; SHM and single-pixel buffers are unaffected.
-        let replace_alpha = matches!(info, Some(&(_, _, false, _)))
-            || matches!(info, Some(&(_, _, _, true)));
+        let info = infos.iter().find(|(id, _, _)| id == elem.id());
+        let tex = info.map(|(_, size, _)| *size);
+        // Opaque buffers only. An external sampler can still return alpha 0 for XRGB;
+        // an ARGB buffer keeps its real alpha so a transparent parent does not cover the page.
+        let replace_alpha = matches!(info, Some(&(_, _, false)));
         let origin = local.loc;
         let rescaled = RescaleRenderElement::from_element(elem, origin, scale);
         // Opaque dmabufs (Firefox/Zen XRGB) go through our shader even without rounded

@@ -87,6 +87,7 @@ use std::{
 
 use smithay::{
     backend::{
+        allocator::Modifier,
         drm::DrmNode,
         egl::EGLDevice,
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma},
@@ -2019,7 +2020,23 @@ fn setup_dmabuf(
     }
     tracing::info!("GPU: {gl_name}");
 
-    let formats = renderer.dmabuf_formats();
+    // Только форматы, которые GLES умеет читать как обычную текстуру.
+    // Внешние (external-only) сэмплеры отдают альфу 0, и окно становится чёрным.
+    // DRM_FORMAT_MOD_INVALID рядом с настоящими модификаторами заставляет Firefox
+    // и Zen выделить тайловый буфер и сэмплировать его как линейный — тоже чёрный квадрат.
+    let render = renderer.egl_context().dmabuf_render_formats();
+    let explicit: Vec<_> = render
+        .iter()
+        .filter(|fmt| fmt.modifier != Modifier::Invalid)
+        .cloned()
+        .collect();
+    let formats: Vec<_> = if !explicit.is_empty() {
+        explicit
+    } else if render.iter().next().is_some() {
+        render.iter().cloned().collect()
+    } else {
+        renderer.dmabuf_formats().iter().cloned().collect()
+    };
     let render_node = node_hint
         .or_else(|| {
             EGLDevice::device_for_display(renderer.egl_context().display())
