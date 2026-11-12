@@ -96,7 +96,9 @@ export PLASMA_INTEGRATION_USE_PORTAL="1"
 export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-xdgdesktopportal}"
 export ELECTRON_OZONE_PLATFORM_HINT="auto"
 export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-logind}"
-export PATH="$(cd "$(dirname "$0")" && pwd):$PATH"
+# greetd/GDM часто оставляют PATH=/usr/bin:/bin. Без каталогов пользователя
+# композитор не находит xwayland-satellite из `cargo install`, и Steam стартует без DISPLAY.
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$(cd "$(dirname "$0")" && pwd):${PATH:-/usr/bin:/bin}"
 # Личное разрешение на автоматизацию при входе через экран приветствия.
 if [[ -z "${FEATHER_AUTOMATION+x}" && -f "${XDG_CONFIG_HOME:-$HOME/.config}/feather-de/enable-automation" ]]; then
     export FEATHER_AUTOMATION=1

@@ -734,6 +734,7 @@ impl CompositorHandler for FeatherCompositor {
 
     fn new_surface(&mut self, surface: &WlSurface) {
         add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
+            use smithay::backend::renderer::sync::Fence;
             let acquire_point = with_states(surface, |states| {
                 states
                     .cached_state
@@ -742,17 +743,34 @@ impl CompositorHandler for FeatherCompositor {
                     .acquire_point
                     .clone()
             });
-            if let Some(acquire_point) = acquire_point {
-                if let Ok((blocker, source)) = acquire_point.generate_blocker() {
-                    if let Some(client) = surface.client() {
-                        add_blocker(surface, blocker);
-                        let _ = state.loop_handle.insert_source(source, move |(), (), state| {
-                            let dh = state.display_handle.clone();
-                            state.client_compositor_state(&client).blocker_cleared(state, &dh);
-                            Ok(())
-                        });
-                    }
+            let Some(acquire_point) = acquire_point else { return };
+            // The kernel signals an eventfd when the point is *reached*. A point that is
+            // already signaled (Firefox often finishes the GPU job before we see the commit)
+            // never notifies, the blocker stays pending, and the window keeps its first
+            // empty buffer: a black square that still receives keyboard input.
+            if acquire_point.is_signaled() {
+                return;
+            }
+            let Ok((blocker, source)) = acquire_point.generate_blocker() else {
+                tracing::warn!("explicit sync: не удалось вооружить eventfd, кадр не блокируется");
+                return;
+            };
+            if acquire_point.is_signaled() {
+                return;
+            }
+            let Some(client) = surface.client() else { return };
+            // Arm the fd first. If it is already readable, the callback runs before the
+            // blocker exists and is a no-op; the blocker then sees the released flag.
+            let inserted = state.loop_handle.insert_source(source, move |(), (), state| {
+                let dh = state.display_handle.clone();
+                if client.get_data::<ClientState>().is_some() {
+                    state.client_compositor_state(&client).blocker_cleared(state, &dh);
                 }
+                state.needs_redraw = true;
+                Ok(())
+            });
+            if inserted.is_ok() {
+                add_blocker(surface, blocker);
             }
         });
     }

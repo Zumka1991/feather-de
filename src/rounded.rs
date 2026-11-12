@@ -55,6 +55,9 @@ uniform float radius;
 uniform float all_corners;
 // 1.0: the buffer is magnified, sample it bicubically
 uniform float smooth_upscale;
+// 1.0: format has no alpha (XRGB). External dmabuf samplers still return 0 in .a,
+// and multiplying by it paints the whole window black.
+uniform float replace_alpha;
 
 void main() {
     vec4 color;
@@ -76,9 +79,11 @@ void main() {
               + (texture2D(tex, vec2(t0.x, t3.y)) * w0.x + texture2D(tex, vec2(t12.x, t3.y)) * w12.x + texture2D(tex, vec2(t3.x, t3.y)) * w3.x) * w3.y;
         // The filter overshoots at sharp edges: no halos, premultiplied colour within alpha
         color = clamp(color, 0.0, 1.0);
+        if (replace_alpha > 0.5) color.a = 1.0;
         color.rgb = min(color.rgb, vec3(color.a));
     } else {
         color = texture2D(tex, v_coords);
+        if (replace_alpha > 0.5) color.a = 1.0;
     }
 
 #if defined(NO_ALPHA)
@@ -116,6 +121,7 @@ pub fn compile(renderer: &mut GlesRenderer) -> Option<GlesTexProgram> {
         UniformName::new("radius", UniformType::_1f),
         UniformName::new("all_corners", UniformType::_1f),
         UniformName::new("smooth_upscale", UniformType::_1f),
+        UniformName::new("replace_alpha", UniformType::_1f),
     ];
     match renderer.compile_custom_texture_shader(SHADER, &uniforms) {
         Ok(p) => Some(p),
@@ -141,6 +147,8 @@ pub struct RoundedSurfaceElement {
     clip: Clip,
     /// Texture size of the surface buffer in pixels
     tex_size: Size<i32, Buffer>,
+    /// XRGB and other opaque formats: ignore the sampler's alpha
+    replace_alpha: f32,
 }
 
 impl RoundedSurfaceElement {
@@ -149,12 +157,14 @@ impl RoundedSurfaceElement {
         program: GlesTexProgram,
         clip: Clip,
         tex_size: Size<i32, Buffer>,
+        replace_alpha: bool,
     ) -> Self {
         Self {
             inner,
             program,
             clip,
             tex_size,
+            replace_alpha: if replace_alpha { 1.0 } else { 0.0 },
         }
     }
 
@@ -257,6 +267,7 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceElement {
                 Uniform::new("radius", self.clip.radius * sx.min(sy)),
                 Uniform::new("all_corners", if self.clip.all_corners { 1.0f32 } else { 0.0 }),
                 Uniform::new("smooth_upscale", if magnified { 1.0f32 } else { 0.0 }),
+                Uniform::new("replace_alpha", self.replace_alpha),
             ],
         );
         let res = self.inner.draw(frame, src, dst, damage, opaque_regions);
