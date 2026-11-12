@@ -440,7 +440,12 @@ impl FeatherCompositor {
                         self.needs_redraw = true;
                     }
                 } else {
-                    self.space_step(delta, false);
+                    let moved = self.space_step(delta, false);
+                    if self.mission_open() {
+                        self.relayout_mission();
+                    } else {
+                        self.show_space_banner(moved);
+                    }
                 }
             }
             GestureAction::OpenMission => {
@@ -1138,10 +1143,17 @@ impl FeatherCompositor {
             Some(KeyAction::SwitcherCommit) => self.switcher_commit(),
             Some(KeyAction::CycleAppWindows { reverse }) => self.cycle_app_windows(reverse),
             Some(KeyAction::Space { delta, carry }) => {
-                self.space_step(delta, carry);
-                if self.mission_open() { self.relayout_mission(); }
+                let moved = self.space_step(delta, carry);
+                if self.mission_open() {
+                    self.relayout_mission();
+                } else {
+                    self.show_space_banner(moved);
+                }
             }
-            Some(KeyAction::SpaceJump { target, carry }) => self.space_jump(target, carry),
+            Some(KeyAction::SpaceJump { target, carry }) => {
+                let moved = self.space_jump(target, carry);
+                self.show_space_banner(moved);
+            }
             Some(KeyAction::Mission { focus_hover, close_only }) => {
                 if !self.mission_open() {
                     if !close_only { self.open_mission(); }

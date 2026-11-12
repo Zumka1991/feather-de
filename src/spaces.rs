@@ -114,8 +114,8 @@ impl FeatherCompositor {
         self.needs_redraw = true;
     }
 
-    /// Ctrl+Alt+←/→; with `carry` (Shift) the front window comes along
-    pub fn space_step(&mut self, delta: i32, carry: bool) {
+    /// Ctrl+Alt+←/→; with `carry` (Shift) the front window comes along. Returns `true` if a window was carried.
+    pub fn space_step(&mut self, delta: i32, carry: bool) -> bool {
         // Larvis's desktop comes after the user's last desktop: left from it leads there,
         // and right from the last desktop leads to it instead of adding a desktop
         if self.larvis_shown {
@@ -124,35 +124,39 @@ impl FeatherCompositor {
                 self.leave_larvis_desktop();
                 self.switch_space(last);
             }
-            return;
+            return false;
         }
         if delta > 0 && !carry && self.spaces.current + 1 == self.spaces.count && self.larvis_window().is_some() {
             self.set_larvis_shown(true);
-            return;
+            return false;
         }
         let front = self.windows.iter().rposition(|w| w.is_visible() && !w.pip);
         let has = self.space_has_windows(self.spaces.current)
             || self.windows.iter().any(|w| w.mapped && w.pip && !w.larvis)
             || self.space_layouts.mode(self.spaces.current) != crate::space_layout::SpaceMode::Free;
-        let Some(next) = step(self.spaces, delta, has) else { return };
+        let Some(next) = step(self.spaces, delta, has) else { return false };
         self.spaces.count = next.count;
+        let mut carried = false;
         if carry {
             if let Some(i) = front {
                 self.windows[i].space = next.current;
+                carried = true;
             }
         }
         self.switch_space(next.current);
+        carried
     }
 
     /// Super+1…9 switches directly to desktop 1…9 (creating desktops on the fly up to `target + 1`,
     /// with empty trailing ones pruned on leave); Super+Shift+1…9 carries the front window there.
-    pub fn space_jump(&mut self, target: u32, carry: bool) {
+    /// Returns `true` if a window was carried.
+    pub fn space_jump(&mut self, target: u32, carry: bool) -> bool {
         if target >= MAX_SPACES {
-            return;
+            return false;
         }
         if self.larvis_shown {
             if carry {
-                return;
+                return false;
             }
             self.leave_larvis_desktop();
             self.spaces.count = self.spaces.count.max(target + 1);
@@ -162,7 +166,7 @@ impl FeatherCompositor {
             if self.mission_open() {
                 self.close_mission(None);
             }
-            return;
+            return false;
         }
         if carry {
             let Some(idx) = self
@@ -170,7 +174,7 @@ impl FeatherCompositor {
                 .iter()
                 .rposition(|w| w.is_visible() && !w.pip && !w.larvis)
             else {
-                return;
+                return false;
             };
             if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
                 let id = self.windows[idx].id;
@@ -189,10 +193,10 @@ impl FeatherCompositor {
                 if self.mission_open() {
                     self.relayout_mission();
                 }
-                return;
+                return true;
             }
             if target == self.spaces.current {
-                return;
+                return false;
             }
             self.spaces.count = self.spaces.count.max(target + 1);
             self.windows[idx].space = target;
@@ -201,7 +205,7 @@ impl FeatherCompositor {
             if self.mission_open() {
                 self.relayout_mission();
             }
-            return;
+            return true;
         }
         if self.shell.launchpad.is_some() {
             self.shell.launchpad = None;
@@ -227,6 +231,7 @@ impl FeatherCompositor {
             self.refresh_focus();
             self.needs_redraw = true;
         }
+        false
     }
 
     /// Debug check helper: a step left that must change nothing

@@ -3049,6 +3049,15 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
                 TimeoutAction::Drop
             })?;
         }
+        Ok("space-banner") => {
+            state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(1800)), |_, _, s| {
+                s.shell.toasts.clear();
+                s.spaces = crate::spaces::Spaces { current: 1, count: 3 };
+                s.set_space_mode(1, crate::space_layout::SpaceMode::Tape, false);
+                s.show_space_banner(false);
+                TimeoutAction::Drop
+            })?;
+        }
         Ok("sound-mixer") => {
             state.controls = None;
             state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(1400)), |_, _, s| {

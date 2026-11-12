@@ -28,6 +28,7 @@ const W: i32 = 420;
 const H: i32 = 84;
 const M: i32 = 14;
 const LIFETIME: Duration = Duration::from_millis(2000);
+const SPACE_LIFETIME: Duration = Duration::from_millis(1200);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BannerIcon {
@@ -36,6 +37,7 @@ pub enum BannerIcon {
     SpaceMode(crate::space_layout::SpaceMode),
     DropShelf,
     Pip(bool),
+    Space { current: u8, count: u8 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,9 +97,34 @@ impl Banner {
                 BannerIcon::SpaceMode(mode) => draw_space_mode_icon(&mut pm, cx, cy, 2.3, p.accent, mode),
                 BannerIcon::DropShelf => draw_drop_shelf_icon(&mut pm, cx, cy, 2.2, p.accent),
                 BannerIcon::Pip(ghost) => draw_pip_icon(&mut pm, cx, cy, 2.25, p.accent, ghost),
+                BannerIcon::Space { current, count } => {
+                    let (bw, bh) = (38.0, 26.0);
+                    fill_rounded_rect(&mut pm, cx - bw * 0.5, cy - 18.0, bw, bh, 7.5, with_alpha(p.accent, 0.16));
+                    stroke_rounded_rect(&mut pm, cx - bw * 0.5, cy - 18.0, bw, bh, 7.5, 1.5, p.accent);
+                    fonts.draw_text_centered(&mut pm, &(current as u32 + 1).to_string(), cx, cy - 13.0, 14.5, p.accent, true);
+                    let dots = (count as usize).clamp(1, 9);
+                    let active_dot = (current as usize).min(dots - 1);
+                    let total_w: f32 = (0..dots).map(|i| if i == active_dot { 7.5 } else { 4.0 }).sum::<f32>()
+                        + (dots.saturating_sub(1) as f32) * 3.0;
+                    let mut dx = cx - total_w * 0.5;
+                    for i in 0..dots {
+                        let w_dot = if i == active_dot { 7.5 } else { 4.0 };
+                        let col = if i == active_dot { p.accent } else { with_alpha(p.text_secondary, 0.42) };
+                        fill_rounded_rect(&mut pm, dx, cy + 13.5, w_dot, 4.0, 2.0, col);
+                        dx += w_dot + 3.0;
+                    }
+                }
             }
-            fonts.draw_text(&mut pm, message.title, m + 80.0, m + 21.0, 15.0, p.text, true);
-            fonts.draw_text(&mut pm, message.detail, m + 80.0, m + 46.0, 12.5, p.text_secondary, false);
+            if let BannerIcon::Space { current, count } = message.icon {
+                let space_title = format!("Рабочий стол {}", current as u32 + 1);
+                fonts.draw_text(&mut pm, &space_title, m + 82.0, m + 21.0, 15.0, p.text, true);
+                let counter = format!("{} / {}", current as u32 + 1, count.max(1));
+                fonts.draw_text_right(&mut pm, &counter, m + W as f32 - 20.0, m + 22.5, 12.0, p.text_tertiary, true);
+                fonts.draw_text(&mut pm, message.detail, m + 82.0, m + 46.0, 12.5, p.text_secondary, false);
+            } else {
+                fonts.draw_text(&mut pm, message.title, m + 80.0, m + 21.0, 15.0, p.text, true);
+                fonts.draw_text(&mut pm, message.detail, m + 80.0, m + 46.0, 12.5, p.text_secondary, false);
+            }
             Result::<_, ()>::Ok(vec![Rectangle::from_size(size.into())])
         });
         self.painted = Some(key);
@@ -138,12 +165,45 @@ impl FeatherCompositor {
         }
         self.banner.message = Some(message);
         self.needs_redraw = true;
-        if let Ok(token) = self.loop_handle.insert_source(Timer::from_duration(LIFETIME), |_, _, st| {
+        let ttl = if matches!(message.icon, BannerIcon::Space { .. }) {
+            SPACE_LIFETIME
+        } else {
+            LIFETIME
+        };
+        if let Ok(token) = self.loop_handle.insert_source(Timer::from_duration(ttl), |_, _, st| {
             st.banner = Banner::default();
             st.needs_redraw = true;
             TimeoutAction::Drop
         }) {
             self.banner.timer = Some(token);
+        }
+    }
+
+    pub fn show_space_banner(&mut self, carried: bool) {
+        if self.larvis_shown || self.mission_open() {
+            return;
+        }
+        let current = self.spaces.current.min(u8::MAX as u32) as u8;
+        let count = self.spaces.count.max(1).min(u8::MAX as u32) as u8;
+        let detail = if carried {
+            "Окно перенесено на этот стол"
+        } else {
+            self.space_layouts.mode(self.spaces.current).label()
+        };
+        self.show_banner(Message {
+            icon: BannerIcon::Space { current, count },
+            title: "",
+            detail,
+        });
+    }
+
+    pub fn clear_space_banner(&mut self) {
+        if matches!(self.banner.message.map(|m| m.icon), Some(BannerIcon::Space { .. })) {
+            if let Some(token) = self.banner.timer.take() {
+                self.loop_handle.remove(token);
+            }
+            self.banner = Banner::default();
+            self.needs_redraw = true;
         }
     }
 

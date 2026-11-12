@@ -3446,11 +3446,21 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             assert_eq!((s.spaces.current, s.spaces.count), (0, 1));
             tap_super_combo(s, false, false, 4); // Cmd + 3 -> desktop index 2
             assert_eq!((s.spaces.current, s.spaces.count), (2, 3), "{LOG} Cmd+3 created desktop 3 on the fly");
+            assert_eq!(
+                s.banner.message.map(|m| (m.icon, m.detail)),
+                Some((crate::banner::BannerIcon::Space { current: 2, count: 3 }, SpaceMode::Free.label())),
+                "{LOG} Cmd+3 shows centered desktop HUD banner"
+            );
             tap_super_combo(s, false, false, 2); // Cmd + 1 -> back to desktop index 0
             assert_eq!((s.spaces.current, s.spaces.count), (0, 1), "{LOG} empty desktops 2 and 3 pruned on return");
             let carried_id = s.windows.iter().rev().find(|w| w.is_visible() && !w.pip).unwrap().id;
             tap_super_combo(s, false, true, 4); // Cmd + Shift + 3 -> carry window to desktop 3
             assert_eq!((s.spaces.current, s.spaces.count), (2, 3), "{LOG} Cmd+Shift+3 jumped with window to desktop 3");
+            assert_eq!(
+                s.banner.message.map(|m| (m.icon, m.detail)),
+                Some((crate::banner::BannerIcon::Space { current: 2, count: 3 }, "Окно перенесено на этот стол")),
+                "{LOG} Cmd+Shift+3 shows carried-window subtitle in HUD banner"
+            );
             let carried = s.windows.iter().find(|w| w.id == carried_id).unwrap();
             assert_eq!(carried.space, 2, "{LOG} carried window is on desktop 3");
             assert!(carried.is_visible(), "{LOG} carried window is visible on desktop 3");

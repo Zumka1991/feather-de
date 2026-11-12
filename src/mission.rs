@@ -128,6 +128,7 @@ impl FeatherCompositor {
             return;
         }
         self.shell.close_menus();
+        self.clear_space_banner();
         self.shell.switcher = None;
         self.shell.launchpad = None;
         let mut m = self.mission.take().unwrap_or_default();

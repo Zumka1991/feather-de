@@ -101,7 +101,7 @@
 
 ## Окна и рабочие столы
 
-- [x] Рабочие столы (Spaces): Ctrl+Alt+←/→, прямое переключение `Super+1…9` и перенос окна `Super+Shift+1…9` с созданием столов на лету, анимация — [WINDOWS.md](WINDOWS.md#рабочие-столы-srcspacesrs-шаг-1)
+- [x] Рабочие столы (Spaces): Ctrl+Alt+←/→, прямое переключение `Super+1…9` и перенос окна `Super+Shift+1…9` с созданием столов на лету, центральная HUD-табличка номера и режима стола при переключении, анимация — [WINDOWS.md](WINDOWS.md#рабочие-столы-srcspacesrs-шаг-1)
 - [x] Режимы рабочих столов (`Free` / `Tile` / `Tape`): независимый режим для каждого стола — свободные окна macOS Tahoe, авто-плитка BSP и прокручиваемая горизонтальная лента в духе Niri (`Ctrl+Alt+M`, пилюля в строке меню и в Mission Control, Spotlight, меню «Окно», `featherctl space-mode`, сохранение в `windows.conf`) — [WINDOWS.md](WINDOWS.md#режимы-рабочих-столов-srcspace_layoutrs), [API.md](API.md)
 - [x] Mission Control: обзор окон и столов, перенос окна на стол — [WINDOWS.md](WINDOWS.md#mission-control-srcmissionrs-шаг-2)
 - [x] Жесты трекпада: столы, Mission Control и Launchpad (`GestureSwipe` / `GesturePinch` 3–4 пальцами; физический трекпад в DRM проверяет пользователь)
