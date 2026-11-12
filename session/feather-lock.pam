@@ -1,5 +1,17 @@
 #%PAM-1.0
-# Arch Linux / distributions providing system-auth. Adapt to the distribution's
-# screen-lock PAM stack when packaging (for example common-auth on Debian).
-auth include system-auth
-account include system-auth
+# PAM stack for the Feather DE screen locker.
+#
+# Astra Linux (Parsec MAC) requires pam_parsec_mac.so in the auth and account
+# stacks — without it every password is rejected because the security label
+# check never runs.  Debian/Ubuntu use common-auth / common-account, Arch Linux
+# uses system-auth.  We include both Astra modules and the Debian includes; on
+# non-Astra systems the pam_parsec_mac.so lines are simply absent and PAM
+# skips them.
+
+auth required  pam_parsec_mac.so
+auth include   common-auth
+auth include   system-auth
+
+account required  pam_parsec_mac.so labelselect=appset
+account include   common-account
+account include   system-auth
