@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Задать вопрос · Ask a question
+    url: https://github.com/Zumka1991/feather-de/discussions/categories/q-a
+    about: Установка, настройка, «как сделать…» — на форуме.
+  - name: Предложить идею · Suggest an idea
+    url: https://github.com/Zumka1991/feather-de/discussions/categories/ideas
+    about: Чего не хватает Пёрышку. За идеи можно голосовать.
+  - name: Руководство пользователя · User guide
+    url: https://featheros.ru/guide/
+    about: Все возможности и сочетания клавиш.

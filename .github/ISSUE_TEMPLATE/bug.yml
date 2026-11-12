@@ -1,0 +1,84 @@
+name: Сообщить об ошибке · Bug report
+description: Что-то работает не так, как должно. Something does not work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что помогаете сделать Пёрышко лучше! Вопросы и идеи удобнее обсуждать на
+        [форуме](https://github.com/Zumka1991/feather-de/discussions), а здесь — только ошибки.
+
+        Thanks for helping! You may write in English. Questions and ideas belong on the forum.
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось · What happened
+      description: Что вы ожидали и что произошло на самом деле.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как повторить · Steps to reproduce
+      placeholder: |
+        1. Открыть …
+        2. Нажать …
+        3. Видно, что …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия Пёрышка · Feather version
+      description: Меню 🪶 → «Об этом компьютере», или `featherctl status`.
+      placeholder: 0.20.2
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Как установлено · Install method
+      options:
+        - Образ Пёрышко OS (ISO)
+        - Ubuntu, скрипт или APT
+        - Arch Linux, pacman
+        - Сборка из исходников
+        - Другое
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Дистрибутив · Distribution
+      placeholder: Ubuntu 26.04
+  - type: input
+    id: gpu
+    attributes:
+      label: Видеокарта и драйвер · GPU and driver
+      placeholder: AMD Radeon RX 570, Mesa 26.0
+    validations:
+      required: true
+  - type: input
+    id: display
+    attributes:
+      label: Мониторы и масштаб · Displays and scaling
+      placeholder: один 4K-монитор, 60 Гц, масштаб 200 %
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Режим запуска · Session type
+      options:
+        - Обычный сеанс (DRM/KMS)
+        - Вложенное окно (--windowed)
+        - Не знаю
+  - type: textarea
+    id: log
+    attributes:
+      label: Лог · Log
+      description: Если есть. Проверьте, что в нём нет личных данных.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Снимки экрана и прочее · Screenshots and anything else
+      description: На снимках оставляйте только то, что готовы опубликовать.
