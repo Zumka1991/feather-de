@@ -748,3 +748,27 @@ Super + S показывает и прячет подложку	Super + S shows 
 Изображение	Image	Imagen	Bild	Image	图像
 Архив	Archive	Archivo comprimido	Archiv	Archive	压缩包
 Файл	File	Archivo	Datei	Fichier	文件
+# ── Menu HUD (Поиск по командам меню) ──
+Поиск по меню	Menu Search	Búsqueda en menús	Menüsuche	Recherche dans les menus	菜单搜索
+Поиск по меню…	Search Menus…	Buscar en los menús…	Menüs durchsuchen …	Rechercher dans les menus…	搜索菜单…
+Поиск команд меню…	Search menu commands…	Buscar comandos de menú…	Menübefehle suchen …	Rechercher des commandes de menu…	搜索菜单命令…
+Нет доступных команд меню	No menu commands available	No hay comandos de menú disponibles	Keine Menübefehle verfügbar	Aucune commande de menu disponible	暂无可用菜单命令
+Команды активного окна	Active window commands	Comandos de la ventana activa	Befehle des aktiven Fensters	Commandes de la fenêtre active	当前窗口命令
+# ── Ghost PiP («Картинка в картинке» и сквозь курсор) ──
+Картинка в картинке (PiP)	Picture in Picture (PiP)	Imagen dentro de imagen (PiP)	Bild-in-Bild (PiP)	Image dans l’image (PiP)	画中画 (PiP)
+Поверх всех столов	Above all desktops	Sobre todos los escritorios	Über allen Schreibtischen	Au-dessus de tous les bureaux	置于所有桌面之上
+Сквозь курсор (призрачное окно)	Click-Through (Ghost Window)	Clic a través (ventana fantasma)	Klickdurchlässig (Geisterfenster)	Clic traversant (fenêtre fantôme)	鼠标穿透（幽灵窗口）
+Призрачный режим (сквозь курсор)	Ghost Mode (Click-Through)	Modo fantasma (clic a través)	Geistermodus (klickdurchlässig)	Mode fantôme (clic traversant)	幽灵模式（鼠标穿透）
+Призрачный PiP · Сквозь курсор	Ghost PiP · Click-Through	PiP fantasma · Clic a través	Geister-PiP · Klickdurchlässig	PiP fantôme · Clic traversant	幽灵画中画 · 鼠标穿透
+Клики проходят насквозь · Super — захват окна	Clicks pass through · Hold Super to grab	Los clics pasan a través · Super para mover	Klicks gehen hindurch · Super zum Greifen	Les clics traversent · Super pour saisir	点击穿透窗口 · 按住 Super 拖动
+Поверх всех столов · ⌥⌘P — сквозь курсор	Above all desktops · ⌥⌘P for click-through	Sobre todos los escritorios · ⌥⌘P clic a través	Über allen Schreibtischen · ⌥⌘P Klickdurchlass	Au-dessus des bureaux · ⌥⌘P clic traversant	置于所有桌面之上 · ⌥⌘P 鼠标穿透
+Обычное окно	Normal Window	Ventana normal	Normales Fenster	Fenêtre normale	普通窗口
+Закрепление поверх всех столов снято	Unpinned from above all desktops	Se quitó la fijación sobre todos los escritorios	Anheftung über allen Schreibtischen aufgehoben	Épinglage au-dessus des bureaux retiré	已取消置顶于所有桌面
+# ── Per-App Audio Mixer (Пооконный микшер звука) ──
+Программы	Apps	Aplicaciones	Apps	Applications	应用程序
+Настройки звука…	Sound Settings…	Ajustes de sonido…	Toneinstellungen …	Réglages Son…	声音设置…
+Вывод	Output	Salida	Ausgabe	Sortie	输出
+По умолчанию	Default	Predeterminado	Standard	Par défaut	默认
+Громкость программ	App Volume	Volumen de aplicaciones	App-Lautstärke	Volume des applications	应用音量
+Сейчас ни одна программа не воспроизводит звук.	No apps are currently playing audio.	Ninguna aplicación está reproduciendo audio ahora mismo.	Derzeit gibt keine App Ton wieder.	Aucune application ne lit d’audio en ce moment.	当前没有应用正在播放音频。
+Выключить звук программы	Mute App Audio	Silenciar audio de la aplicación	App-Ton stummschalten	Couper le son de l’application	静音此应用

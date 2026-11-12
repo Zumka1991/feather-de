@@ -459,6 +459,7 @@ impl FeatherCompositor {
                     w.id == *id
                         && w.space == space
                         && w.mapped
+                        && !w.pip
                         && !w.minimized
                         && !w.maximized
                         && !w.fullscreen
@@ -525,6 +526,7 @@ impl FeatherCompositor {
                 .filter(|w| {
                     w.space == space
                         && w.mapped
+                        && !w.pip
                         && !w.larvis
                         && !w.has_parent()
                         && !w.fullscreen
@@ -573,6 +575,7 @@ impl FeatherCompositor {
         let space = self.windows[idx].space;
         if space >= MAX_SPACES
             || self.space_layouts.mode(space) == SpaceMode::Free
+            || self.windows[idx].pip
             || self.windows[idx].larvis
             || self.windows[idx].has_parent()
         {
@@ -645,6 +648,7 @@ impl FeatherCompositor {
                     let w = &self.windows[i];
                     w.space == space
                         && w.mapped
+                        && !w.pip
                         && !w.larvis
                         && !w.has_parent()
                         && !w.fullscreen
@@ -690,7 +694,7 @@ impl FeatherCompositor {
                 .windows
                 .iter()
                 .rev()
-                .find(|w| w.space == space && w.mapped && !w.minimized && !w.larvis)
+                .find(|w| w.space == space && w.mapped && !w.pip && !w.minimized && !w.larvis)
                 .is_some_and(|w| {
                     w.fullscreen && self.space_layouts.spaces[space as usize].order.contains(&w.id)
                 });

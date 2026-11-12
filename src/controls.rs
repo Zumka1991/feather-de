@@ -37,12 +37,32 @@ impl Sink {
     }
 }
 #[derive(Clone, Default, Debug, PartialEq)]
+pub struct AudioStream {
+    pub index: u32,
+    pub name: String,
+    pub subtitle: String,
+    pub binary: String,
+    pub icon_name: String,
+    pub sink_index: u32,
+    pub sink_name: String,
+    pub channels: Vec<u32>,
+    pub balance_channels: Vec<u32>,
+    pub muted: bool,
+}
+impl AudioStream {
+    pub fn volume(&self) -> f32 {
+        (self.channels.iter().copied().max().unwrap_or(0) as f32 / 65536.0).clamp(0.0, 1.0)
+    }
+}
+#[derive(Clone, Default, Debug, PartialEq)]
 pub struct Audio {
     pub sinks: Vec<Sink>,
     pub default: String,
     /// Microphones and line inputs; monitors of outputs are left out.
     pub sources: Vec<Sink>,
     pub default_source: String,
+    /// Active playback streams (queried while Sound UI is open or via D-Bus).
+    pub streams: Vec<AudioStream>,
     pub input_error: Option<String>,
     pub error: Option<String>,
 }
@@ -67,6 +87,20 @@ impl Audio {
                         };
                         sink.balance_channels = cached.clone();
                     }
+                }
+            }
+        }
+        for stream in &mut self.streams {
+            if stream.channels.iter().copied().max().unwrap_or(0) == 0 {
+                if let Some(old) = previous.streams.iter().find(|o| o.index == stream.index && o.name == stream.name && o.channels.len() == stream.channels.len()) {
+                    let cached = if old.channels.iter().copied().max().unwrap_or(0) > 0 {
+                        &old.channels
+                    } else if old.balance_channels.len() == stream.channels.len() && old.balance_channels.iter().copied().max().unwrap_or(0) > 0 {
+                        &old.balance_channels
+                    } else {
+                        continue;
+                    };
+                    stream.balance_channels = cached.clone();
                 }
             }
         }
@@ -100,6 +134,7 @@ pub enum Control {
     ScanBluetooth,
     WatchWifi(bool),
     WatchBluetooth(bool),
+    WatchAudioStreams(bool),
     Wifi(bool),
     Bluetooth(bool),
     Connect {
@@ -139,6 +174,19 @@ pub enum Control {
         muted: bool,
     },
     Input(String),
+    StreamVolume {
+        index: u32,
+        value: f32,
+    },
+    StreamMute {
+        index: u32,
+        muted: bool,
+    },
+    StreamOutput {
+        index: u32,
+        sink: String,
+    },
+    QueryStreams(Arc<Mutex<Option<Box<dyn FnOnce(Result<Vec<AudioStream>, String>) + Send>>>>),
     AudioKey(AudioKey),
 }
 impl std::fmt::Debug for Control {
@@ -153,6 +201,7 @@ impl std::fmt::Debug for Control {
             Self::ScanBluetooth => "ScanBluetooth",
             Self::WatchWifi(_) => "WatchWifi",
             Self::WatchBluetooth(_) => "WatchBluetooth",
+            Self::WatchAudioStreams(_) => "WatchAudioStreams",
             Self::Wifi(_) => "Wifi",
             Self::Bluetooth(_) => "Bluetooth",
             Self::Connect { .. } => "Connect(redacted)",
@@ -171,6 +220,10 @@ impl std::fmt::Debug for Control {
             Self::InputVolume { .. } => "InputVolume",
             Self::InputMute { .. } => "InputMute",
             Self::Input(_) => "Input",
+            Self::StreamVolume { .. } => "StreamVolume",
+            Self::StreamMute { .. } => "StreamMute",
+            Self::StreamOutput { .. } => "StreamOutput",
+            Self::QueryStreams(_) => "QueryStreams",
             Self::AudioKey(_) => "AudioKey",
         })
     }
@@ -192,6 +245,7 @@ pub struct Controls {
     audio_open: bool,
     detailed: bool,
     bluetooth_detailed: bool,
+    audio_streams_open: bool,
 }
 impl Controls {
     pub fn new(
@@ -274,6 +328,7 @@ impl Controls {
                     if state.system_settings.audio_drag.as_ref().is_some_and(|(_, command)| match command {
                         Control::InputVolume { source, .. } => state.shell.cc.audio.current_source().is_none_or(|s| s.name != *source),
                         Control::Volume { sink, .. } => state.shell.cc.audio.current().is_none_or(|s| s.name != *sink),
+                        Control::StreamVolume { index, .. } => !state.shell.cc.audio.streams.iter().any(|s| s.index == *index),
                         _ => true,
                     }) { state.system_settings.audio_drag = None; }
                     state.mark_settings_dirty();
@@ -311,9 +366,16 @@ impl Controls {
             audio_open: false,
             detailed: false,
             bluetooth_detailed: false,
+            audio_streams_open: false,
         })
     }
-    pub fn sync(&mut self, open: bool, detailed: bool, bluetooth_detailed: bool) {
+    pub fn sync(
+        &mut self,
+        open: bool,
+        detailed: bool,
+        bluetooth_detailed: bool,
+        audio_streams: bool,
+    ) {
         if open && !self.wifi_open && self.wifi.try_send(Control::Refresh).is_ok() {
             self.wifi_open = true;
         }
@@ -335,6 +397,11 @@ impl Controls {
             && self.send(Control::WatchBluetooth(bluetooth_detailed)).is_ok()
         {
             self.bluetooth_detailed = bluetooth_detailed;
+        }
+        if audio_streams != self.audio_streams_open
+            && self.send(Control::WatchAudioStreams(audio_streams)).is_ok()
+        {
+            self.audio_streams_open = audio_streams;
         }
     }
     pub fn send(&self, command: Control) -> Result<(), &'static str> {
@@ -531,6 +598,99 @@ fn parse_devices(json: &str, skip_monitors: bool) -> Result<Vec<Sink>, String> {
     }
     Ok(result)
 }
+pub(crate) fn parse_streams(json: &str, sinks: &[Sink]) -> Result<Vec<AudioStream>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| "Некорректный список потоков звука")?;
+    let list = value
+        .as_array()
+        .ok_or("Некорректный список потоков звука")?;
+    let mut result = Vec::new();
+    for s in list.iter().take(64) {
+        let props = &s["properties"];
+        if props["media.role"].as_str() == Some("event")
+            || props["application.id"].as_str() == Some("org.PulseAudio.pavucontrol")
+            || props["media.name"].as_str() == Some("Peak detect")
+            || props["stream.monitor"].as_str() == Some("true")
+        {
+            continue;
+        }
+        let Some(index) = s["index"].as_u64().and_then(|v| u32::try_from(v).ok()) else {
+            continue;
+        };
+        let channels = match s["volume"].as_object() {
+            Some(vol) => vol
+                .values()
+                .filter_map(|v| v["value"].as_u64().and_then(|n| u32::try_from(n).ok()))
+                .collect::<Vec<_>>(),
+            None => continue,
+        };
+        if channels.is_empty() {
+            continue;
+        }
+        let app_name = ["application.name", "node.name", "application.process.binary", "media.name"]
+            .into_iter()
+            .find_map(|k| props[k].as_str().map(str::trim).filter(|v| !v.is_empty()))
+            .unwrap_or("");
+        if app_name.is_empty() {
+            continue;
+        }
+        let name: String = app_name.chars().take(128).collect();
+        let raw_media = props["media.name"].as_str().map(str::trim).unwrap_or("");
+        let generic_media = matches!(
+            raw_media.to_ascii_lowercase().as_str(),
+            "" | "playback" | "audiostream" | "audio stream" | "output" | "simple directmedia layer"
+        ) || raw_media.eq_ignore_ascii_case(&name);
+        let subtitle: String = if generic_media {
+            String::new()
+        } else {
+            raw_media.chars().take(128).collect()
+        };
+        let binary: String = props["application.process.binary"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(64)
+            .collect();
+        let icon_name: String = props["application.icon_name"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(64)
+            .collect();
+        let sink_index = s["sink"].as_u64().unwrap_or(0) as u32;
+        let sink_name = sinks
+            .iter()
+            .find(|d| d.index == sink_index)
+            .map(|d| d.name.clone())
+            .unwrap_or_default();
+        let balance_channels = if channels.iter().copied().max().unwrap_or(0) > 0 {
+            channels.clone()
+        } else {
+            Vec::new()
+        };
+        result.push(AudioStream {
+            index,
+            name,
+            subtitle,
+            binary,
+            icon_name,
+            sink_index,
+            sink_name,
+            channels,
+            balance_channels,
+            muted: s["mute"].as_bool().unwrap_or(false),
+        });
+    }
+    result.sort_by_key(|s| s.index);
+    Ok(result)
+}
+fn audio_streams_snapshot(sinks: &[Sink]) -> Result<Vec<AudioStream>, String> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let json = pactl_until(&strings(&["--format=json", "list", "sink-inputs"]), deadline)?;
+    parse_streams(&json, sinks)
+}
 fn audio_snapshot(cached_inputs: Option<&Audio>) -> Audio {
     let deadline = Instant::now() + Duration::from_secs(3);
     let run = |args: &[String]| pactl_until(args, deadline);
@@ -577,15 +737,15 @@ fn audio_snapshot_with_cached_inputs(
     audio
 }
 
-fn volumes(sink: &Sink, value: f32) -> Vec<String> {
-    let active = if sink.channels.iter().copied().max().unwrap_or(0) > 0 {
-        &sink.channels
-    } else if sink.balance_channels.len() == sink.channels.len()
-        && sink.balance_channels.iter().copied().max().unwrap_or(0) > 0
+fn channel_volumes(channels: &[u32], balance_channels: &[u32], value: f32) -> Vec<String> {
+    let active = if channels.iter().copied().max().unwrap_or(0) > 0 {
+        channels
+    } else if balance_channels.len() == channels.len()
+        && balance_channels.iter().copied().max().unwrap_or(0) > 0
     {
-        &sink.balance_channels
+        balance_channels
     } else {
-        &sink.channels
+        channels
     };
     let peak = active.iter().copied().max().unwrap_or(0) as f32;
     let target = value.clamp(0.0, 1.0);
@@ -602,6 +762,9 @@ fn volumes(sink: &Sink, value: f32) -> Vec<String> {
             )
         })
         .collect()
+}
+fn volumes(sink: &Sink, value: f32) -> Vec<String> {
+    channel_volumes(&sink.channels, &sink.balance_channels, value)
 }
 fn audio_action(command: Control, state: &Audio) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -671,6 +834,32 @@ fn audio_action_with(
             // Existing streams on the old default follow an explicit output selection.
             let old = state.current().map(|s| s.index as u64);
             move_streams(run, "sink-inputs", "sink", "move-sink-input", old, &name)?;
+        }
+        Control::StreamVolume { index, value } => {
+            let mut args = vec!["set-sink-input-volume".into(), index.to_string()];
+            if let Some(stream) = state.streams.iter().find(|s| s.index == index) {
+                args.extend(channel_volumes(&stream.channels, &stream.balance_channels, value));
+            } else {
+                args.push(format!("{:.3}%", value.clamp(0.0, 1.0) * 100.0));
+            }
+            run(&args)?;
+        }
+        Control::StreamMute { index, muted } => {
+            run(&vec![
+                "set-sink-input-mute".into(),
+                index.to_string(),
+                if muted { "1" } else { "0" }.into(),
+            ])?;
+        }
+        Control::StreamOutput { index, sink } => {
+            if !state.sinks.iter().any(|s| s.name == sink) {
+                return Err("Устройство отключено".into());
+            }
+            run(&vec![
+                "move-sink-input".into(),
+                index.to_string(),
+                sink,
+            ])?;
         }
         _ => {}
     }
@@ -746,6 +935,8 @@ impl Drop for Subscription {
 fn subscribe(
     wake: async_channel::Sender<()>,
     sources_dirty: Arc<std::sync::atomic::AtomicBool>,
+    watch_streams: Arc<std::sync::atomic::AtomicBool>,
+    streams_dirty: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Subscription, String> {
     use std::os::unix::process::CommandExt;
     let mut cmd = Command::new("pactl");
@@ -816,6 +1007,11 @@ fn subscribe(
                                 let _ = wake.try_send(());
                             } else if line.contains(" on sink #") {
                                 let _ = wake.try_send(());
+                            } else if line.contains(" on sink-input #")
+                                && watch_streams.load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                streams_dirty.store(true, std::sync::atomic::Ordering::Release);
+                                let _ = wake.try_send(());
                             }
                             pending.drain(..=end);
                         }
@@ -861,7 +1057,15 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
     use std::sync::atomic::{AtomicBool, Ordering};
     let (wake, changes) = async_channel::bounded(1);
     let sources_dirty = Arc::new(AtomicBool::new(true));
-    let mut watcher = subscribe(wake.clone(), sources_dirty.clone()).ok();
+    let watch_streams = Arc::new(AtomicBool::new(false));
+    let streams_dirty = Arc::new(AtomicBool::new(false));
+    let mut watcher = subscribe(
+        wake.clone(),
+        sources_dirty.clone(),
+        watch_streams.clone(),
+        streams_dirty.clone(),
+    )
+    .ok();
     let mut state = Audio::default();
     let mut command = Some(Control::Refresh);
     let mut auto_headphones = true;
@@ -870,6 +1074,8 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
         let mut feedback = false;
         let mut queued = None;
         let mut refresh_inputs = sources_dirty.swap(false, Ordering::AcqRel);
+        let mut force_streams = streams_dirty.swap(false, Ordering::AcqRel);
+        let mut skip_snapshot = false;
         if let Some(c) = command.take() {
             if matches!(
                 c,
@@ -881,53 +1087,126 @@ fn audio_run(commands: async_channel::Receiver<Control>, updates: channel::SyncS
             ) {
                 refresh_inputs = true;
             }
+            if matches!(
+                c,
+                Control::StreamVolume { .. }
+                    | Control::StreamMute { .. }
+                    | Control::StreamOutput { .. }
+            ) {
+                force_streams = true;
+            }
             if matches!(c, Control::Refresh | Control::RefreshAudio)
                 && watcher
                     .as_ref()
                     .is_none_or(|w| w.0.lock().unwrap().try_wait().ok().flatten().is_some())
             {
-                watcher = subscribe(wake.clone(), sources_dirty.clone()).ok();
+                watcher = subscribe(
+                    wake.clone(),
+                    sources_dirty.clone(),
+                    watch_streams.clone(),
+                    streams_dirty.clone(),
+                )
+                .ok();
             }
-            let result = if let Control::AutoHeadphones(on) = c {
-                auto_headphones = on;
-                Ok(())
-            } else if let Control::AudioKey(first) = c {
-                feedback = true;
-                let mut keys = vec![first];
-                // Collapse a burst without crossing a slider/output command or reordering mute.
-                for _ in 1..16 {
-                    match commands.try_recv() {
-                        Ok(Control::AudioKey(key)) => keys.push(key),
-                        Ok(other) => { queued = Some(other); break; }
-                        Err(_) => break,
-                    }
+            let result = match c {
+                Control::AutoHeadphones(on) => {
+                    auto_headphones = on;
+                    Ok(())
                 }
-                let deadline = Instant::now() + Duration::from_secs(3);
-                audio_keys_with(&keys, &state, &|args| pactl_until(args, deadline))
-            } else { audio_action(c, &state) };
+                Control::WatchAudioStreams(on) => {
+                    watch_streams.store(on, Ordering::Release);
+                    if on {
+                        force_streams = true;
+                    } else {
+                        skip_snapshot = !refresh_inputs;
+                    }
+                    Ok(())
+                }
+                Control::QueryStreams(slot) => {
+                    let sinks_snap = if state.sinks.is_empty() {
+                        audio_snapshot(Some(&state)).sinks
+                    } else {
+                        state.sinks.clone()
+                    };
+                    let res = audio_streams_snapshot(&sinks_snap);
+                    if let Ok(ref list) = res {
+                        let mut updated = list.clone();
+                        let mut tmp = state.clone();
+                        tmp.streams = std::mem::take(&mut updated);
+                        tmp.retain_zero_balances(&state);
+                        if tmp != state {
+                            state = tmp;
+                            let _ = updates.send(Update::Audio(state.clone()));
+                        }
+                    }
+                    if let Ok(mut guard) = slot.lock() {
+                        if let Some(cb) = guard.take() {
+                            cb(res.map(|_| state.streams.clone()));
+                        }
+                    }
+                    skip_snapshot = !refresh_inputs;
+                    Ok(())
+                }
+                Control::AudioKey(first) => {
+                    feedback = true;
+                    let mut keys = vec![first];
+                    // Collapse a burst without crossing a slider/output command or reordering mute.
+                    for _ in 1..16 {
+                        match commands.try_recv() {
+                            Ok(Control::AudioKey(key)) => keys.push(key),
+                            Ok(other) => { queued = Some(other); break; }
+                            Err(_) => break,
+                        }
+                    }
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    audio_keys_with(&keys, &state, &|args| pactl_until(args, deadline))
+                }
+                other => audio_action(other, &state),
+            };
             if let Err(error) = result {
                 refresh_inputs = true;
+                skip_snapshot = false;
                 if updates.send(Update::Error("Звук", error)).is_err() {
                     break;
                 }
             }
         }
-        refresh_inputs |= sources_dirty.swap(false, Ordering::AcqRel);
-        let mut next = audio_snapshot(if refresh_inputs { None } else { Some(&state) });
-        next.retain_zero_balances(&state);
-        let arrived = arrived_headphones(&state, &next, &mut vanished, Instant::now());
-        if let Some(target) = arrived.filter(|_| auto_headphones) {
-            // Like macOS: freshly connected headphones take over, playing streams follow
-            if audio_action(Control::Output(target), &next).is_ok() {
-                let switched = audio_snapshot(Some(&next));
-                next = switched;
-                next.retain_zero_balances(&state);
+        if !skip_snapshot {
+            refresh_inputs |= sources_dirty.swap(false, Ordering::AcqRel);
+            let mut next = audio_snapshot(if refresh_inputs { None } else { Some(&state) });
+            if watch_streams.load(Ordering::Acquire) || force_streams {
+                if let Ok(streams) = audio_streams_snapshot(&next.sinks) {
+                    next.streams = streams;
+                } else {
+                    next.streams = state.streams.clone();
+                }
+            } else {
+                next.streams = state.streams.clone();
             }
-        }
-        if feedback || next != state {
-            state = next;
-            let update = if feedback { Update::AudioFeedback(state.clone()) } else { Update::Audio(state.clone()) };
-            if updates.send(update).is_err() { break; }
+            next.retain_zero_balances(&state);
+            let arrived = arrived_headphones(&state, &next, &mut vanished, Instant::now());
+            if let Some(target) = arrived.filter(|_| auto_headphones) {
+                // Like macOS: freshly connected headphones take over, playing streams follow
+                if audio_action(Control::Output(target), &next).is_ok() {
+                    let mut switched = audio_snapshot(Some(&next));
+                    if watch_streams.load(Ordering::Acquire) || force_streams {
+                        if let Ok(streams) = audio_streams_snapshot(&switched.sinks) {
+                            switched.streams = streams;
+                        } else {
+                            switched.streams = next.streams.clone();
+                        }
+                    } else {
+                        switched.streams = next.streams.clone();
+                    }
+                    next = switched;
+                    next.retain_zero_balances(&state);
+                }
+            }
+            if feedback || next != state {
+                state = next;
+                let update = if feedback { Update::AudioFeedback(state.clone()) } else { Update::Audio(state.clone()) };
+                if updates.send(update).is_err() { break; }
+            }
         }
         if queued.is_some() { command = queued; continue; }
         enum Event {
@@ -1292,5 +1571,49 @@ mod tests {
             {"name":"pci","index":3,"volume":{"mono":{"value":30000}},"properties":{"device.bus":"pci","device.form_factor":"internal"}}]"#;
         let sinks = parse_sinks(json).unwrap();
         assert_eq!(sinks.iter().map(|s| s.headphones).collect::<Vec<_>>(), [true, true, false]);
+    }
+    #[test]
+    fn streams_parse_filter_and_route_per_app() {
+        let sinks = vec![
+            Sink { name: "speakers".into(), label: "Динамики".into(), index: 1, channels: vec![65536, 65536], ..Default::default() },
+            Sink { name: "usb_dac".into(), label: "USB ЦАП".into(), index: 7, channels: vec![65536, 65536], ..Default::default() },
+        ];
+        let json = r#"[
+            {"index":42,"sink":7,"mute":false,"volume":{"front-left":{"value":32768},"front-right":{"value":65536}},
+             "properties":{"application.name":"Google Chrome","media.name":"YouTube — Lo-Fi","application.process.binary":"chrome"}},
+            {"index":11,"sink":1,"mute":true,"volume":{"mono":{"value":49152}},
+             "properties":{"application.name":"Telegram Desktop","media.name":"Playback","application.process.binary":"Telegram"}},
+            {"index":99,"sink":1,"mute":false,"volume":{"mono":{"value":65536}},
+             "properties":{"application.name":"System Bell","media.role":"event"}},
+            {"index":100,"sink":1,"mute":false,"volume":{"mono":{"value":65536}},
+             "properties":{"application.id":"org.PulseAudio.pavucontrol","media.name":"Peak detect"}}
+        ]"#;
+        let streams = parse_streams(json, &sinks).unwrap();
+        assert_eq!(streams.len(), 2);
+        // Sorted deterministically by stream index
+        assert_eq!(streams[0].index, 11);
+        assert_eq!(streams[0].name, "Telegram Desktop");
+        assert_eq!(streams[0].subtitle, "");
+        assert_eq!(streams[0].sink_name, "speakers");
+        assert!(streams[0].muted);
+        assert_eq!(streams[1].index, 42);
+        assert_eq!(streams[1].name, "Google Chrome");
+        assert_eq!(streams[1].subtitle, "YouTube — Lo-Fi");
+        assert_eq!(streams[1].sink_name, "usb_dac");
+        assert_eq!(streams[1].volume(), 1.0);
+
+        let state = Audio { sinks, default: "speakers".into(), streams, ..Default::default() };
+        let calls = std::cell::RefCell::new(Vec::<Vec<String>>::new());
+        let run = |args: &[String]| {
+            calls.borrow_mut().push(args.to_vec());
+            Ok(String::new())
+        };
+        audio_action_with(Control::StreamVolume { index: 42, value: 0.5 }, &state, &run).unwrap();
+        audio_action_with(Control::StreamMute { index: 11, muted: false }, &state, &run).unwrap();
+        audio_action_with(Control::StreamOutput { index: 11, sink: "usb_dac".into() }, &state, &run).unwrap();
+        let recorded = calls.into_inner();
+        assert_eq!(recorded[0], ["set-sink-input-volume", "42", "25.000%", "50.000%"]);
+        assert_eq!(recorded[1], ["set-sink-input-mute", "11", "0"]);
+        assert_eq!(recorded[2], ["move-sink-input", "11", "usb_dac"]);
     }
 }

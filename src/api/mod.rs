@@ -7,7 +7,7 @@ mod server;
 pub(crate) mod automation;
 
 use crate::{shell::ShellClickAction, FeatherCompositor};
-use feather_api::{AppInfo, AudioInfo, DisplayInfo, Error, MediaInfo, ShelfInfo, ShelfItemInfo, SpaceInfo, WindowInfo};
+use feather_api::{AppInfo, AudioInfo, AudioStreamInfo, DisplayInfo, Error, MediaInfo, ShelfInfo, ShelfItemInfo, SpaceInfo, WindowInfo};
 use smithay::reexports::calloop::{channel, LoopHandle};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -24,6 +24,8 @@ pub enum Call {
     FullscreenWindow(u64, bool),
     /// Индекс стола с 0
     MoveWindowToSpace(u64, u32),
+    GetWindowPip(u64),
+    SetWindowPip(u64, bool, bool),
     ListSpaces,
     SwitchSpace(u32),
     /// `None` — текущий стол, `Some(i)` — индекс стола с 0
@@ -32,6 +34,8 @@ pub enum Call {
     SetSpaceMode(Option<u32>, Option<crate::space_layout::SpaceMode>),
     MissionControl(bool),
     Launchpad(bool),
+    GetMenuHud,
+    ShowMenuHud(bool),
     GetDropShelf,
     ShowDropShelf(bool),
     ClearDropShelf,
@@ -44,6 +48,10 @@ pub enum Call {
     ChangeVolume(i32),
     SetMute(bool),
     SetMicMute(bool),
+    ListAudioStreams,
+    SetStreamVolume(u32, u32),
+    SetStreamMute(u32, bool),
+    MoveStreamOutput(u32, String),
     GetDisplay,
     SetBrightness(u32),
     ChangeBrightness(i32),
@@ -74,12 +82,15 @@ pub enum Shot {
 #[derive(Debug, PartialEq)]
 pub enum Reply {
     Done,
+    Bool(bool),
     Windows(Vec<WindowInfo>),
+    WindowPip(bool, bool),
     Spaces(Vec<SpaceInfo>),
     SpaceMode(String),
     DropShelf(ShelfInfo),
     Apps(Vec<AppInfo>),
     Audio(AudioInfo),
+    AudioStreams(Vec<AudioStreamInfo>),
     Display(DisplayInfo),
     DockEdge(String),
     /// Стол Ларвиса: запущен, показан
@@ -175,10 +186,13 @@ pub fn allowed_while_locked(call: &Call) -> bool {
     matches!(
         call,
         Call::ListWindows
+            | Call::GetWindowPip(_)
             | Call::ListSpaces
             | Call::GetSpaceMode(_)
+            | Call::GetMenuHud
             | Call::ListApps
             | Call::GetAudio
+            | Call::ListAudioStreams
             | Call::GetDisplay
             | Call::GetDockEdge
             | Call::GetLarvisDesktop
@@ -187,11 +201,37 @@ pub fn allowed_while_locked(call: &Call) -> bool {
             | Call::ChangeVolume(_)
             | Call::SetMute(_)
             | Call::SetMicMute(_)
+            | Call::SetStreamVolume(..)
+            | Call::SetStreamMute(..)
+            | Call::MoveStreamOutput(..)
             | Call::Media(_)
             | Call::LockScreen
             | Call::Suspend
             | Call::CastStop(_)
     )
+}
+
+fn format_audio_streams(
+    streams: &[crate::controls::AudioStream],
+    sinks: &[crate::controls::Sink],
+) -> Vec<AudioStreamInfo> {
+    streams
+        .iter()
+        .map(|st| {
+            let sink_obj = sinks
+                .iter()
+                .find(|s| (!st.sink_name.is_empty() && s.name == st.sink_name) || s.index == st.sink_index);
+            AudioStreamInfo {
+                index: st.index,
+                name: st.name.clone(),
+                subtitle: st.subtitle.clone(),
+                sink: sink_obj.map(|s| s.name.clone()).unwrap_or_else(|| st.sink_name.clone()),
+                sink_label: sink_obj.map(|s| s.label.clone()).unwrap_or_default(),
+                volume: percent(st.volume()),
+                muted: st.muted,
+            }
+        })
+        .collect()
 }
 
 pub struct Api {
@@ -295,6 +335,7 @@ impl FeatherCompositor {
                 self.cast_stop(id);
                 return reply.send(Ok(Reply::Done));
             }
+            Call::ListAudioStreams => return self.api_list_audio_streams(reply),
             _ => {}
         }
         let result = self.api_call(call);
@@ -304,12 +345,78 @@ impl FeatherCompositor {
         reply.send(result);
     }
 
+    fn api_list_audio_streams(&mut self, reply: Responder) {
+        let sinks = self.shell.cc.audio.sinks.clone();
+        if let Some(controls) = self.controls.as_ref() {
+            let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(
+                Box::new(move |res: Result<Vec<crate::controls::AudioStream>, String>| {
+                    reply.send(match res {
+                        Ok(streams) => Ok(Reply::AudioStreams(format_audio_streams(&streams, &sinks))),
+                        Err(e) => Err(unavailable(e)),
+                    });
+                }) as Box<dyn FnOnce(Result<Vec<crate::controls::AudioStream>, String>) + Send>,
+            )));
+            if let Err(err) = controls.send(crate::controls::Control::QueryStreams(slot.clone())) {
+                if let Ok(mut g) = slot.lock() {
+                    let _ = g.take();
+                }
+                let _ = err;
+            }
+            return;
+        }
+        reply.send(Ok(Reply::AudioStreams(format_audio_streams(
+            &self.shell.cc.audio.streams,
+            &sinks,
+        ))));
+    }
+
     /// Индекс открытого окна; 0 — верхнее видимое (активное)
     fn api_window(&self, id: u64) -> Result<usize, Error> {
         if id == 0 {
-            return self.windows.iter().rposition(|w| w.is_visible() && !w.larvis).ok_or_else(|| not_found("Нет активного окна"));
+            return self
+                .windows
+                .iter()
+                .rposition(|w| w.activated && w.is_visible() && !w.larvis)
+                .or_else(|| self.windows.iter().rposition(|w| !w.pip_ghost && w.is_visible() && !w.larvis))
+                .or_else(|| self.windows.iter().rposition(|w| w.is_visible() && !w.larvis))
+                .ok_or_else(|| not_found("Нет активного окна"));
         }
         self.windows.iter().position(|w| w.id == id && w.mapped && !w.larvis).ok_or_else(|| not_found(format!("Нет окна {id}")))
+    }
+
+    fn api_pip_window(&self, id: u64) -> Result<usize, Error> {
+        if id == 0 {
+            if let Some(i) = self
+                .windows
+                .iter()
+                .rposition(|w| w.pip && w.is_visible() && !w.larvis)
+            {
+                return Ok(i);
+            }
+        }
+        self.api_window(id)
+    }
+
+    fn api_sink(&self, query: &str) -> Result<String, Error> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Err(Error::InvalidArgs("Укажите имя или название устройства вывода".into()));
+        }
+        let sinks = &self.shell.cc.audio.sinks;
+        if let Some(s) = sinks.iter().find(|s| s.name == q) {
+            return Ok(s.name.clone());
+        }
+        let ql = q.to_lowercase();
+        if let Some(s) = sinks.iter().find(|s| s.label.to_lowercase() == ql) {
+            return Ok(s.name.clone());
+        }
+        if let Some(s) = sinks
+            .iter()
+            .find(|s| s.label.to_lowercase().contains(&ql) || s.name.to_lowercase().contains(&ql))
+        {
+            return Ok(s.name.clone());
+        }
+        Err(not_found(format!("Нет устройства вывода «{q}»")))
     }
 
     fn api_app(&self, query: &str) -> Result<usize, Error> {
@@ -417,6 +524,16 @@ impl FeatherCompositor {
                 }
                 self.refresh_focus();
             }
+            Call::GetWindowPip(id) => {
+                let i = self.api_pip_window(id)?;
+                let w = &self.windows[i];
+                return Ok(Reply::WindowPip(w.pip, w.pip && w.pip_ghost));
+            }
+            Call::SetWindowPip(id, pip, ghost) => {
+                let i = self.api_pip_window(id)?;
+                let target_id = self.windows[i].id;
+                let _ = self.set_window_pip_state(target_id, pip, pip && ghost, false);
+            }
             Call::ListSpaces => {
                 let list = (0..self.spaces.count)
                     .map(|s| SpaceInfo {
@@ -462,6 +579,23 @@ impl FeatherCompositor {
                 if show != self.shell.launchpad.is_some() {
                     self.toggle_launchpad();
                     self.pointer_focus_dirty = true;
+                }
+            }
+            Call::GetMenuHud => {
+                let open = self.shell.spotlight_open
+                    && self.shell.spotlight_mode == crate::shell::SpotlightMode::MenuHud;
+                return Ok(Reply::Bool(open));
+            }
+            Call::ShowMenuHud(show) => {
+                let open = self.shell.spotlight_open
+                    && self.shell.spotlight_mode == crate::shell::SpotlightMode::MenuHud;
+                if show {
+                    if !open {
+                        self.open_picker(crate::shell::SpotlightMode::MenuHud);
+                    }
+                } else if open {
+                    self.shell.close_menus();
+                    self.shell.overlay_dirty = true;
                 }
             }
             Call::GetDropShelf => {
@@ -587,6 +721,30 @@ impl FeatherCompositor {
                 let controls = self.controls.as_ref().ok_or_else(|| unavailable("Служба звука недоступна"))?;
                 controls.send(Control::InputMute { source, muted }).map_err(unavailable)?;
             }
+            Call::SetStreamVolume(index, p) => {
+                let clamped = p.min(100);
+                let controls = self.controls.as_ref().ok_or_else(|| unavailable("Служба звука недоступна"))?;
+                controls
+                    .send(Control::StreamVolume {
+                        index,
+                        value: clamped as f32 / 100.0,
+                    })
+                    .map_err(unavailable)?;
+                return Ok(Reply::Percent(clamped));
+            }
+            Call::SetStreamMute(index, muted) => {
+                let controls = self.controls.as_ref().ok_or_else(|| unavailable("Служба звука недоступна"))?;
+                controls
+                    .send(Control::StreamMute { index, muted })
+                    .map_err(unavailable)?;
+            }
+            Call::MoveStreamOutput(index, sink_query) => {
+                let sink = self.api_sink(&sink_query)?;
+                let controls = self.controls.as_ref().ok_or_else(|| unavailable("Служба звука недоступна"))?;
+                controls
+                    .send(Control::StreamOutput { index, sink })
+                    .map_err(unavailable)?;
+            }
             Call::GetDisplay => {
                 return Ok(Reply::Display(DisplayInfo {
                     brightness: self.shell.cc.brightness.filter(|_| self.brightness.is_some()).map_or(-1, |b| percent(b) as i32),
@@ -646,7 +804,11 @@ impl FeatherCompositor {
             Call::LockScreen => self.lock_session(),
             Call::Suspend => self.sleep_system(),
             Call::WindowInput(token, input) => self.api_window_input(token, input)?,
-            Call::Screenshot(_) | Call::ObserveWindow(_) | Call::CastStart(..) | Call::CastStop(_) => {
+            Call::Screenshot(_)
+            | Call::ObserveWindow(_)
+            | Call::CastStart(..)
+            | Call::CastStop(_)
+            | Call::ListAudioStreams => {
                 unreachable!("answered in api_request")
             }
         }
@@ -695,10 +857,27 @@ mod tests {
 
     #[test]
     fn the_lock_screen_keeps_windows_and_apps_out_of_reach() {
-        for call in [Call::FocusWindow(0), Call::LaunchApp("x".into()), Call::SwitchSpace(0), Call::Screenshot(Shot::Screen), Call::SetDarkMode(true)] {
+        for call in [
+            Call::FocusWindow(0),
+            Call::SetWindowPip(0, true, false),
+            Call::ShowMenuHud(true),
+            Call::LaunchApp("x".into()),
+            Call::SwitchSpace(0),
+            Call::Screenshot(Shot::Screen),
+            Call::SetDarkMode(true),
+        ] {
             assert!(!allowed_while_locked(&call), "{call:?}");
         }
-        for call in [Call::ListWindows, Call::ChangeVolume(5), Call::Media(crate::mpris::Command::Next), Call::LockScreen, Call::Suspend] {
+        for call in [
+            Call::ListWindows,
+            Call::GetWindowPip(0),
+            Call::ListAudioStreams,
+            Call::SetStreamVolume(1, 50),
+            Call::ChangeVolume(5),
+            Call::Media(crate::mpris::Command::Next),
+            Call::LockScreen,
+            Call::Suspend,
+        ] {
             assert!(allowed_while_locked(&call), "{call:?}");
         }
     }

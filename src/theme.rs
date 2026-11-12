@@ -182,14 +182,14 @@ pub fn palette() -> Palette {
             glass_edge: rgba(255, 255, 255, 210),
             glass_outline: rgba(0, 0, 0, if hc { 95 } else { 30 }),
             dock_fill: if opaque { rgba(240, 240, 244, 255) } else { rgba(255, 255, 255, 105) },
-            text: rgba(0, 0, 0, if hc { 255 } else { 222 }),
-            text_secondary: if hc { rgba(40, 40, 46, 225) } else { rgba(60, 60, 67, 165) },
-            text_tertiary: if hc { rgba(50, 50, 58, 175) } else { rgba(60, 60, 67, 95) },
+            text: rgba(0, 0, 0, if hc { 255 } else { 232 }),
+            text_secondary: if hc { rgba(0, 0, 0, 235) } else { rgba(12, 12, 16, 198) },
+            text_tertiary: if hc { rgba(0, 0, 0, 190) } else { rgba(16, 16, 22, 140) },
             accent,
             highlight,
             on_accent: rgba(255, 255, 255, 255),
-            separator: rgba(0, 0, 0, if hc { 72 } else { 26 }),
-            control_fill: rgba(0, 0, 0, if hc { 28 } else { 14 }),
+            separator: rgba(0, 0, 0, if hc { 72 } else { 28 }),
+            control_fill: rgba(0, 0, 0, if hc { 30 } else { 20 }),
             window_bg: rgba(255, 255, 255, 255),
             titlebar_active: rgba(247, 247, 247, 255),
             titlebar_inactive: rgba(236, 236, 236, 255),
@@ -208,9 +208,9 @@ pub fn palette() -> Palette {
             glass_edge: rgba(255, 255, 255, if hc { 95 } else { 46 }),
             glass_outline: rgba(0, 0, 0, if hc { 180 } else { 120 }),
             dock_fill: if opaque { rgba(46, 46, 52, 255) } else { rgba(60, 60, 66, 120) },
-            text: rgba(255, 255, 255, if hc { 255 } else { 235 }),
-            text_secondary: if hc { rgba(240, 240, 248, 225) } else { rgba(235, 235, 245, 155) },
-            text_tertiary: if hc { rgba(225, 225, 235, 170) } else { rgba(235, 235, 245, 85) },
+            text: rgba(255, 255, 255, if hc { 255 } else { 240 }),
+            text_secondary: if hc { rgba(248, 248, 255, 235) } else { rgba(242, 242, 250, 194) },
+            text_tertiary: if hc { rgba(235, 235, 245, 185) } else { rgba(238, 238, 248, 130) },
             accent,
             highlight,
             on_accent: rgba(255, 255, 255, 255),
@@ -1020,6 +1020,27 @@ pub fn draw_drop_shelf_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, scale: f32
     stroke_line(pixmap, cx, top_y, cx, tip_y, sw, color);
     stroke_line(pixmap, cx - 2.4 * scale, tip_y - 2.3 * scale, cx, tip_y, sw, color);
     stroke_line(pixmap, cx + 2.4 * scale, tip_y - 2.3 * scale, cx, tip_y, sw, color);
+}
+
+/// Picture-in-Picture glyph (`pip.enter`); translucent frame + hollow/soft tile when `ghost` is on
+pub fn draw_pip_icon(pixmap: &mut PixmapMut, cx: f32, cy: f32, scale: f32, color: Color, ghost: bool) {
+    let w = 14.0 * scale;
+    let h = 10.8 * scale;
+    let sw = (1.3 * scale).max(1.1);
+    let x0 = cx - w * 0.5;
+    let y0 = cy - h * 0.5;
+    let frame_col = if ghost { with_alpha(color, 0.55) } else { color };
+    stroke_rounded_rect(pixmap, x0, y0, w, h, 2.6 * scale, sw, frame_col);
+    let pw = 6.2 * scale;
+    let ph = 4.6 * scale;
+    let px = x0 + w - pw - 1.7 * scale;
+    let py = y0 + h - ph - 1.6 * scale;
+    if ghost {
+        fill_rounded_rect(pixmap, px, py, pw, ph, 1.4 * scale, with_alpha(color, 0.32));
+        stroke_rounded_rect(pixmap, px, py, pw, ph, 1.4 * scale, (1.0 * scale).max(1.0), color);
+    } else {
+        fill_rounded_rect(pixmap, px, py, pw, ph, 1.4 * scale, color);
+    }
 }
 
 /// Blurred, darkened wallpaper for full-screen surfaces like Launchpad (macOS hides windows

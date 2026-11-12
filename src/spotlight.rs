@@ -40,6 +40,8 @@ pub struct Hit {
     pub icon: AppIcon,
     /// Emoji panel: the glyph, instead of the icon
     pub emoji: Option<char>,
+    /// Optional right-aligned badge (e.g. keyboard shortcut pill in Menu HUD)
+    pub badge: String,
     pub action: ShellClickAction,
 }
 
@@ -301,6 +303,22 @@ fn matches_drop_shelf(query: &str) -> bool {
         .all(|word| title.contains(word) || "полка перетаскивания".contains(word) || words.contains(word))
 }
 
+fn matches_menu_hud(query: &str) -> bool {
+    let title = feather_ui::i18n::tr("Поиск по меню").to_lowercase();
+    let words = "меню команды поиск активного окна hud menu command palette";
+    query
+        .split_whitespace()
+        .all(|word| title.contains(word) || "поиск по меню".contains(word) || words.contains(word))
+}
+
+fn matches_pip(query: &str) -> bool {
+    let title = feather_ui::i18n::tr("Картинка в картинке (PiP)").to_lowercase();
+    let words = "pip картинка в картинке поверх всех окон призрачный сквозь курсор picture in picture ghost";
+    query
+        .split_whitespace()
+        .all(|word| title.contains(word) || "картинка в картинке".contains(word) || words.contains(word))
+}
+
 /// Icon for a file by its extension; folders and everything else look like the file manager
 fn file_icon(file: &FoundFile) -> IconKind {
     if file.is_dir {
@@ -349,6 +367,15 @@ impl FeatherCompositor {
                 self.shell.overlay_dirty = true;
                 return;
             }
+            crate::shell::SpotlightMode::MenuHud => {
+                self.shell.spotlight_hits = self.menu_hud_hits(&query);
+                if self.shell.spotlight_selected >= self.shell.spotlight_hits.len() {
+                    self.shell.spotlight_selected = 0;
+                }
+                self.shell.sync_spotlight_scroll();
+                self.shell.overlay_dirty = true;
+                return;
+            }
         }
         let mut hits: Vec<Hit> = Vec::with_capacity(MAX_ROWS);
         if !query.is_empty() {
@@ -358,6 +385,7 @@ impl FeatherCompositor {
                     sub: app.subtitle.clone(),
                     icon: AppIcon::of(app),
                     emoji: None,
+                    badge: String::new(),
                     action: ShellClickAction::LaunchApp(app.action.clone(), app.name.clone()),
                 });
             }
@@ -369,6 +397,7 @@ impl FeatherCompositor {
                     sub: window_label.clone(),
                     icon: app.map_or(AppIcon { kind: IconKind::GenericApp, name: None }, AppIcon::of),
                     emoji: None,
+                    badge: String::new(),
                     action: ShellClickAction::FocusWindow(win.id),
                 });
             }
@@ -379,6 +408,7 @@ impl FeatherCompositor {
                     sub: settings_label.clone(),
                     icon: AppIcon { kind: IconKind::Settings, name: None },
                     emoji: None,
+                    badge: String::new(),
                     action: ShellClickAction::OpenSettingsPage(page),
                 });
             }
@@ -392,6 +422,7 @@ impl FeatherCompositor {
                     sub: mode_sub.clone(),
                     icon: AppIcon { kind: IconKind::Launchpad, name: None },
                     emoji: None,
+                    badge: String::new(),
                     action: ShellClickAction::SetSpaceMode(mode),
                 });
             }
@@ -401,7 +432,28 @@ impl FeatherCompositor {
                     sub: feather_ui::i18n::tr("Перетащите файлы сюда").into_owned(),
                     icon: AppIcon { kind: IconKind::Finder, name: None },
                     emoji: None,
+                    badge: String::new(),
                     action: ShellClickAction::ToggleDropShelf,
+                });
+            }
+            if matches_menu_hud(&query) {
+                hits.push(Hit {
+                    name: feather_ui::i18n::tr("Поиск по меню").into_owned(),
+                    sub: feather_ui::i18n::tr("Команды активного окна").into_owned(),
+                    icon: AppIcon { kind: IconKind::Settings, name: None },
+                    emoji: None,
+                    badge: "⌘/".into(),
+                    action: ShellClickAction::OpenMenuHud,
+                });
+            }
+            if matches_pip(&query) {
+                hits.push(Hit {
+                    name: feather_ui::i18n::tr("Картинка в картинке (PiP)").into_owned(),
+                    sub: feather_ui::i18n::tr("Поверх всех столов").into_owned(),
+                    icon: AppIcon { kind: IconKind::Launchpad, name: None },
+                    emoji: None,
+                    badge: "⌘P".into(),
+                    action: ShellClickAction::TogglePipFocused,
                 });
             }
             let notes_cmd = self.app_registry.apps.iter().find_map(|a| match &a.action {
@@ -415,6 +467,7 @@ impl FeatherCompositor {
                     sub: note.line.clone(),
                     icon: AppIcon { kind: IconKind::Notes, name: None },
                     emoji: None,
+                    badge: String::new(),
                     action: ShellClickAction::LaunchApp(AppAction::Exec(format!("{} --note {}", notes_cmd.as_deref().unwrap_or_default(), quoted_id)), feather_ui::i18n::tr("Заметки").into_owned()),
                 });
             }
@@ -427,12 +480,14 @@ impl FeatherCompositor {
                     sub: tilde(&file.path),
                     icon: AppIcon { kind: file_icon(file), name: None },
                     emoji: None,
+                    badge: String::new(),
                     action: ShellClickAction::OpenPath(file.path.clone()),
                 });
             }
             hits.truncate(MAX_ROWS);
         }
         self.shell.spotlight_hits = hits;
+        self.shell.spotlight_scroll = 0;
         self.shell.overlay_dirty = true;
     }
 }

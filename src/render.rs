@@ -337,6 +337,27 @@ fn to_phys_point(x: i32, y: i32, scale: f64) -> Point<i32, Physical> {
     Point::from(((x as f64 * scale).round() as i32, (y as f64 * scale).round() as i32))
 }
 
+pub(crate) fn scene_windows_front_to_back(
+    windows: &[ManagedWindow],
+) -> impl Iterator<Item = &ManagedWindow> {
+    windows
+        .iter()
+        .rev()
+        .filter(|w| w.space == crate::scratch::SCRATCH_SPACE)
+        .chain(
+            windows
+                .iter()
+                .rev()
+                .filter(|w| w.space != crate::scratch::SCRATCH_SPACE && w.pip),
+        )
+        .chain(
+            windows
+                .iter()
+                .rev()
+                .filter(|w| w.space != crate::scratch::SCRATCH_SPACE && !w.pip),
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_glass_specs(
     shell: &MacShell,
@@ -371,6 +392,7 @@ pub(crate) fn collect_glass_specs(
 
     let top = windows.iter().rev().find(|w| {
         w.is_visible()
+            && !w.pip
             && crate::monitors::Rect {
                 x: w.x,
                 y: w.y,
@@ -568,7 +590,7 @@ fn build_world_snap(
     let sx = l0_size.0 as f64 / view.w.max(1) as f64;
     let sy = l0_size.1 as f64 / view.h.max(1) as f64;
     let mut win_snaps = Vec::with_capacity(windows.len());
-    for win in windows.iter().rev() {
+    for win in scene_windows_front_to_back(windows) {
         let v = animations.window(win);
         if !animations.draws_window(win)
             || (v.identity()
@@ -755,7 +777,7 @@ pub(crate) fn build_world_scene(
 
     let backdrop = animations.scratch_progress().clamp(0.0, 1.0);
     let mut backdrop_due = backdrop > 0.0;
-    for win in windows.iter().rev() {
+    for win in scene_windows_front_to_back(windows) {
         // Everything below the Подложка's windows is seen through its backdrop
         if backdrop_due && win.space != crate::scratch::SCRATCH_SPACE {
             backdrop_due = false;
@@ -894,6 +916,7 @@ pub(crate) fn build_scene(
             .rev()
             .find(|w| {
                 w.is_visible()
+                    && !w.pip
                     && crate::monitors::Rect {
                         x: w.x,
                         y: w.y,
@@ -910,6 +933,7 @@ pub(crate) fn build_scene(
     }
     let top = windows.iter().rev().find(|w| {
         w.is_visible()
+            && !w.pip
             && crate::monitors::Rect {
                 x: w.x,
                 y: w.y,
@@ -1379,7 +1403,7 @@ fn push_space_thumbnails(
         let space = tile.space.filter(|s| !animations.in_slide(*s));
         if space.is_none() && !tile.larvis { continue }
         let r = tile.rect;
-        let on_tile = |w: &&ManagedWindow| if tile.larvis { w.larvis } else { Some(w.space) == space };
+        let on_tile = |w: &&ManagedWindow| if tile.larvis { w.larvis } else { !w.pip && Some(w.space) == space };
         let (mut x_min, mut x_max) = (0.0_f64, sw);
         for win in windows.iter().filter(|w| w.mapped && !w.minimized).filter(on_tile) {
             x_min = x_min.min(win.x as f64);
@@ -1632,6 +1656,7 @@ impl FeatherCompositor {
         }
         self.refresh_output_membership();
         self.needs_redraw = false;
+        self.animations.super_held = self.keyboard.modifier_state().logo;
         let t_cpu = Instant::now();
         let shelf_anim = if !self.lock.active {
             self.drop_shelf.advance(t_cpu, self.animations.enabled())
@@ -1931,6 +1956,7 @@ impl FeatherCompositor {
                     .rev()
                     .find(|w| {
                         w.is_visible()
+                            && !w.pip
                             && crate::monitors::Rect {
                                 x: w.x,
                                 y: w.y,
@@ -2357,8 +2383,8 @@ impl FeatherCompositor {
             return None;
         }
         let pos = Point::<f64, smithay::utils::Logical>::from((px, py));
-        for win in self.windows.iter().rev() {
-            if !win.is_visible() {
+        for win in scene_windows_front_to_back(&self.windows) {
+            if !win.is_visible() || self.pip_is_ghosted(win) {
                 continue;
             }
             // The backdrop of the Подложка takes the pointer from the desktop below

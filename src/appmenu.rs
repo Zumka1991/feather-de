@@ -282,6 +282,10 @@ enum Command {
         generation: u64,
         id: i32,
     },
+    Prefetch {
+        generation: u64,
+        ids: Vec<i32>,
+    },
     Close {
         generation: u64,
         id: i32,
@@ -339,6 +343,12 @@ impl AppMenus {
                         );
                     }
                     if state.shell.set_client_menu(generation, root) {
+                        state.needs_redraw = true;
+                    }
+                    if state.shell.spotlight_open
+                        && state.shell.spotlight_mode == crate::shell::SpotlightMode::MenuHud
+                    {
+                        state.spotlight_refresh();
                         state.needs_redraw = true;
                     }
                 }
@@ -399,6 +409,15 @@ impl AppMenus {
             });
         }
     }
+
+    pub fn prefetch_submenus(&self, generation: u64, ids: &[i32]) {
+        if generation == self.generation && !ids.is_empty() {
+            self.send(Command::Prefetch {
+                generation,
+                ids: ids.to_vec(),
+            });
+        }
+    }
 }
 
 impl FeatherCompositor {
@@ -407,7 +426,7 @@ impl FeatherCompositor {
             .windows
             .iter()
             .rev()
-            .find(|w| w.is_visible())
+            .find(|w| w.is_visible() && !w.pip_ghost)
             .and_then(|w| {
                 endpoint(w.wl_surface()?).map(|endpoint| Target {
                     window: w.id,
@@ -704,6 +723,34 @@ async fn worker(
                         .call_noreply("Event", &(id, "opened", Value::from(0i32), 0u32))
                         .await;
                     reload = true;
+                }
+            }
+            Wake::Command(Ok(Command::Prefetch {
+                generation: token,
+                ids,
+            })) if token == generation && token == latest_generation.load(Ordering::Acquire) => {
+                if gtk.is_some() {
+                    reload = true;
+                } else if let Some(p) = &proxy {
+                    let mut any = false;
+                    for id in ids {
+                        let shown = while_current(
+                            p.call::<_, _, bool>("AboutToShow", &(id,)),
+                            generation,
+                            &latest_generation,
+                            &focus_changes,
+                        )
+                        .await;
+                        if shown.is_none() {
+                            break;
+                        }
+                        if matches!(shown, Some(Ok(_))) {
+                            any = true;
+                        }
+                    }
+                    if any {
+                        reload = true;
+                    }
                 }
             }
             Wake::Command(Ok(Command::Close {

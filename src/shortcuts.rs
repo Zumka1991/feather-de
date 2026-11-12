@@ -109,6 +109,9 @@ actions! {
     MoveNext, "move-next", "Окно на следующий стол", CTRL | ALT | SHIFT, k::KEY_Right;
     SpaceMode, "space-mode", "Режим рабочего стола", CTRL | ALT, k::KEY_m;
     DropShelf, "drop-shelf", "Полка перетаскивания", SUPER, k::KEY_d;
+    MenuHud, "menu-hud", "Поиск по меню", SUPER, k::KEY_slash;
+    Pip, "pip", "Картинка в картинке (PiP)", SUPER, k::KEY_p;
+    PipGhost, "pip-ghost", "Призрачный режим (сквозь курсор)", SUPER | ALT, k::KEY_p;
     ScratchToggle, "scratch", "Подложка", SUPER, k::KEY_s;
     ScratchMove, "scratch-move", "Окно на подложку и обратно", SUPER | SHIFT, k::KEY_s;
     ClipboardHistory, "clipboard-history", "История буфера обмена", SUPER | SHIFT, k::KEY_v;
@@ -365,7 +368,15 @@ impl crate::FeatherCompositor {
         use crate::{apps::AppAction, input::KeyAction as A, shell::ShellClickAction as S};
         Some(match action {
             Action::Search => {
-                self.shell.spotlight_open = !self.shell.spotlight_open;
+                if self.shell.spotlight_open
+                    && self.shell.spotlight_mode != crate::shell::SpotlightMode::Search
+                {
+                    self.shell.leave_picker();
+                    self.spotlight_refresh();
+                } else {
+                    self.shell.spotlight_open = !self.shell.spotlight_open;
+                    self.shell.leave_picker();
+                }
                 self.shell.control_center_open = false;
                 self.shell.open_menu = None;
                 self.shell.overlay_dirty = true;
@@ -397,6 +408,9 @@ impl crate::FeatherCompositor {
             Action::ScratchMove => A::ScratchMove,
             Action::SpaceMode => A::SpaceModeCycle,
             Action::DropShelf => A::DropShelfToggle,
+            Action::MenuHud => A::Picker(crate::shell::SpotlightMode::MenuHud),
+            Action::Pip => A::PipToggle,
+            Action::PipGhost => A::PipGhostToggle,
             Action::ClipboardHistory => A::Picker(crate::shell::SpotlightMode::Clipboard),
             Action::Emoji => A::Picker(crate::shell::SpotlightMode::Emoji),
             Action::TileLeft => A::Tile(crate::tiling::Dir::Left),

@@ -28,6 +28,7 @@ pub struct Panel {
     pub audio: Audio,
     pub page: Page,
     pub scroll: usize,
+    pub stream_scroll: usize,
     pub error: Option<String>,
     password: feather_ui::input::TextInput,
     selected: Option<Network>,
@@ -42,46 +43,93 @@ pub struct Panel {
     pub sound_only: bool,
     /// Volume set by the last drag, shown until the sound server reports it (no jump back)
     pending_volume: Option<(String, f32, u8)>,
+    /// Per-app stream volume set by the last drag
+    pending_stream: Option<(u32, f32, u8)>,
     /// Last volume sent while dragging (sent again only after a 2 % change)
     sent_volume: Option<f32>,
     /// Output rows that fit the Sound page as last painted: the full Control Center and the
     /// speaker's own panel have different heights
     sound_fit: std::cell::Cell<usize>,
+    stream_fit: std::cell::Cell<usize>,
+    streams_top: std::cell::Cell<f32>,
 }
 
 /// Row pitch of the output list on the Sound page
 const OUTPUT_ROW: f32 = 34.0;
 /// Most outputs the speaker's own panel grows to before it scrolls
 const SPEAKER_ROWS: usize = 6;
+/// Header height before per-app playback streams («Программы»)
+const STREAM_HEADER: f32 = 28.0;
+/// Row pitch of each active playback stream in the Sound mixer
+const STREAM_ROW: f32 = 50.0;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Slider {
     Volume(String),
+    StreamVolume(u32),
     Brightness,
 }
 impl Panel {
     pub fn close(&mut self) {
         self.page = Page::Main;
         self.scroll = 0;
+        self.stream_scroll = 0;
         self.password.clear();
         self.selected = None;
         self.drag = None;
         self.error = None;
         self.sound_only = false;
     }
-    /// Height of the speaker's panel: the slider, up to six outputs and an error line
+    /// Height of the speaker's panel: the slider, outputs, active app streams and an error line
     pub fn sound_height(&self) -> f32 {
-        let rows = self.audio.sinks.len().clamp(1, SPEAKER_ROWS) as f32;
-        151.0 + rows * OUTPUT_ROW + self.bottom_gap()
+        if self.audio.streams.is_empty() {
+            let rows = self.audio.sinks.len().clamp(1, SPEAKER_ROWS) as f32;
+            151.0 + rows * OUTPUT_ROW + self.bottom_gap()
+        } else {
+            let out_rows = self.audio.sinks.len().clamp(1, 3) as f32;
+            let stream_rows = self.audio.streams.len().min(3) as f32;
+            151.0 + out_rows * OUTPUT_ROW + STREAM_HEADER + stream_rows * STREAM_ROW + self.bottom_gap()
+        }
     }
     /// Output rows that fit a Sound page of this height
     fn output_rows(&self, h: f32) -> usize {
         (((h - self.bottom_gap() - 151.0 + 2.0) / OUTPUT_ROW).floor() as usize).max(1)
     }
+    /// `(output_rows, stream_rows)` that fit a Sound page of height `h`
+    fn sound_sections(&self, h: f32) -> (usize, usize) {
+        if self.audio.streams.is_empty() {
+            return (self.output_rows(h), 0);
+        }
+        let avail = (h - self.bottom_gap() - 151.0 + 2.0).max(0.0);
+        let max_sinks = self.audio.sinks.len().max(1);
+        let cap_sinks = if self.sound_only { 3 } else { 2 };
+        let mut out_rows = max_sinks.min(cap_sinks);
+        while out_rows > 1 && avail - out_rows as f32 * OUTPUT_ROW < STREAM_HEADER + STREAM_ROW {
+            out_rows -= 1;
+        }
+        let rem = avail - out_rows as f32 * OUTPUT_ROW - STREAM_HEADER;
+        if rem < STREAM_ROW * 0.8 {
+            return (self.output_rows(h), 0);
+        }
+        let stream_rows = ((rem / STREAM_ROW).floor() as usize)
+            .max(1)
+            .min(self.audio.streams.len());
+        let leftover =
+            avail - out_rows as f32 * OUTPUT_ROW - STREAM_HEADER - stream_rows as f32 * STREAM_ROW;
+        let extra_out = (leftover / OUTPUT_ROW).floor().max(0.0) as usize;
+        out_rows = (out_rows + extra_out).min(max_sinks);
+        (out_rows, stream_rows)
+    }
     /// Rows visible now (before the first paint: as many as the speaker's panel shows)
     fn visible_outputs(&self) -> usize {
         match self.sound_fit.get() {
             0 => SPEAKER_ROWS,
+            n => n,
+        }
+    }
+    fn visible_streams(&self) -> usize {
+        match self.stream_fit.get() {
+            0 => 3,
             n => n,
         }
     }
@@ -101,6 +149,7 @@ impl Panel {
         self.selected = None;
         self.page = page;
         self.scroll = 0;
+        self.stream_scroll = 0;
         self.error = None;
     }
     pub fn volume(&self) -> f32 {
@@ -111,6 +160,39 @@ impl Panel {
                 .map_or(0.0, |s| s.volume().clamp(0.0, 1.0))
         })
     }
+    pub fn stream_volume(&self, stream: &crate::controls::AudioStream) -> f32 {
+        let pending = self
+            .pending_stream
+            .as_ref()
+            .filter(|(idx, _, _)| *idx == stream.index)
+            .map(|p| p.1);
+        self.drag
+            .as_ref()
+            .filter(|d| d.0 == Slider::StreamVolume(stream.index))
+            .map(|d| d.2)
+            .or(pending)
+            .unwrap_or_else(|| stream.volume().clamp(0.0, 1.0))
+    }
+    fn next_stream_sink(&self, stream: &crate::controls::AudioStream) -> Option<String> {
+        if self.audio.sinks.len() < 2 {
+            return None;
+        }
+        let pos = self
+            .audio
+            .sinks
+            .iter()
+            .position(|s| (!stream.sink_name.is_empty() && s.name == stream.sink_name) || s.index == stream.sink_index)
+            .unwrap_or(0);
+        Some(self.audio.sinks[(pos + 1) % self.audio.sinks.len()].name.clone())
+    }
+    fn stream_sink_label<'a>(&'a self, stream: &'a crate::controls::AudioStream) -> &'a str {
+        self.audio
+            .sinks
+            .iter()
+            .find(|s| (!stream.sink_name.is_empty() && s.name == stream.sink_name) || s.index == stream.sink_index)
+            .or_else(|| self.audio.current())
+            .map_or("Вывод", |s| s.label.as_str())
+    }
     pub fn start_slider(&mut self, rect: R, x: f32) {
         if let Some(sink) = self.audio.current() {
             self.drag = Some((
@@ -119,6 +201,13 @@ impl Panel {
                 ((x - rect.x) / rect.w).clamp(0.0, 1.0),
             ));
         }
+    }
+    pub fn start_stream_slider(&mut self, index: u32, rect: R, x: f32) {
+        self.drag = Some((
+            Slider::StreamVolume(index),
+            rect,
+            ((x - rect.x) / rect.w).clamp(0.0, 1.0),
+        ));
     }
 
     /// Brightness shown: the dragged value while a drag is on
@@ -136,12 +225,30 @@ impl Panel {
 
     /// While dragging the volume: a command to send now, at most every 2 %
     pub fn live_volume(&mut self) -> Option<ShellClickAction> {
-        let (Slider::Volume(sink), _, value) = self.drag.as_ref()? else { return None };
-        if self.sent_volume.is_some_and(|v| (v - value).abs() < 0.02) {
-            return None;
+        let (target, _, value) = self.drag.as_ref()?;
+        match target {
+            Slider::Volume(sink) => {
+                if self.sent_volume.is_some_and(|v| (v - value).abs() < 0.02) {
+                    return None;
+                }
+                self.sent_volume = Some(*value);
+                Some(ShellClickAction::Control(Control::Volume {
+                    sink: sink.clone(),
+                    value: *value,
+                }))
+            }
+            Slider::StreamVolume(index) => {
+                if self.sent_volume.is_some_and(|v| (v - value).abs() < 0.02) {
+                    return None;
+                }
+                self.sent_volume = Some(*value);
+                Some(ShellClickAction::Control(Control::StreamVolume {
+                    index: *index,
+                    value: *value,
+                }))
+            }
+            Slider::Brightness => None,
         }
-        self.sent_volume = Some(*value);
-        Some(ShellClickAction::Control(Control::Volume { sink: sink.clone(), value: *value }))
     }
 
     /// A hardware key supersedes the slider's local preview.
@@ -162,6 +269,21 @@ impl Panel {
                 self.pending_volume = None;
             }
         }
+        if let Some((idx, value, seen)) = self.pending_stream.as_mut() {
+            let actual = self.audio.streams.iter().find(|s| s.index == *idx).map(|s| s.volume());
+            *seen += 1;
+            if actual.is_none_or(|a| (a - *value).abs() < 0.02) || *seen >= 4 {
+                self.pending_stream = None;
+            }
+        }
+        if matches!(self.drag, Some((Slider::StreamVolume(idx), _, _)) if !self.audio.streams.iter().any(|s| s.index == idx)) {
+            self.drag = None;
+            self.sent_volume = None;
+        }
+        let max_s = self.audio.streams.len().saturating_sub(self.visible_streams());
+        if self.stream_scroll > max_s {
+            self.stream_scroll = max_s;
+        }
     }
 
     pub fn brightness_drag(&self) -> Option<f32> {
@@ -181,10 +303,28 @@ impl Panel {
                 self.pending_volume = Some((sink.clone(), value, 0));
                 ShellClickAction::Control(Control::Volume { sink, value })
             }
+            Slider::StreamVolume(index) => {
+                self.pending_stream = Some((index, value, 0));
+                ShellClickAction::Control(Control::StreamVolume { index, value })
+            }
             Slider::Brightness => ShellClickAction::SetBrightness(value),
         })
     }
     pub fn scroll(&mut self, delta: f64) {
+        if self.page == Page::Sound && !self.audio.streams.is_empty() {
+            let top = self.streams_top.get();
+            let over_streams = top > 0.0 && self.hover.is_some_and(|(_, gy)| gy >= top);
+            let out_max = self.audio.sinks.len().saturating_sub(self.visible_outputs());
+            let stream_max = self.audio.streams.len().saturating_sub(self.visible_streams());
+            if over_streams || (out_max == 0 && stream_max > 0) {
+                self.stream_scroll = if delta > 0.0 {
+                    (self.stream_scroll + 1).min(stream_max)
+                } else {
+                    self.stream_scroll.saturating_sub(1)
+                };
+                return;
+            }
+        }
         let max = match self.page {
             Page::Wifi => self.wifi.networks.len().saturating_sub(5),
             Page::Bluetooth => self.bluetooth.devices.len().saturating_sub(5),
@@ -260,7 +400,9 @@ impl Panel {
         }
         match self.page {
             Page::Password => (y > p.h - 65.0).then(|| (5, row(p.h - 60.0, 40.0))),
-            Page::Wifi | Page::Bluetooth if y > p.h - 43.0 => Some((4, row(p.h - 42.0, 34.0))),
+            Page::Wifi | Page::Bluetooth | Page::Sound if !self.sound_only && y > p.h - 43.0 => {
+                Some((4, row(p.h - 42.0, 34.0)))
+            }
             Page::Wifi => {
                 if (50.0..85.0).contains(&y) && self.wifi.enabled {
                     return Some((3, row(50.0, 34.0)));
@@ -289,11 +431,38 @@ impl Panel {
                 if (50.0..85.0).contains(&y) {
                     return Some((3, row(50.0, 34.0)));
                 }
-                let rows = self.output_rows(p.h);
+                let (rows, stream_rows) = self.sound_sections(p.h);
+                let out_scroll = self.scroll.min(self.audio.sinks.len().saturating_sub(rows));
                 if (151.0..151.0 + rows as f32 * OUTPUT_ROW).contains(&y) {
                     let i = ((y - 151.0) / OUTPUT_ROW) as usize;
-                    if self.audio.sinks.len() > i + self.scroll {
-                        return Some((200 + (i + self.scroll) as u32, row(150.0 + i as f32 * OUTPUT_ROW, 32.0)));
+                    if self.audio.sinks.len() > i + out_scroll {
+                        return Some((200 + (i + out_scroll) as u32, row(150.0 + i as f32 * OUTPUT_ROW, 32.0)));
+                    }
+                }
+                if stream_rows > 0 {
+                    let streams_y0 = 151.0 + rows as f32 * OUTPUT_ROW + STREAM_HEADER;
+                    if (streams_y0..streams_y0 + stream_rows as f32 * STREAM_ROW).contains(&y) {
+                        let row_i = ((y - streams_y0) / STREAM_ROW) as usize;
+                        let s_scroll = self
+                            .stream_scroll
+                            .min(self.audio.streams.len().saturating_sub(stream_rows));
+                        if let Some(stream) = self.audio.streams.get(s_scroll + row_i) {
+                            let ry = streams_y0 + row_i as f32 * STREAM_ROW;
+                            if y < ry + 24.0 {
+                                if x < 42.0 {
+                                    return Some((
+                                        400 + stream.index,
+                                        R::new(p.x + 12.0, p.y + ry, 28.0, 22.0),
+                                    ));
+                                }
+                                if self.audio.sinks.len() > 1 && x >= p.w - 114.0 {
+                                    return Some((
+                                        500 + stream.index,
+                                        R::new(p.x + p.w - 112.0, p.y + ry + 1.0, 96.0, 20.0),
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
                 None
@@ -319,10 +488,11 @@ impl Panel {
             }
             return ShellClickAction::None;
         }
-        if y > p.h - 43.0 && matches!(self.page, Page::Wifi | Page::Bluetooth) {
+        if !self.sound_only && y > p.h - 43.0 && matches!(self.page, Page::Wifi | Page::Bluetooth | Page::Sound) {
             return match self.page {
                 Page::Wifi => ShellClickAction::NetworkSettings,
                 Page::Bluetooth => ShellClickAction::BluetoothSettings,
+                Page::Sound => ShellClickAction::SoundSettings,
                 _ => ShellClickAction::None,
             };
         }
@@ -381,11 +551,48 @@ impl Panel {
             let slider = R::new(p.x + 18.0, p.y + 93.0, p.w - 36.0, 22.0);
             if slider.contains(x + p.x, y + p.y) {
                 self.start_slider(slider, x + p.x);
+                return ShellClickAction::None;
             }
-            if (151.0..151.0 + self.output_rows(p.h) as f32 * OUTPUT_ROW).contains(&y) {
-                let i = ((y - 151.0) / OUTPUT_ROW) as usize + self.scroll;
+            let (rows, stream_rows) = self.sound_sections(p.h);
+            let out_scroll = self.scroll.min(self.audio.sinks.len().saturating_sub(rows));
+            if (151.0..151.0 + rows as f32 * OUTPUT_ROW).contains(&y) {
+                let i = ((y - 151.0) / OUTPUT_ROW) as usize + out_scroll;
                 if let Some(sink) = self.audio.sinks.get(i) {
                     return ShellClickAction::Control(Control::Output(sink.name.clone()));
+                }
+            }
+            if stream_rows > 0 {
+                let streams_y0 = 151.0 + rows as f32 * OUTPUT_ROW + STREAM_HEADER;
+                if (streams_y0..streams_y0 + stream_rows as f32 * STREAM_ROW).contains(&y) {
+                    let row_i = ((y - streams_y0) / STREAM_ROW) as usize;
+                    let s_scroll = self
+                        .stream_scroll
+                        .min(self.audio.streams.len().saturating_sub(stream_rows));
+                    if let Some(stream) = self.audio.streams.get(s_scroll + row_i).cloned() {
+                        let ry = streams_y0 + row_i as f32 * STREAM_ROW;
+                        if y < ry + 24.0 {
+                            if x < 42.0 {
+                                return ShellClickAction::Control(Control::StreamMute {
+                                    index: stream.index,
+                                    muted: !stream.muted,
+                                });
+                            }
+                            if let Some(next_sink) = self
+                                .next_stream_sink(&stream)
+                                .filter(|_| x >= p.w - 114.0)
+                            {
+                                return ShellClickAction::Control(Control::StreamOutput {
+                                    index: stream.index,
+                                    sink: next_sink,
+                                });
+                            }
+                        } else {
+                            let s_rect = R::new(p.x + 18.0, p.y + ry + 26.0, p.w - 64.0, 18.0);
+                            if s_rect.contains(x + p.x, y + p.y) {
+                                self.start_stream_slider(stream.index, s_rect, x + p.x);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -393,6 +600,7 @@ impl Panel {
     }
     pub fn paint(&self, pm: &mut PixmapMut, fonts: &mut FontSystem, p: R) {
         let pal = palette();
+        let heading = with_alpha(pal.text, 0.90);
         draw_glass_panel(pm, p.x, p.y, p.w, p.h, 22.0, false);
         if let Some((_, r)) = self.hover_target(p) {
             let tint = if appearance() == Appearance::Dark { rgba(255, 255, 255, 22) } else { rgba(0, 0, 0, 16) };
@@ -442,7 +650,7 @@ impl Panel {
                 p.y + 58.0,
                 p.w - 36.0,
                 12.0,
-                pal.text_secondary,
+                heading,
                 false,
             );
             if self.wifi.enabled && self.wifi.available {
@@ -567,7 +775,7 @@ impl Panel {
                 p.y + 58.0,
                 p.w - 36.0,
                 12.0,
-                pal.text_secondary,
+                heading,
                 false,
             );
             if self.bluetooth.powered && self.bluetooth.available {
@@ -701,21 +909,23 @@ impl Panel {
                 p.x + 18.0,
                 p.y + 129.0,
                 12.0,
-                pal.text_secondary,
+                heading,
                 true,
             );
-            let rows = self.output_rows(p.h);
+            let (rows, stream_rows) = self.sound_sections(p.h);
             self.sound_fit.set(rows);
+            self.stream_fit.set(stream_rows);
             let total = self.audio.sinks.len();
+            let out_scroll = self.scroll.min(total.saturating_sub(rows));
             if total > rows {
                 // More outputs than fit: a thin scroll bar says the list goes on
                 let track = rows as f32 * OUTPUT_ROW - 4.0;
                 let thumb = (track * rows as f32 / total as f32).max(16.0);
                 let at = track - thumb;
-                let ty = p.y + 152.0 + at * self.scroll.min(total - rows) as f32 / (total - rows) as f32;
+                let ty = p.y + 152.0 + at * out_scroll as f32 / (total - rows) as f32;
                 fill_rounded_rect(pm, p.x + p.w - 7.0, ty, 3.0, thumb, 1.5, with_alpha(pal.text_secondary, 0.55));
             }
-            for (row, sink) in self.audio.sinks.iter().skip(self.scroll).take(rows).enumerate() {
+            for (row, sink) in self.audio.sinks.iter().skip(out_scroll).take(rows).enumerate() {
                 let y = p.y + 151.0 + row as f32 * OUTPUT_ROW;
                 let active = sink.name == self.audio.default;
                 if active {
@@ -742,6 +952,105 @@ impl Panel {
                 if active {
                     fonts.draw_text(pm, "✓", p.x + p.w - 31.0, y + 7.0, 13.0, pal.accent, true);
                 }
+            }
+            if stream_rows > 0 {
+                let hdr_y = p.y + 151.0 + rows as f32 * OUTPUT_ROW + 7.0;
+                self.streams_top.set(hdr_y);
+                fill_rounded_rect(pm, p.x + 18.0, hdr_y - 3.0, p.w - 36.0, 0.75, 0.35, pal.glass_outline);
+                fonts.draw_text(
+                    pm,
+                    "Программы",
+                    p.x + 18.0,
+                    hdr_y + 2.0,
+                    12.0,
+                    heading,
+                    true,
+                );
+                let streams_y0 = p.y + 151.0 + rows as f32 * OUTPUT_ROW + STREAM_HEADER;
+                let s_total = self.audio.streams.len();
+                let s_scroll = self.stream_scroll.min(s_total.saturating_sub(stream_rows));
+                if s_total > stream_rows {
+                    let track = stream_rows as f32 * STREAM_ROW - 6.0;
+                    let thumb = (track * stream_rows as f32 / s_total as f32).max(16.0);
+                    let at = track - thumb;
+                    let ty = streams_y0 + 2.0 + at * s_scroll as f32 / (s_total - stream_rows) as f32;
+                    fill_rounded_rect(pm, p.x + p.w - 7.0, ty, 3.0, thumb, 1.5, with_alpha(pal.text_secondary, 0.55));
+                }
+                let multi_sink = self.audio.sinks.len() > 1;
+                for (row, stream) in self
+                    .audio
+                    .streams
+                    .iter()
+                    .skip(s_scroll)
+                    .take(stream_rows)
+                    .enumerate()
+                {
+                    let ry = streams_y0 + row as f32 * STREAM_ROW;
+                    icon(
+                        pm,
+                        Icon::Speaker,
+                        p.x + 25.0,
+                        ry + 11.0,
+                        if stream.muted { pal.text_tertiary } else { pal.text },
+                        stream.muted,
+                    );
+                    let title_max = if multi_sink { p.w - 160.0 } else { p.w - 60.0 };
+                    fonts.draw_text_clipped(
+                        pm,
+                        &stream.name,
+                        p.x + 41.0,
+                        ry + 2.5,
+                        title_max.max(40.0),
+                        12.0,
+                        if stream.muted { pal.text_secondary } else { pal.text },
+                        false,
+                    );
+                    if multi_sink {
+                        let pill = R::new(p.x + p.w - 112.0, ry + 1.0, 96.0, 20.0);
+                        fill_rounded_rect(pm, pill.x, pill.y, pill.w, pill.h, 6.0, pal.control_fill);
+                        stroke_rounded_rect(pm, pill.x, pill.y, pill.w, pill.h, 6.0, 0.5, pal.glass_outline);
+                        let route = format!("↦ {}", self.stream_sink_label(stream));
+                        fonts.draw_text_clipped(
+                            pm,
+                            &route,
+                            pill.x + 6.0,
+                            pill.y + 3.0,
+                            pill.w - 12.0,
+                            10.5,
+                            pal.text_secondary,
+                            false,
+                        );
+                    }
+                    let vol = self.stream_volume(stream);
+                    slider(
+                        pm,
+                        R::new(p.x + 18.0, ry + 27.0, p.w - 64.0, 16.0),
+                        vol,
+                        !stream.muted,
+                    );
+                    fonts.draw_text_right(
+                        pm,
+                        &format!("{}%", (vol * 100.0).round() as u32),
+                        p.x + p.w - 18.0,
+                        ry + 27.5,
+                        11.0,
+                        pal.text_secondary,
+                        false,
+                    );
+                }
+            } else {
+                self.streams_top.set(0.0);
+            }
+            if !self.sound_only {
+                fonts.draw_text(
+                    pm,
+                    "Настройки звука…",
+                    p.x + 18.0,
+                    p.y + p.h - 29.0,
+                    12.0,
+                    pal.accent,
+                    false,
+                );
             }
         } else if self.page == Page::Password {
             let name = self
@@ -1342,5 +1651,52 @@ mod tests {
             }
             image.save_png("/tmp/feather-controls/fixture-media.png").unwrap();
         });
+    }
+
+    #[test]
+    fn per_app_mixer_mutes_routes_and_slides_streams() {
+        let mut panel = Panel::default();
+        panel.open(Page::Sound);
+        panel.sound_only = true;
+        let sink = |name: &str, index: u32| crate::controls::Sink {
+            name: name.into(),
+            label: name.into(),
+            index,
+            channels: vec![65536, 65536],
+            ..Default::default()
+        };
+        panel.audio = Audio {
+            sinks: vec![sink("speakers", 1), sink("usb", 2)],
+            default: "speakers".into(),
+            streams: vec![crate::controls::AudioStream {
+                index: 42,
+                name: "Google Chrome".into(),
+                sink_index: 1,
+                sink_name: "speakers".into(),
+                channels: vec![32768, 32768],
+                muted: false,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let p = R::new(50.0, 36.0, 300.0, panel.sound_height());
+        let streams_y0 = p.y + 151.0 + 2.0 * OUTPUT_ROW + STREAM_HEADER;
+        // Left speaker icon toggles stream mute
+        assert!(matches!(
+            panel.click(p, p.x + 24.0, streams_y0 + 10.0),
+            ShellClickAction::Control(Control::StreamMute { index: 42, muted: true })
+        ));
+        // Right pill cycles output sink for this stream
+        assert!(matches!(
+            panel.click(p, p.x + p.w - 40.0, streams_y0 + 10.0),
+            ShellClickAction::Control(Control::StreamOutput { index: 42, ref sink }) if sink == "usb"
+        ));
+        // Bottom slider drags and releases per-stream volume
+        let slider_mid_x = p.x + 18.0 + (p.w - 64.0) * 0.75;
+        assert!(matches!(panel.click(p, slider_mid_x, streams_y0 + 34.0), ShellClickAction::None));
+        assert!(matches!(
+            panel.release(),
+            Some(ShellClickAction::Control(Control::StreamVolume { index: 42, value })) if (value - 0.75).abs() < 0.01
+        ));
     }
 }

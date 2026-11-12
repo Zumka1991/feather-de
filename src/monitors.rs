@@ -288,6 +288,7 @@ impl crate::FeatherCompositor {
             self.drop_shelf.clamp_to_screen((self.shell.screen_w, self.shell.screen_h));
             self.drop_shelf.mark_dirty();
         }
+        self.relayout_pip_windows();
         let rects = self.monitor_rects();
         let old_rects: Vec<_> = old.iter().map(|m| m.rect).collect();
         for win in &mut self.windows {

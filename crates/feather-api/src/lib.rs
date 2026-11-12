@@ -123,6 +123,18 @@ pub struct ShelfInfo {
     pub items: Vec<ShelfItemInfo>,
 }
 
+/// Активный поток воспроизведения программы (`ListAudioStreams`), D-Bus `(ussssub)`
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct AudioStreamInfo {
+    pub index: u32,
+    pub name: String,
+    pub subtitle: String,
+    pub sink: String,
+    pub sink_label: String,
+    pub volume: u32,
+    pub muted: bool,
+}
+
 /// Ошибки методов: `org.feather.Shell1.Error.<Вариант>` с описанием по-русски
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "org.feather.Shell1.Error")]
@@ -154,6 +166,9 @@ mod client {
         fn maximize_window(&self, id: u64, maximized: bool) -> Result<()>;
         fn fullscreen_window(&self, id: u64, fullscreen: bool) -> Result<()>;
         fn move_window_to_space(&self, id: u64, space: u32) -> Result<()>;
+        /// `(pip, ghost)` для окна (`0` — активное или текущее PiP-окно)
+        fn get_window_pip(&self, id: u64) -> Result<(bool, bool)>;
+        fn set_window_pip(&self, id: u64, pip: bool, ghost: bool) -> Result<()>;
 
         fn list_spaces(&self) -> Result<Vec<SpaceInfo>>;
         fn switch_space(&self, number: u32) -> Result<()>;
@@ -163,6 +178,8 @@ mod client {
         fn set_space_mode(&self, number: u32, mode: &str) -> Result<()>;
         fn show_mission_control(&self, show: bool) -> Result<()>;
         fn show_launchpad(&self, show: bool) -> Result<()>;
+        fn get_menu_hud(&self) -> Result<bool>;
+        fn show_menu_hud(&self, show: bool) -> Result<()>;
 
         fn get_drop_shelf(&self) -> Result<ShelfInfo>;
         fn show_drop_shelf(&self, show: bool) -> Result<()>;
@@ -178,6 +195,10 @@ mod client {
         fn change_volume(&self, delta: i32) -> Result<u32>;
         fn set_mute(&self, muted: bool) -> Result<()>;
         fn set_mic_mute(&self, muted: bool) -> Result<()>;
+        fn list_audio_streams(&self) -> Result<Vec<AudioStreamInfo>>;
+        fn set_stream_volume(&self, index: u32, percent: u32) -> Result<u32>;
+        fn set_stream_mute(&self, index: u32, muted: bool) -> Result<()>;
+        fn move_stream_output(&self, index: u32, sink: &str) -> Result<()>;
 
         fn get_display(&self) -> Result<DisplayInfo>;
         fn set_brightness(&self, percent: u32) -> Result<u32>;
@@ -245,6 +266,7 @@ mod tests {
         assert_eq!(MediaInfo::SIGNATURE.to_string(), "(bsssb)");
         assert_eq!(ShelfItemInfo::SIGNATURE.to_string(), "(tssss)");
         assert_eq!(ShelfInfo::SIGNATURE.to_string(), "(ba(tssss))");
+        assert_eq!(AudioStreamInfo::SIGNATURE.to_string(), "(ussssub)");
     }
 
     #[test]

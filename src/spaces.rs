@@ -52,7 +52,7 @@ pub fn prune(mut s: Spaces, has_windows: impl Fn(u32) -> bool) -> Spaces {
 
 impl FeatherCompositor {
     fn space_has_windows(&self, space: u32) -> bool {
-        self.windows.iter().any(|w| w.mapped && w.space == space)
+        self.windows.iter().any(|w| w.mapped && !w.pip && w.space == space)
     }
 
     pub fn apply_space_visibility(&mut self) {
@@ -68,6 +68,8 @@ impl FeatherCompositor {
                 !larvis
             } else if w.space == crate::scratch::SCRATCH_SPACE {
                 !scratch || self.scratch.is_hidden_by_zoom(w.id)
+            } else if w.pip {
+                larvis
             } else {
                 larvis
                     || w.space != current
@@ -115,8 +117,9 @@ impl FeatherCompositor {
             self.set_larvis_shown(true);
             return;
         }
-        let front = self.windows.iter().rposition(|w| w.is_visible());
+        let front = self.windows.iter().rposition(|w| w.is_visible() && !w.pip);
         let has = self.space_has_windows(self.spaces.current)
+            || self.windows.iter().any(|w| w.mapped && w.pip && !w.larvis)
             || self.space_layouts.mode(self.spaces.current) != crate::space_layout::SpaceMode::Free;
         let Some(next) = step(self.spaces, delta, has) else { return };
         self.spaces.count = next.count;
@@ -161,6 +164,11 @@ impl FeatherCompositor {
     pub fn reveal_window_space(&mut self, id: u64) {
         if self.windows.iter().any(|w| w.id == id && w.larvis) {
             self.set_larvis_shown(true);
+            return;
+        }
+        if self.windows.iter().any(|w| w.id == id && w.pip && w.mapped && !w.minimized) {
+            self.leave_larvis_desktop();
+            self.set_scratch_open(false);
             return;
         }
         if let Some(space) = self.windows.iter().find(|w| w.id == id && w.mapped && !w.minimized).map(|w| w.space) {

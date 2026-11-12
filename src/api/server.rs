@@ -2,7 +2,7 @@
 //! событий через ограниченный calloop-канал и ждёт ответа на одноразовом канале. Цикл никогда
 //! не ждёт этот поток: запросы отправляются `try_send`, события — тоже.
 use super::{automation::Input, screenshot_target, space_index, Call, Event, Reply, Request, Responder};
-use feather_api::{AppInfo, AudioInfo, DisplayInfo, Error, MediaInfo, ShelfInfo, SpaceInfo, WindowInfo};
+use feather_api::{AppInfo, AudioInfo, AudioStreamInfo, DisplayInfo, Error, MediaInfo, ShelfInfo, SpaceInfo, WindowInfo};
 use smithay::reexports::calloop::channel;
 use zbus::{object_server::SignalEmitter, Connection};
 
@@ -71,6 +71,12 @@ impl Server {
     async fn move_window_to_space(&self, id: u64, space: u32) -> Result<(), Error> {
         self.done(Call::MoveWindowToSpace(id, space_index(space)?)).await
     }
+    async fn get_window_pip(&self, id: u64) -> Result<(bool, bool), Error> {
+        want!(self.call(Call::GetWindowPip(id)).await, Reply::WindowPip(pip, ghost) => (pip, ghost))
+    }
+    async fn set_window_pip(&self, id: u64, pip: bool, ghost: bool) -> Result<(), Error> {
+        self.done(Call::SetWindowPip(id, pip, ghost)).await
+    }
 
     // Рабочие столы
     async fn list_spaces(&self) -> Result<Vec<SpaceInfo>, Error> {
@@ -90,6 +96,12 @@ impl Server {
     }
     async fn show_launchpad(&self, show: bool) -> Result<(), Error> {
         self.done(Call::Launchpad(show)).await
+    }
+    async fn get_menu_hud(&self) -> Result<bool, Error> {
+        want!(self.call(Call::GetMenuHud).await, Reply::Bool(b) => b)
+    }
+    async fn show_menu_hud(&self, show: bool) -> Result<(), Error> {
+        self.done(Call::ShowMenuHud(show)).await
     }
 
     // Полка перетаскивания
@@ -135,6 +147,22 @@ impl Server {
     }
     async fn set_mic_mute(&self, muted: bool) -> Result<(), Error> {
         self.done(Call::SetMicMute(muted)).await
+    }
+    async fn list_audio_streams(&self) -> Result<Vec<AudioStreamInfo>, Error> {
+        want!(self.call(Call::ListAudioStreams).await, Reply::AudioStreams(v) => v)
+    }
+    async fn set_stream_volume(&self, index: u32, percent: u32) -> Result<u32, Error> {
+        self.percent(Call::SetStreamVolume(index, percent.min(100))).await
+    }
+    async fn set_stream_mute(&self, index: u32, muted: bool) -> Result<(), Error> {
+        self.done(Call::SetStreamMute(index, muted)).await
+    }
+    async fn move_stream_output(&self, index: u32, sink: String) -> Result<(), Error> {
+        let sink = sink.trim().to_string();
+        if sink.is_empty() || sink.len() > 256 {
+            return Err(Error::InvalidArgs("Укажите имя или название устройства вывода".into()));
+        }
+        self.done(Call::MoveStreamOutput(index, sink)).await
     }
 
     // Экран и режимы

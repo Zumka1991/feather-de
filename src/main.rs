@@ -67,6 +67,8 @@ mod scratch;
 mod space_layout;
 mod glass;
 mod drop_shelf;
+mod menu_hud;
+mod pip;
 mod spotlight;
 mod theme;
 mod tiling;
@@ -403,7 +405,8 @@ impl FeatherCompositor {
         self.cancel_key_repeat();
         self.scratch_sync();
         self.space_layout_sync();
-        let top = self.windows.iter().rposition(|w| w.is_visible() && !self.auxiliary_game_window(w));
+        self.sync_pip_topbar();
+        let top = self.windows.iter().rposition(|w| w.is_visible() && !w.pip_ghost && !self.auxiliary_game_window(w));
         // The desktop keeps the keyboard until another window comes to the front
         if self.shell.desktop.focused && top.map(|i| self.windows[i].id) != self.desktop_focus_top {
             self.shell.desktop.focused = false;
@@ -585,7 +588,7 @@ impl FeatherCompositor {
 
     /// Name shown in bold in the menu bar: the frontmost app, like macOS
     pub fn active_window_title(&self) -> String {
-        match self.windows.iter().rev().find(|w| w.is_visible()) {
+        match self.windows.iter().rev().find(|w| w.is_visible() && !w.pip_ghost) {
             Some(w) => match self.app_key(w) {
                 AppKey::App(i) => self.app_registry.apps[i].name.clone(),
                 AppKey::Window(_) => w.title.clone(),
@@ -752,7 +755,7 @@ impl FeatherCompositor {
         self.windows
             .iter()
             .rev()
-            .find(|w| w.is_visible() && !w.larvis && !self.auxiliary_game_window(w))
+            .find(|w| w.is_visible() && !w.pip_ghost && !w.larvis && !self.auxiliary_game_window(w))
             .map(|w| self.app_key(w))
     }
 
@@ -778,10 +781,18 @@ impl FeatherCompositor {
     pub fn build_menu_context(&self) -> MenuContext {
         let space_mode = self.current_space_mode();
         let shelf_open = self.drop_shelf.is_open();
-        let Some(top) = self.windows.iter().rev().find(|w| w.is_visible() && !w.larvis) else {
+        let pip_fallback = self
+            .windows
+            .iter()
+            .rev()
+            .find(|w| w.pip && w.is_visible())
+            .map(|w| (w.pip, w.pip_ghost));
+        let Some(top) = self.windows.iter().rev().find(|w| w.is_visible() && !w.pip_ghost && !w.larvis) else {
             return MenuContext {
                 space_mode,
                 shelf_open,
+                pip: pip_fallback.map_or(false, |p| p.0),
+                pip_ghost: pip_fallback.map_or(false, |p| p.1),
                 ..MenuContext::default()
             };
         };
@@ -798,6 +809,11 @@ impl FeatherCompositor {
             AppKey::App(i) => Some(self.is_pinned(i)),
             AppKey::Window(_) => None,
         };
+        let (pip, pip_ghost) = if top.pip {
+            (true, top.pip_ghost)
+        } else {
+            pip_fallback.unwrap_or((false, false))
+        };
         MenuContext {
             app_name,
             windows,
@@ -805,6 +821,8 @@ impl FeatherCompositor {
             pinned,
             space_mode,
             shelf_open,
+            pip,
+            pip_ghost,
         }
     }
 
@@ -1298,7 +1316,7 @@ impl FeatherCompositor {
             match action {
                 ShellClickAction::CloseFocused | ShellClickAction::MinimizeFocused => return self.leave_larvis_desktop(),
                 ShellClickAction::QuitFocusedApp | ShellClickAction::ZoomFocused | ShellClickAction::FullscreenFocused | ShellClickAction::TileFocused(_)
-                | ShellClickAction::TogglePinFocused | ShellClickAction::CycleSpaceMode | ShellClickAction::SetSpaceMode(_) | ShellClickAction::CycleTapeWidth | ShellClickAction::EqualizeSpaceLayout | ShellClickAction::ToggleDropShelf => return,
+                | ShellClickAction::TogglePinFocused | ShellClickAction::CycleSpaceMode | ShellClickAction::SetSpaceMode(_) | ShellClickAction::CycleTapeWidth | ShellClickAction::EqualizeSpaceLayout | ShellClickAction::ToggleDropShelf | ShellClickAction::OpenMenuHud | ShellClickAction::TogglePipFocused | ShellClickAction::TogglePipGhostFocused | ShellClickAction::TopbarPipClick(_) => return,
                 _ => {}
             }
         }
@@ -1348,6 +1366,10 @@ impl FeatherCompositor {
             ShellClickAction::BluetoothSettings => {
                 self.shell.close_menus();
                 self.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth));
+            }
+            ShellClickAction::SoundSettings => {
+                self.shell.close_menus();
+                self.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Sound));
             }
             ShellClickAction::AppMenuActivate { generation, id } => {
                 self.appmenus.click(generation, id, self.start_time.elapsed().as_millis() as u32);
@@ -1576,17 +1598,16 @@ impl FeatherCompositor {
             ShellClickAction::CycleTapeWidth => self.space_layout_cycle_tape_width(),
             ShellClickAction::EqualizeSpaceLayout => self.space_layout_equalize(),
             ShellClickAction::ToggleDropShelf => self.toggle_drop_shelf(),
-            ShellClickAction::OpenSettingsPage(page) => {
-                self.open_or_focus_builtin(BuiltinWindowKind::SystemSettings);
-                self.apply_system_setting(crate::system_settings::Action::Page(page));
-            }
-            ShellClickAction::OpenPath(path) => {
-                let quoted = path.to_string_lossy().replace('\'', "'\\''");
-                crate::apps::spawn_wayland_command(&format!("xdg-open '{quoted}'"), &self.wayland_socket_name);
-            }
+            ShellClickAction::OpenMenuHud => self.open_picker(crate::shell::SpotlightMode::MenuHud),
+            ShellClickAction::TogglePipFocused => self.toggle_focused_pip(),
+            ShellClickAction::TogglePipGhostFocused => self.toggle_focused_pip_ghost(),
+            ShellClickAction::TopbarPipClick(left) => self.click_topbar_pip(left),
             ShellClickAction::ZoomFocused => {
                 if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){
-                    if self.windows[i].space == crate::scratch::SCRATCH_SPACE {
+                    if self.windows[i].pip {
+                        let id = self.windows[i].id;
+                        let _ = self.set_window_pip_state(id, false, false, true);
+                    } else if self.windows[i].space == crate::scratch::SCRATCH_SPACE {
                         self.scratch_toggle_zoom();
                     } else if self.windows[i].managed_layout && self.current_space_managed() {
                         self.space_layout_toggle_zoom();
@@ -1594,6 +1615,14 @@ impl FeatherCompositor {
                         let r=self.window_monitor(i);let w=&mut self.windows[i];w.resize_anchor=None;w.maximize_on(!w.maximized,r);
                     }
                 }
+            }
+            ShellClickAction::OpenSettingsPage(page) => {
+                self.open_or_focus_builtin(BuiltinWindowKind::SystemSettings);
+                self.apply_system_setting(crate::system_settings::Action::Page(page));
+            }
+            ShellClickAction::OpenPath(path) => {
+                let quoted = path.to_string_lossy().replace('\'', "'\\''");
+                crate::apps::spawn_wayland_command(&format!("xdg-open '{quoted}'"), &self.wayland_socket_name);
             }
             ShellClickAction::FullscreenFocused => {
                 if let Some(i)=self.windows.iter().rposition(|w|w.is_visible()){let r=self.window_monitor(i);self.windows[i].resize_anchor=None;let on=!self.windows[i].fullscreen;self.set_window_fullscreen(i,on,r);}
@@ -2930,6 +2959,168 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         Ok("cc-wifi") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Wifi);}
         Ok("cc-bluetooth") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Bluetooth);}
         Ok("cc-sound") => {state.shell.control_center_open=true;state.shell.cc.open(crate::control_panel::Page::Sound);}
+        Ok("menu-hud") => {
+            state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(1400)), |_, _, s| {
+                s.shell.toasts.clear();
+                s.open_or_focus_builtin(BuiltinWindowKind::QuickNotes);
+                if let Some(w) = s.windows.iter_mut().find(|w| w.app_id == "builtin.notes") {
+                    w.x = 76;
+                    w.y = 66;
+                }
+                let item = |id: i32, label: &str, shortcut: &str, checked: bool, children: Vec<crate::appmenu::MenuNode>| {
+                    crate::appmenu::MenuNode {
+                        id,
+                        label: label.into(),
+                        shortcut: shortcut.into(),
+                        enabled: true,
+                        visible: true,
+                        separator: false,
+                        checked,
+                        radio: false,
+                        submenu: !children.is_empty(),
+                        children,
+                    }
+                };
+                let root = item(
+                    0,
+                    "",
+                    "",
+                    false,
+                    vec![
+                        item(
+                            1,
+                            "Файл",
+                            "",
+                            false,
+                            vec![
+                                item(10, "Сохранить заметку", "⌘S", false, vec![]),
+                                item(
+                                    11,
+                                    "Экспорт",
+                                    "",
+                                    false,
+                                    vec![
+                                        item(12, "Экспортировать как PDF…", "⇧⌘E", false, vec![]),
+                                        item(13, "Экспортировать в Markdown…", "⌥⌘M", false, vec![]),
+                                    ],
+                                ),
+                            ],
+                        ),
+                        item(
+                            2,
+                            "Правка",
+                            "",
+                            false,
+                            vec![item(20, "Найти и заменить…", "⌥⌘F", false, vec![])],
+                        ),
+                        item(
+                            3,
+                            "Вид",
+                            "",
+                            false,
+                            vec![item(30, "Режим фокуса", "⌃⌘F", true, vec![])],
+                        ),
+                    ],
+                );
+                s.shell.client_menu = Some(std::sync::Arc::new(root));
+                s.shell.client_generation = 1;
+                s.open_picker(crate::shell::SpotlightMode::MenuHud);
+                if let Ok(q) = std::env::var("FEATHER_DEBUG_HUD_QUERY") {
+                    s.shell.spotlight_query = q;
+                    s.spotlight_refresh();
+                }
+                s.needs_redraw = true;
+                TimeoutAction::Drop
+            })?;
+        }
+        Ok("pip") => {
+            state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(1600)), |_, _, s| {
+                s.shell.toasts.clear();
+                s.open_or_focus_builtin(BuiltinWindowKind::SystemSettings);
+                if let Some(w) = s.windows.iter_mut().find(|w| w.app_id == "builtin.settings") {
+                    w.x = (s.shell.screen_w - w.width - 170).max(48);
+                    w.y = 76;
+                }
+                s.open_or_focus_builtin(BuiltinWindowKind::QuickNotes);
+                if let Some(id) = s.windows.iter().find(|w| w.app_id == "builtin.notes").map(|w| w.id) {
+                    let _ = s.set_window_pip_state(id, true, true, true);
+                }
+                s.needs_redraw = true;
+                TimeoutAction::Drop
+            })?;
+        }
+        Ok("sound-mixer") => {
+            state.controls = None;
+            state.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(1400)), |_, _, s| {
+                s.shell.toasts.clear();
+                let vol = |pct: u32| vec![(pct * 65536 + 50) / 100; 2];
+                s.shell.cc.audio = crate::controls::Audio {
+                    default: "alsa_output.speakers".into(),
+                    sinks: vec![
+                        crate::controls::Sink {
+                            index: 1,
+                            name: "alsa_output.speakers".into(),
+                            label: "Динамики MacBook Pro".into(),
+                            channels: vol(72),
+                            ..Default::default()
+                        },
+                        crate::controls::Sink {
+                            index: 2,
+                            name: "alsa_output.usb_dac".into(),
+                            label: "USB ЦАП · Наушники".into(),
+                            channels: vol(58),
+                            headphones: true,
+                            ..Default::default()
+                        },
+                    ],
+                    streams: vec![
+                        crate::controls::AudioStream {
+                            index: 41,
+                            name: "Google Chrome".into(),
+                            subtitle: "YouTube — 4K HDR".into(),
+                            sink_index: 1,
+                            sink_name: "alsa_output.speakers".into(),
+                            channels: vol(85),
+                            ..Default::default()
+                        },
+                        crate::controls::AudioStream {
+                            index: 42,
+                            name: "Telegram Desktop".into(),
+                            subtitle: "Голосовой чат".into(),
+                            sink_index: 2,
+                            sink_name: "alsa_output.usb_dac".into(),
+                            channels: vol(64),
+                            ..Default::default()
+                        },
+                        crate::controls::AudioStream {
+                            index: 43,
+                            name: "Музыка".into(),
+                            subtitle: "Lossless FLAC".into(),
+                            sink_index: 1,
+                            sink_name: "alsa_output.speakers".into(),
+                            channels: vol(40),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                };
+                s.open_or_focus_builtin(BuiltinWindowKind::SystemSettings);
+                s.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Sound));
+                s.system_settings.scroll = 640.0;
+                if let Some(w) = s.windows.iter_mut().find(|w| w.app_id == "builtin.settings") {
+                    w.x = 40;
+                    w.y = 48;
+                }
+                s.mark_settings_dirty();
+                s.shell.control_center_open = true;
+                s.shell.cc.open(crate::control_panel::Page::Sound);
+                s.shell.cc.sound_only = true;
+                s.shell.topbar_dirty = true;
+                s.shell.overlay_dirty = true;
+                s.needs_redraw = true;
+                TimeoutAction::Drop
+            })?;
+        }
         Ok("settings-network") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Network)),
         Ok("settings-bluetooth") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Bluetooth)),
         Ok("settings-defaults") => state.apply_system_setting(crate::system_settings::Action::Page(crate::system_settings::Page::Defaults)),
@@ -3026,13 +3217,23 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             state.system_settings.privacy_query.clear();
         }
         if let Some(controls)=&mut state.controls {
+            let sound_settings_open =
+                settings_visible && state.system_settings.page == crate::system_settings::Page::Sound;
             let wifi_open = (state.shell.control_center_open
                 && matches!(state.shell.cc.page, crate::control_panel::Page::Wifi | crate::control_panel::Page::Password))
                 || network_settings_open;
             let bluetooth_open = (state.shell.control_center_open
                 && state.shell.cc.page == crate::control_panel::Page::Bluetooth)
                 || bluetooth_settings_open;
-            controls.sync(state.shell.control_center_open, wifi_open, bluetooth_open);
+            let sound_streams_open = (state.shell.control_center_open
+                && state.shell.cc.page == crate::control_panel::Page::Sound)
+                || sound_settings_open;
+            controls.sync(
+                state.shell.control_center_open || sound_settings_open,
+                wifi_open,
+                bluetooth_open,
+                sound_streams_open,
+            );
         }
         if !state.shell.control_center_open {state.shell.cc.close();}
         state.sync_modal_keyboard_focus();

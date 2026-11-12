@@ -324,6 +324,12 @@ pub struct ManagedWindow {
     /// Managed by a `Tile` or `Tape` desktop (`src/space_layout.rs`)
     pub managed_layout: bool,
     pub tile_free: Option<(i32, i32, i32, i32)>,
+    /// Picture-in-Picture: sticky across desktops, above normal windows, excluded from tiling
+    pub pip: bool,
+    /// Click-through translucent Ghost PiP unless `Super` is held
+    pub pip_ghost: bool,
+    pub pip_corner: crate::pip::PipCorner,
+    pub pip_saved: Option<crate::pip::PipSaved>,
     /// From the window memory, used when the window first shows
     pub remembered_place: Option<(i32, i32)>,
     pub remembered_space: Option<u32>,
@@ -498,6 +504,10 @@ impl ManagedWindow {
             tiled: None,
             managed_layout: false,
             tile_free: None,
+            pip: false,
+            pip_ghost: false,
+            pip_corner: crate::pip::PipCorner::default(),
+            pip_saved: None,
             remembered_place: None,
             remembered_space: None,
             remembered_scratch: None,
@@ -559,6 +569,10 @@ impl ManagedWindow {
             tiled: None,
             managed_layout: false,
             tile_free: None,
+            pip: false,
+            pip_ghost: false,
+            pip_corner: crate::pip::PipCorner::default(),
+            pip_saved: None,
             remembered_place: None,
             remembered_space: None,
             remembered_scratch: None,
@@ -851,6 +865,11 @@ impl ManagedWindow {
         self.set_xdg_state(xdg_toplevel::State::TiledRight, r);
         self.set_xdg_state(xdg_toplevel::State::TiledTop, t);
         self.set_xdg_state(xdg_toplevel::State::TiledBottom, b);
+    }
+
+    pub(crate) fn clear_xdg_maximized_and_tiled(&self) {
+        self.set_xdg_state(xdg_toplevel::State::Maximized, false);
+        self.set_tile_states(None);
     }
 
     /// No longer tiled, staying where it is: its edges were dragged by hand

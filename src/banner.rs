@@ -35,6 +35,7 @@ pub enum BannerIcon {
     Scratch,
     SpaceMode(crate::space_layout::SpaceMode),
     DropShelf,
+    Pip(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +94,7 @@ impl Banner {
                 BannerIcon::Scratch => draw_scratch_icon(&mut pm, cx, cy, 2.3, p.accent),
                 BannerIcon::SpaceMode(mode) => draw_space_mode_icon(&mut pm, cx, cy, 2.3, p.accent, mode),
                 BannerIcon::DropShelf => draw_drop_shelf_icon(&mut pm, cx, cy, 2.2, p.accent),
+                BannerIcon::Pip(ghost) => draw_pip_icon(&mut pm, cx, cy, 2.25, p.accent, ghost),
             }
             fonts.draw_text(&mut pm, message.title, m + 80.0, m + 21.0, 15.0, p.text, true);
             fonts.draw_text(&mut pm, message.detail, m + 80.0, m + 46.0, 12.5, p.text_secondary, false);

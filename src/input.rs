@@ -169,6 +169,8 @@ pub(crate) enum KeyAction {
     SpaceLayoutEqualize,
     SpaceLayoutCycleWidth,
     DropShelfToggle,
+    PipToggle,
+    PipGhostToggle,
     /// Alt/Super+Tab: open the app switcher or move the selection
     SwitcherStep { reverse: bool },
     SwitcherCommit,
@@ -1118,7 +1120,7 @@ impl FeatherCompositor {
             Some(KeyAction::LarvisDesktop) => self.toggle_larvis_desktop(),
             // Larvis's desktop is not a window of the user: Cmd+W and Cmd+M leave it
             Some(KeyAction::CloseTop | KeyAction::MinimizeTop) if self.larvis_shown => self.leave_larvis_desktop(),
-            Some(KeyAction::ToggleMaximizeTop | KeyAction::Tile(_) | KeyAction::SpaceModeCycle | KeyAction::SpaceLayoutFocus(_) | KeyAction::SpaceLayoutFocusEdge(_) | KeyAction::SpaceLayoutSwap(_) | KeyAction::SpaceLayoutEqualize | KeyAction::SpaceLayoutCycleWidth | KeyAction::DropShelfToggle) if self.larvis_shown => {}
+            Some(KeyAction::ToggleMaximizeTop | KeyAction::Tile(_) | KeyAction::SpaceModeCycle | KeyAction::SpaceLayoutFocus(_) | KeyAction::SpaceLayoutFocusEdge(_) | KeyAction::SpaceLayoutSwap(_) | KeyAction::SpaceLayoutEqualize | KeyAction::SpaceLayoutCycleWidth | KeyAction::DropShelfToggle | KeyAction::PipToggle | KeyAction::PipGhostToggle) if self.larvis_shown => {}
             Some(KeyAction::Tile(dir)) => {
                 self.tile_front_step(dir);
                 if self.shell.scratch_open {
@@ -1140,6 +1142,8 @@ impl FeatherCompositor {
             Some(KeyAction::SpaceLayoutEqualize) => self.space_layout_equalize(),
             Some(KeyAction::SpaceLayoutCycleWidth) => self.space_layout_cycle_tape_width(),
             Some(KeyAction::DropShelfToggle) => self.toggle_drop_shelf(),
+            Some(KeyAction::PipToggle) => self.toggle_focused_pip(),
+            Some(KeyAction::PipGhostToggle) => self.toggle_focused_pip_ghost(),
             Some(KeyAction::CloseTop) => self.close_top_window(),
             Some(KeyAction::MinimizeTop) => {
                 let mut was_scratch = false;
@@ -1157,7 +1161,10 @@ impl FeatherCompositor {
             }
             Some(KeyAction::ToggleMaximizeTop) => {
                 if let Some(i) = self.windows.iter().rposition(|w| w.is_visible()) {
-                    if self.windows[i].space == crate::scratch::SCRATCH_SPACE {
+                    if self.windows[i].pip {
+                        let id = self.windows[i].id;
+                        let _ = self.set_window_pip_state(id, false, false, true);
+                    } else if self.windows[i].space == crate::scratch::SCRATCH_SPACE {
                         self.scratch_toggle_zoom();
                     } else if self.windows[i].managed_layout && self.current_space_managed() {
                         self.space_layout_toggle_zoom();
@@ -1170,6 +1177,10 @@ impl FeatherCompositor {
                 }
             }
             None => {}
+        }
+        if is_super && self.has_visible_ghost_pip() {
+            self.refresh_pointer_focus();
+            self.needs_redraw = true;
         }
         if self.sticky_keys && !is_modifier && key_state == KeyState::Pressed && self.shell.switcher.is_none() {
             self.release_latched_modifiers(time);
@@ -1240,6 +1251,7 @@ impl FeatherCompositor {
                     }
                     keysyms::KEY_Up => {
                         self.shell.spotlight_selected = self.shell.spotlight_selected.saturating_sub(1);
+                        self.shell.sync_spotlight_scroll();
                         self.shell.overlay_dirty = true;
                     }
                     keysyms::KEY_Down => {
@@ -1247,6 +1259,7 @@ impl FeatherCompositor {
                         if count > 0 {
                             self.shell.spotlight_selected = (self.shell.spotlight_selected + 1).min(count - 1);
                         }
+                        self.shell.sync_spotlight_scroll();
                         self.shell.overlay_dirty = true;
                     }
                     keysyms::KEY_Return => {
@@ -1448,8 +1461,8 @@ impl FeatherCompositor {
         if self.shell_takes_pointer(px, py) {
             return CursorIcon::Default;
         }
-        for w in self.windows.iter().rev() {
-            if !w.is_visible() {
+        for w in crate::render::scene_windows_front_to_back(&self.windows) {
+            if !w.is_visible() || self.pip_is_ghosted(w) {
                 continue;
             }
             if self.shell.scratch_open && w.space != crate::scratch::SCRATCH_SPACE {
@@ -1570,10 +1583,15 @@ impl FeatherCompositor {
                 self.needs_redraw = true;
             }
         }
+        let super_held = self.keyboard.modifier_state().logo;
         for win in &mut self.windows {
             if win.is_visible() {
                 let was = win.dirty;
-                win.update_hover(pos.x, pos.y);
+                if win.pip && win.pip_ghost && !super_held {
+                    win.update_hover(-1e6, -1e6);
+                } else {
+                    win.update_hover(pos.x, pos.y);
+                }
                 if !was && win.dirty {
                     self.needs_redraw = true;
                 }
@@ -1639,8 +1657,11 @@ impl FeatherCompositor {
                     self.needs_redraw = true;
                     return;
                 }
-                self.tile_drag_motion(win_id, pos.x, pos.y);
-                self.space_layout_drag_preview(win_id, pos.x, pos.y);
+                let is_pip = self.windows.iter().any(|w| w.id == win_id && w.pip);
+                if !is_pip {
+                    self.tile_drag_motion(win_id, pos.x, pos.y);
+                    self.space_layout_drag_preview(win_id, pos.x, pos.y);
+                }
                 let r = self.monitor_at(pos.x, pos.y);
                 if let Some(win) = self.windows.iter_mut().find(|w| w.id == win_id) {
                     let top = if win.space == crate::scratch::SCRATCH_SPACE {
@@ -1880,9 +1901,11 @@ impl FeatherCompositor {
                 self.space_layout_end_resize();
             }
             if let Some(DragOperation::MoveWindow { win_id, .. }) = drag {
-                self.tile_drag_finish(win_id);
-                self.scratch_drop(win_id);
-                self.space_layout_drop(win_id);
+                if !self.snap_pip_after_move(win_id) {
+                    self.tile_drag_finish(win_id);
+                    self.scratch_drop(win_id);
+                    self.space_layout_drop(win_id);
+                }
             }
             let was_dragging = drag.is_some();
             if was_dragging {
@@ -1940,7 +1963,7 @@ impl FeatherCompositor {
         let primary=self.primary_monitor().map(|m|m.info.rect).unwrap_or_else(||self.monitor_at(0.0,0.0));
         // Larvis's desktop keeps our menu bar over its own, so its item can switch back
         let over_bar=pos.y<(primary.y+TOP_BAR_HEIGHT) as f64;
-        let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen&&!(w.larvis&&over_bar))||self.shell.scratch_open;
+        let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&!w.pip&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen&&!(w.larvis&&over_bar))||self.shell.scratch_open;
         if !primary.contains(pos.x,pos.y)&&self.shell.launchpad.is_some(){self.shell.launchpad=None;self.needs_redraw=true;}
         // Over the Подложка the menu bar and the Dock are gone: a passing banner must not revive
         // them, but a click on the banner itself (its body, buttons, close) is the banner's
@@ -2017,6 +2040,17 @@ impl FeatherCompositor {
             let panel = self.shell.control_panel_rect();
             self.shell.cc.click_password(panel, pos.x as f32, pos.y as f32, &mut self.fonts, self.keyboard.modifier_state().shift);
         }
+        if (!fullscreen_top || panels)
+            && self.shell.launchpad.is_none()
+            && button == BTN_RIGHT
+            && self.shell.topbar_pip_hit(pos.x, pos.y)
+        {
+            self.consumed_buttons.push(button);
+            self.pointer_focus_dirty = true;
+            self.shell.close_menus();
+            self.execute_shell_action(ShellClickAction::TopbarPipClick(false));
+            return;
+        }
         if !fullscreen_top || panels {
             if let Some(action) = self
                 .shell
@@ -2060,9 +2094,17 @@ impl FeatherCompositor {
 
         let hit_index = match owner {
             Some(ref owner) => self.window_index_for_toplevel(owner),
-            None => self.windows.iter().rposition(|w| {
-                w.is_visible() && (w.contains_point(pos.x, pos.y) || w.resize_edges_at(pos.x, pos.y).is_some())
-            }),
+            None => {
+                let hit_id = crate::render::scene_windows_front_to_back(&self.windows)
+                    .find(|w| {
+                        w.is_visible()
+                            && !self.pip_is_ghosted(w)
+                            && (w.contains_point(pos.x, pos.y)
+                                || w.resize_edges_at(pos.x, pos.y).is_some())
+                    })
+                    .map(|w| w.id);
+                hit_id.and_then(|id| self.windows.iter().position(|w| w.id == id))
+            }
         };
 
         let Some(idx) = hit_index else {
@@ -2124,7 +2166,10 @@ impl FeatherCompositor {
                     self.refresh_focus();
                 }
                 crate::window::TrafficButton::Maximize => {
-                    if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
+                    if self.windows[idx].pip {
+                        let id = self.windows[idx].id;
+                        let _ = self.set_window_pip_state(id, false, false, true);
+                    } else if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
                         self.scratch_toggle_zoom();
                     } else if self.windows[idx].managed_layout && self.current_space_managed() {
                         self.space_layout_toggle_zoom();
@@ -2142,7 +2187,9 @@ impl FeatherCompositor {
                 .is_some_and(|(t, id)| id == win_id && now.duration_since(t).as_millis() < DOUBLE_CLICK_MS);
             if is_double {
                 self.last_titlebar_click = None;
-                if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
+                if self.windows[idx].pip {
+                    let _ = self.set_window_pip_state(win_id, false, false, true);
+                } else if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
                     self.scratch_toggle_zoom();
                 } else if self.windows[idx].managed_layout && self.current_space_managed() {
                     self.space_layout_toggle_zoom();
@@ -2364,7 +2411,7 @@ impl FeatherCompositor {
             self.needs_redraw = true;
             return;
         }
-        let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()).is_some_and(|w|w.fullscreen&&!w.larvis);
+        let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()&&!w.pip).is_some_and(|w|w.fullscreen&&!w.larvis);
         if !fullscreen&&self.shell.launchpad.is_none() {
             if let Some(key)=self.shell.tray_hit(self.pointer_location.x,self.pointer_location.y).map(|(i,_)|i.key.clone()) {
                 for (axis,horizontal) in [(Axis::Vertical,false),(Axis::Horizontal,true)] {
@@ -2383,6 +2430,15 @@ impl FeatherCompositor {
             return;
         }
         if self.shell.scroll_client_menu(self.pointer_location.x as f32, self.pointer_location.y as f32, menu_delta) {
+            self.needs_redraw |= self.shell.overlay_dirty;
+            return;
+        }
+        if self.shell.scroll_spotlight(
+            self.pointer_location.x as f32,
+            self.pointer_location.y as f32,
+            menu_delta,
+            &self.app_registry,
+        ) {
             self.needs_redraw |= self.shell.overlay_dirty;
             return;
         }
@@ -2429,7 +2485,11 @@ impl FeatherCompositor {
                 return;
             }
         }
-        if let Some((w,h))=self.windows.iter().rev().find(|w|w.contains_point(self.pointer_location.x,self.pointer_location.y)).filter(|w|matches!(w.backend,WindowBackend::Builtin(BuiltinWindowKind::SystemSettings))).map(|w|(w.width as f32,w.height as f32)){
+        let settings_dims = crate::render::scene_windows_front_to_back(&self.windows)
+            .find(|w| w.is_visible() && !self.pip_is_ghosted(w) && w.contains_point(self.pointer_location.x, self.pointer_location.y))
+            .filter(|w| matches!(w.backend, WindowBackend::Builtin(BuiltinWindowKind::SystemSettings)))
+            .map(|w| (w.width as f32, w.height as f32));
+        if let Some((w, h)) = settings_dims {
             let mut panel=std::mem::take(&mut self.system_settings);
             let changed=panel.scroll_by(menu_delta,w,h,&self.settings_context());
             self.system_settings=panel;

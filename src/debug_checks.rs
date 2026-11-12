@@ -3822,5 +3822,305 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             }
         })?;
     }
+    if std::env::var_os("FEATHER_DEBUG_MENU_HUD").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only {
+            return Err("menu hud check requires isolated windowed input".into());
+        }
+        const LOG: &str = "[feather-menu-hud-check]";
+        fn menu_node(
+            id: i32,
+            label: &str,
+            shortcut: &str,
+            checked: bool,
+            children: Vec<crate::appmenu::MenuNode>,
+        ) -> crate::appmenu::MenuNode {
+            crate::appmenu::MenuNode {
+                id,
+                label: label.into(),
+                shortcut: shortcut.into(),
+                enabled: true,
+                visible: true,
+                separator: false,
+                checked,
+                radio: false,
+                submenu: !children.is_empty(),
+                children,
+            }
+        }
+        at(state, 1200, move |s| {
+            s.open_or_focus_builtin(crate::apps::BuiltinWindowKind::QuickNotes);
+            let root = menu_node(
+                0,
+                "",
+                "",
+                false,
+                vec![
+                    menu_node(
+                        1,
+                        "Файл",
+                        "",
+                        false,
+                        vec![
+                            menu_node(10, "Сохранить заметку", "⌘S", false, vec![]),
+                            menu_node(
+                                11,
+                                "Экспорт",
+                                "",
+                                false,
+                                vec![
+                                    menu_node(12, "Экспортировать как PDF…", "⇧⌘E", false, vec![]),
+                                    menu_node(13, "Экспортировать в Markdown…", "⌥⌘M", false, vec![]),
+                                ],
+                            ),
+                        ],
+                    ),
+                    menu_node(
+                        2,
+                        "Вид",
+                        "",
+                        false,
+                        vec![menu_node(20, "Режим фокуса", "⌃⌘F", true, vec![])],
+                    ),
+                ],
+            );
+            s.shell.client_menu = Some(std::sync::Arc::new(root));
+            s.shell.client_generation = 77;
+            assert!(!s.shell.spotlight_open, "{LOG} starts closed");
+
+            // 1) Super + / (evdev 125 + 53) opens Menu HUD
+            s.debug_keyboard_key(125, true);
+            s.debug_keyboard_key(53, true);
+            s.debug_keyboard_key(53, false);
+            s.debug_keyboard_key(125, false);
+            assert!(s.shell.spotlight_open, "{LOG} Super+/ opened spotlight");
+            assert_eq!(
+                s.shell.spotlight_mode,
+                crate::shell::SpotlightMode::MenuHud,
+                "{LOG} mode is MenuHud"
+            );
+            assert!(
+                s.shell.spotlight_hits.iter().any(|h| {
+                    h.name == "Экспортировать как PDF…"
+                        && h.sub == "Файл ▸ Экспорт"
+                        && h.badge == "⇧⌘E"
+                }),
+                "{LOG} nested client menu item with breadcrumb and badge must appear"
+            );
+            assert!(
+                s.shell
+                    .spotlight_hits
+                    .iter()
+                    .any(|h| h.name == "✓ Режим фокуса"),
+                "{LOG} checked menu item must carry checkmark"
+            );
+            assert!(
+                s.shell
+                    .spotlight_hits
+                    .iter()
+                    .any(|h| matches!(h.action, ShellClickAction::TogglePipFocused)),
+                "{LOG} Feather DE Window menu items must also be searchable"
+            );
+
+            // 2) Breadcrumb + keyword search ("файл pdf") ranks PDF export #1
+            s.shell.spotlight_query = "файл pdf".into();
+            s.spotlight_refresh();
+            assert_eq!(
+                s.shell.spotlight_hits.first().map(|h| h.name.as_str()),
+                Some("Экспортировать как PDF…"),
+                "{LOG} breadcrumb search ranked PDF export first"
+            );
+
+            // 3) Mistyped English QWERTY layout ("cj[hfybnm" -> "сохранить") matches Russian command
+            s.shell.spotlight_query = "cj[hfybnm".into();
+            s.spotlight_refresh();
+            assert_eq!(
+                s.shell.spotlight_hits.first().map(|h| h.name.as_str()),
+                Some("Сохранить заметку"),
+                "{LOG} wrong keyboard layout search matched Russian command"
+            );
+
+            // 4) Search for "картинка в картинке" and press Enter (evdev 28) -> triggers PiP!
+            s.shell.spotlight_query = "картинка в картинке".into();
+            s.spotlight_refresh();
+            assert!(
+                matches!(
+                    s.shell.spotlight_hits.first().map(|h| &h.action),
+                    Some(ShellClickAction::TogglePipFocused)
+                ),
+                "{LOG} found TogglePipFocused in Menu HUD"
+            );
+            s.debug_keyboard_key(28, true);
+            s.debug_keyboard_key(28, false);
+            assert!(!s.shell.spotlight_open, "{LOG} Enter closed Menu HUD");
+            assert!(
+                s.windows.iter().any(|w| w.app_id == "builtin.notes" && w.pip),
+                "{LOG} Enter executed TogglePip on focused window"
+            );
+
+            eprintln!("{LOG} Super+/ summon, nested DBusMenu breadcrumbs, shortcut badges, wrong-layout search and command activation passed");
+            s.loop_signal.stop();
+        })?;
+    }
+    if std::env::var_os("FEATHER_DEBUG_PIP").is_some() {
+        if state.backend.is_drm() || !state.debug_input_only {
+            return Err("pip check requires isolated windowed input".into());
+        }
+        const LOG: &str = "[feather-pip-check]";
+        at(state, 300, move |s| {
+            if let Ok(exe) = std::env::current_exe() {
+                for (bin, label) in [("feather-textedit", "TextEdit"), ("feather-calc", "Калькулятор")] {
+                    let p = exe.with_file_name(bin);
+                    if p.exists() {
+                        s.execute_shell_action(ShellClickAction::LaunchApp(
+                            crate::apps::AppAction::Exec(format!("\"{}\"", p.display())),
+                            label.into(),
+                        ));
+                    }
+                }
+            }
+        })?;
+        at(state, 1500, move |s| {
+            if let Some(idx) = s
+                .windows
+                .iter()
+                .position(|w| w.app_id == "feather-textedit" && w.mapped)
+            {
+                let mon = s.window_monitor(idx);
+                s.windows[idx].maximize_on(true, mon);
+            }
+        })?;
+        at(state, 2100, move |s| {
+            let te_id = s
+                .windows
+                .iter()
+                .find(|w| w.app_id == "feather-textedit" && w.mapped)
+                .map(|w| w.id)
+                .expect("feather-textedit window must map");
+            let calc_id = s
+                .windows
+                .iter()
+                .find(|w| w.app_id == "feather-calc" && w.mapped)
+                .map(|w| w.id)
+                .expect("feather-calc window must map");
+
+            s.execute_shell_action(ShellClickAction::FocusWindow(calc_id));
+
+            // 1) Super+P (evdev 125 + 25) pins Calc into interactive PiP in bottom-right corner
+            s.debug_keyboard_key(125, true);
+            s.debug_keyboard_key(25, true);
+            s.debug_keyboard_key(25, false);
+            s.debug_keyboard_key(125, false);
+
+            let (cx, cy, calc_surface, te_surface) = {
+                let calc = s.windows.iter().find(|w| w.id == calc_id).unwrap();
+                let te = s.windows.iter().find(|w| w.id == te_id).unwrap();
+                assert!(calc.pip && !calc.pip_ghost, "{LOG} Super+P enabled interactive PiP");
+                let cx = (calc.x + calc.width / 2) as f64;
+                let cy = (calc.y + calc.total_height() / 2) as f64;
+                (
+                    cx,
+                    cy,
+                    calc.wl_surface().unwrap().clone(),
+                    te.wl_surface().unwrap().clone(),
+                )
+            };
+            assert_eq!(
+                s.shell.pip_state,
+                Some(false),
+                "{LOG} Topbar indicator reflects interactive PiP"
+            );
+            assert_eq!(
+                s.surface_under_pointer(cx, cy).map(|(surf, _)| surf),
+                Some(calc_surface.clone()),
+                "{LOG} interactive PiP receives pointer hit-testing"
+            );
+
+            // 2) Super+Alt+P (evdev 125 + 56 + 25) switches Calc into Ghost (Click-Through) PiP
+            s.debug_keyboard_key(125, true);
+            s.debug_keyboard_key(56, true);
+            s.debug_keyboard_key(25, true);
+            s.debug_keyboard_key(25, false);
+            s.debug_keyboard_key(56, false);
+            s.debug_keyboard_key(125, false);
+
+            let calc = s.windows.iter().find(|w| w.id == calc_id).unwrap();
+            let te = s.windows.iter().find(|w| w.id == te_id).unwrap();
+            assert!(calc.pip && calc.pip_ghost, "{LOG} Super+Alt+P enabled Ghost PiP");
+            assert!(
+                te.activated && !calc.activated,
+                "{LOG} Ghost PiP hands keyboard focus back to underlying window"
+            );
+            assert_eq!(s.shell.pip_state, Some(true), "{LOG} Topbar indicator reflects Ghost PiP");
+
+            // Click-through invariant: pointer at center of Ghost PiP hits TextEdit underneath!
+            assert_eq!(
+                s.surface_under_pointer(cx, cy).map(|(surf, _)| surf),
+                Some(te_surface.clone()),
+                "{LOG} clicks pass through Ghost PiP to underlying Wayland surface"
+            );
+
+            // Hold Super (evdev 125 down): Ghost PiP temporarily becomes solid so user can drag/resize it!
+            s.debug_keyboard_key(125, true);
+            assert_eq!(
+                s.surface_under_pointer(cx, cy).map(|(surf, _)| surf),
+                Some(calc_surface),
+                "{LOG} holding Super temporarily restores hit-testing on Ghost PiP"
+            );
+            // Drag Ghost PiP toward top-right corner while Super is held, then release mouse + Super
+            s.debug_pointer_motion(cx, cy);
+            s.debug_pointer_button(0x110, true);
+            s.debug_pointer_motion(cx, 90.0);
+            s.debug_pointer_button(0x110, false);
+            s.debug_keyboard_key(125, false);
+            let (new_cx, new_cy) = {
+                let calc = s.windows.iter().find(|w| w.id == calc_id).unwrap();
+                assert_eq!(
+                    calc.pip_corner,
+                    crate::pip::PipCorner::TopRight,
+                    "{LOG} dragging Ghost PiP snapped magnetically to TopRight corner"
+                );
+                ((calc.x + calc.width / 2) as f64, (calc.y + calc.total_height() / 2) as f64)
+            };
+            assert_eq!(
+                s.surface_under_pointer(new_cx, new_cy).map(|(surf, _)| surf),
+                Some(te_surface),
+                "{LOG} releasing Super restores click-through at new corner"
+            );
+
+            // 3) Sticky across spaces: switching to Space 2 keeps the PiP window visible on screen
+            s.spaces.count = 2;
+            s.switch_space(1);
+            assert_eq!(s.spaces.current, 1);
+            let calc = s.windows.iter().find(|w| w.id == calc_id).unwrap();
+            let te = s.windows.iter().find(|w| w.id == te_id).unwrap();
+            assert!(!calc.off_space && calc.is_visible(), "{LOG} PiP window stays visible on desktop 2");
+            assert!(te.off_space && !te.is_visible(), "{LOG} normal window on desktop 1 is hidden on desktop 2");
+            s.switch_space(0);
+            assert_eq!(s.spaces.current, 0);
+            assert!(
+                s.windows.iter().find(|w| w.id == calc_id).unwrap().is_visible(),
+                "{LOG} PiP window stays visible back on desktop 1"
+            );
+
+            // 4) Layout exclusion & restoration in SpaceMode::Tile
+            s.set_space_mode(0, crate::space_layout::SpaceMode::Tile, false);
+            assert!(
+                !s.windows.iter().find(|w| w.id == calc_id).unwrap().managed_layout,
+                "{LOG} PiP window excluded from Tile layout"
+            );
+            assert!(
+                s.windows.iter().find(|w| w.id == te_id).unwrap().managed_layout,
+                "{LOG} underlying window managed by Tile layout"
+            );
+            assert!(s.set_window_pip_state(calc_id, false, false, true));
+            let calc = s.windows.iter().find(|w| w.id == calc_id).unwrap();
+            assert!(!calc.pip && !calc.pip_ghost, "{LOG} exited PiP");
+            assert!(calc.managed_layout, "{LOG} exiting PiP restored window into Tile layout");
+            assert_eq!(s.shell.pip_state, None, "{LOG} Topbar PiP indicator cleared");
+
+            eprintln!("{LOG} corner snap, Ghost click-through, Super grab override, sticky spaces and Tile layout restoration passed");
+            s.loop_signal.stop();
+        })?;
+    }
     Ok(())
 }

@@ -194,9 +194,13 @@ impl FeatherCompositor {
         self.shell.spotlight_query.clear();
         self.shell.spotlight_input.clear();
         self.shell.spotlight_selected = 0;
+        self.shell.spotlight_scroll = 0;
         if !again {
             self.shell.spotlight_mode = mode;
             self.shell.spotlight_open = true;
+            if mode == crate::shell::SpotlightMode::MenuHud {
+                self.prefetch_menu_hud();
+            }
         }
         self.spotlight_refresh();
         self.needs_redraw = true;
@@ -211,7 +215,7 @@ impl FeatherCompositor {
             .take(10)
             .map(|clip| {
                 let (name, sub, kind) = label_of(clip);
-                Hit { name, sub, icon: AppIcon { kind, name: None }, emoji: None, action: ShellClickAction::PasteClip(clip.clone()) }
+                Hit { name, sub, icon: AppIcon { kind, name: None }, emoji: None, badge: String::new(), action: ShellClickAction::PasteClip(clip.clone()) }
             })
             .collect()
     }
@@ -222,6 +226,7 @@ impl FeatherCompositor {
             sub: String::new(),
             icon: AppIcon { kind: IconKind::GenericApp, name: None },
             emoji: Some(ch),
+            badge: String::new(),
             action: ShellClickAction::PasteEmoji(ch),
         };
         let words = |ch: char| crate::emoji::TABLE.iter().find(|(c, _)| *c == ch).map_or("", |(_, w)| *w);

@@ -130,15 +130,24 @@ struct TapeMotion {
     fresh: bool,
 }
 
+struct WindowGlide {
+    x: Spring,
+    y: Spring,
+    fresh: bool,
+}
+
 #[derive(Default)]
 pub struct Animations {
     disabled: bool,
+    /// True while `Super` (`logo`) is held so Ghost PiP temporarily becomes opaque & interactive
+    pub super_held: bool,
     /// Auto-hide Dock: 0 shown, 1 below the screen
     dock: Option<Spring>,
     slide: Option<Slide>,
     tape: Option<TapeMotion>,
     mission: Option<MissionMotion>,
     windows: HashMap<u64, WindowMotion>,
+    glides: HashMap<u64, WindowGlide>,
     overlay_key: Option<OverlayKind>,
     overlay: Option<Spring>,
     launchpad: Option<Spring>,
@@ -158,6 +167,7 @@ impl Animations {
     pub fn set_enabled(&mut self, enabled: bool, windows: &[ManagedWindow], shell: &MacShell) {
         self.disabled = !enabled;
         self.windows.clear();
+        self.glides.clear();
         self.slide = None;
         self.tape = None;
         self.mission = None;
@@ -297,6 +307,21 @@ impl Animations {
         }
     }
 
+    pub fn glide_window(&mut self, id: u64, dx: f64, dy: f64) {
+        if self.disabled || (dx.abs() < 0.5 && dy.abs() < 0.5) {
+            self.glides.remove(&id);
+            return;
+        }
+        self.glides.insert(
+            id,
+            WindowGlide {
+                x: Spring::quick(dx, 0.0),
+                y: Spring::quick(dy, 0.0),
+                fresh: true,
+            },
+        );
+    }
+
     /// Called only for frames requested by events or a still-running spring.
     pub fn advance(&mut self, windows: &[ManagedWindow], shell: &MacShell, now: Instant) -> bool {
         if self.disabled {
@@ -408,8 +433,19 @@ impl Animations {
                 self.mission = None;
             }
         }
+        self.glides.retain(|id, g| {
+            if !windows.iter().any(|w| w.id == *id && w.mapped && !w.minimized) {
+                return false;
+            }
+            if !std::mem::take(&mut g.fresh) {
+                g.x.advance(dt);
+                g.y.advance(dt);
+            }
+            g.x.active() || g.y.active()
+        });
         let active = self.slide.is_some()
             || self.tape.is_some()
+            || !self.glides.is_empty()
             || self.scratch.is_some()
             || self.dock.as_ref().is_some_and(Spring::active)
             || self.mission.as_ref().is_some_and(|m| m.spring.active())
@@ -442,13 +478,20 @@ impl Animations {
         {
             visual.offset.0 += t.spring.value * (1.0 - self.mission_progress());
         }
-        if let Some(s) = self.slide.as_ref() {
+        if let Some(g) = self.glides.get(&w.id) {
+            visual.offset.0 += g.x.value;
+            visual.offset.1 += g.y.value;
+        }
+        if let Some(s) = self.slide.as_ref().filter(|_| !w.pip) {
             let p = s.spring.value;
             if w.space == s.from {
                 visual.offset.0 -= s.dir * p * s.width;
             } else if w.space == s.to {
                 visual.offset.0 += s.dir * (1.0 - p) * s.width;
             }
+        }
+        if w.pip && w.pip_ghost && !self.super_held {
+            visual.alpha *= crate::pip::PIP_GHOST_ALPHA;
         }
         visual
     }
@@ -481,7 +524,11 @@ impl Animations {
     pub fn draws_window(&self, w: &ManagedWindow) -> bool {
         // The desktop being left stays drawn while it slides out; scrolled-off columns
         // of a `Tape` desktop stay culled so they don't walk across the neighbour desktop.
-        let on_screen = if let Some(s) = self.slide.as_ref().filter(|s| w.space == s.from || w.space == s.to) {
+        let on_screen = if let Some(s) = self
+            .slide
+            .as_ref()
+            .filter(|s| !w.pip && (w.space == s.from || w.space == s.to))
+        {
             !w.managed_layout || (w.x + w.width > 0 && w.x < s.width as i32)
         } else {
             !w.off_space || (w.space == crate::scratch::SCRATCH_SPACE && self.scratch.is_some())

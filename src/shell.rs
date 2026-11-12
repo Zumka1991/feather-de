@@ -576,6 +576,7 @@ enum TopbarItem {
     Caffeine,
     Scratch,
     DropShelf,
+    Pip,
     SpaceMode,
     Battery,
     Tray(usize),
@@ -606,6 +607,7 @@ pub enum SpotlightMode {
     Search,
     Clipboard,
     Emoji,
+    MenuHud,
 }
 
 #[derive(Debug, Clone)]
@@ -619,6 +621,7 @@ pub enum ShellClickAction {
     Control(crate::controls::Control),
     NetworkSettings,
     BluetoothSettings,
+    SoundSettings,
     AppMenuActivate { generation: u64, id: i32 },
     LaunchApp(AppAction, String),
     LaunchpadLaunch(usize),
@@ -654,6 +657,10 @@ pub enum ShellClickAction {
     ToggleCaffeine,
     ToggleScratch,
     ToggleDropShelf,
+    OpenMenuHud,
+    TogglePipFocused,
+    TogglePipGhostFocused,
+    TopbarPipClick(bool),
     CycleSpaceMode,
     SetSpaceMode(crate::space_layout::SpaceMode),
     CycleTapeWidth,
@@ -736,6 +743,8 @@ pub struct MenuContext {
     pub pinned: Option<bool>,
     pub space_mode: crate::space_layout::SpaceMode,
     pub shelf_open: bool,
+    pub pip: bool,
+    pub pip_ghost: bool,
 }
 
 const MENU_ITEM_H: f32 = 22.0;
@@ -747,7 +756,7 @@ fn builtin(kind: BuiltinWindowKind, name: &str) -> Option<ShellClickAction> {
     Some(ShellClickAction::LaunchApp(AppAction::BuiltinWindow(kind), name.into()))
 }
 
-fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
+pub(crate) fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
     use MenuRow::Separator;
     let has_app = !ctx.app_name.is_empty();
     let has_window = ctx.windows.iter().any(|w| w.2);
@@ -798,6 +807,22 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
                     "",
                     on(has_window && ctx.focused_is_wayland, ShellClickAction::FullscreenFocused),
                 ),
+                MenuRow::Item {
+                    label: "Картинка в картинке (PiP)".into(),
+                    shortcut: "⌘P".into(),
+                    action: on(has_window || ctx.pip, ShellClickAction::TogglePipFocused),
+                    checked: ctx.pip,
+                    radio: false,
+                    submenu: None,
+                },
+                MenuRow::Item {
+                    label: "Сквозь курсор (призрачное окно)".into(),
+                    shortcut: "⌥⌘P".into(),
+                    action: on(has_window || ctx.pip, ShellClickAction::TogglePipGhostFocused),
+                    checked: ctx.pip_ghost,
+                    radio: false,
+                    submenu: None,
+                },
                 Separator,
             ];
             for (idx, mode) in crate::space_layout::SpaceMode::ALL.into_iter().enumerate() {
@@ -849,6 +874,8 @@ fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
             rows
         }
         TopMenu::Help => vec![
+            item("Поиск по меню…", "⌘/", Some(ShellClickAction::OpenMenuHud)),
+            Separator,
             item("Горячие клавиши Пёрышка", "", Some(ShellClickAction::ShowShortcuts)),
             item("Об этом компьютере", "", builtin(BuiltinWindowKind::AboutFeather, "Об этом компьютере")),
         ],
@@ -927,6 +954,8 @@ pub struct MacShell {
     /// Полка перетаскивания (`drop_shelf.rs`): shown in front and number of stashed items
     pub shelf_open: bool,
     pub shelf_count: usize,
+    /// PiP topbar indicator: `None` = no PiP window, `Some(ghost)` = active PiP (translucent when `ghost`)
+    pub pip_state: Option<bool>,
     /// Layout mode of the current user desktop (`space_layout.rs`)
     pub space_mode: crate::space_layout::SpaceMode,
     /// Layer surfaces of other programs, front first (`layer_shell.rs`)
@@ -938,6 +967,7 @@ pub struct MacShell {
     /// Caret/selection of the Spotlight field; `spotlight_query` mirrors its text
     pub spotlight_input: feather_ui::input::TextInput,
     pub spotlight_selected: usize,
+    pub spotlight_scroll: usize,
     pub spotlight_hits: Vec<crate::spotlight::Hit>,
     pub spotlight_mode: SpotlightMode,
     pub emoji: crate::emoji::EmojiCache,
@@ -1097,6 +1127,7 @@ impl MacShell {
             scratch_backdrop: false,
             shelf_open: false,
             shelf_count: 0,
+            pip_state: None,
             space_mode: crate::space_layout::SpaceMode::Free,
             layers: Vec::new(),
             battery: None,
@@ -1104,6 +1135,7 @@ impl MacShell {
             spotlight_query: String::new(),
             spotlight_input: Default::default(),
             spotlight_selected: 0,
+            spotlight_scroll: 0,
             spotlight_hits: Vec::new(),
             spotlight_mode: SpotlightMode::Search,
             emoji: Default::default(),
@@ -1706,8 +1738,11 @@ impl MacShell {
         ((a + b) * 0.5, TOP_BAR_HEIGHT as f32 * 0.5)
     }
 
+    pub const SPOTLIGHT_VISIBLE_ROWS: usize = 10;
+
     /// Spotlight's panel closed: the next time it opens as itself. A picker leaves no query.
     pub fn leave_picker(&mut self) {
+        self.spotlight_scroll = 0;
         if self.spotlight_mode != SpotlightMode::Search {
             self.spotlight_mode = SpotlightMode::Search;
             self.spotlight_query.clear();
@@ -1716,6 +1751,58 @@ impl MacShell {
             self.spotlight_selected = 0;
             self.emoji.release();
         }
+    }
+
+    pub fn sync_spotlight_scroll(&mut self) {
+        if self.spotlight_mode == SpotlightMode::Emoji {
+            self.spotlight_scroll = 0;
+            return;
+        }
+        let total = self.spotlight_hits.len();
+        let vis = Self::SPOTLIGHT_VISIBLE_ROWS;
+        if total <= vis {
+            self.spotlight_scroll = 0;
+            return;
+        }
+        let sel = self.spotlight_selected.min(total - 1);
+        if sel < self.spotlight_scroll {
+            self.spotlight_scroll = sel;
+        } else if sel >= self.spotlight_scroll + vis {
+            self.spotlight_scroll = sel + 1 - vis;
+        }
+        self.spotlight_scroll = self.spotlight_scroll.min(total - vis);
+    }
+
+    pub fn scroll_spotlight(&mut self, px: f32, py: f32, delta: f64, registry: &AppRegistry) -> bool {
+        if !self.spotlight_open || self.spotlight_mode == SpotlightMode::Emoji {
+            return false;
+        }
+        let (_, Some(list), _, _) = self.spotlight_layout(registry) else {
+            return false;
+        };
+        if !list.contains(px, py) {
+            return false;
+        }
+        let total = self.spotlight_hits.len();
+        let vis = Self::SPOTLIGHT_VISIBLE_ROWS;
+        if total <= vis {
+            return true;
+        }
+        let step = if delta > 0.0 { 1isize } else if delta < 0.0 { -1isize } else { 0 };
+        let next = (self.spotlight_scroll as isize + step).clamp(0, (total - vis) as isize) as usize;
+        if next != self.spotlight_scroll {
+            self.spotlight_scroll = next;
+            self.spotlight_selected = self.spotlight_selected.clamp(next, next + vis - 1);
+            self.overlay_dirty = true;
+        }
+        true
+    }
+
+    pub fn topbar_pip_hit(&self, x: f64, y: f64) -> bool {
+        !self.topbar_hidden
+            && y >= 0.0
+            && y < TOP_BAR_HEIGHT as f64
+            && self.topbar_item_at(x as f32) == Some(TopbarItem::Pip)
     }
 
     /// Something opened by hand is up, as opposed to a passing banner
@@ -2654,9 +2741,10 @@ impl MacShell {
             return (bar, list, n, false);
         }
         let math = search && eval_spotlight_math(&self.spotlight_query).is_some();
-        let rows = n + usize::from(math);
+        let vis_n = n.min(Self::SPOTLIGHT_VISIBLE_ROWS);
+        let rows = vis_n + usize::from(math);
         let list = (rows > 0).then(|| R::new(x, y + 52.0 + 8.0, w, 12.0 + rows as f32 * 40.0));
-        (bar, list, n, math)
+        (bar, list, vis_n, math)
     }
 
     fn toast_visible(&self)->bool {
@@ -2902,6 +2990,7 @@ impl MacShell {
                 Some(TopbarItem::Caffeine) => return Some(ShellClickAction::ToggleCaffeine),
                 Some(TopbarItem::Scratch) => return Some(ShellClickAction::ToggleScratch),
                 Some(TopbarItem::DropShelf) => return Some(ShellClickAction::ToggleDropShelf),
+                Some(TopbarItem::Pip) => return Some(ShellClickAction::TopbarPipClick(true)),
                 Some(TopbarItem::SpaceMode) => return Some(ShellClickAction::CycleSpaceMode),
                 Some(TopbarItem::Battery) => return Some(ShellClickAction::OpenSettingsPage(crate::system_settings::Page::Power)),
                 Some(TopbarItem::ControlCenter) | Some(TopbarItem::Wifi) => {
@@ -3023,7 +3112,10 @@ impl MacShell {
                 }
                 let row = ((my - list.y - 6.0) / 40.0).floor().max(0.0) as usize;
                 let app_row = row.checked_sub(usize::from(math));
-                if let Some(hit) = app_row.filter(|r| *r < n).and_then(|r| self.spotlight_hits.get(r)) {
+                if let Some(hit) = app_row
+                    .filter(|r| *r < n)
+                    .and_then(|r| self.spotlight_hits.get(self.spotlight_scroll + r))
+                {
                     let action = hit.action.clone();
                     self.spotlight_query.clear();
                     self.close_menus();
@@ -3169,6 +3261,7 @@ impl MacShell {
         let (center_open,dnd,caffeine,battery)=(self.center_open,self.dnd_active(),self.caffeine,self.battery);
         let scratch=(self.scratch_open,self.scratch_count);
         let shelf=(self.shelf_open,self.shelf_count);
+        let pip_state = self.pip_state;
         let space_mode = self.space_mode;
         let mut menus = vec![(active_app_title.to_string(), TopMenu::App, true, true)];
         if let Some(root) = self.client_menu.as_ref().filter(|root| root.children.iter().any(|n| n.visible)) {
@@ -3207,7 +3300,8 @@ impl MacShell {
                     0.0
                 };
                 let shelf_reserved = if shelf.1 > 0 { 46.0 } else if shelf.0 { 30.0 } else { 0.0 };
-                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 222.0+tray_width+if battery.is_some(){72.0}else{0.0}+if scratch.1>0{46.0}else{0.0}+shelf_reserved+mode_reserved;
+                let pip_reserved = if pip_state.is_some() { 30.0 } else { 0.0 };
+                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 222.0+tray_width+if battery.is_some(){72.0}else{0.0}+if scratch.1>0{46.0}else{0.0}+shelf_reserved+pip_reserved+mode_reserved;
                 for (label, menu, bold, enabled) in &menus {
                     let available = lw - right_reserved - x - 12.0;
                     if available < 24.0 { break; }
@@ -3259,6 +3353,14 @@ impl MacShell {
                     };
                     hits.push((rx - width, rx, TopbarItem::DropShelf));
                     rx -= width;
+                }
+                if let Some(ghost) = pip_state {
+                    if ghost || hover == Some(TopbarItem::Pip) {
+                        highlight(&mut pm, rx - 29.0, rx - 1.0);
+                    }
+                    crate::theme::draw_pip_icon(&mut pm, rx - 15.0, lh * 0.5, 1.0, bar.text, ghost);
+                    hits.push((rx - 30.0, rx, TopbarItem::Pip));
+                    rx -= 30.0;
                 }
                 if space_mode != crate::space_layout::SpaceMode::Free {
                     let label = space_mode.short_label();
@@ -3851,6 +3953,7 @@ impl MacShell {
         let query = self.spotlight_query.clone();
         let spotlight_input = self.spotlight_input.clone();
         let selected = self.spotlight_selected;
+        let scroll = self.spotlight_scroll;
         let (wifi, dnd, vol) = (self.wifi_enabled, self.dnd_active(), self.cc.volume());
         let theme_name = self.theme.name();
         let dark = appearance() == Appearance::Dark;
@@ -3858,8 +3961,8 @@ impl MacShell {
         let mode = self.spotlight_mode;
         let emoji_hits: Vec<(char, String)> = self.spotlight_hits.iter().filter_map(|h| h.emoji.map(|e| (e, h.name.clone()))).collect();
         self.emoji.begin_frame();
-        let results: Vec<(String, String, AppIcon)> = if sp_open && mode != SpotlightMode::Emoji && (mode != SpotlightMode::Search || !query.trim().is_empty()) {
-            self.spotlight_hits.iter().map(|h| (h.name.clone(), h.sub.clone(), h.icon.clone())).collect()
+        let results: Vec<(String, String, String, AppIcon)> = if sp_open && mode != SpotlightMode::Emoji && (mode != SpotlightMode::Search || !query.trim().is_empty()) {
+            self.spotlight_hits.iter().map(|h| (h.name.clone(), h.sub.clone(), h.badge.clone(), h.icon.clone())).collect()
         } else {
             Vec::new()
         };
@@ -4023,6 +4126,8 @@ impl MacShell {
                         SpotlightMode::Clipboard if results.is_empty() => "История буфера обмена пуста",
                         SpotlightMode::Clipboard => "Поиск в истории буфера обмена",
                         SpotlightMode::Emoji => "Поиск эмодзи",
+                        SpotlightMode::MenuHud if results.is_empty() => "Нет доступных команд меню",
+                        SpotlightMode::MenuHud => "Поиск команд меню…",
                     };
                     fonts.draw_text(&mut pm, placeholder, bar.x + 50.0, bar.y + 14.0, 20.0, p.text_tertiary, false);
                 } else {
@@ -4062,8 +4167,12 @@ impl MacShell {
                             y += 40.0;
                         }
                     }
-                    let sel = selected.min(results.len().saturating_sub(1));
-                    for (i, (name, sub, icon)) in results.iter().enumerate() {
+                    let total_results = results.len();
+                    let sel = selected.min(total_results.saturating_sub(1));
+                    let start = scroll.min(total_results);
+                    let end = total_results.min(start + Self::SPOTLIGHT_VISIBLE_ROWS);
+                    for (offset, (name, sub, badge, icon)) in results[start..end].iter().enumerate() {
+                        let i = start + offset;
                         let hot = i == sel;
                         if hot {
                             fill_rounded_rect(&mut pm, list.x + 6.0, y, list.w - 12.0, 40.0, 10.0, p.accent);
@@ -4071,9 +4180,38 @@ impl MacShell {
                         draw_any_icon(&mut pm, fonts, icons, icon, name, list.x + 14.0, y + 5.0, 30.0);
                         let fg = if hot { p.on_accent } else { p.text };
                         let fg2 = if hot { with_alpha(p.on_accent, 0.8) } else { p.text_secondary };
-                        let nw = fonts.draw_text(&mut pm, name, list.x + 54.0, y + 11.0, 14.0, fg, false);
-                        fonts.draw_text_clipped(&mut pm, sub, list.x + 66.0 + nw, y + 12.5, list.w - 140.0 - nw, 12.0, fg2, false);
+                        let badge_reserve = if badge.is_empty() {
+                            0.0
+                        } else {
+                            let bw = fonts.measure_text(badge, 12.0, true) + 14.0;
+                            let bx = list.x + list.w - 18.0 - bw;
+                            let pill_bg = if hot {
+                                rgba(255, 255, 255, 44)
+                            } else if dark {
+                                rgba(255, 255, 255, 24)
+                            } else {
+                                rgba(0, 0, 0, 16)
+                            };
+                            fill_rounded_rect(&mut pm, bx, y + 9.0, bw, 22.0, 6.0, pill_bg);
+                            let bfg = if hot { p.on_accent } else { p.text_secondary };
+                            fonts.draw_text(&mut pm, badge, bx + 7.0, y + 12.0, 12.0, bfg, true);
+                            bw + 14.0
+                        };
+                        let max_name_w = (list.w - 90.0 - badge_reserve).max(80.0);
+                        let shown_name = fonts.ellipsize(name, max_name_w, 14.0, false);
+                        let nw = fonts.draw_text(&mut pm, &shown_name, list.x + 54.0, y + 11.0, 14.0, fg, false);
+                        let sub_w = list.w - 90.0 - badge_reserve - nw;
+                        if sub_w > 24.0 && !sub.is_empty() {
+                            fonts.draw_text_clipped(&mut pm, sub, list.x + 66.0 + nw, y + 12.5, sub_w, 12.0, fg2, false);
+                        }
                         y += 40.0;
+                    }
+                    if total_results > Self::SPOTLIGHT_VISIBLE_ROWS {
+                        let track_h = Self::SPOTLIGHT_VISIBLE_ROWS as f32 * 40.0 - 8.0;
+                        let thumb_h = (track_h * (Self::SPOTLIGHT_VISIBLE_ROWS as f32 / total_results as f32)).max(20.0);
+                        let max_scroll = (total_results - Self::SPOTLIGHT_VISIBLE_ROWS).max(1) as f32;
+                        let thumb_y = list.y + 10.0 + (track_h - thumb_h) * (start as f32 / max_scroll);
+                        fill_rounded_rect(&mut pm, list.x + list.w - 5.0, thumb_y, 2.5, thumb_h, 1.25, with_alpha(p.text_tertiary, 0.55));
                     }
                 }
             }
@@ -4167,7 +4305,7 @@ impl MacShell {
                     let rr = *rr;
                     match row {
                         CenterItem::Group(i, label) => {
-                            fonts.draw_text_clipped(&mut pm, label, rr.x + 6.0, rr.y + 6.0, rr.w - 40.0, 12.0, p.text_secondary, true);
+                            fonts.draw_text_clipped(&mut pm, label, rr.x + 6.0, rr.y + 6.0, rr.w - 40.0, 12.0, with_alpha(p.text, 0.90), true);
                             let hot = center_hover == Some(CenterHit::ClearGroup(*i));
                             if hot { fill_rounded_rect(&mut pm, rr.x + rr.w - 24.0, rr.y + 3.0, 20.0, 20.0, 10.0, p.control_fill); }
                             fonts.draw_text_centered(&mut pm, "×", rr.x + rr.w - 14.0, rr.y + 4.0, 14.0, if hot { p.text } else { p.text_secondary }, true);
@@ -4200,7 +4338,7 @@ impl MacShell {
         let cell = (r.w - 24.0) / 7.0;
         let cx = |col: usize| r.x + 12.0 + cell * (col as f32 + 0.5);
         for (col, day) in WEEKDAYS.iter().enumerate() {
-            fonts.draw_text_centered(pm, day, cx(col), r.y + 46.0, 11.0, p.text_secondary, true);
+            fonts.draw_text_centered(pm, day, cx(col), r.y + 46.0, 11.0, with_alpha(p.text, 0.88), true);
         }
         for (i, (day, inside)) in month_grid(year, month).into_iter().enumerate() {
             let (col, row) = (i % 7, i / 7);

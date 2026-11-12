@@ -10,6 +10,7 @@ const HELP: &str = "featherctl — управление рабочим стол�
   window list                        список окон
   window focus|close|minimize ID     показать / закрыть (опасно) / свернуть
   window maximize|fullscreen ID [on|off|toggle]
+  window pip [ID] [status|on|off|ghost|toggle]  «Картинка в картинке» / «Сквозь курсор»
   window move ID СТОЛ                перенести на рабочий стол (с 1)
 Рабочие столы:
   space [list]                       список столов
@@ -17,6 +18,7 @@ const HELP: &str = "featherctl — управление рабочим стол�
   space-mode [free|tile|tape|next] [N] режим раскладки стола (N с 1; без N — текущий)
   mission [on|off]                   Mission Control
   launchpad [on|off]                 Launchpad
+  menu-hud [open|close|toggle]       HUD-поиск по командам меню (Super + /)
   shelf [status|on|off|toggle|clear|add ПУТЬ...] полка перетаскивания
   larvis [status|on|off|toggle]      стол Ларвиса вместо твоих столов
 Приложения:
@@ -26,6 +28,10 @@ const HELP: &str = "featherctl — управление рабочим стол�
 Звук и экран:
   volume [N|+N|-N|mute|unmute|toggle]
   mic [mute|unmute|toggle]
+  audio streams                      активные звуковые потоки программ
+  audio app-volume INDEX 0..100      громкость потока программы
+  audio app-mute INDEX [on|off|toggle]
+  audio app-output INDEX УСТРОЙСТВО  направить поток программы на устройство вывода
   brightness [N|+N|-N]
   night|dark|dnd [on|off|toggle]     ночной режим / тёмная тема / «Не беспокоить»
   display                            яркость и режимы
@@ -70,6 +76,15 @@ enum Mode {
     Dnd,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PipAction {
+    Status,
+    On,
+    Off,
+    GhostToggle,
+    Toggle,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Command {
     Help,
@@ -81,6 +96,7 @@ enum Command {
     Minimize(u64),
     Maximize(u64, Switch),
     Fullscreen(u64, Switch),
+    WindowPip(u64, PipAction),
     MoveWindow(u64, u32),
     Spaces,
     SwitchSpace(u32),
@@ -88,6 +104,7 @@ enum Command {
     SetSpaceMode(u32, String),
     Mission(bool),
     Launchpad(bool),
+    MenuHud(Switch),
     ShelfStatus,
     ShelfShow(Switch),
     ShelfClear,
@@ -100,6 +117,10 @@ enum Command {
     Volume(Level),
     Mute(Switch),
     MicMute(Switch),
+    AudioStreams,
+    StreamVolume(u32, u32),
+    StreamMute(u32, Switch),
+    StreamOutput(u32, String),
     Brightness(Level),
     Mode(Mode, Switch),
     Display,
@@ -119,8 +140,19 @@ fn bad(msg: impl Into<String>) -> String {
 fn window_id(arg: Option<&str>) -> Result<u64, String> {
     match arg {
         None => Err(bad("Нужен ID окна (число из `window list` или active)")),
-        Some("active") => Ok(0),
+        Some("active" | "focused") => Ok(0),
         Some(s) => s.parse().map_err(|_| bad(format!("Неверный ID окна: {s}"))),
+    }
+}
+
+fn pip_action(arg: Option<&str>) -> Result<PipAction, String> {
+    match arg {
+        None | Some("toggle") => Ok(PipAction::Toggle),
+        Some("status") => Ok(PipAction::Status),
+        Some("on" | "1" | "true" | "вкл") => Ok(PipAction::On),
+        Some("off" | "0" | "false" | "выкл") => Ok(PipAction::Off),
+        Some("ghost" | "click-through") => Ok(PipAction::GhostToggle),
+        Some(s) => Err(bad(format!("Ожидалось status, on, off, ghost или toggle, а не {s}"))),
     }
 }
 
@@ -209,6 +241,15 @@ fn parse(args: &[&str]) -> Result<Command, String> {
                 Some("minimize") => no_more(3, Command::Minimize(id()?)),
                 Some("maximize") => no_more(4, Command::Maximize(id()?, switch(arg(3), Switch::Toggle)?)),
                 Some("fullscreen") => no_more(4, Command::Fullscreen(id()?, switch(arg(3), Switch::Toggle)?)),
+                Some("pip") => match (arg(2), arg(3)) {
+                    (None, _) => Ok(Command::WindowPip(0, PipAction::Toggle)),
+                    (Some(mode @ ("status" | "on" | "off" | "ghost" | "click-through" | "toggle")), None) => {
+                        Ok(Command::WindowPip(0, pip_action(Some(mode))?))
+                    }
+                    (Some(raw_id), mode) => {
+                        no_more(4, Command::WindowPip(window_id(Some(raw_id))?, pip_action(mode)?))
+                    }
+                },
                 Some("move") => {
                     let space = arg(3).ok_or_else(|| bad("Нужен номер стола"))?;
                     no_more(4, Command::MoveWindow(id()?, number(space, "стола")?))
@@ -225,6 +266,11 @@ fn parse(args: &[&str]) -> Result<Command, String> {
         "space-mode" => parse_space_mode(&args[1..]),
         "mission" => no_more(2, Command::Mission(switch(arg(1), Switch::On)? != Switch::Off)),
         "launchpad" => no_more(2, Command::Launchpad(switch(arg(1), Switch::On)? != Switch::Off)),
+        "menu-hud" | "hud" => match arg(1) {
+            Some("open") => no_more(2, Command::MenuHud(Switch::On)),
+            Some("close") => no_more(2, Command::MenuHud(Switch::Off)),
+            other => no_more(2, Command::MenuHud(switch(other, Switch::Toggle)?)),
+        },
         "shelf" => match arg(1) {
             None | Some("status" | "list") => no_more(2, Command::ShelfStatus),
             Some("clear") => no_more(2, Command::ShelfClear),
@@ -260,6 +306,44 @@ fn parse(args: &[&str]) -> Result<Command, String> {
             other => no_more(2, Command::Volume(level(other)?)),
         },
         "mic" => no_more(2, Command::MicMute(mute(arg(1))?)),
+        "audio" => match arg(1) {
+            None | Some("streams" | "list") => no_more(2, Command::AudioStreams),
+            Some("app-volume") => {
+                let idx_raw = arg(2).ok_or_else(|| bad("Нужен индекс потока из `audio streams`"))?;
+                let vol_raw = arg(3).ok_or_else(|| bad("Нужна громкость 0..100"))?;
+                let idx = number(idx_raw, "потока")?;
+                let vol = vol_raw
+                    .trim_end_matches('%')
+                    .parse::<u32>()
+                    .map_err(|_| bad(format!("Неверная громкость: {vol_raw}")))?;
+                if vol > 100 {
+                    return Err(bad("Громкость потока — от 0 до 100"));
+                }
+                no_more(4, Command::StreamVolume(idx, vol))
+            }
+            Some("app-mute") => {
+                let idx_raw = arg(2).ok_or_else(|| bad("Нужен индекс потока из `audio streams`"))?;
+                let idx = number(idx_raw, "потока")?;
+                let sw = match arg(3) {
+                    Some(m @ ("mute" | "unmute")) => mute(Some(m))?,
+                    other => switch(other, Switch::Toggle)?,
+                };
+                no_more(4, Command::StreamMute(idx, sw))
+            }
+            Some("app-output") => {
+                let idx_raw = arg(2).ok_or_else(|| bad("Нужен индекс потока из `audio streams`"))?;
+                let idx = number(idx_raw, "потока")?;
+                if args.len() < 4 {
+                    return Err(bad("Нужно устройство вывода (имя или описание)"));
+                }
+                let sink = args[3..].join(" ");
+                if sink.trim().is_empty() {
+                    return Err(bad("Нужно устройство вывода (имя или описание)"));
+                }
+                Ok(Command::StreamOutput(idx, sink))
+            }
+            Some(s) => Err(bad(format!("Неизвестная команда звука: {s}"))),
+        },
         "brightness" => no_more(2, Command::Brightness(level(arg(1))?)),
         "night" | "dark" | "dnd" => {
             let mode = match head { "night" => Mode::Night, "dark" => Mode::Dark, _ => Mode::Dnd };
@@ -366,6 +450,26 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
             if full { proxy.fullscreen_window(id, on)? } else { proxy.maximize_window(id, on)? }
         }
         Command::MoveWindow(id, space) => proxy.move_window_to_space(id, space)?,
+        Command::WindowPip(id, action) => match action {
+            PipAction::Status => {
+                let (pip, ghost) = proxy.get_window_pip(id)?;
+                if json {
+                    print_json(&serde_json::json!({"pip": pip, "ghost": ghost}));
+                } else {
+                    println!("pip: {}, сквозь курсор: {}", on_off(pip), on_off(ghost));
+                }
+            }
+            PipAction::On => proxy.set_window_pip(id, true, false)?,
+            PipAction::Off => proxy.set_window_pip(id, false, false)?,
+            PipAction::Toggle => {
+                let (pip, _) = proxy.get_window_pip(id)?;
+                proxy.set_window_pip(id, !pip, false)?;
+            }
+            PipAction::GhostToggle => {
+                let (pip, ghost) = proxy.get_window_pip(id)?;
+                proxy.set_window_pip(id, true, if pip { !ghost } else { true })?;
+            }
+        },
         Command::Spaces => {
             let list = proxy.list_spaces()?;
             if json {
@@ -388,6 +492,14 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
         Command::SetSpaceMode(n, mode) => proxy.set_space_mode(n, &mode)?,
         Command::Mission(on) => proxy.show_mission_control(on)?,
         Command::Launchpad(on) => proxy.show_launchpad(on)?,
+        Command::MenuHud(s) => {
+            let show = if s == Switch::Toggle {
+                !proxy.get_menu_hud()?
+            } else {
+                s.resolve(false)
+            };
+            proxy.show_menu_hud(show)?;
+        }
         Command::ShelfStatus => {
             let s = proxy.get_drop_shelf()?;
             if json {
@@ -478,6 +590,42 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
             let on = if s == Switch::Toggle { !proxy.get_audio()?.mic_muted } else { s.resolve(false) };
             proxy.set_mic_mute(on)?
         }
+        Command::AudioStreams => {
+            let streams = proxy.list_audio_streams()?;
+            if json {
+                print_json(&streams);
+            } else if streams.is_empty() {
+                println!("Нет активных звуковых потоков");
+            } else {
+                for st in streams {
+                    let out = if st.sink_label.is_empty() { &st.sink } else { &st.sink_label };
+                    let sub = if st.subtitle.is_empty() { String::new() } else { format!(" — {}", st.subtitle) };
+                    println!(
+                        "{:>4}  {:>3} %{}  [{out}]  {}{}",
+                        st.index,
+                        st.volume,
+                        if st.muted { " [без звука]" } else { "" },
+                        st.name,
+                        sub
+                    );
+                }
+            }
+        }
+        Command::StreamVolume(index, vol) => println!("{}", proxy.set_stream_volume(index, vol)?),
+        Command::StreamMute(index, s) => {
+            let muted = if s == Switch::Toggle {
+                let streams = proxy.list_audio_streams()?;
+                let cur = streams
+                    .iter()
+                    .find(|st| st.index == index)
+                    .ok_or_else(|| Error::NotFound(format!("Нет звукового потока #{index}")))?;
+                !cur.muted
+            } else {
+                s.resolve(false)
+            };
+            proxy.set_stream_mute(index, muted)?;
+        }
+        Command::StreamOutput(index, sink) => proxy.move_stream_output(index, &sink)?,
         Command::Brightness(Level::Show) => {
             let b = proxy.get_display()?.brightness;
             if b < 0 { return Err(Error::Unavailable("Яркость этого экрана не управляется".into())) }
@@ -631,5 +779,33 @@ mod tests {
         assert_eq!(p("suspend"), Ok(Command::Suspend));
         assert_eq!(p(""), Ok(Command::Help));
         assert!(p("reboot").is_err());
+    }
+
+    #[test]
+    fn pip_hud_and_audio_mixer() {
+        assert_eq!(p("window pip"), Ok(Command::WindowPip(0, PipAction::Toggle)));
+        assert_eq!(p("window pip ghost"), Ok(Command::WindowPip(0, PipAction::GhostToggle)));
+        assert_eq!(p("window pip status"), Ok(Command::WindowPip(0, PipAction::Status)));
+        assert_eq!(p("window pip 42 on"), Ok(Command::WindowPip(42, PipAction::On)));
+        assert_eq!(p("window pip active off"), Ok(Command::WindowPip(0, PipAction::Off)));
+        assert_eq!(p("window pip focused ghost"), Ok(Command::WindowPip(0, PipAction::GhostToggle)));
+        assert!(p("window pip 42 banana").is_err());
+
+        assert_eq!(p("menu-hud"), Ok(Command::MenuHud(Switch::Toggle)));
+        assert_eq!(p("menu-hud open"), Ok(Command::MenuHud(Switch::On)));
+        assert_eq!(p("hud close"), Ok(Command::MenuHud(Switch::Off)));
+
+        assert_eq!(p("audio"), Ok(Command::AudioStreams));
+        assert_eq!(p("audio streams"), Ok(Command::AudioStreams));
+        assert_eq!(p("audio app-volume 57 75%"), Ok(Command::StreamVolume(57, 75)));
+        assert!(p("audio app-volume 57 120").is_err());
+        assert_eq!(p("audio app-mute 57"), Ok(Command::StreamMute(57, Switch::Toggle)));
+        assert_eq!(p("audio app-mute 57 mute"), Ok(Command::StreamMute(57, Switch::On)));
+        assert_eq!(p("audio app-mute 57 off"), Ok(Command::StreamMute(57, Switch::Off)));
+        assert_eq!(
+            p("audio app-output 57 USB ЦАП Наушники"),
+            Ok(Command::StreamOutput(57, "USB ЦАП Наушники".into()))
+        );
+        assert!(p("audio app-output 57").is_err());
     }
 }

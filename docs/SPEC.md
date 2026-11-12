@@ -83,6 +83,11 @@ calloop EventLoop (один поток)
 | `xwayland.rs` | Свой X-дисплей: lock и сокеты, xwayland-satellite по первому X-клиенту через `-listenfd`, перезапуск и очистка |
 | `gtk_shell.rs`, `gtk_menu.rs` | `gtk_shell1` v1 (адрес меню GTK, capability глобального меню-бара) и загрузка `org.gtk.Menus`/`org.gtk.Actions` в общее дерево меню |
 | `spaces.rs` | Рабочие столы: принадлежность окон, рост и удаление столов, переход к столу окна, сдвиг пружиной |
+| `space_layout.rs` | Режимы каждого рабочего стола (`Free`, `Tile` BSP, `Tape` Niri-лента с GPU-прокруткой) и сохранение рамок |
+| `glass.rs` | Живое оптическое стекло на GPU: Dual-Kawase blur `1/4 → 1/8 → 1/16` строго по `damage ∩ панели`, SDF-рефракция и дисперсия |
+| `drop_shelf.rs` | Полка перетаскивания `wl_data_device` (`ClientDnd` / `ServerDnd`), встряхивание курсора, временные картинки в `XDG_RUNTIME_DIR` |
+| `menu_hud.rs` | HUD-поиск по командам меню (`Super+/`): разворачивание `DBusMenu`/`org.gtk.Menus` и меню оболочки по требованию, автоисправление раскладки |
+| `pip.rs` | «Картинка в картинке» (`Super+P`) и призрачный режим «Сквозь курсор» (`Super+Alt+P`, захват по `Super`), примагничивание к углам |
 | `mission.rs` | Mission Control: раскладка обзора, полоса столов, клики и перетаскивание окна на стол |
 | `night.rs`, `brightness.rs` | Ночной режим (гамма CRTC, плавный переход на секундном тике) и яркость (logind backlight или DDC/CI на потоке, последнее значение) |
 | `shell.rs` | UI оболочки: меню-бар, Dock, меню, Spotlight, Control Center, уведомления, переключатель |

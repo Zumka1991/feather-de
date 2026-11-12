@@ -97,6 +97,7 @@ pub enum Choice {
     CapsLock,
     Region,
     DisplayMode,
+    StreamOutput(u32),
 }
 /// Labels of a choice's options and the index of the current one.
 fn choice_options(choice: Choice, c: &Context<'_>) -> (Vec<String>, Option<usize>) {
@@ -123,6 +124,16 @@ fn choice_options(choice: Choice, c: &Context<'_>) -> (Vec<String>, Option<usize
         Choice::CapsLock => pick(&crate::settings::Caps::ALL, c.keyboard.caps, |k| k.label().into()),
         Choice::Region => pick(&crate::theme::Region::ALL, crate::theme::region(), |r| r.label().into()),
         Choice::DisplayMode => pick(c.modes, c.current, Mode::label),
+        Choice::StreamOutput(index) => {
+            let labels = c.audio.sinks.iter().map(|s| s.label.clone()).collect();
+            let current = c.audio.streams.iter().find(|s| s.index == index).and_then(|st| {
+                c.audio
+                    .sinks
+                    .iter()
+                    .position(|s| (!st.sink_name.is_empty() && s.name == st.sink_name) || s.index == st.sink_index)
+            });
+            (labels, current)
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -1552,6 +1563,58 @@ impl Panel {
                 l.begin();
                 l.row(52.0, "Переключаться на наушники", "Bluetooth и гарнитуры сразу после подключения".into(), Style::Toggle(c.sounds.auto_headphones), Some(Action::AutoHeadphones));
                 l.end();
+                l.header("Громкость программ");
+                if c.audio.streams.is_empty() {
+                    l.footer("Сейчас ни одна программа не воспроизводит звук.");
+                } else {
+                    for stream in &c.audio.streams {
+                        l.begin();
+                        let vol = self.stream_volume(stream);
+                        let pct = format!("{} %", (vol * 100.0).round() as u32);
+                        let detail = if stream.subtitle.is_empty() {
+                            pct
+                        } else {
+                            format!("{} · {}", stream.subtitle, pct)
+                        };
+                        let r = l.row(94.0, &stream.name, detail, Style::Row, None);
+                        l.push(
+                            R::new(r.x + 14.0, r.y + 55.0, r.w - 28.0, 26.0),
+                            "",
+                            Style::Volume(vol.clamp(0.0, 1.0)),
+                            Some(Action::Audio(Audio::StreamVolume {
+                                index: stream.index,
+                                value: 0.0,
+                            })),
+                        );
+                        l.row(
+                            48.0,
+                            "Выключить звук программы",
+                            String::new(),
+                            Style::Toggle(stream.muted),
+                            Some(Action::Audio(Audio::StreamMute {
+                                index: stream.index,
+                                muted: !stream.muted,
+                            })),
+                        );
+                        if c.audio.sinks.len() > 1 {
+                            let sink_label = c
+                                .audio
+                                .sinks
+                                .iter()
+                                .find(|s| (!stream.sink_name.is_empty() && s.name == stream.sink_name) || s.index == stream.sink_index)
+                                .or_else(|| c.audio.current())
+                                .map_or_else(|| "По умолчанию".into(), |s| s.label.clone());
+                            l.choice(
+                                48.0,
+                                "Устройство вывода",
+                                String::new(),
+                                sink_label,
+                                Some(Action::ChoiceMenu(Some(Choice::StreamOutput(stream.index)))),
+                            );
+                        }
+                        l.end();
+                    }
+                }
                 l.footer("Уровень записи задаёт усиление микрофона. Изменение уровня сохраняет баланс каналов.");
                 l.begin();
                 l.row(48.0, "Обновить устройства", String::new(), Style::Row, Some(Action::Audio(Audio::RefreshAudio)));
@@ -2792,11 +2855,23 @@ impl Panel {
             _ => device.volume(),
         }
     }
+    fn stream_volume(&self, stream: &crate::controls::AudioStream) -> f32 {
+        use crate::controls::Control;
+        match &self.audio_drag {
+            Some((_, Control::StreamVolume { index, value })) if *index == stream.index => *value,
+            _ => stream.volume(),
+        }
+    }
     pub fn audio_motion(&mut self, x: f32) -> Option<Action> {
         use crate::controls::Control;
         let (rect, command) = self.audio_drag.as_mut()?;
         let value = ((x - rect.x - 10.0) / (rect.w - 20.0)).clamp(0.0, 1.0);
-        let current = match command { Control::InputVolume { value, .. } | Control::Volume { value, .. } => value, _ => return None };
+        let current = match command {
+            Control::InputVolume { value, .. }
+            | Control::Volume { value, .. }
+            | Control::StreamVolume { value, .. } => value,
+            _ => return None,
+        };
         let sent = *self.audio_sent_volume.get_or_insert(*current);
         *current = value;
         if (sent - value).abs() < 0.02 { return None; }
@@ -2839,6 +2914,7 @@ impl Panel {
                 Some(Action::Audio(match command {
                     crate::controls::Control::InputVolume { source, .. } => crate::controls::Control::InputVolume { source, value },
                     crate::controls::Control::Volume { sink, .. } => crate::controls::Control::Volume { sink, value },
+                    crate::controls::Control::StreamVolume { index, .. } => crate::controls::Control::StreamVolume { index, value },
                     other => other,
                 }))
             }
@@ -3474,7 +3550,14 @@ impl Panel {
 
 impl crate::FeatherCompositor {
     pub fn settings_control_press(&mut self, action: &Action, x: f32, y: f32, w: f32, h: f32) {
-        if matches!(action, Action::Audio(crate::controls::Control::Volume { .. } | crate::controls::Control::InputVolume { .. })) {
+        if matches!(
+            action,
+            Action::Audio(
+                crate::controls::Control::Volume { .. }
+                    | crate::controls::Control::InputVolume { .. }
+                    | crate::controls::Control::StreamVolume { .. }
+            )
+        ) {
             if let Some(control) = self.system_settings.controls(w, h, &self.settings_context()).into_iter().rev()
                 .find(|c| matches!(c.style, Style::Volume(_)) && c.rect.contains(x, y)) {
                 if let Some(win) = self.windows.iter().find(|w| w.app_id == "builtin.settings") {
@@ -3577,6 +3660,15 @@ impl crate::FeatherCompositor {
                 if i < self.display_modes.len() && !self.system_settings.confirming {
                     self.system_settings.selected_mode = Some(i);
                 }
+            }
+            Choice::StreamOutput(index) => {
+                let Some(sink) = self.shell.cc.audio.sinks.get(i).map(|s| s.name.clone()) else {
+                    return;
+                };
+                self.apply_system_setting(Action::Audio(crate::controls::Control::StreamOutput {
+                    index,
+                    sink,
+                }));
             }
         }
     }

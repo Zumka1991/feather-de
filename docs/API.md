@@ -72,6 +72,7 @@
 | `MediaInfo` | `(bsssb)` | `available`, `player`, `title`, `artist`, `playing` |
 | `ShelfItemInfo` | `(tssss)` | `id`, `kind` (`"file"`, `"folder"`, `"image"`, `"url"`, `"text"`), `title`, `subtitle`, `path` (пустая строка для текста без файла) |
 | `ShelfInfo` | `(ba(tssss))` | `open` (открыта ли панель), `items` (список карточек сверху вниз) |
+| `AudioStreamInfo` | `(ussssub)` | `index`, `name`, `subtitle`, `sink` (системное имя), `sink_label` (подпись выхода), `volume` (`0…100`), `muted` |
 
 В крейте `feather-api` это структуры с `serde`. `featherctl --json` печатает их в JSON.
 
@@ -88,6 +89,8 @@
 | `MaximizeWindow` | `t id, b maximized` | разворачивает на экран или возвращает прежний размер |
 | `FullscreenWindow` | `t id, b fullscreen` | полноэкранный режим |
 | `MoveWindowToSpace` | `t id, u space` | переносит окно на стол `space`; номер «последний + 1» создаёт новый стол |
+| `GetWindowPip` | `t id` → `(bb)` | возвращает `(pip, ghost)` для окна (`0` — активное или текущее PiP-окно) |
+| `SetWindowPip` | `t id, b pip, b ghost` | включает/выключает «Картинку в картинке» и призрачный режим «Сквозь курсор» |
 
 ### Рабочие столы
 
@@ -99,6 +102,8 @@
 | `SetSpaceMode` | `u number, s mode` | задаёт режим стола (`"free"`, `"tile"`, `"tape"` или `"next"` по кругу; `0` — текущий стол, номер «последний + 1» создаёт новый стол) |
 | `ShowMissionControl` | `b show` | открывает или закрывает Mission Control |
 | `ShowLaunchpad` | `b show` | открывает или закрывает Launchpad |
+| `GetMenuHud` | → `b` | открыт ли сейчас HUD-поиск по командам меню (`Super + /`) |
+| `ShowMenuHud` | `b show` | открывает или закрывает HUD-поиск по командам меню |
 
 ### Полка перетаскивания
 
@@ -163,6 +168,10 @@
 | `ChangeVolume` | `i delta` → `u` | меняет на `delta` процентов; рост включает звук |
 | `SetMute` | `b muted` | выключает или включает звук |
 | `SetMicMute` | `b muted` | выключает или включает микрофон |
+| `ListAudioStreams` | → `a(ussssub)` | активные звуковые потоки программ (`AudioStreamInfo`) |
+| `SetStreamVolume` | `u index, u percent` → `u` | задаёт громкость потока программы (`0…100`) с сохранением баланса |
+| `SetStreamMute` | `u index, b muted` | выключает или включает звук потока программы |
+| `MoveStreamOutput` | `u index, s sink` | перенаправляет поток программы на устройство вывода (по системному имени или подписи) |
 
 ### Экран и режимы
 
@@ -272,15 +281,18 @@ featherctl [--json] КОМАНДА
 | `featherctl window minimize active` | `MinimizeWindow(0)` |
 | `featherctl window maximize 12 [on\|off\|toggle]` | `MaximizeWindow` |
 | `featherctl window fullscreen active toggle` | `FullscreenWindow` |
+| `featherctl window pip [ID] [status\|on\|off\|ghost\|toggle]` | `GetWindowPip` / `SetWindowPip` |
 | `featherctl window move 12 2` | `MoveWindowToSpace(12, 2)` |
 | `featherctl space` / `featherctl space 2` | `ListSpaces` / `SwitchSpace(2)` |
 | `featherctl space-mode [free\|tile\|tape\|next] [N]` | `GetSpaceMode` / `SetSpaceMode` (`N` с 1; без `N` — текущий стол) |
+| `featherctl menu-hud [open\|close\|toggle]` | `GetMenuHud` / `ShowMenuHud` |
 | `featherctl shelf [status\|on\|off\|toggle\|clear\|add ПУТЬ…]` | `GetDropShelf` / `ShowDropShelf` / `ClearDropShelf` / `AddToDropShelf` |
 | `featherctl mission [on\|off]`, `featherctl launchpad [on\|off]` | `ShowMissionControl`, `ShowLaunchpad` |
 | `featherctl larvis [status]` / `featherctl larvis on\|off\|toggle` | `GetLarvisDesktop` / `ShowLarvisDesktop` |
 | `featherctl app list` / `app launch firefox` / `app open firefox` | `ListApps` / `LaunchApp` / `ActivateApp` |
 | `featherctl volume` / `volume 40` / `volume +5` / `volume -5` | `GetAudio` / `SetVolume` / `ChangeVolume` |
 | `featherctl volume mute\|unmute\|toggle`, `featherctl mic mute\|unmute\|toggle` | `SetMute`, `SetMicMute` |
+| `featherctl audio [streams\|app-volume\|app-mute\|app-output]` | `ListAudioStreams` / `SetStreamVolume` / `SetStreamMute` / `MoveStreamOutput` |
 | `featherctl brightness [N\|+N\|-N]` | `GetDisplay` / `SetBrightness` / `ChangeBrightness` |
 | `featherctl night\|dark\|dnd [on\|off\|toggle]` | `SetNightShift`, `SetDarkMode`, `SetDoNotDisturb` |
 | `featherctl display` | `GetDisplay` |
