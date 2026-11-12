@@ -3441,7 +3441,22 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
                 assert!(!win.managed_layout, "{LOG} unmanaged again in Free");
                 assert_eq!((win.x, win.y, win.width, win.height), (x, y, w, h), "{LOG} Free frame restored for window {id}");
             }
-            eprintln!("{LOG} Free/Tile/Tape shortcuts, BSP resize, Niri ribbon scroll/peek/presets, fullscreen video roundtrip, Mission Control mode pill and Free frame restore passed");
+            // 5) Cmd+1…9 direct jump creates desktops on the fly, prunes empty trailing ones on return,
+            //    and Cmd+Shift+1…9 carries the active window straight to the target desktop.
+            assert_eq!((s.spaces.current, s.spaces.count), (0, 1));
+            tap_super_combo(s, false, false, 4); // Cmd + 3 -> desktop index 2
+            assert_eq!((s.spaces.current, s.spaces.count), (2, 3), "{LOG} Cmd+3 created desktop 3 on the fly");
+            tap_super_combo(s, false, false, 2); // Cmd + 1 -> back to desktop index 0
+            assert_eq!((s.spaces.current, s.spaces.count), (0, 1), "{LOG} empty desktops 2 and 3 pruned on return");
+            let carried_id = s.windows.iter().rev().find(|w| w.is_visible() && !w.pip).unwrap().id;
+            tap_super_combo(s, false, true, 4); // Cmd + Shift + 3 -> carry window to desktop 3
+            assert_eq!((s.spaces.current, s.spaces.count), (2, 3), "{LOG} Cmd+Shift+3 jumped with window to desktop 3");
+            let carried = s.windows.iter().find(|w| w.id == carried_id).unwrap();
+            assert_eq!(carried.space, 2, "{LOG} carried window is on desktop 3");
+            assert!(carried.is_visible(), "{LOG} carried window is visible on desktop 3");
+            tap_super_combo(s, false, false, 2); // Cmd + 1 -> desktop 3 stays because it holds the window
+            assert_eq!((s.spaces.current, s.spaces.count), (0, 3), "{LOG} non-empty desktop 3 preserved");
+            eprintln!("{LOG} Free/Tile/Tape shortcuts, BSP resize, Niri ribbon scroll/peek/presets, fullscreen video roundtrip, Cmd+1..9 jump/carry, Mission Control mode pill and Free frame restore passed");
             s.loop_signal.stop();
         })?;
     }

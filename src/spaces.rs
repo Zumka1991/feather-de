@@ -33,6 +33,18 @@ pub fn step(s: Spaces, delta: i32, current_has_windows: bool) -> Option<Spaces> 
     (target == s.count && current_has_windows && s.count < MAX_SPACES).then_some(Spaces { current: target, count: s.count + 1 })
 }
 
+/// Direct jump to desktop `target` (`0..MAX_SPACES`), growing `count` on the fly when needed;
+/// empty trailing desktops fold back via `prune` once left.
+pub fn jump(s: Spaces, target: u32) -> Option<Spaces> {
+    if target >= MAX_SPACES || target == s.current {
+        return None;
+    }
+    Some(Spaces {
+        current: target,
+        count: s.count.max(target + 1),
+    })
+}
+
 /// Desktops after removing `space`; the current one follows its content
 pub fn removed(s: Spaces, space: u32) -> Option<Spaces> {
     if s.count <= 1 || space >= s.count {
@@ -92,6 +104,7 @@ impl FeatherCompositor {
                 || self.space_layouts.mode(s) != crate::space_layout::SpaceMode::Free
         });
         self.apply_space_visibility();
+        self.space_layout_sync();
         self.animations.slide_spaces(from, target, self.shell.screen_w as f64);
         self.shell.close_menus();
         self.unfocus_desktop();
@@ -129,6 +142,91 @@ impl FeatherCompositor {
             }
         }
         self.switch_space(next.current);
+    }
+
+    /// Super+1…9 switches directly to desktop 1…9 (creating desktops on the fly up to `target + 1`,
+    /// with empty trailing ones pruned on leave); Super+Shift+1…9 carries the front window there.
+    pub fn space_jump(&mut self, target: u32, carry: bool) {
+        if target >= MAX_SPACES {
+            return;
+        }
+        if self.larvis_shown {
+            if carry {
+                return;
+            }
+            self.leave_larvis_desktop();
+            self.spaces.count = self.spaces.count.max(target + 1);
+            if target != self.spaces.current {
+                self.switch_space(target);
+            }
+            if self.mission_open() {
+                self.close_mission(None);
+            }
+            return;
+        }
+        if carry {
+            let Some(idx) = self
+                .windows
+                .iter()
+                .rposition(|w| w.is_visible() && !w.pip && !w.larvis)
+            else {
+                return;
+            };
+            if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
+                let id = self.windows[idx].id;
+                self.scratch_move_focused();
+                self.spaces.count = self.spaces.count.max(target + 1);
+                if target == self.spaces.current {
+                    self.set_scratch_open(false);
+                    self.space_layout_sync();
+                } else {
+                    if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
+                        w.space = target;
+                    }
+                    self.switch_space(target);
+                }
+                self.window_memory_changed();
+                if self.mission_open() {
+                    self.relayout_mission();
+                }
+                return;
+            }
+            if target == self.spaces.current {
+                return;
+            }
+            self.spaces.count = self.spaces.count.max(target + 1);
+            self.windows[idx].space = target;
+            self.switch_space(target);
+            self.window_memory_changed();
+            if self.mission_open() {
+                self.relayout_mission();
+            }
+            return;
+        }
+        if self.shell.launchpad.is_some() {
+            self.shell.launchpad = None;
+            self.shell.overlay_dirty = true;
+        }
+        if self.shell.spotlight_open {
+            self.shell.spotlight_open = false;
+            self.shell.leave_picker();
+            self.shell.overlay_dirty = true;
+            self.shell.topbar_dirty = true;
+        }
+        if let Some(next) = jump(self.spaces, target) {
+            self.spaces.count = next.count;
+            self.switch_space(next.current);
+            if self.mission_open() {
+                self.close_mission(None);
+            }
+        } else {
+            self.set_scratch_open(false);
+            if self.mission_open() {
+                self.close_mission(None);
+            }
+            self.refresh_focus();
+            self.needs_redraw = true;
+        }
     }
 
     /// Debug check helper: a step left that must change nothing
@@ -205,5 +303,13 @@ mod tests {
         assert_eq!(removed(Spaces::default(), 0), None, "the last desktop stays");
         let full = Spaces { current: MAX_SPACES - 1, count: MAX_SPACES };
         assert_eq!(step(full, 1, true), None);
+        // Direct Cmd+1…9 jumps grow desktops on the fly and prune empty trailing ones on return
+        assert_eq!(jump(one, 0), None, "already on desktop 1");
+        let three = jump(one, 2).unwrap();
+        assert_eq!(three, Spaces { current: 2, count: 3 });
+        let back_one = jump(three, 0).unwrap();
+        assert_eq!(prune(back_one, |_| false), Spaces { current: 0, count: 1 });
+        assert_eq!(prune(back_one, |s| s == 2), Spaces { current: 0, count: 3 });
+        assert_eq!(jump(one, MAX_SPACES), None);
     }
 }

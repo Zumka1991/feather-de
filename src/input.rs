@@ -179,12 +179,14 @@ pub(crate) enum KeyAction {
     CycleAppWindows { reverse: bool },
     /// Ctrl+Alt+←/→ (Shift: take the front window along)
     Space { delta: i32, carry: bool },
+    /// Super+1…9 / Super+Shift+1…9: jump directly to desktop 1…9 (Shift carries the front window)
+    SpaceJump { target: u32, carry: bool },
     /// Ctrl+Alt+↑ toggles; Escape/Return while open
     Mission { focus_hover: bool, close_only: bool },
     SwitchVt(i32),
     /// Print: screen, Shift+Print: region/window selection, Alt+Print: active window
     Screenshot { shift: bool, alt: bool },
-    /// Super+Shift+5 / Ctrl+Shift+Print: macOS-style Screen Capture & Video Recording HUD
+    /// Super+Alt+5 / Ctrl+Shift+Print: macOS-style Screen Capture & Video Recording HUD
     ScreenRecorder,
     ScreenRecorderStart,
     Auth(crate::auth_dialog::Cmd),
@@ -216,8 +218,41 @@ fn cycle_stack<T>(stack: &mut Vec<T>, matches: impl Fn(&T) -> bool, reverse: boo
     true
 }
 
+/// Maps top-row keys 1…9 (evdev 2…10 on any layout, even with Shift or AZERTY/Russian) and
+/// keypad `KP_1…KP_9` to 0-based desktop index `0..=8`. Key `0` is never matched here.
+pub fn space_digit_index(keycode_raw: u32, raw_sym: u32, latin_sym: Option<u32>) -> Option<u32> {
+    let evdev = keycode_raw.saturating_sub(8);
+    if (2..=10).contains(&evdev) {
+        return Some(evdev - 2);
+    }
+    for sym in [Some(raw_sym), latin_sym].into_iter().flatten() {
+        if (keysyms::KEY_1..=keysyms::KEY_9).contains(&sym) {
+            return Some(sym - keysyms::KEY_1);
+        }
+        if (keysyms::KEY_KP_1..=keysyms::KEY_KP_9).contains(&sym) {
+            return Some(sym - keysyms::KEY_KP_1);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod cycle_tests {
+    #[test]
+    fn space_digits_work_across_layouts_shift_symbols_and_keypad() {
+        use smithay::input::keyboard::keysyms as k;
+        // Physical top-row 1…9 (XKB = evdev + 8 = 10…18) even with Russian Shift symbols (! " № ; % : ? * ()
+        assert_eq!(super::space_digit_index(10, k::KEY_exclam, Some(k::KEY_exclam)), Some(0));
+        assert_eq!(super::space_digit_index(11, k::KEY_quotedbl, None), Some(1));
+        assert_eq!(super::space_digit_index(12, 0x06b0, None), Some(2)); // № in Russian layout
+        assert_eq!(super::space_digit_index(14, k::KEY_percent, Some(k::KEY_percent)), Some(4));
+        assert_eq!(super::space_digit_index(18, k::KEY_parenleft, None), Some(8));
+        // Key 0 (evdev 11 -> XKB 19) is reserved for Cmd+0 layout equalize
+        assert_eq!(super::space_digit_index(19, k::KEY_0, Some(k::KEY_0)), None);
+        // Keypad 1…9 fallback
+        assert_eq!(super::space_digit_index(87, k::KEY_KP_1, None), Some(0));
+        assert_eq!(super::space_digit_index(81, k::KEY_KP_9, None), Some(8));
+    }
     #[test]
     fn resized_extent_follows_the_grabbed_edge_within_limits() {
         assert_eq!(super::resized_extent(400, 30, false, true, 280, i32::MAX), 430);
@@ -805,16 +840,20 @@ impl FeatherCompositor {
                     deferred = Some(KeyAction::Shell(ShellClickAction::SetBrightness(((value * 10.0).round() / 10.0).clamp(0.0, 1.0))));
                     return FilterResult::Intercept(());
                 }
-                // Ctrl+Shift+Print or Super+Shift+5: macOS-style Screen Capture & Video Recording HUD
+                // Ctrl+Shift+Print or Super+Alt+5 (⌥⌘5): macOS-style Screen Capture & Video Recording HUD
                 if (raw == keysyms::KEY_Print || raw == keysyms::KEY_Sys_Req) && mods.ctrl && mods.shift {
                     deferred = Some(KeyAction::ScreenRecorder);
                     return FilterResult::Intercept(());
                 }
-                if mods.logo && mods.shift {
+                if mods.logo
+                    && mods.alt
+                    && !mods.ctrl
+                    && !mods.shift
+                    && st.keybindings.chord(crate::shortcuts::Action::ScreenRecorder)
+                        == Some(crate::shortcuts::Action::ScreenRecorder.default_chord())
+                {
                     let latin = keysym_handle.raw_latin_sym_or_raw_current_sym().map(|s| s.raw());
-                    if matches!(raw, keysyms::KEY_5 | keysyms::KEY_percent)
-                        || matches!(latin, Some(keysyms::KEY_5 | keysyms::KEY_percent))
-                    {
+                    if space_digit_index(keycode.raw(), raw, latin) == Some(4) {
                         deferred = Some(KeyAction::ScreenRecorder);
                         return FilterResult::Intercept(());
                     }
@@ -907,6 +946,16 @@ impl FeatherCompositor {
                 deferred = st.shortcut_action(action);
                 repeat_candidate = None;
                 return FilterResult::Intercept(());
+            }
+            if mods.logo && !mods.ctrl && !mods.alt {
+                if let Some(target) = space_digit_index(keycode.raw(), sym.raw(), Some(latin_sym.raw())) {
+                    deferred = Some(KeyAction::SpaceJump {
+                        target,
+                        carry: mods.shift,
+                    });
+                    repeat_candidate = None;
+                    return FilterResult::Intercept(());
+                }
             }
 
             // Keys for the desktop icons when no window has the keyboard
@@ -1092,6 +1141,7 @@ impl FeatherCompositor {
                 self.space_step(delta, carry);
                 if self.mission_open() { self.relayout_mission(); }
             }
+            Some(KeyAction::SpaceJump { target, carry }) => self.space_jump(target, carry),
             Some(KeyAction::Mission { focus_hover, close_only }) => {
                 if !self.mission_open() {
                     if !close_only { self.open_mission(); }

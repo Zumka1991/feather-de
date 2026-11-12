@@ -1963,7 +1963,7 @@ impl Panel {
                 }
                 l.row(48.0, "Вернуть стандартные сочетания", String::new(), Style::Row, Some(Action::ResetShortcuts));
                 l.end();
-                l.footer("Нажмите на действие, затем сочетание с Ctrl, Alt или Super. Esc — отмена; Backspace — выключить. Super+L, Alt+Tab и системные клавиши сохраняются.");
+                l.footer("Нажмите на действие, затем сочетание с Ctrl, Alt или Super. Esc — отмена; Backspace — выключить. Super+1…9 переключает рабочие столы, Super+Shift+1…9 переносит окно. Super+L, Alt+Tab и системные клавиши сохраняются.");
             }
             Page::Pointer => {
                 let p = &c.pointer;

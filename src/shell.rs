@@ -769,7 +769,7 @@ pub(crate) fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
             Separator,
             item("Системные настройки…", "", builtin(BuiltinWindowKind::SystemSettings, "Системные настройки")),
             item("Мониторинг системы", "⌃⌥⌦", Some(ShellClickAction::TaskManager)),
-            item("Запись экрана…", "⇧⌘5", Some(ShellClickAction::ToggleScreenRecorder)),
+            item("Запись экрана…", "⌥⌘5", Some(ShellClickAction::ToggleScreenRecorder)),
             item("Программы", "⌘A", Some(ShellClickAction::LaunchApp(crate::apps::AppAction::OpenLaunchpad, "Программы".into()))),
             Separator,
             item("Перезагрузить оболочку", "⇧⌘R", Some(ShellClickAction::HotReloadShell)),

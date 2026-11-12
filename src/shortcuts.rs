@@ -112,6 +112,7 @@ actions! {
     MenuHud, "menu-hud", "Поиск по меню", SUPER, k::KEY_slash;
     Pip, "pip", "Картинка в картинке (PiP)", SUPER, k::KEY_p;
     PipGhost, "pip-ghost", "Призрачный режим (сквозь курсор)", SUPER | ALT, k::KEY_p;
+    ScreenRecorder, "screen-recorder", "Запись экрана", SUPER | ALT, k::KEY_5;
     ScratchToggle, "scratch", "Подложка", SUPER, k::KEY_s;
     ScratchMove, "scratch-move", "Окно на подложку и обратно", SUPER | SHIFT, k::KEY_s;
     ClipboardHistory, "clipboard-history", "История буфера обмена", SUPER | SHIFT, k::KEY_v;
@@ -411,6 +412,7 @@ impl crate::FeatherCompositor {
             Action::MenuHud => A::Picker(crate::shell::SpotlightMode::MenuHud),
             Action::Pip => A::PipToggle,
             Action::PipGhost => A::PipGhostToggle,
+            Action::ScreenRecorder => A::ScreenRecorder,
             Action::ClipboardHistory => A::Picker(crate::shell::SpotlightMode::Clipboard),
             Action::Emoji => A::Picker(crate::shell::SpotlightMode::Emoji),
             Action::TileLeft => A::Tile(crate::tiling::Dir::Left),
