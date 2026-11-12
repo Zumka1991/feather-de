@@ -205,7 +205,11 @@ pub(crate) fn push_surface_tree(
 /// Rotated or flipped buffers are left out (the corner shader assumes a normal transform).
 fn surface_tex_info(
     surface: &WlSurface,
-) -> Vec<(smithay::backend::renderer::element::Id, smithay::utils::Size<i32, smithay::utils::Buffer>, bool)> {
+) -> Vec<(smithay::backend::renderer::element::Id, smithay::utils::Size<i32, smithay::utils::Buffer>, bool, bool)> {
+    // Returns (id, tex_size, has_alpha, is_dmabuf).
+    // is_dmabuf drives replace_alpha: the GL_OES_EGL_image_external sampler returns 0 in
+    // the alpha channel regardless of the buffer format (XRGB *and* ARGB), so any window
+    // drawn through it needs its alpha forced to 1.0 or it renders as a black rectangle.
     use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
     let mut out = Vec::new();
     with_surface_tree_downward(
@@ -218,15 +222,19 @@ fn surface_tex_info(
                 if data.buffer_transform() == smithay::utils::Transform::Normal {
                     if let Some(size) = data.buffer_size() {
                         let scale = data.buffer_scale();
-                        // Unknown formats keep their alpha: forcing it would hide real transparency
-                        let has_alpha = match data.buffer() {
-                            Some(buf) => smithay::backend::renderer::buffer_has_alpha(buf).unwrap_or(true),
-                            None => true,
+                        let (has_alpha, is_dmabuf) = match data.buffer() {
+                            Some(buf) => {
+                                let is_dmabuf = smithay::wayland::dmabuf::get_dmabuf(buf).is_ok();
+                                let has_alpha = smithay::backend::renderer::buffer_has_alpha(buf).unwrap_or(true);
+                                (has_alpha, is_dmabuf)
+                            }
+                            None => (true, false),
                         };
                         out.push((
                             smithay::backend::renderer::element::Id::from_wayland_resource(s),
                             (size.w * scale, size.h * scale).into(),
                             has_alpha,
+                            is_dmabuf,
                         ));
                     }
                 }
@@ -253,18 +261,23 @@ fn push_window_surfaces(
     let infos = if program.is_some() { surface_tex_info(surface) } else { Vec::new() };
     for elem in elems {
         let local = elem.geometry(Scale::from(1.0));
-        let info = infos.iter().find(|(id, _, _)| id == elem.id());
-        let tex = info.map(|(_, size, _)| *size);
-        let opaque = matches!(info, Some(&(_, _, false)));
+        let info = infos.iter().find(|(id, _, _, _)| id == elem.id());
+        let tex = info.map(|(_, size, _, _)| *size);
+        // replace_alpha: the external dmabuf sampler (GL_OES_EGL_image_external) always
+        // returns 0 in the alpha channel, regardless of whether the format claims to have
+        // one (ARGB) or not (XRGB).  Without replace_alpha the window is a black square.
+        // Force it for all dmabuf surfaces; SHM and single-pixel buffers are unaffected.
+        let replace_alpha = matches!(info, Some(&(_, _, false, _)))
+            || matches!(info, Some(&(_, _, _, true)));
         let origin = local.loc;
         let rescaled = RescaleRenderElement::from_element(elem, origin, scale);
         // Opaque dmabufs (Firefox/Zen XRGB) go through our shader even without rounded
         // corners: the stock external sampler keeps a zero alpha and the window is black.
         let element = match (program, tex, clip) {
             (Some(program), Some(tex), Some(clip)) => SceneElement::Rounded(
-                crate::rounded::RoundedSurfaceElement::new(rescaled, program.clone(), clip, tex, opaque),
+                crate::rounded::RoundedSurfaceElement::new(rescaled, program.clone(), clip, tex, replace_alpha),
             ),
-            (Some(program), Some(tex), None) if opaque => SceneElement::Rounded(
+            (Some(program), Some(tex), None) if replace_alpha => SceneElement::Rounded(
                 crate::rounded::RoundedSurfaceElement::new(
                     rescaled,
                     program.clone(),
