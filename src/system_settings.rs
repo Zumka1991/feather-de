@@ -4512,6 +4512,7 @@ impl crate::FeatherCompositor {
                 self.keybindings.reset();
                 self.system_settings.keybindings = self.keybindings.clone();
                 self.system_settings.shortcut_capture = None;
+                self.mark_builtin_windows_dirty();
                 self.save_settings();
             }
             Action::CapsLock => {

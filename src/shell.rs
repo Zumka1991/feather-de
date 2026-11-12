@@ -672,6 +672,7 @@ pub enum ShellClickAction {
     CloseFocused,
     FocusWindow(u64),
     ShowShortcuts,
+    ToggleShortcutsGuide,
     TogglePinFocused,
     ToggleDoNotDisturb,
     SetBrightness(f32),
@@ -766,6 +767,7 @@ pub(crate) fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
         TopMenu::Feather => vec![
             item("Об этом компьютере", "", builtin(BuiltinWindowKind::AboutFeather, "Об этом компьютере")),
             item("Мастер приветствия…", "", builtin(BuiltinWindowKind::FirstRun, "Добро пожаловать в Пёрышко")),
+            item("Горячие клавиши…", "⇧⌘/", Some(ShellClickAction::ShowShortcuts)),
             Separator,
             item("Системные настройки…", "", builtin(BuiltinWindowKind::SystemSettings, "Системные настройки")),
             item("Мониторинг системы", "⌃⌥⌦", Some(ShellClickAction::TaskManager)),
@@ -876,7 +878,7 @@ pub(crate) fn menu_rows(menu: TopMenu, ctx: &MenuContext) -> Vec<MenuRow> {
         TopMenu::Help => vec![
             item("Поиск по меню…", "⌘/", Some(ShellClickAction::OpenMenuHud)),
             Separator,
-            item("Горячие клавиши Пёрышка", "", Some(ShellClickAction::ShowShortcuts)),
+            item("Горячие клавиши Пёрышка", "⇧⌘/", Some(ShellClickAction::ShowShortcuts)),
             item("Об этом компьютере", "", builtin(BuiltinWindowKind::AboutFeather, "Об этом компьютере")),
         ],
     }

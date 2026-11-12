@@ -24,6 +24,7 @@ pub enum IconKind {
     ScreenRecord,
     ActivityMonitor,
     Settings,
+    Shortcuts,
     Launchpad,
     GenericApp,
     TrashEmpty,
@@ -51,6 +52,7 @@ pub enum BuiltinWindowKind {
     QuickNotes,
     SystemSettings,
     FirstRun,
+    ShortcutsGuide,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -372,6 +374,25 @@ impl AppRegistry {
                 BuiltinWindow(BuiltinWindowKind::SystemSettings),
                 true,
             ),
+            AppEntry::new(
+                "builtin.shortcuts",
+                "Горячие клавиши",
+                "Памятка по управлению системой, окнами и тайлингом (Super+Shift+/)",
+                IconKind::Shortcuts,
+                BuiltinWindow(BuiltinWindowKind::ShortcutsGuide),
+                false,
+            )
+            .with_aliases(&[
+                "shortcuts",
+                "hotkeys",
+                "keybindings",
+                "cheatsheet",
+                "клавиши",
+                "хоткеи",
+                "памятка",
+                "управление",
+            ])
+            .with_own_icon(),
             AppEntry::new(
                 "builtin.about",
                 "Об этом компьютере",
@@ -1522,6 +1543,56 @@ pub fn draw_app_icon(
             stroke_line(pixmap, x + size * 0.68, cy, x + size * 0.86, cy, w, c);
         }
         IconKind::Settings => draw_settings_icon(pixmap, x, y, size),
+        IconKind::Shortcuts => {
+            // Keyboard Shortcuts («Горячие клавиши»): indigo-cobalt Tahoe tile with tactile 3D keycaps
+            tile(pixmap, rgba(92, 114, 255, 255), rgba(40, 52, 202, 255));
+            if let Some(sheen) = crate::theme::squircle_path(x, y, size) {
+                crate::theme::fill_path_gradient(
+                    pixmap,
+                    &sheen,
+                    y,
+                    y + size * 0.52,
+                    rgba(255, 255, 255, 34),
+                    rgba(255, 255, 255, 0),
+                );
+            }
+            let bevel = rgba(16, 22, 96, 130);
+            let face = rgba(250, 252, 255, 248);
+            let ink = rgba(46, 58, 206, 255);
+            let r = size * 0.085;
+            // Top-left keycap ("⌘") + top-right keycap ("?")
+            let (kw, kh) = (size * 0.30, size * 0.29);
+            let ky = y + size * 0.20;
+            let kx0 = x + size * 0.17;
+            let kx1 = x + size * 0.53;
+            for (kx, glyph) in [(kx0, "⌘"), (kx1, "?")] {
+                fill_rounded_rect(pixmap, kx, ky + size * 0.03, kw, kh, r, bevel);
+                fill_rounded_rect(pixmap, kx, ky, kw, kh, r, face);
+                fonts.draw_text_centered(
+                    pixmap,
+                    glyph,
+                    kx + kw * 0.5,
+                    ky + size * 0.055,
+                    size * 0.175,
+                    ink,
+                    true,
+                );
+            }
+            // Bottom wide spacebar keycap
+            let (sw, sh) = (size * 0.66, size * 0.22);
+            let (sx, sy) = (x + size * 0.17, y + size * 0.58);
+            fill_rounded_rect(pixmap, sx, sy + size * 0.03, sw, sh, r, bevel);
+            fill_rounded_rect(pixmap, sx, sy, sw, sh, r, face);
+            fill_rounded_rect(
+                pixmap,
+                sx + sw * 0.30,
+                sy + sh * 0.56,
+                sw * 0.40,
+                (size * 0.026).max(1.2),
+                size * 0.013,
+                rgba(90, 108, 235, 165),
+            );
+        }
         IconKind::Launchpad => {
             tile(pixmap, rgba(245, 245, 247, 255), rgba(222, 222, 228, 255));
             let colors = [
@@ -1553,7 +1624,9 @@ pub fn draw_app_icon(
     }
 
     // Subtle rim, as on macOS icons
-    stroke_squircle(pixmap, x + 0.25, y + 0.25, size - 0.5, 0.5, rgba(0, 0, 0, 30));
+    let rim_w = (size * 0.008).max(0.5);
+    let rim_in = rim_w * 0.5;
+    stroke_squircle(pixmap, x + rim_in, y + rim_in, size - rim_w, rim_w, rgba(0, 0, 0, 32));
 }
 #[cfg(test)]
 mod trash_icon_preview {
@@ -1571,6 +1644,32 @@ mod trash_icon_preview {
                 draw_app_icon(&mut pm.as_mut(), &mut fonts, k, "Okno", 11.0 + i as f32 * 150.0, 21.0, 128.0);
             }
             pm.save_png(format!("{dir}/icons-{dark}.png")).unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn export_app_icons() {
+        let dir = std::env::var("FEATHER_ICON_EXPORT")
+            .unwrap_or_else(|_| "docs/images/icons".to_string());
+        fs::create_dir_all(&dir).unwrap();
+        let mut fonts = FontSystem::new();
+        let icons = [
+            ("files", IconKind::Finder),
+            ("terminal", IconKind::Terminal),
+            ("notes", IconKind::Notes),
+            ("preview", IconKind::Preview),
+            ("textedit", IconKind::TextEdit),
+            ("calc", IconKind::Calculator),
+            ("monitor", IconKind::ActivityMonitor),
+            ("store", IconKind::Store),
+            ("settings", IconKind::Settings),
+            ("shortcuts", IconKind::Shortcuts),
+        ];
+        for (name, kind) in icons {
+            let mut pm = tiny_skia::Pixmap::new(256, 256).unwrap();
+            draw_app_icon(&mut pm.as_mut(), &mut fonts, kind, "", 2.0, 2.0, 252.0);
+            pm.save_png(format!("{dir}/{name}.png")).unwrap();
         }
     }
 }

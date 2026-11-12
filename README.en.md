@@ -43,7 +43,7 @@ installation image for a separate operating system.
 | `feather-textedit` | Tabbed text editor with syntax highlighting and find/replace |
 | `feather-calc` | Basic, scientific, and programmer calculator |
 | `feather-monitor` | Activity Monitor (`Ctrl+Alt+Del`): processes, End Task, CPU, memory, disk and network graphs |
-| `feather-store` | App Store: AppStream software catalog with install/remove via PackageKit |
+| `feather-store` | App Store: unified system AppStream (`PackageKit`) and **Flathub (`Flatpak`)** catalog with one-click setup and updates |
 | `featherctl` / `feather-api` | CLI tool and D-Bus API (`org.feather.Shell1`) for controlling windows, workspaces, audio, and screenshots |
 | `feather-ui` | Shared drawing, text, scaling, localization, and UI primitives |
 
@@ -583,6 +583,7 @@ instance in the outer session; account for this during testing.
 | `Super` *(short tap)* | Radial App Ring (`Super, Super` bounces back to previous window) |
 | `Super+Space` | Spotlight search (apps, windows, files, settings, live math) |
 | `Super+/` | **Menu HUD** — instant search across active window menu commands |
+| `Super+Shift+/` / `Super+F1` | **Feather Keyboard Shortcuts** — built-in interactive cheat sheet window with live search |
 | `Super+A` | Launchpad application grid |
 | `Super+Enter` / `Super+T` | Terminal |
 | `Super+E` | Files |

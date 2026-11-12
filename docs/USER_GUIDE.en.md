@@ -301,7 +301,7 @@ Feather ships **eight native Wayland applications written in Rust**, sharing a u
 7. **📈 Activity Monitor (`feather-monitor`, `Ctrl + Alt + Del`)**
    - Opens with **`Ctrl + Alt + Del`**: inspect CPU/memory per process, search, **End Task** (`Delete`, or `Shift + Delete` to force-kill immediately), and watch live 60-second CPU, memory, disk, and network charts.
 8. **🛍️ App Store (`feather-store`)**
-   - Browse, search, install, and remove Linux software (AppStream catalog via `PackageKit`).
+   - Unified catalog combining system packages (`PackageKit`) and **Flathub (`Flatpak`)**: one-click Flathub setup right from the Home or Search view, **`System Package / Flathub`** source selector on app pages, and unified system + Flatpak updates.
 
 ---
 
@@ -365,12 +365,17 @@ See [docs/API.md](API.md) for the full `org.feather.Shell1` D-Bus specification.
 
 ### Complete Keyboard Shortcut Cheat Sheet
 
+> **Built-in Cheat Sheet inside the OS:** press **`Super + Shift + /`** (`Super + ?`) or **`Super + F1`** (or open **`🪶 Feather → Keyboard Shortcuts…`** / **`Help → Feather Keyboard Shortcuts`**) at any time to open the interactive cheat sheet window with category tabs and instant search.
+
+![Built-in Feather Keyboard Shortcuts Cheat Sheet](images/guide/en/15-shortcuts-guide.png)
+
 #### Shell, Search & Drawers
 | Shortcut | Action |
 |---|---|
 | `Super` *(single short tap)* | Open radial **App Ring** (`Super, Super` switches back to previous window) |
 | `Super + Space` | **Spotlight** search (apps, windows, files, settings, live calculator) |
 | `Super + /` | **Menu HUD** — instant search across active window menu commands |
+| `Super + Shift + /` / `Super + F1` | **Keyboard Shortcuts Guide** — interactive cheat sheet window with live search |
 | `Super + A` | **Launchpad** application grid |
 | `Super + N` | **Control Center** top drawer (Wi-Fi, Bluetooth, sound, brightness) |
 | `Super + S` / `Super + Shift + S` | Toggle **Scratchpad** drawer / move focused window to or from Scratchpad |

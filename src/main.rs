@@ -50,6 +50,7 @@ mod file_manager1;
 mod polkit_agent;
 mod auth_dialog;
 mod first_run;
+mod shortcuts_guide;
 mod session_lock;
 mod lock_auth;
 mod power;
@@ -384,6 +385,7 @@ pub struct FeatherCompositor {
     pub wallpaper_cycle_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     pub system_settings: crate::system_settings::Panel,
     pub first_run: crate::first_run::Wizard,
+    pub shortcuts_guide: crate::shortcuts_guide::ShortcutsGuide,
     pub first_run_completed: bool,
     pub system_preferences: crate::system_preferences::State,
     pub system_worker: Option<crate::system_preferences::Worker>,
@@ -571,6 +573,10 @@ impl FeatherCompositor {
             let x=r.x+(r.w/2-260+offset).max(32);
             let y=r.y+(TOP_BAR_HEIGHT+54+offset).max(TOP_BAR_HEIGHT+12);
             let mut win = ManagedWindow::new_builtin(id, kind, x, y);
+            if kind == BuiltinWindowKind::ShortcutsGuide {
+                win.x = r.x + ((r.w - win.width) / 2).max(24);
+                win.y = r.y + ((r.h - win.total_height()) / 2).max(TOP_BAR_HEIGHT + 12);
+            }
             win.space = self.spaces.current;
             self.windows.push(win);
         }
@@ -1663,10 +1669,24 @@ impl FeatherCompositor {
                     }
                 }
             }
-            ShellClickAction::ShowShortcuts => self.shell.notify(
-                "Горячие клавиши",
-                "Super+Space поиск • Super+A приложения • Alt+Tab • Alt+` окна программы • Ctrl+Alt+←/→ столы • Ctrl+Alt+↑ Mission Control • Super+Q/W/H/M/F",
-            ),
+            ShellClickAction::ShowShortcuts => {
+                self.open_or_focus_builtin(BuiltinWindowKind::ShortcutsGuide);
+            }
+            ShellClickAction::ToggleShortcutsGuide => {
+                let top_is_guide = self
+                    .windows
+                    .iter()
+                    .rev()
+                    .find(|w| w.is_visible() && !w.pip_ghost)
+                    .is_some_and(|w| {
+                        matches!(w.backend, WindowBackend::Builtin(BuiltinWindowKind::ShortcutsGuide))
+                    });
+                if top_is_guide {
+                    self.close_top_window();
+                } else {
+                    self.open_or_focus_builtin(BuiltinWindowKind::ShortcutsGuide);
+                }
+            }
             ShellClickAction::FirstRun(action) => {
                 use crate::first_run::Action as FA;
                 match action {
@@ -1734,6 +1754,9 @@ impl FeatherCompositor {
                         } else {
                             self.apply_system_setting(crate::system_settings::Action::AddSource(id.to_string()));
                         }
+                    }
+                    FA::OpenShortcuts => {
+                        self.open_or_focus_builtin(BuiltinWindowKind::ShortcutsGuide);
                     }
                 }
             }
@@ -2566,6 +2589,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         wallpaper_cycle_timer: None,
         system_settings: crate::system_settings::Panel {keybindings:saved.keybindings.clone(),..Default::default()},
         first_run: Default::default(),
+        shortcuts_guide: Default::default(),
         first_run_completed: saved.first_run_completed,
         system_preferences: crate::system_preferences::State{browser:saved.default_browser.clone(),terminal:saved.default_terminal.clone().unwrap_or_else(||"feather-terminal.desktop".into()),file_manager:saved.default_file_manager.clone().unwrap_or_else(||"feather-files.desktop".into()),..Default::default()},
         system_worker: None,
@@ -3150,6 +3174,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             state.mark_settings_dirty();
         }
         Ok("about") => state.open_or_focus_builtin(BuiltinWindowKind::AboutFeather),
+        Ok("shortcuts" | "shortcuts-guide") => {
+            state.open_or_focus_builtin(BuiltinWindowKind::ShortcutsGuide);
+        }
         Ok("first-run" | "welcome" | "first-run-0") => {
             state.first_run.step = 0;
             state.open_or_focus_builtin(BuiltinWindowKind::FirstRun);

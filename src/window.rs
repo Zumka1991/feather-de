@@ -353,6 +353,7 @@ pub struct ManagedWindow {
 pub struct BuiltinContext<'a> {
     pub settings: &'a crate::system_settings::Panel,
     pub first_run: &'a crate::first_run::Wizard,
+    pub shortcuts_guide: &'a crate::shortcuts_guide::ShortcutsGuide,
     pub settings_context: crate::system_settings::Context<'a>,
     pub notes_text: &'a str,
     pub rss_mb: f32,
@@ -400,9 +401,11 @@ impl ManagedWindow {
         self.maximized = !job.shadow;
         let context = job.context();
         let first_run = crate::first_run::Wizard::default();
+        let shortcuts_guide = crate::shortcuts_guide::ShortcutsGuide::default();
         let ctx = BuiltinContext {
             settings: &job.panel,
             first_run: &first_run,
+            shortcuts_guide: &shortcuts_guide,
             settings_context: context,
             notes_text: "",
             rss_mb: 0.0,
@@ -541,6 +544,9 @@ impl ManagedWindow {
             }
             BuiltinWindowKind::FirstRun => {
                 ("Добро пожаловать в Пёрышко", "builtin.welcome", 640, 496)
+            }
+            BuiltinWindowKind::ShortcutsGuide => {
+                ("Горячие клавиши Пёрышка", "builtin.shortcuts", 820, 560)
             }
         };
 
@@ -1400,6 +1406,7 @@ impl ManagedWindow {
                             tb,
                             win_w,
                             win_h - tb,
+                            focused,
                             ctx,
                         );
                     }
@@ -1429,6 +1436,7 @@ impl ManagedWindow {
         cy: f32,
         cw: f32,
         ch: f32,
+        focused: bool,
         ctx: &BuiltinContext<'_>,
     ) {
         let p = palette();
@@ -1630,6 +1638,16 @@ impl ManagedWindow {
                 ctx.first_run
                     .paint(pm, fonts, (cx, cy, cw, ch), &ctx.settings_context);
             }
+            BuiltinWindowKind::ShortcutsGuide => {
+                ctx.shortcuts_guide.paint(
+                    pm,
+                    fonts,
+                    (cx, cy, cw, ch),
+                    focused,
+                    &ctx.settings.keybindings,
+                    ctx.input_shortcut,
+                );
+            }
         }
     }
 }
@@ -1763,11 +1781,13 @@ mod settings_tests {
                 sticky_keys: false,
             };
             let first_run = crate::first_run::Wizard::default();
+            let shortcuts_guide = crate::shortcuts_guide::ShortcutsGuide::default();
             let mut direct = ManagedWindow::new_builtin(1, BuiltinWindowKind::SystemSettings, 0, 0);
             direct.activated = true;
             let ctx = BuiltinContext {
                 settings: &panel,
                 first_run: &first_run,
+                shortcuts_guide: &shortcuts_guide,
                 settings_context: context,
                 notes_text: "",
                 rss_mb: 0.0,
@@ -1877,6 +1897,7 @@ mod settings_tests {
                         let ctx = BuiltinContext {
                             settings: &panel,
                             first_run: &first_run,
+                            shortcuts_guide: &shortcuts_guide,
                             settings_context: context,
                             notes_text: "",
                             rss_mb: 24.6,

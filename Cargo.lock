@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "feather-de"
-version = "0.20.2"
+version = "0.20.3"
 dependencies = [
  "async-channel",
  "bitflags 2.13.2",

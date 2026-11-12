@@ -2,7 +2,8 @@
 //! page per program. Painting records the clickable zones it drew, so hit testing always
 //! matches what is on screen.
 
-use crate::catalog::{self, AppInfo, Catalog};
+use crate::catalog::{self, AppInfo, Catalog, InstalledSnapshot, Source};
+use crate::flatpak::{self, ConnectEvent, InstalledScope};
 use crate::packagekit::{self, Event, Op};
 use feather_ui::appearance::colors;
 use feather_ui::draw::*;
@@ -83,6 +84,21 @@ const GAMES: [&str; 8] = [
     "frozen-bubble.desktop",
 ];
 
+const FLATHUB_PICKS: [&str; 12] = [
+    "com.discordapp.Discord",
+    "md.obsidian.Obsidian",
+    "com.spotify.Client",
+    "org.signal.Signal",
+    "com.bitwarden.desktop",
+    "com.github.tchx84.Flatseal",
+    "net.nokyan.Resources",
+    "com.usebottles.bottles",
+    "net.lutris.Lutris",
+    "com.heroicgameslauncher.hgl",
+    "org.prismlauncher.PrismLauncher",
+    "com.valvesoftware.Steam",
+];
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Close,
@@ -92,8 +108,13 @@ pub enum Effect {
     Resize(u32),
     /// Start a PackageKit operation for a package; `confirmed`: what else it removes is agreed
     Run(Op, String, bool),
+    /// Start a Flatpak install/remove operation
+    RunFlatpak(Op, String, InstalledScope),
     Launch(String),
+    LaunchFlatpak(String),
     OpenUrl(String),
+    /// One-click setup: install flatpak if needed, add Flathub remote, download AppStream catalog
+    ConnectFlathub,
     /// List available updates; true: refresh the package lists first
     CheckUpdates(bool),
     RunUpdates(Vec<String>),
@@ -153,6 +174,8 @@ enum Hit {
     Content,
     UpdateAll,
     CheckUpdates,
+    ConnectFlathub,
+    SelectSource(Source),
 }
 
 /// The «Обновления» page
@@ -171,6 +194,7 @@ enum Updates {
 struct Task {
     app: usize,
     op: Op,
+    source: Source,
     fraction: Option<f32>,
     message: String,
     /// Packages the user agreed to remove along with it
@@ -191,6 +215,7 @@ pub struct App {
     /// The page before a search, to return to when it is cleared
     before_search: Page,
     detail: Option<usize>,
+    detail_source: Option<(usize, Source)>,
     /// Program to open as soon as the catalog arrives (command line)
     pending_detail: Option<String>,
     search: TextInput,
@@ -204,6 +229,7 @@ pub struct App {
     requested: HashSet<usize>,
     icon_queue: Vec<(usize, PathBuf)>,
     task: Option<Task>,
+    connecting_flathub: Option<(Option<f32>, String)>,
     updates: Updates,
     /// The mirrors were asked in this run
     updates_refreshed: bool,
@@ -232,6 +258,7 @@ impl App {
             page: Page::Home,
             before_search: Page::Home,
             detail: None,
+            detail_source: None,
             pending_detail: None,
             search: TextInput::default().with_limit(80),
             search_focus: false,
@@ -244,6 +271,7 @@ impl App {
             requested: HashSet::new(),
             icon_queue: Vec::new(),
             task: None,
+            connecting_flathub: None,
             updates: Updates::Unknown,
             updates_refreshed: false,
             updating: None,
@@ -263,23 +291,41 @@ impl App {
     }
 
     pub fn loaded(&mut self, catalog: Catalog) {
-        self.by_id = catalog.apps.iter().enumerate().map(|(i, a)| (a.id.clone(), i)).collect();
-        self.catalog = Some(catalog);
-        if let Some(id) = self.pending_detail.take() {
-            let found = self.by_id.get(&id).or_else(|| self.by_id.get(&format!("{id}.desktop"))).copied();
-            if let Some(i) = found {
-                self.detail = Some(i);
+        let prev_detail_id = self.detail.and_then(|i| self.app(i)).map(|a| a.id.clone());
+        self.icons.clear();
+        self.requested.clear();
+        self.icon_queue.clear();
+        let mut by_id = HashMap::with_capacity(catalog.apps.len() * 2);
+        for (i, a) in catalog.apps.iter().enumerate() {
+            by_id.insert(catalog::canonical_id(&a.id), i);
+            if !a.flatpak_id.is_empty() {
+                by_id.insert(a.flatpak_id.clone(), i);
+                by_id.insert(catalog::canonical_id(&a.flatpak_id), i);
             }
+            by_id.insert(a.id.clone(), i);
+        }
+        self.by_id = by_id;
+        self.catalog = Some(catalog);
+        let reopen = self.pending_detail.take().or(prev_detail_id);
+        self.detail = reopen.and_then(|id| {
+            self.by_id
+                .get(&id)
+                .or_else(|| self.by_id.get(&catalog::canonical_id(&id)))
+                .copied()
+        });
+        if let Some(i) = self.detail {
+            self.detail_source = Some((i, self.default_source(i)));
         }
         self.refresh_results();
         self.dirty = true;
     }
 
-    /// dpkg's list after the window was away: something may have been installed elsewhere
-    pub fn installed_changed(&mut self, installed: HashSet<String>) {
+    /// dpkg & flatpak lists after the window was away: something may have been installed elsewhere
+    pub fn installed_changed(&mut self, snap: InstalledSnapshot) {
         if let Some(c) = &mut self.catalog {
-            if c.installed != installed {
-                c.installed = installed;
+            if c.installed != snap.packages || c.installed_flatpaks != snap.flatpaks {
+                c.installed = snap.packages;
+                c.installed_flatpaks = snap.flatpaks;
                 if self.page == Page::Installed {
                     self.refresh_results();
                 }
@@ -288,8 +334,29 @@ impl App {
         }
     }
 
+    pub fn flathub_event(&mut self, event: ConnectEvent) {
+        self.dirty = true;
+        match event {
+            ConnectEvent::Progress(fraction, msg) => {
+                self.connecting_flathub = Some((fraction, tr(&msg).into_owned()));
+            }
+            ConnectEvent::Done(catalog) => {
+                self.connecting_flathub = None;
+                self.loaded(catalog);
+                self.notice = Some((tr("Каталог Flathub подключён").into_owned(), false));
+            }
+            ConnectEvent::Cancelled => {
+                self.connecting_flathub = None;
+            }
+            ConnectEvent::Failed(err) => {
+                self.connecting_flathub = None;
+                self.notice = Some((format!("{}: {}", tr("Не удалось подключить Flathub"), tr(&err)), true));
+            }
+        }
+    }
+
     pub fn busy(&self) -> bool {
-        self.task.is_some() || self.updating.is_some()
+        self.task.is_some() || self.updating.is_some() || self.connecting_flathub.is_some()
     }
 
     pub fn icons_loaded(&mut self, icons: Vec<(usize, Option<Pixmap>)>) {
@@ -308,27 +375,65 @@ impl App {
         self.catalog.as_ref().and_then(|c| c.apps.get(i))
     }
 
-    fn installed(&self, i: usize) -> bool {
-        match (&self.catalog, self.app(i)) {
-            (Some(c), Some(a)) => c.installed.contains(&a.package),
-            _ => false,
+    fn installed_in(&self, i: usize, source: Source) -> bool {
+        let (Some(c), Some(a)) = (&self.catalog, self.app(i)) else { return false };
+        match source {
+            Source::System => a.has_system() && c.installed.contains(&a.package),
+            Source::Flathub => a.has_flathub() && c.installed_flatpaks.contains_key(&a.flatpak_id),
         }
     }
 
+    fn installed(&self, i: usize) -> bool {
+        self.installed_in(i, Source::System) || self.installed_in(i, Source::Flathub)
+    }
+
+    fn default_source(&self, i: usize) -> Source {
+        if self.installed_in(i, Source::Flathub) && !self.installed_in(i, Source::System) {
+            Source::Flathub
+        } else if self.app(i).is_some_and(AppInfo::has_system) {
+            Source::System
+        } else {
+            Source::Flathub
+        }
+    }
+
+    fn active_source(&self, i: usize) -> Source {
+        self.detail_source
+            .filter(|(idx, _)| *idx == i)
+            .map(|(_, s)| s)
+            .unwrap_or_else(|| self.default_source(i))
+    }
+
     fn picks(&self, ids: &[&str]) -> Vec<usize> {
-        ids.iter().filter_map(|id| self.by_id.get(*id).copied()).collect()
+        let mut seen = HashSet::new();
+        ids.iter()
+            .filter_map(|id| {
+                self.by_id
+                    .get(*id)
+                    .or_else(|| self.by_id.get(&catalog::canonical_id(id)))
+                    .copied()
+            })
+            .filter(|&i| seen.insert(i))
+            .collect()
     }
 
     fn refresh_results(&mut self) {
         let Some(catalog) = &self.catalog else { return };
-        let picked: HashSet<usize> = self.picks(&EDITORS_CHOICE).into_iter().chain(self.picks(&GAMES)).collect();
+        let picked: HashSet<usize> = self
+            .picks(&EDITORS_CHOICE)
+            .into_iter()
+            .chain(self.picks(&FLATHUB_PICKS))
+            .chain(self.picks(&GAMES))
+            .collect();
         self.results = match self.page {
             Page::Home | Page::Updates => Vec::new(),
             Page::Search => search(&catalog.apps, self.search.text()),
-            Page::Installed => (0..catalog.apps.len()).filter(|i| catalog.installed.contains(&catalog.apps[*i].package)).collect(),
+            Page::Installed => (0..catalog.apps.len()).filter(|&i| self.installed(i)).collect(),
             Page::Category(c) => {
                 let wanted = CATEGORIES[c].1;
-                let mut list: Vec<usize> = (0..catalog.apps.len()).filter(|i| catalog.apps[*i].categories.iter().any(|k| wanted.contains(&k.as_str()))).collect();
+                let mut list: Vec<usize> = (0..catalog.apps.len())
+                    .filter(|i| catalog.apps[*i].categories.iter().any(|k| wanted.contains(&k.as_str())))
+                    .collect();
                 // Picks first, the rest stay alphabetical
                 list.sort_by_key(|i| !picked.contains(i));
                 list
@@ -351,6 +456,7 @@ impl App {
     fn open_detail(&mut self, i: usize) {
         self.list_scroll = self.scroll;
         self.detail = Some(i);
+        self.detail_source = Some((i, self.default_source(i)));
         self.confirm = None;
         self.scroll = 0.0;
         self.dirty = true;
@@ -358,6 +464,7 @@ impl App {
 
     fn back(&mut self) {
         if self.detail.take().is_some() {
+            self.detail_source = None;
             self.confirm = None;
             self.scroll = self.list_scroll;
             self.dirty = true;
@@ -451,21 +558,72 @@ impl App {
         }
     }
 
-    fn start(&mut self, op: Op, app: usize, confirmed: Vec<String>) -> Vec<Effect> {
-        if self.task.is_some() || self.updating.is_some() {
+    fn start(&mut self, op: Op, app: usize, source: Source, confirmed: Vec<String>) -> Vec<Effect> {
+        if self.busy() {
             return Vec::new();
         }
-        let Some(package) = self.app(app).map(|a| a.package.clone()) else { return Vec::new() };
-        let confirmed_all = !confirmed.is_empty();
-        self.notice = None;
-        self.confirm = None;
-        self.task = Some(Task { app, op, fraction: None, message: tr("Подготовка…").into_owned(), also: confirmed });
-        self.dirty = true;
-        vec![Effect::Run(op, package, confirmed_all)]
+        let Some(info) = self.app(app).cloned() else { return Vec::new() };
+        match source {
+            Source::System => {
+                if info.package.is_empty() {
+                    return Vec::new();
+                }
+                let confirmed_all = !confirmed.is_empty();
+                self.notice = None;
+                self.confirm = None;
+                self.task = Some(Task {
+                    app,
+                    op,
+                    source,
+                    fraction: None,
+                    message: tr("Подготовка…").into_owned(),
+                    also: confirmed,
+                });
+                self.dirty = true;
+                vec![Effect::Run(op, info.package, confirmed_all)]
+            }
+            Source::Flathub => {
+                if info.flatpak_id.is_empty() {
+                    return Vec::new();
+                }
+                let scope = self
+                    .catalog
+                    .as_ref()
+                    .and_then(|c| c.installed_flatpaks.get(&info.flatpak_id).copied())
+                    .unwrap_or_default();
+                self.notice = None;
+                self.confirm = None;
+                self.task = Some(Task {
+                    app,
+                    op,
+                    source,
+                    fraction: None,
+                    message: tr("Подготовка…").into_owned(),
+                    also: Vec::new(),
+                });
+                self.dirty = true;
+                vec![Effect::RunFlatpak(op, info.flatpak_id, scope)]
+            }
+        }
     }
 
-    /// "Открыть": the program's .desktop command; without one its page
-    fn open_program(&mut self, i: usize) -> Vec<Effect> {
+    fn connect_flathub(&mut self) -> Vec<Effect> {
+        if self.busy() {
+            return Vec::new();
+        }
+        self.notice = None;
+        self.connecting_flathub = Some((None, tr("Подготовка…").into_owned()));
+        self.dirty = true;
+        vec![Effect::ConnectFlathub]
+    }
+
+    /// "Открыть": flatpak run for Flathub installs, or the program's .desktop command
+    fn open_program(&mut self, i: usize, source: Source) -> Vec<Effect> {
+        if source == Source::Flathub {
+            if let Some(id) = self.app(i).map(|a| a.flatpak_id.clone()).filter(|s| !s.is_empty()) {
+                return vec![Effect::LaunchFlatpak(id)];
+            }
+        }
         match self.app(i).and_then(catalog::launcher) {
             Some(command) => vec![Effect::Launch(command)],
             None => {
@@ -497,15 +655,30 @@ impl App {
             Event::Done => {
                 let task = self.task.take().unwrap_or_else(|| unreachable!());
                 if let Some(c) = &mut self.catalog {
-                    let package = c.apps[task.app].package.clone();
-                    match task.op {
-                        Op::Install => {
-                            c.installed.insert(package);
+                    match task.source {
+                        Source::System => {
+                            let package = c.apps[task.app].package.clone();
+                            match task.op {
+                                Op::Install => {
+                                    c.installed.insert(package);
+                                }
+                                Op::Remove => {
+                                    c.installed.remove(&package);
+                                    for p in &task.also {
+                                        c.installed.remove(p);
+                                    }
+                                }
+                            }
                         }
-                        Op::Remove => {
-                            c.installed.remove(&package);
-                            for p in &task.also {
-                                c.installed.remove(p);
+                        Source::Flathub => {
+                            let app_id = c.apps[task.app].flatpak_id.clone();
+                            match task.op {
+                                Op::Install => {
+                                    c.installed_flatpaks.insert(app_id, InstalledScope { user: true, system: false });
+                                }
+                                Op::Remove => {
+                                    c.installed_flatpaks.remove(&app_id);
+                                }
                             }
                         }
                     }
@@ -664,6 +837,15 @@ impl App {
             }
             Hit::UpdateAll => self.update_all(),
             Hit::CheckUpdates => self.check_updates(true),
+            Hit::ConnectFlathub => self.connect_flathub(),
+            Hit::SelectSource(src) => {
+                if let Some(i) = self.detail {
+                    self.detail_source = Some((i, src));
+                    self.confirm = None;
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
             Hit::Back => {
                 self.back();
                 Vec::new()
@@ -672,20 +854,32 @@ impl App {
                 self.open_detail(i);
                 Vec::new()
             }
-            Hit::CardButton(_) | Hit::Primary => {
-                let i = if let Hit::CardButton(i) = hit { i } else { self.detail.unwrap_or(usize::MAX) };
-                if self.installed(i) {
-                    self.open_program(i)
+            Hit::CardButton(i) => {
+                let source = self.default_source(i);
+                if self.installed_in(i, source) {
+                    self.open_program(i, source)
                 } else {
-                    self.start(Op::Install, i, Vec::new())
+                    self.start(Op::Install, i, source, Vec::new())
+                }
+            }
+            Hit::Primary => {
+                let Some(i) = self.detail else { return Vec::new() };
+                let source = self.active_source(i);
+                if self.installed_in(i, source) {
+                    self.open_program(i, source)
+                } else {
+                    self.start(Op::Install, i, source, Vec::new())
                 }
             }
             Hit::Remove => match self.detail {
-                Some(i) => self.start(Op::Remove, i, Vec::new()),
+                Some(i) => {
+                    let source = self.active_source(i);
+                    self.start(Op::Remove, i, source, Vec::new())
+                }
                 None => Vec::new(),
             },
             Hit::Confirm => match self.confirm.take() {
-                Some((i, others)) => self.start(Op::Remove, i, others),
+                Some((i, others)) => self.start(Op::Remove, i, Source::System, others),
                 None => Vec::new(),
             },
             Hit::CancelConfirm => {
@@ -837,17 +1031,50 @@ impl App {
             self.centered_message(pm, "Загрузка каталога…", None);
             return;
         };
+        let flathub_ready = catalog.flathub == flatpak::Status::Ready;
+        let show_flathub_onboarding = !flathub_ready || self.connecting_flathub.is_some();
         if catalog.apps.is_empty() {
-            self.content_h = 0.0;
-            self.centered_message(pm, "Каталог программ пуст", Some("Он появится после обновления списков программ: sudo apt update (нужен пакет appstream)"));
+            if show_flathub_onboarding {
+                y = self.paint_flathub_card(pm, x0, y, inner_w) + 24.0;
+                self.fonts.draw_text(
+                    pm,
+                    "Он появится после обновления списков программ: sudo apt update (нужен пакет appstream)",
+                    x0,
+                    y,
+                    13.0,
+                    colors::secondary(),
+                    false,
+                );
+                self.content_h = y + 40.0 + self.scroll + PAD;
+            } else {
+                self.content_h = 0.0;
+                self.centered_message(
+                    pm,
+                    "Каталог программ пуст",
+                    Some("Он появится после обновления списков программ: sudo apt update (нужен пакет appstream)"),
+                );
+            }
             return;
         }
         let count = catalog.apps.len();
         if self.page == Page::Home {
-            self.paint_banner(pm, x0, y, inner_w, count);
-            y += BANNER_H + 30.0;
-            for (heading, ids) in [("Выбор редакции", &EDITORS_CHOICE[..]), ("Игры", &GAMES[..])] {
-                let list = self.picks(ids);
+            self.paint_banner(pm, x0, y, inner_w, count, flathub_ready);
+            y += BANNER_H + 22.0;
+            if show_flathub_onboarding {
+                y = self.paint_flathub_card(pm, x0, y, inner_w) + 26.0;
+            } else {
+                y += 8.0;
+            }
+            let flathub_list: Vec<usize> = self
+                .picks(&FLATHUB_PICKS)
+                .into_iter()
+                .filter(|&i| self.app(i).is_some_and(AppInfo::has_flathub))
+                .collect();
+            for (heading, list) in [
+                ("Выбор редакции", self.picks(&EDITORS_CHOICE)),
+                ("Популярное во Flathub", flathub_list),
+                ("Игры", self.picks(&GAMES)),
+            ] {
                 if list.is_empty() {
                     continue;
                 }
@@ -862,10 +1089,17 @@ impl App {
                 _ => "В этом разделе пока нет программ",
             };
             self.fonts.draw_text(pm, text, x0, y + 8.0, 14.0, colors::secondary(), false);
-            y += 40.0;
+            y += 42.0;
+            if self.page == Page::Search && show_flathub_onboarding {
+                y = self.paint_flathub_card(pm, x0, y, inner_w) + 16.0;
+            }
         } else {
             let list = self.results.clone();
             y = self.paint_grid(pm, &list, x0, y, inner_w);
+            if self.page == Page::Search && show_flathub_onboarding {
+                y += 22.0;
+                y = self.paint_flathub_card(pm, x0, y, inner_w);
+            }
         }
         self.content_h = y + self.scroll + PAD;
     }
@@ -909,7 +1143,12 @@ impl App {
                     self.fonts.draw_raw(pm, &version, x + w - version_w, y + 4.0, 12.0, colors::tertiary(), false);
                     let title = self.fonts.ellipsize_raw(&title, w - version_w - 16.0, 13.0, true);
                     self.fonts.draw_raw(pm, &title, x, y + 2.0, 13.0, colors::text(), true);
-                    let summary = self.fonts.ellipsize_raw(&update.summary, w, 12.0, false);
+                    let summary_raw = if update.source == Source::Flathub {
+                        tr("Flathub (Flatpak)").into_owned()
+                    } else {
+                        update.summary.clone()
+                    };
+                    let summary = self.fonts.ellipsize_raw(&summary_raw, w, 12.0, false);
                     self.fonts.draw_raw(pm, &summary, x, y + 22.0, 12.0, colors::secondary(), false);
                     y += 48.0;
                 }
@@ -933,7 +1172,7 @@ impl App {
         }
     }
 
-    fn paint_banner(&mut self, pm: &mut PixmapMut, x: f32, y: f32, w: f32, count: usize) {
+    fn paint_banner(&mut self, pm: &mut PixmapMut, x: f32, y: f32, w: f32, count: usize, flathub_ready: bool) {
         fill_rrect_gradient(pm, x, y, w, BANNER_H, 18.0, rgba(64, 140, 255, 255), rgba(120, 72, 230, 255));
         // Soft light circles, as on the app icon
         fill_circle(pm, x + w - 90.0, y + 30.0, 70.0, rgba(255, 255, 255, 26));
@@ -946,8 +1185,61 @@ impl App {
             self.fonts.draw_raw(pm, &line, x + 28.0, ty, 14.0, rgba(255, 255, 255, 230), false);
             ty += 20.0;
         }
-        let label = format!("{} {count}", tr("Программ в каталоге:"));
+        let label = if flathub_ready {
+            format!("{} {count} · {}", tr("Программ в каталоге:"), tr("системные пакеты и Flathub"))
+        } else {
+            format!("{} {count}", tr("Программ в каталоге:"))
+        };
         self.fonts.draw_raw(pm, &label, x + 28.0, y + BANNER_H - 30.0, 12.0, rgba(255, 255, 255, 190), false);
+    }
+
+    /// One-click Flathub onboarding card shown when Flathub is not connected yet; returns y below it.
+    fn paint_flathub_card(&mut self, pm: &mut PixmapMut, x: f32, y: f32, w: f32) -> f32 {
+        let h = 86.0;
+        let dark = feather_ui::scale::appearance() == feather_ui::scale::Appearance::Dark;
+        let bg = if dark { rgba(56, 128, 235, 24) } else { rgba(32, 110, 232, 13) };
+        let border = if dark { rgba(96, 165, 250, 56) } else { rgba(32, 110, 232, 38) };
+        fill_rrect(pm, x, y, w, h, 16.0, bg);
+        stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 15.5, 1.0, border);
+
+        // Procedural Flathub geometric emblem (squircle + circle + square + triangle)
+        let (ix, iy, isz) = (x + 18.0, y + (h - 50.0) / 2.0, 50.0);
+        fill_rrect_gradient(pm, ix, iy, isz, isz, 13.0, rgba(34, 186, 214, 255), rgba(88, 86, 214, 255));
+        fill_circle(pm, ix + 17.5, iy + 18.0, 6.2, rgba(255, 255, 255, 240));
+        fill_rrect(pm, ix + 27.0, iy + 12.0, 11.5, 11.5, 3.0, rgba(255, 255, 255, 215));
+        polyline(
+            pm,
+            &[(ix + 25.0, iy + 27.5), (ix + 33.5, iy + 39.5), (ix + 16.5, iy + 39.5), (ix + 25.0, iy + 27.5)],
+            2.2,
+            rgba(255, 255, 255, 240),
+        );
+
+        let tx = ix + isz + 16.0;
+        if let Some((fraction, msg)) = self.connecting_flathub.clone() {
+            let tw = (w - (tx - x) - 24.0).max(80.0);
+            self.fonts.draw_text(pm, "Каталог Flathub", tx, y + 17.0, 14.5, colors::text(), true);
+            let status = self.fonts.ellipsize_raw(&msg, tw, 12.5, false);
+            self.fonts.draw_raw(pm, &status, tx, y + 39.0, 12.5, colors::secondary(), false);
+            let bar_y = y + 62.0;
+            fill_rrect(pm, tx, bar_y, tw, 6.0, 3.0, colors::control());
+            fill_rrect(pm, tx, bar_y, (tw * fraction.unwrap_or(0.08)).max(10.0), 6.0, 3.0, colors::accent());
+        } else {
+            let btn_label = tr("Подключить Flathub").into_owned();
+            let bw = (self.fonts.measure_raw(&btn_label, 13.0, true) + 34.0).max(156.0);
+            let bx = x + w - 18.0 - bw;
+            let by = y + (h - 32.0) / 2.0;
+            self.paint_button(pm, Hit::ConnectFlathub, &btn_label, bx, by, bw, true, self.busy());
+
+            let tw = (bx - 16.0 - tx).max(80.0);
+            self.fonts.draw_text(pm, "Каталог Flathub", tx, y + 17.0, 14.5, colors::text(), true);
+            let desc = tr("Тысячи дополнительных программ в свежих версиях: браузеры, мессенджеры, редакторы и игры.");
+            let mut ly = y + 39.0;
+            for line in wrap(&mut self.fonts, &desc, tw, 12.5, 2) {
+                self.fonts.draw_raw(pm, &line, tx, ly, 12.5, colors::secondary(), false);
+                ly += 17.0;
+            }
+        }
+        y + h
     }
 
     /// Cards in as many columns as fit; returns the y below them
@@ -988,13 +1280,31 @@ impl App {
 
         let tx = x + 14.0 + CARD_ICON + 14.0;
         let tw = (bx - 12.0 - tx).max(40.0);
-        let name = self.fonts.ellipsize_raw(&app.name, tw, 14.0, true);
-        self.fonts.draw_raw(pm, &name, tx, y + 17.0, 14.0, colors::text(), true);
+        let show_flathub = self.default_source(i) == Source::Flathub;
+        let badge_w = if show_flathub && tw > 110.0 {
+            self.fonts.measure_raw("Flathub", 10.5, true) + 14.0
+        } else {
+            0.0
+        };
+        let name_max_w = if badge_w > 0.0 { tw - badge_w - 6.0 } else { tw };
+        let name = self.fonts.ellipsize_raw(&app.name, name_max_w, 14.0, true);
+        let nw = self.fonts.draw_raw(pm, &name, tx, y + 17.0, 14.0, colors::text(), true);
+        if badge_w > 0.0 {
+            self.paint_flathub_badge(pm, tx + nw + 6.0, y + 17.5, badge_w);
+        }
         let mut ly = y + 39.0;
         for line in wrap(&mut self.fonts, &app.summary, tw, 12.5, 2) {
             self.fonts.draw_raw(pm, &line, tx, ly, 12.5, colors::secondary(), false);
             ly += 17.0;
         }
+    }
+
+    fn paint_flathub_badge(&mut self, pm: &mut PixmapMut, x: f32, y: f32, w: f32) {
+        let dark = feather_ui::scale::appearance() == feather_ui::scale::Appearance::Dark;
+        let bg = if dark { rgba(38, 174, 214, 34) } else { rgba(18, 128, 178, 22) };
+        let fg = if dark { rgba(96, 212, 248, 255) } else { rgba(14, 114, 164, 255) };
+        fill_rrect(pm, x, y, w, 17.0, 5.5, bg);
+        self.fonts.draw_text_centered(pm, "Flathub", x + w / 2.0, y + 2.0, 10.5, fg, true);
     }
 
     fn card_label(&self, i: usize) -> String {
@@ -1068,7 +1378,8 @@ impl App {
 
     fn paint_detail(&mut self, pm: &mut PixmapMut, i: usize) {
         let Some(app) = self.app(i).cloned() else { return };
-        let installed = self.installed(i);
+        let source = self.active_source(i);
+        let installed = self.installed_in(i, source);
         let (x0, inner_w) = self.content_x();
         let right = x0 + inner_w;
         let top = TOOLBAR_H + 14.0 - self.scroll;
@@ -1091,7 +1402,7 @@ impl App {
             buttons_left = bx;
         } else {
             let primary = if installed { tr("Открыть") } else { tr("Установить") }.into_owned();
-            let blocked = self.task.is_some() && !installed;
+            let blocked = self.busy() && !installed;
             let pw = (self.fonts.measure_raw(&primary, 13.0, true) + 36.0).max(116.0);
             let px = right - pw;
             self.paint_button(pm, Hit::Primary, &primary, px, top + 8.0, pw, true, blocked);
@@ -1100,7 +1411,7 @@ impl App {
                 let label = tr("Удалить").into_owned();
                 let rw = (self.fonts.measure_raw(&label, 13.0, false) + 32.0).max(96.0);
                 let rx = px - 10.0 - rw;
-                self.paint_button(pm, Hit::Remove, &label, rx, top + 8.0, rw, false, self.task.is_some());
+                self.paint_button(pm, Hit::Remove, &label, rx, top + 8.0, rw, false, self.busy());
                 buttons_left = rx;
             }
         }
@@ -1114,11 +1425,23 @@ impl App {
             self.fonts.draw_raw(pm, &line, tx, y, 14.0, colors::secondary(), false);
             y += 20.0;
         }
-        let by = if app.developer.is_empty() { app.package.clone() } else { app.developer.clone() };
+        let pkg_ident = if source == Source::Flathub { &app.flatpak_id } else { &app.package };
+        let by = if app.developer.is_empty() { pkg_ident.clone() } else { app.developer.clone() };
         let by = self.fonts.ellipsize_raw(&by, tw, 12.5, false);
-        self.fonts.draw_raw(pm, &by, tx, y + 4.0, 12.5, colors::tertiary(), false);
+        let by_w = self.fonts.draw_raw(pm, &by, tx, y + 4.0, 12.5, colors::tertiary(), false);
+        if !app.has_both() && source == Source::Flathub {
+            let bw = self.fonts.measure_raw("Flathub", 10.5, true) + 14.0;
+            if by_w + 8.0 + bw <= tw {
+                self.paint_flathub_badge(pm, tx + by_w + 8.0, y + 3.0, bw);
+            }
+        }
 
-        let mut y = top + DETAIL_ICON + 26.0;
+        let mut y = top + DETAIL_ICON + 22.0;
+        if app.has_both() {
+            y = self.paint_source_selector(pm, i, source, x0, y) + 18.0;
+        } else {
+            y += 4.0;
+        }
         if let Some((_, others)) = self.confirm.clone().filter(|(a, _)| *a == i) {
             y = self.paint_confirm(pm, &app, &others, x0, y, inner_w) + 20.0;
         }
@@ -1142,11 +1465,23 @@ impl App {
         y += 18.0;
         self.fonts.draw_text(pm, "Сведения", x0, y, 18.0, colors::text(), true);
         y += 36.0;
-        let categories: Vec<String> = CATEGORIES.iter().filter(|(_, keys)| app.categories.iter().any(|c| keys.contains(&c.as_str()))).map(|(label, _)| tr(label).into_owned()).collect();
+        let categories: Vec<String> = CATEGORIES
+            .iter()
+            .filter(|(_, keys)| app.categories.iter().any(|c| keys.contains(&c.as_str())))
+            .map(|(label, _)| tr(label).into_owned())
+            .collect();
+        let source_label = match source {
+            Source::System => tr("Системный пакет").into_owned(),
+            Source::Flathub => tr("Flathub (Flatpak)").into_owned(),
+        };
+        let version_value = if source == Source::Flathub { app.flatpak_version.clone() } else { String::new() };
+        let pkg_value = if source == Source::Flathub { app.flatpak_id.clone() } else { app.package.clone() };
         let facts = [
+            ("Источник", source_label),
+            ("Версия", version_value),
             ("Разработчик", app.developer.clone()),
             ("Лицензия", app.license.clone()),
-            ("Пакет", app.package.clone()),
+            ("Пакет", pkg_value),
             ("Разделы", categories.join(", ")),
             ("Сайт", app.homepage.clone()),
         ];
@@ -1169,6 +1504,51 @@ impl App {
             y += 26.0;
         }
         self.content_h = y + self.scroll + PAD;
+    }
+
+    /// Segmented control `[ Системный пакет | Flathub ]` for apps available from both sources.
+    fn paint_source_selector(&mut self, pm: &mut PixmapMut, i: usize, active: Source, x: f32, y: f32) -> f32 {
+        let h = 32.0;
+        let dark = feather_ui::scale::appearance() == feather_ui::scale::Appearance::Dark;
+        let label_w = self.fonts.draw_text(pm, "Источник:", x, y + 7.5, 13.0, colors::secondary(), false);
+        let sx = x + label_w + 12.0;
+
+        let sys_text = if self.installed_in(i, Source::System) {
+            format!("{} ✓", tr("Системный пакет"))
+        } else {
+            tr("Системный пакет").into_owned()
+        };
+        let fh_text = if self.installed_in(i, Source::Flathub) {
+            "Flathub ✓".to_string()
+        } else {
+            "Flathub".to_string()
+        };
+        let w_sys = (self.fonts.measure_raw(&sys_text, 12.5, true) + 28.0).max(132.0);
+        let w_fh = (self.fonts.measure_raw(&fh_text, 12.5, true) + 28.0).max(108.0);
+        let total_w = w_sys + w_fh + 6.0;
+
+        let track = if dark { rgba(255, 255, 255, 16) } else { rgba(0, 0, 0, 14) };
+        fill_rrect(pm, sx, y, total_w, h, 9.0, track);
+
+        for (src, tab_x, tab_w, text) in [
+            (Source::System, sx + 2.0, w_sys, sys_text.as_str()),
+            (Source::Flathub, sx + 4.0 + w_sys, w_fh, fh_text.as_str()),
+        ] {
+            let selected = active == src;
+            let hit = Hit::SelectSource(src);
+            if selected {
+                let thumb = if dark { rgba(255, 255, 255, 38) } else { rgba(255, 255, 255, 245) };
+                fill_rrect(pm, tab_x, y + 2.0, tab_w, h - 4.0, 7.0, thumb);
+            } else if self.hover == hit && !self.busy() {
+                fill_rrect(pm, tab_x, y + 2.0, tab_w, h - 4.0, 7.0, colors::hover());
+            }
+            let ink = if selected { colors::text() } else { colors::secondary() };
+            self.fonts.draw_text_centered(pm, text, tab_x + tab_w / 2.0, y + 7.5, 12.5, ink, selected);
+            if !self.busy() {
+                self.content_zone(hit, tab_x, y, tab_w, h);
+            }
+        }
+        y + h
     }
 
     /// The warning before a removal that takes other packages along; returns the y below it
@@ -1580,7 +1960,11 @@ mod tests {
             info("net.supertuxkart.SuperTuxKart", "supertuxkart", "SuperTuxKart", "Гонки на картах", &["Game"]),
         ];
         let mut app = App::new(FontSystem::new());
-        app.loaded(Catalog { apps, installed: ["vlc".to_string()].into_iter().collect() });
+        app.loaded(Catalog {
+            apps,
+            installed: ["vlc".to_string()].into_iter().collect(),
+            ..Default::default()
+        });
         app
     }
 
@@ -1626,7 +2010,14 @@ mod tests {
 
     #[test]
     fn updates_page_lists_runs_and_checks_again() {
-        let update = |name: &str| packagekit::Update { id: format!("{name};1;amd64;main"), name: name.into(), version: "1".into(), summary: String::new(), security: false };
+        let update = |name: &str| packagekit::Update {
+            id: format!("{name};1;amd64;main"),
+            name: name.into(),
+            version: "1".into(),
+            summary: String::new(),
+            security: false,
+            source: Source::System,
+        };
         let mut app = sample();
         assert_eq!(app.initial_effects(), [Effect::CheckUpdates(false)]);
         app.updates_listed(Ok(vec![update("bash"), update("vim")]));
@@ -1698,6 +2089,56 @@ mod tests {
         assert_eq!(wrap(&mut fonts, "один", 180.0, 13.0, 2), ["один"]);
     }
 
+    #[test]
+    fn flathub_onboarding_and_dual_source_switching() {
+        let mut app = sample();
+        painted(&mut app);
+        // Home shows the 1-click Flathub connection card when status != Ready
+        assert_eq!(app.click(Hit::ConnectFlathub), [Effect::ConnectFlathub]);
+        assert!(app.busy());
+        app.flathub_event(ConnectEvent::Progress(Some(0.6), "Загрузка каталога программ Flathub…".into()));
+        painted(&mut app);
+
+        let mut gimp = info("org.gimp.GIMP", "gimp", "GIMP", "Редактор изображений", &["Graphics"]);
+        gimp.flatpak_id = "org.gimp.GIMP".into();
+        gimp.flatpak_version = "3.0.4".into();
+        let mut obsidian = info("md.obsidian.Obsidian", "", "Obsidian", "База знаний в Markdown", &["Office"]);
+        obsidian.flatpak_id = "md.obsidian.Obsidian".into();
+        obsidian.flatpak_version = "1.8.9".into();
+
+        app.flathub_event(ConnectEvent::Done(Catalog {
+            apps: vec![gimp, obsidian],
+            installed: HashSet::new(),
+            installed_flatpaks: HashMap::new(),
+            flathub: flatpak::Status::Ready,
+        }));
+        assert!(!app.busy());
+        assert!(matches!(&app.notice, Some((_, false))));
+
+        // Dual-source GIMP defaults to System, and switches cleanly to Flathub on its detail page
+        app.open_detail(0);
+        painted(&mut app);
+        assert_eq!(app.active_source(0), Source::System);
+        app.click(Hit::SelectSource(Source::Flathub));
+        assert_eq!(app.active_source(0), Source::Flathub);
+        painted(&mut app);
+        assert_eq!(
+            app.click(Hit::Primary),
+            [Effect::RunFlatpak(Op::Install, "org.gimp.GIMP".into(), InstalledScope::default())]
+        );
+        app.task_event(Event::Done);
+        assert!(app.installed_in(0, Source::Flathub));
+        assert!(!app.installed_in(0, Source::System));
+        painted(&mut app);
+        assert_eq!(app.click(Hit::Primary), [Effect::LaunchFlatpak("org.gimp.GIMP".into())]);
+        assert_eq!(
+            app.click(Hit::Remove),
+            [Effect::RunFlatpak(Op::Remove, "org.gimp.GIMP".into(), InstalledScope { user: true, system: false })]
+        );
+        app.task_event(Event::Done);
+        assert!(!app.installed(0));
+    }
+
     /// Screens with the real catalog: FEATHER_STORE_PREVIEW=/dir cargo test -p feather-store -- --ignored preview
     #[test]
     #[ignore]
@@ -1708,7 +2149,12 @@ mod tests {
             feather_ui::scale::set_appearance(if dark { feather_ui::scale::Appearance::Dark } else { feather_ui::scale::Appearance::Light });
             let theme = if dark { "dark" } else { "light" };
             let mut app = App::new(FontSystem::new());
-            app.loaded(Catalog { apps: catalog.apps.clone(), installed: catalog.installed.clone() });
+            app.loaded(Catalog {
+                apps: catalog.apps.clone(),
+                installed: catalog.installed.clone(),
+                installed_flatpaks: catalog.installed_flatpaks.clone(),
+                flathub: catalog.flathub,
+            });
             let shot = |app: &mut App, name: &str| {
                 // Twice: the first paint asks for icons, loaded here synchronously
                 painted(app);
@@ -1722,16 +2168,30 @@ mod tests {
             app.go(Page::Category(2));
             shot(&mut app, "graphics");
             if let Some(&gimp) = app.by_id.get("org.gimp.GIMP") {
+                if let Some(c) = &mut app.catalog {
+                    c.apps[gimp].flatpak_id = "org.gimp.GIMP".into();
+                    c.apps[gimp].flatpak_version = "3.0.4".into();
+                }
                 app.open_detail(gimp);
-                app.task = Some(Task { app: gimp, op: Op::Install, fraction: Some(0.45), message: "Загрузка…".into(), also: Vec::new() });
+                app.detail_source = Some((gimp, Source::Flathub));
+                shot(&mut app, "detail-flathub");
+                app.task = Some(Task {
+                    app: gimp,
+                    op: Op::Install,
+                    source: Source::Flathub,
+                    fraction: Some(0.45),
+                    message: "Загрузка…".into(),
+                    also: Vec::new(),
+                });
                 shot(&mut app, "detail-progress");
                 app.task = None;
+                app.detail_source = Some((gimp, Source::System));
                 app.confirm = Some((gimp, vec!["gimp-data-extras".into(), "gimp-plugin-registry".into()]));
                 app.notice = Some(("Не удалось установить «GIMP»: Не удалось скачать пакеты. Проверьте подключение к интернету".into(), true));
                 shot(&mut app, "detail-confirm");
             }
             app.go(Page::Home);
-            app.search.set("видео");
+            app.search.set("discord");
             app.search_changed();
             shot(&mut app, "search");
         }

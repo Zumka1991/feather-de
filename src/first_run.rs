@@ -34,6 +34,7 @@ pub enum Action {
     TextSize(TextSize),
     Shortcut(Switch),
     ToggleLayout(&'static str),
+    OpenShortcuts,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -710,12 +711,25 @@ impl Wizard {
             p.text,
             true,
         );
+        let (btn_w, btn_h) = (118.0, 22.0);
+        let (btn_x, btn_y) = (x + w - btn_w - 14.0, sy + 9.0);
+        fill_rounded_rect(pm, btn_x, btn_y, btn_w, btn_h, btn_h * 0.5, p.control_fill);
+        stroke_rounded_rect(pm, btn_x, btn_y, btn_w, btn_h, btn_h * 0.5, 0.6, p.glass_outline);
+        fonts.draw_text_centered(
+            pm,
+            "Все клавиши…",
+            btn_x + btn_w * 0.5,
+            btn_y + 4.0,
+            11.0,
+            p.text,
+            true,
+        );
 
         let shortcuts = [
             ("Super + Space", "Spotlight — мгновенный поиск программ и файлов"),
-            ("Super + A", "Launchpad — сетка всех приложений"),
-            ("Ctrl + Alt + ↑", "Mission Control — обзор окон и рабочих столов"),
-            ("Super + Ctrl + Q", "Мгновенная блокировка экрана"),
+            ("Super + Shift + /", "Памятка по всем клавишам и жестам системы"),
+            ("Ctrl + Alt + M", "Режим стола: Свободные окна, Авто-плитка, Лента"),
+            ("Super + L", "Мгновенная блокировка экрана"),
         ];
         for (i, (chord, desc)) in shortcuts.iter().enumerate() {
             let ry = sy + 36.0 + i as f32 * 23.0;
@@ -875,6 +889,14 @@ impl Wizard {
                     if (cx..=cx + card_w).contains(&lx) && (cy..=cy + card_h).contains(&ly) {
                         return Some(Action::ToggleLayout(id));
                     }
+                }
+            }
+            3 => {
+                let sy = y + 120.0;
+                let (btn_w, btn_h) = (118.0, 22.0);
+                let (btn_x, btn_y) = (x + w - btn_w - 14.0, sy + 9.0);
+                if (btn_x..=btn_x + btn_w).contains(&lx) && (btn_y..=btn_y + btn_h).contains(&ly) {
+                    return Some(Action::OpenShortcuts);
                 }
             }
             _ => {}

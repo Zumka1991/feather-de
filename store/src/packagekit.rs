@@ -21,6 +21,7 @@ pub struct Update {
     pub version: String,
     pub summary: String,
     pub security: bool,
+    pub source: crate::catalog::Source,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -102,7 +103,22 @@ pub fn run(op: Op, package: String, confirmed: bool, send: impl Fn(Event) + Send
     });
 }
 
-async fn work(op: Op, package: &str, confirmed: bool, send: &(impl Fn(Event) + Send)) -> zbus::Result<Event> {
+/// Synchronously installs `package` via PackageKit on the current worker thread.
+pub fn install_blocking(package: &str, send: impl Fn(Option<f32>, String)) -> Event {
+    let forward = |ev: Event| {
+        if let Event::Progress(f, msg) = ev {
+            send(f, msg);
+        }
+    };
+    futures_lite::future::block_on(work(Op::Install, package, false, &forward)).unwrap_or_else(|e| match e {
+        zbus::Error::MethodError(name, ..) if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" => {
+            Event::Failed("Служба PackageKit недоступна (пакет packagekit)".into())
+        }
+        e => Event::Failed(format!("PackageKit: {e}")),
+    })
+}
+
+async fn work(op: Op, package: &str, confirmed: bool, send: &impl Fn(Event)) -> zbus::Result<Event> {
     let conn = Connection::system().await?;
     send(Event::Progress(None, "Подготовка…".into()));
     let progress = |fraction: Option<f32>, status: u32| {
@@ -156,9 +172,10 @@ async fn work(op: Op, package: &str, confirmed: bool, send: &(impl Fn(Event) + S
     }
 }
 
-/// What can be updated. `refresh`: ask the mirrors first, otherwise only apt's current lists
+/// What can be updated (both APT via PackageKit and Flatpak). `refresh`: ask the mirrors first.
 pub fn check_updates(refresh: bool, send: impl Fn(Result<Vec<Update>, String>) + Send + 'static) {
     std::thread::spawn(move || {
+        let fp_handle = std::thread::spawn(move || crate::flatpak::check_updates(refresh));
         let result = futures_lite::future::block_on(async {
             let conn = Connection::system().await?;
             if refresh {
@@ -167,12 +184,19 @@ pub fn check_updates(refresh: bool, send: impl Fn(Result<Vec<Update>, String>) +
             }
             transaction(&conn, Call::GetUpdates, &|_, _| {}).await
         });
+        let fp_updates = fp_handle.join().unwrap_or_default();
         send(match result {
             Ok(out) => match failure(&out) {
-                None => Ok(updates_of(&out)),
+                None => {
+                    let mut all = updates_of(&out);
+                    all.extend(fp_updates);
+                    Ok(all)
+                }
+                Some(_) if !fp_updates.is_empty() => Ok(fp_updates),
                 Some(Event::Failed(text)) => Err(text),
                 Some(_) => Err("Операция не удалась".into()),
             },
+            Err(_) if !fp_updates.is_empty() => Ok(fp_updates),
             Err(zbus::Error::MethodError(name, ..)) if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" => {
                 Err("Служба PackageKit недоступна (пакет packagekit)".into())
             }
@@ -193,26 +217,34 @@ fn updates_of(out: &Outcome) -> Vec<Update> {
             version: id.split(';').nth(1).unwrap_or("").to_string(),
             summary: summary.clone(),
             security: *info == INFO_SECURITY,
+            source: crate::catalog::Source::System,
         })
         .collect();
     list.sort_by(|a, b| b.security.cmp(&a.security).then_with(|| a.name.cmp(&b.name)));
     list
 }
 
-/// Installs all these updates; `send` gets progress and then one final event
+/// Installs all these updates (PackageKit + Flatpak); `send` gets progress and then one final event
 pub fn run_updates(ids: Vec<String>, send: impl Fn(Event) + Send + 'static) {
     std::thread::spawn(move || {
-        let event = futures_lite::future::block_on(async {
-            let conn = Connection::system().await?;
-            let progress = |fraction: Option<f32>, status: u32| {
-                if let Some(text) = status_text(Op::Install, status) {
-                    send(Event::Progress(fraction, text.into()));
-                }
-            };
-            let done = transaction(&conn, Call::Update(FLAG_ONLY_TRUSTED, ids), &progress).await?;
-            Ok::<_, zbus::Error>(failure(&done).unwrap_or(Event::Done))
-        })
-        .unwrap_or_else(|e| Event::Failed(format!("PackageKit: {e}")));
+        let (flatpak_ids, pk_ids): (Vec<String>, Vec<String>) = ids.into_iter().partition(|id| id.starts_with("flatpak:"));
+        let mut event = Event::Done;
+        if !pk_ids.is_empty() {
+            event = futures_lite::future::block_on(async {
+                let conn = Connection::system().await?;
+                let progress = |fraction: Option<f32>, status: u32| {
+                    if let Some(text) = status_text(Op::Install, status) {
+                        send(Event::Progress(fraction, text.into()));
+                    }
+                };
+                let done = transaction(&conn, Call::Update(FLAG_ONLY_TRUSTED, pk_ids), &progress).await?;
+                Ok::<_, zbus::Error>(failure(&done).unwrap_or(Event::Done))
+            })
+            .unwrap_or_else(|e| Event::Failed(format!("PackageKit: {e}")));
+        }
+        if matches!(event, Event::Done) && !flatpak_ids.is_empty() {
+            event = crate::flatpak::run_updates_blocking(&flatpak_ids, &send);
+        }
         send(event);
     });
 }

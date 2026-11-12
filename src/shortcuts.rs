@@ -20,6 +20,8 @@ impl Chord {
                 | u8::from(mods.logo) * SUPER,
             key: if (k::KEY_A..=k::KEY_Z).contains(&key) {
                 key + 32
+            } else if mods.shift && key == k::KEY_question {
+                k::KEY_slash
             } else {
                 key
             },
@@ -110,6 +112,7 @@ actions! {
     SpaceMode, "space-mode", "Режим рабочего стола", CTRL | ALT, k::KEY_m;
     DropShelf, "drop-shelf", "Полка перетаскивания", SUPER, k::KEY_d;
     MenuHud, "menu-hud", "Поиск по меню", SUPER, k::KEY_slash;
+    ShortcutsGuide, "shortcuts-guide", "Памятка горячих клавиш", SUPER | SHIFT, k::KEY_slash;
     Pip, "pip", "Картинка в картинке (PiP)", SUPER, k::KEY_p;
     PipGhost, "pip-ghost", "Призрачный режим (сквозь курсор)", SUPER | ALT, k::KEY_p;
     ScreenRecorder, "screen-recorder", "Запись экрана", SUPER | ALT, k::KEY_5;
@@ -140,6 +143,13 @@ impl Bindings {
                     == (Chord {
                         mods: SUPER,
                         key: k::KEY_t,
+                    })
+            || action == Action::ShortcutsGuide
+                && !self.0.iter().any(|(a, _)| *a == action)
+                && chord
+                    == (Chord {
+                        mods: SUPER,
+                        key: k::KEY_F1,
                     })
     }
     pub fn action(&self, chord: Chord) -> Option<Action> {
@@ -363,6 +373,7 @@ impl crate::FeatherCompositor {
             }
         }
         self.mark_settings_dirty();
+        self.mark_builtin_windows_dirty();
         self.needs_redraw = true;
     }
     pub(crate) fn shortcut_action(&mut self, action: Action) -> Option<crate::input::KeyAction> {
@@ -410,6 +421,7 @@ impl crate::FeatherCompositor {
             Action::SpaceMode => A::SpaceModeCycle,
             Action::DropShelf => A::DropShelfToggle,
             Action::MenuHud => A::Picker(crate::shell::SpotlightMode::MenuHud),
+            Action::ShortcutsGuide => A::Shell(S::ToggleShortcutsGuide),
             Action::Pip => A::PipToggle,
             Action::PipGhost => A::PipGhostToggle,
             Action::ScreenRecorder => A::ScreenRecorder,

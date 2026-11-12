@@ -1086,8 +1086,8 @@ impl FeatherCompositor {
             }
 
             if let Some(top_win) = st.windows.iter_mut().rev().find(|w| w.is_visible()) {
-                if let WindowBackend::Builtin(BuiltinWindowKind::QuickNotes) = top_win.backend {
-                    match sym.raw() {
+                match top_win.backend {
+                    WindowBackend::Builtin(BuiltinWindowKind::QuickNotes) => match sym.raw() {
                         keysyms::KEY_BackSpace => {
                             st.notes_buffer.pop();
                             top_win.dirty = true;
@@ -1107,7 +1107,32 @@ impl FeatherCompositor {
                                 }
                             }
                         }
+                    },
+                    WindowBackend::Builtin(BuiltinWindowKind::ShortcutsGuide) => {
+                        let ch = top_win.height as f32;
+                        let input_sc = st.keyboard_config.switch().label();
+                        match st.shortcuts_guide.on_key(
+                            sym,
+                            latin_sym,
+                            mods.ctrl,
+                            mods.shift,
+                            ch,
+                            &st.keybindings,
+                            input_sc,
+                        ) {
+                            crate::shortcuts_guide::KeyOutcome::Repaint => {
+                                top_win.dirty = true;
+                                return FilterResult::Intercept(());
+                            }
+                            crate::shortcuts_guide::KeyOutcome::CloseWindow => {
+                                deferred = Some(KeyAction::CloseTop);
+                                repeat_candidate = None;
+                                return FilterResult::Intercept(());
+                            }
+                            crate::shortcuts_guide::KeyOutcome::Ignored => {}
+                        }
                     }
+                    _ => {}
                 }
             }
 
@@ -1469,7 +1494,7 @@ impl FeatherCompositor {
         self.needs_redraw = true;
     }
 
-    fn close_top_window(&mut self) {
+    pub(crate) fn close_top_window(&mut self) {
         let Some(idx) = self.windows.iter().rposition(|w| w.is_visible()) else {
             return;
         };
@@ -2292,6 +2317,48 @@ impl FeatherCompositor {
                         .hit(lx, ly, width, height, &self.settings_context())
                         .map(ShellClickAction::FirstRun);
                 }
+                BuiltinWindowKind::ShortcutsGuide => {
+                    let cw = win.width as f32;
+                    let shift = self.keyboard.modifier_state().shift;
+                    if let Some(hit) = self.shortcuts_guide.hit(&mut self.fonts, lx, ly, cw, shift) {
+                        use crate::shortcuts_guide::HitAction as HA;
+                        match hit {
+                            HA::SelectCategory(cat) => {
+                                self.shortcuts_guide.category = cat;
+                                self.shortcuts_guide.scroll = 0.0;
+                                self.windows[idx].dirty = true;
+                                self.needs_redraw = true;
+                            }
+                            HA::ClearSearch => {
+                                self.shortcuts_guide.input.set("");
+                                self.shortcuts_guide.scroll = 0.0;
+                                self.windows[idx].dirty = true;
+                                self.needs_redraw = true;
+                            }
+                            HA::FocusSearch { rel_x, width, shift } => {
+                                self.shortcuts_guide.input.click(
+                                    &mut self.fonts,
+                                    rel_x,
+                                    width,
+                                    12.0,
+                                    false,
+                                    shift,
+                                );
+                                self.windows[idx].dirty = true;
+                                self.needs_redraw = true;
+                            }
+                            HA::OpenKeyboardSettings => {
+                                self.open_or_focus_builtin(BuiltinWindowKind::SystemSettings);
+                                self.apply_system_setting(crate::system_settings::Action::Page(
+                                    crate::system_settings::Page::Keyboard,
+                                ));
+                                self.system_settings.scroll = 420.0;
+                                self.mark_settings_dirty();
+                                self.needs_redraw = true;
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         } else {
@@ -2547,15 +2614,36 @@ impl FeatherCompositor {
                 return;
             }
         }
-        let settings_dims = crate::render::scene_windows_front_to_back(&self.windows)
+        let hit_builtin = crate::render::scene_windows_front_to_back(&self.windows)
             .find(|w| w.is_visible() && !self.pip_is_ghosted(w) && w.contains_point(self.pointer_location.x, self.pointer_location.y))
-            .filter(|w| matches!(w.backend, WindowBackend::Builtin(BuiltinWindowKind::SystemSettings)))
-            .map(|w| (w.width as f32, w.height as f32));
-        if let Some((w, h)) = settings_dims {
-            let mut panel=std::mem::take(&mut self.system_settings);
-            let changed=panel.scroll_by(menu_delta,w,h,&self.settings_context());
-            self.system_settings=panel;
-            if changed{self.mark_settings_dirty();self.needs_redraw=true;}
+            .and_then(|w| match w.backend {
+                WindowBackend::Builtin(kind @ (BuiltinWindowKind::SystemSettings | BuiltinWindowKind::ShortcutsGuide)) => {
+                    Some((w.id, kind, w.width as f32, w.height as f32))
+                }
+                _ => None,
+            });
+        if let Some((win_id, kind, w, h)) = hit_builtin {
+            match kind {
+                BuiltinWindowKind::SystemSettings => {
+                    let mut panel = std::mem::take(&mut self.system_settings);
+                    let changed = panel.scroll_by(menu_delta, w, h, &self.settings_context());
+                    self.system_settings = panel;
+                    if changed {
+                        self.mark_settings_dirty();
+                        self.needs_redraw = true;
+                    }
+                }
+                BuiltinWindowKind::ShortcutsGuide => {
+                    let input_sc = self.keyboard_config.switch().label();
+                    if self.shortcuts_guide.scroll_by(menu_delta, h, &self.keybindings, input_sc) {
+                        if let Some(win) = self.windows.iter_mut().find(|win| win.id == win_id) {
+                            win.dirty = true;
+                        }
+                        self.needs_redraw = true;
+                    }
+                }
+                _ => {}
+            }
             return;
         }
         self.forward_pointer_axis::<B>(event);

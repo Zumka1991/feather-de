@@ -14,11 +14,15 @@ use smithay::reexports::calloop::{
 };
 use std::{path::PathBuf, time::Duration};
 
-/// The user's folder first (created below), then the existing system ones; snapd creates its
-/// folder with the first snap, which then shows up after the next login
+/// User folders inside `$HOME` (`~/.local/share/applications` and `~/.local/share/flatpak/exports/…`)
+/// are created up front so inotify watches them even before the first Flatpak is installed;
+/// system folders are watched when they exist.
 fn app_dirs() -> Vec<PathBuf> {
-    let mut dirs = crate::apps::application_dirs().into_iter();
-    dirs.next().into_iter().chain(dirs.filter(|d| d.is_dir())).collect()
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    crate::apps::application_dirs()
+        .into_iter()
+        .filter(|d| d.is_dir() || home.as_ref().is_some_and(|h| d.starts_with(h)))
+        .collect()
 }
 
 impl FeatherCompositor {
@@ -30,10 +34,9 @@ impl FeatherCompositor {
             }
         })?;
         self.apps_tx = Some(tx);
-        for (i, dir) in app_dirs().into_iter().enumerate() {
-            // A fresh account has no ~/.local/share/applications yet, and a missing folder
-            // cannot be watched: create it once at startup (the system ones are left alone).
-            if i == 0 {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        for dir in app_dirs() {
+            if home.as_ref().is_some_and(|h| dir.starts_with(h)) {
                 let _ = std::fs::create_dir_all(&dir);
             }
             let Some(mut watcher) = fileops::Watcher::new() else { continue };

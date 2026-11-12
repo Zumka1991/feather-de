@@ -10,10 +10,19 @@ use std::process::{Command, Stdio};
 /// Where appstream's apt hook keeps the catalog: AppStream 1.0, then the older location
 const ROOTS: [&str; 2] = ["/var/lib/swcatalog", "/var/lib/app-info"];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Source {
+    #[default]
+    System,
+    Flathub,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AppInfo {
     pub id: String,
     pub package: String,
+    pub flatpak_id: String,
+    pub flatpak_version: String,
     pub name: String,
     pub summary: String,
     /// Paragraphs of the description; list items start with "• "
@@ -30,9 +39,36 @@ pub struct AppInfo {
     pub search_keywords: String,
 }
 
+impl AppInfo {
+    pub fn has_system(&self) -> bool {
+        !self.package.is_empty()
+    }
+
+    pub fn has_flathub(&self) -> bool {
+        !self.flatpak_id.is_empty()
+    }
+
+    pub fn has_both(&self) -> bool {
+        self.has_system() && self.has_flathub()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InstalledSnapshot {
+    pub packages: HashSet<String>,
+    pub flatpaks: HashMap<String, crate::flatpak::InstalledScope>,
+}
+
+#[derive(Default)]
 pub struct Catalog {
     pub apps: Vec<AppInfo>,
     pub installed: HashSet<String>,
+    pub installed_flatpaks: HashMap<String, crate::flatpak::InstalledScope>,
+    pub flathub: crate::flatpak::Status,
+}
+
+pub fn canonical_id(id: &str) -> String {
+    id.trim_end_matches(".desktop").to_ascii_lowercase()
 }
 
 /// AppStream locale keys for the interface language, best first; "C" is the untranslated text
@@ -48,8 +84,8 @@ fn locale_keys() -> &'static [&'static str] {
     }
 }
 
-/// Everything the catalog files describe, plus what dpkg has installed. Slow (a second of
-/// parsing): called on a worker thread.
+/// Everything the catalog files describe (APT DEP-11 + Flathub AppStream), plus what dpkg
+/// and flatpak have installed. Slow (a second of parsing): called on a worker thread.
 pub fn load() -> Catalog {
     let root = ROOTS.iter().map(Path::new).find(|r| has_yaml(r)).unwrap_or(Path::new(ROOTS[0]));
     let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("yaml"))
@@ -62,16 +98,88 @@ pub fn load() -> Catalog {
         (n.contains("-updates") || n.contains("-security"), n)
     });
     let keys = locale_keys();
-    let mut by_id: HashMap<String, AppInfo> = HashMap::new();
+    let mut by_canon: HashMap<String, AppInfo> = HashMap::new();
     for file in files {
         let Some(text) = read_maybe_gz(&file) else { continue };
         for app in parse_dep11(&text, &root.join("icons"), keys) {
-            by_id.insert(app.id.clone(), app);
+            by_canon.insert(canonical_id(&app.id), app);
         }
     }
-    let mut apps: Vec<AppInfo> = by_id.into_values().collect();
+    let (flathub, flathub_apps) = crate::flatpak::load_catalog(keys);
+    merge_flathub(&mut by_canon, flathub_apps);
+    let mut apps: Vec<AppInfo> = by_canon.into_values().collect();
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.id.cmp(&b.id)));
-    Catalog { apps, installed: installed_packages() }
+    let snap = installed_snapshot();
+    Catalog {
+        apps,
+        installed: snap.packages,
+        installed_flatpaks: snap.flatpaks,
+        flathub,
+    }
+}
+
+pub fn merge_flathub(by_canon: &mut HashMap<String, AppInfo>, flathub_apps: Vec<AppInfo>) {
+    let want_ru = matches!(feather_ui::scale::lang(), feather_ui::i18n::Lang::Ru);
+    let has_cyrillic = |s: &str| s.chars().any(|c| ('\u{0400}'..='\u{04FF}').contains(&c));
+    for fh in flathub_apps {
+        let key = canonical_id(&fh.id);
+        let alt_key = canonical_id(&fh.flatpak_id);
+        let existing_key = if by_canon.contains_key(&key) {
+            Some(key.clone())
+        } else if by_canon.contains_key(&alt_key) {
+            Some(alt_key)
+        } else {
+            None
+        };
+        if let Some(k) = existing_key {
+            let sys = by_canon.get_mut(&k).unwrap();
+            sys.flatpak_id = fh.flatpak_id;
+            sys.flatpak_version = fh.flatpak_version;
+            // Flathub caches 128×128 icons (crisper on HiDPI and the 104 px detail header)
+            if fh.icon.is_some() {
+                sys.icon = fh.icon;
+            }
+            if sys.summary.is_empty() || (want_ru && !has_cyrillic(&sys.summary) && has_cyrillic(&fh.summary)) {
+                sys.summary = fh.summary;
+            }
+            if sys.description.is_empty()
+                || (want_ru && !sys.description.iter().any(|p| has_cyrillic(p)) && fh.description.iter().any(|p| has_cyrillic(p)))
+            {
+                sys.description = fh.description;
+            }
+            if sys.developer.is_empty() {
+                sys.developer = fh.developer;
+            }
+            if sys.license.is_empty() {
+                sys.license = fh.license;
+            }
+            if sys.homepage.is_empty() {
+                sys.homepage = fh.homepage;
+            }
+            for cat in fh.categories {
+                if !sys.categories.contains(&cat) {
+                    sys.categories.push(cat);
+                }
+            }
+            if !fh.search_name.is_empty() {
+                sys.search_name.push(' ');
+                sys.search_name.push_str(&fh.search_name);
+            }
+            if !fh.search_keywords.is_empty() {
+                sys.search_keywords.push(' ');
+                sys.search_keywords.push_str(&fh.search_keywords);
+            }
+        } else {
+            by_canon.insert(key, fh);
+        }
+    }
+}
+
+pub fn installed_snapshot() -> InstalledSnapshot {
+    InstalledSnapshot {
+        packages: installed_packages(),
+        flatpaks: crate::flatpak::installed_apps(),
+    }
 }
 
 fn has_yaml(root: &Path) -> bool {
@@ -423,6 +531,8 @@ fn app_from(doc: &Node, icons: &Path, origin: &str, keys: &[&str]) -> Option<App
         homepage: doc.get("Url").and_then(|u| u.get("homepage")).and_then(Node::str).unwrap_or("").to_string(),
         license: doc.get("ProjectLicense").and_then(Node::str).unwrap_or("").to_string(),
         desktop_id: doc.get("Launchable").and_then(|l| l.get("desktop-id")).and_then(|d| d.list().first()).and_then(Node::str).map(str::to_string),
+        flatpak_id: String::new(),
+        flatpak_version: String::new(),
         id,
         package,
         name,
@@ -483,15 +593,57 @@ pub fn paragraphs(markup: &str) -> Vec<String> {
     out
 }
 
-fn decode_entities(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&apos;", "'").replace("&amp;", "&")
+pub(crate) fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        let window = &rest.as_bytes()[1..rest.len().min(12)];
+        if let Some(pos) = window.iter().position(|&b| b == b';') {
+            if window[..pos].is_ascii() {
+                let semi = pos + 1;
+                let entity = &rest[1..semi];
+                let decoded = match entity {
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" | "#39" => Some('\''),
+                    "amp" => Some('&'),
+                    "nbsp" => Some(' '),
+                    _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+                        u32::from_str_radix(&entity[2..], 16).ok().and_then(char::from_u32)
+                    }
+                    _ if entity.starts_with('#') => entity[1..].parse::<u32>().ok().and_then(char::from_u32),
+                    _ => None,
+                };
+                if let Some(ch) = decoded {
+                    out.push(ch);
+                    rest = &rest[semi + 1..];
+                    continue;
+                }
+            }
+        }
+        out.push('&');
+        rest = &rest[1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The program's launcher from its .desktop file: name and command
 pub fn launcher(app: &AppInfo) -> Option<String> {
-    let mut dirs: Vec<PathBuf> = vec![PathBuf::from("/usr/share/applications"), PathBuf::from("/usr/local/share/applications")];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.insert(0, PathBuf::from(home).join(".local/share/applications"));
+    let mut dirs: Vec<PathBuf> = vec![
+        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
+        PathBuf::from("/usr/share/applications"),
+        PathBuf::from("/usr/local/share/applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        dirs.insert(0, home.join(".local/share/flatpak/exports/share/applications"));
+        dirs.insert(0, home.join(".local/share/applications"));
     }
     let id = app.desktop_id.clone().unwrap_or_else(|| format!("{}.desktop", app.id.trim_end_matches(".desktop")));
     dirs.iter().find_map(|d| std::fs::read_to_string(d.join(&id)).ok()).and_then(|text| desktop_exec(&text))
@@ -622,7 +774,46 @@ Summary:
     #[test]
     fn description_markup() {
         assert_eq!(paragraphs("<p>One\n two</p><ol><li>a <em>b</em></li></ol><p>x &lt; y</p>"), ["One two", "• a b", "x < y"]);
+        assert_eq!(decode_entities("A &#8212; B &amp;lt; &#x2019;"), "A — B &lt; ’");
+        assert_eq!(decode_entities("C++ & система управления"), "C++ & система управления");
         assert_eq!(desktop_exec("[Desktop Entry]\nName=X\nExec=gimp-3.0 %U\n[Desktop Action new]\nExec=other\n"), Some("gimp-3.0".into()));
+    }
+
+    #[test]
+    fn merges_apt_and_flathub_entries_without_duplicates() {
+        let mut by_canon: HashMap<String, AppInfo> = HashMap::new();
+        for app in parse_dep11(SAMPLE, Path::new("/nonexistent"), &["ru", "C"]) {
+            by_canon.insert(canonical_id(&app.id), app);
+        }
+        let fh_gimp = AppInfo {
+            id: "org.gimp.GIMP.desktop".into(),
+            flatpak_id: "org.gimp.GIMP".into(),
+            flatpak_version: "3.0.4".into(),
+            name: "GIMP".into(),
+            summary: "Редактор изображений".into(),
+            description: vec!["Русское описание из Flathub.".into()],
+            license: "GPL-3.0-or-later".into(),
+            search_name: "gimp org.gimp.gimp".into(),
+            search_keywords: "flathub".into(),
+            ..Default::default()
+        };
+        let fh_only = AppInfo {
+            id: "md.obsidian.Obsidian".into(),
+            flatpak_id: "md.obsidian.Obsidian".into(),
+            flatpak_version: "1.8.9".into(),
+            name: "Obsidian".into(),
+            summary: "База знаний в Markdown".into(),
+            ..Default::default()
+        };
+        merge_flathub(&mut by_canon, vec![fh_gimp, fh_only]);
+        assert_eq!(by_canon.len(), 3);
+        let gimp = by_canon.get("org.gimp.gimp").unwrap();
+        assert!(gimp.has_both());
+        assert_eq!(gimp.package, "gimp");
+        assert_eq!(gimp.flatpak_id, "org.gimp.GIMP");
+        assert_eq!(gimp.flatpak_version, "3.0.4");
+        assert_eq!(gimp.license, "GPL-3.0-or-later");
+        assert!(by_canon.get("md.obsidian.obsidian").unwrap().has_flathub());
     }
 
     /// The real catalog of this machine: cargo test -p feather-store -- --ignored --nocapture

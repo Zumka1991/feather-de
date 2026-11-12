@@ -5,6 +5,7 @@
 
 mod app;
 mod catalog;
+mod flatpak;
 mod packagekit;
 
 use feather_ui::text::FontSystem;
@@ -54,9 +55,10 @@ use app::{App, Effect};
 enum Msg {
     Appearance(feather_ui::scale::Appearance),
     Catalog(catalog::Catalog),
-    Installed(std::collections::HashSet<String>),
+    Installed(catalog::InstalledSnapshot),
     Icons(Vec<(usize, Option<tiny_skia::Pixmap>)>),
     Task(packagekit::Event),
+    Flathub(flatpak::ConnectEvent),
     Updates(Result<Vec<packagekit::Update>, String>),
     UpdateProgress(packagekit::Event),
 }
@@ -146,6 +148,7 @@ fn main() {
                     Msg::Installed(installed) => store.app.installed_changed(installed),
                     Msg::Icons(icons) => store.app.icons_loaded(icons),
                     Msg::Task(event) => store.app.task_event(event),
+                    Msg::Flathub(event) => store.app.flathub_event(event),
                     Msg::Updates(result) => store.app.updates_listed(result),
                     Msg::UpdateProgress(event) => {
                         let effects = store.app.update_event(event);
@@ -262,6 +265,18 @@ impl Store {
                         let _ = tx.send(Msg::Task(event));
                     });
                 }
+                Effect::RunFlatpak(op, app_id, scope) => {
+                    let tx = self.tx.clone();
+                    flatpak::run(op, app_id, scope, move |event| {
+                        let _ = tx.send(Msg::Task(event));
+                    });
+                }
+                Effect::ConnectFlathub => {
+                    let tx = self.tx.clone();
+                    flatpak::connect(move |event| {
+                        let _ = tx.send(Msg::Flathub(event));
+                    });
+                }
                 Effect::CheckUpdates(refresh) => {
                     let tx = self.tx.clone();
                     packagekit::check_updates(refresh, move |result| {
@@ -275,6 +290,7 @@ impl Store {
                     });
                 }
                 Effect::Launch(command) => catalog::launch(&command),
+                Effect::LaunchFlatpak(app_id) => flatpak::launch(&app_id),
                 Effect::OpenUrl(url) => catalog::open_url(&url),
             }
         }
@@ -428,11 +444,11 @@ impl WindowHandler for Store {
         if focused != self.app.focused {
             self.app.focused = focused;
             self.app.dirty = true;
-            // Back from elsewhere (a terminal, the .deb installer): dpkg may know more now
+            // Back from elsewhere (a terminal, the .deb installer): dpkg / flatpak may know more now
             if focused && self.loaded && !self.app.busy() {
                 let tx = self.tx.clone();
                 std::thread::spawn(move || {
-                    let _ = tx.send(Msg::Installed(catalog::installed_packages()));
+                    let _ = tx.send(Msg::Installed(catalog::installed_snapshot()));
                 });
             }
         }
