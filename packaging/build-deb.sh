@@ -68,11 +68,14 @@ LIBEXEC="$PKG/usr/libexec/feather-de"
 install -Dm755 "$XWLS_BIN" "$LIBEXEC/xwayland-satellite"
 install -Dm755 "$ROOT_DIR/packaging/setup-desktop.sh" "$LIBEXEC/setup-desktop"
 install -Dm644 "$ROOT_DIR/packaging/apt/feather-de.asc" "$PKG/usr/share/keyrings/feather-de.asc"
-# Экран блокировки: стек PAM Debian/Ubuntu вместо system-auth из Arch
+# Экран блокировки: общий стек Debian. system-auth не включаем — на Debian/Astra
+# этого файла нет, и include отсутствующего файла отклоняет любой пароль.
+# pam_parsec_mac.so обязателен на Astra и пропускается, если модуля нет.
 cat > "$PKG/etc/pam.d/feather-lock" <<'EOF'
 #%PAM-1.0
-# Экран блокировки Пёрышка (Debian/Ubuntu)
+auth [success=ok module_unknown=ignore default=bad] pam_parsec_mac.so
 @include common-auth
+account [success=ok module_unknown=ignore default=bad] pam_parsec_mac.so labelselect=appset
 @include common-account
 EOF
 

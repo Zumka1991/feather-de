@@ -184,12 +184,13 @@ step "Установка в /usr"
 sudo env PREFIX=/usr SYSCONFDIR=/etc \
     "$ROOT_DIR/packaging/install.sh" --no-build --target-dir "$TARGET_DIR/release"
 
-# Правило из репозитория ссылается на system-auth (Arch); в Ubuntu его нет, и экран блокировки
-# не смог бы проверить пароль. Заменяем на штатный стек Debian/Ubuntu.
+# Тот же стек, что пишет install.sh на Debian/Astra: только существующий common-*
+# и Parsec, если модуль есть. include несуществующего system-auth запирает экран.
 sudo tee /etc/pam.d/feather-lock >/dev/null <<'EOF'
 #%PAM-1.0
-# Экран блокировки Пёрышка (Debian/Ubuntu)
+auth [success=ok module_unknown=ignore default=bad] pam_parsec_mac.so
 @include common-auth
+account [success=ok module_unknown=ignore default=bad] pam_parsec_mac.so labelselect=appset
 @include common-account
 EOF
 sudo chmod 644 /etc/pam.d/feather-lock

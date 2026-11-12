@@ -44,9 +44,11 @@
 используется установленная служба `vlock`. На текущей машине `vlock` уже есть.
 При отсутствии обеих служб экран остаётся закрытым и показывает ошибку.
 
-Пример для Arch Linux с `system-auth`: [session/feather-lock.pam](../session/feather-lock.pam).
-При упаковке проекта установить этот файл как `/etc/pam.d/feather-lock` с владельцем
-root. На других дистрибутивах использовать их стек PAM для экранных блокировщиков.
+Файл [session/feather-lock.pam](../session/feather-lock.pam) — стек Debian/Astra
+(`common-auth` / `common-account` и `pam_parsec_mac.so`, если модуль есть).
+`install.sh` на Arch подменяет include на `system-auth`. Включать оба файла нельзя:
+`include` отсутствующего файла отклоняет любой пароль, и экран не открывается.
+При упаковке поставить результат как `/etc/pam.d/feather-lock` с владельцем root.
 Код не создаёт и не изменяет `/etc/pam.d` автоматически. Проверка вызывает
 `pam_authenticate(PAM_DISALLOW_NULL_AUTHTOK)` и `pam_acct_mgmt`, не открывает сеанс
 и не меняет учётные данные. Поддерживается один секретный запрос; дополнительные

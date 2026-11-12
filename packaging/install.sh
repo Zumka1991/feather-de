@@ -213,6 +213,15 @@ EOF
         install -Dm644 "$ROOT_DIR/etc/greetd/feather-greeter.toml" "$GREETD_DEST/feather-greeter.toml"
     else
         install -Dm644 "$ROOT_DIR/session/feather-lock.pam" "$PAM_DEST/feather-lock"
+        # Включать можно только тот общий стек, который реально есть. include
+        # отсутствующего файла (system-auth на Astra) отклоняет любой пароль.
+        pam_dir="${DESTDIR}${SYSCONFDIR}/pam.d"
+        if [[ ! -f "$pam_dir/common-auth" && -f "$pam_dir/system-auth" ]]; then
+            sed -i \
+                -e 's|^@include common-auth$|@include system-auth|' \
+                -e 's|^@include common-account$|@include system-auth|' \
+                "$PAM_DEST/feather-lock"
+        fi
         install -Dm644 "$ROOT_DIR/session/feather-greeter.toml" "$GREETD_DEST/feather-greeter.toml"
     fi
 fi
