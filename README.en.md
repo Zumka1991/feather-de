@@ -1,21 +1,30 @@
 # Feather DE · Пёрышко
 
-**A lightweight Linux desktop with its own Wayland compositor, integrated shell, and six native applications, written in Rust.**
+**A lightweight Linux desktop with its own Wayland compositor, real-time GPU `Liquid Glass`, three workspace layout modes (floating windows, automatic BSP tiling, and a scrollable horizontal ribbon), and eight native applications in Rust.**
 
-[Русский](README.md) · [Shell features](#shell-features) · [Build and install](#build-and-install) · [Keyboard shortcuts](#keyboard-shortcuts) · [Project status](#project-status-and-limitations) · [Roadmap](docs/ROADMAP.md)
+[🇷🇺 Русский](README.md) · **[📖 User Guide (EN)](docs/USER_GUIDE.en.md)** · **[📖 Руководство (RU)](docs/USER_GUIDE.md)** · [Shell features](#shell-features) · [Build and install](#build-and-install) · [Keyboard shortcuts](#keyboard-shortcuts) · [Roadmap](docs/ROADMAP.md)
 
 ![The Feather desktop running its native Terminal](docs/images/desktop.png)
 
-Feather brings together a global menu bar, Dock, application search and launcher,
-window overview, workspaces, notifications, and System Settings. Its visual language
-is inspired by macOS Tahoe: light surfaces, frosted glass, rounded corners, soft
-shadows, and spring animations. The desktop runs on its own **Rust / Smithay 0.7**
-compositor with event-driven processing and an OpenGL/EGL rendering pipeline.
+> ### 📖 Illustrated User Guide
+> Complete step-by-step manual covering every feature of Feather DE with live screenshots — including the Control Center & Notification drawers, Scratchpad (`Super+S`), Glass Drop Shelf (`Super+D`), Auto-Tiling, Scrollable Ribbon (`Tape`), Ghost PiP, Per-App Audio Mixer, native apps, and all keyboard shortcuts:
+> - 🇬🇧 **[Open the Illustrated User Guide in English (`docs/USER_GUIDE.en.md`)](docs/USER_GUIDE.en.md)**
+> - 🇷🇺 **[Открыть Руководство пользователя на русском (`docs/USER_GUIDE.md`)](docs/USER_GUIDE.md)**
+>
+> Quick jump: [Menu Bar & Menu HUD](docs/USER_GUIDE.en.md#2-top-menu-bar-global-menus--menu-hud-super--) · [Windows & Ghost PiP](docs/USER_GUIDE.en.md#4-windows-edge-snapping--ghost-pip-super--p) · [Auto-Tiling & Scrollable Ribbon](docs/USER_GUIDE.en.md#5-workspaces-auto-tiling-tile--scrollable-ribbon-tape) · [Scratchpad & Drop Shelf](docs/USER_GUIDE.en.md#6-scratchpad-drawer-super--s--drop-shelf-super--d) · [Control Center & Per-App Audio Mixer](docs/USER_GUIDE.en.md#7-top-drawers-control-center-per-app-audio-mixer--notifications) · [Shortcut Cheat Sheet](docs/USER_GUIDE.en.md#12-cli-automation-featherctl--complete-keyboard-shortcut-reference)
 
-The project prioritizes responsiveness and low resource use. Rendering follows
-changes to the scene; expensive asset preparation and system-service operations run
-outside the input and rendering loop. Files, Terminal, Notes, Preview, Text Editor,
-and Calculator are developed alongside the compositor.
+Feather brings together a global menu bar, Dock, application search and launcher,
+window overview, workspaces with three layout modes, quick control/notification drawers,
+and System Settings. Its visual language is inspired by macOS Tahoe: light and dark surfaces,
+real-time GPU **Liquid Glass**, rounded corners, soft shadows, and spring animations.
+The desktop runs on its own **Rust / Smithay 0.7** compositor with event-driven processing
+and an OpenGL/EGL rendering pipeline.
+
+The project prioritizes responsiveness and low resource use (`0%` idle CPU, `≤ 1 ms` compositor
+work per frame, `≤ 60 MB` steady `RssAnon`). Rendering follows changes to the scene; expensive
+asset preparation and system-service operations run outside the input and rendering loop.
+Files, Terminal, Notes, Preview, Text Editor, Calculator, Activity Monitor, and App Store
+are developed alongside the compositor.
 
 **Early testing stage.** Ready packages with updates exist for Ubuntu (APT) and Arch Linux
 (pacman). Validation across GPUs, laptops, and physical displays is ongoing. Feather
@@ -33,34 +42,43 @@ installation image for a separate operating system.
 | `feather-preview` | Raster image, SVG, and multipage PDF viewer |
 | `feather-textedit` | Tabbed text editor with syntax highlighting and find/replace |
 | `feather-calc` | Basic, scientific, and programmer calculator |
-| `feather-monitor` | Activity Monitor (Ctrl+Alt+Del): processes, End Task, CPU, memory, disk and network graphs |
+| `feather-monitor` | Activity Monitor (`Ctrl+Alt+Del`): processes, End Task, CPU, memory, disk and network graphs |
+| `feather-store` | App Store: AppStream software catalog with install/remove via PackageKit |
+| `featherctl` / `feather-api` | CLI tool and D-Bus API (`org.feather.Shell1`) for controlling windows, workspaces, audio, and screenshots |
 | `feather-ui` | Shared drawing, text, scaling, localization, and UI primitives |
 
 The components share a Cargo workspace. Applications are separate Wayland clients
 built with `smithay-client-toolkit` and `tiny-skia`; the desktop shell is integrated
 into the compositor. System integrations become available when their services exist.
 
+| Auto-Tiling (`Tile`, BSP) | Scrollable Ribbon (`Tape`, Niri-style) |
+|---|---|
+| ![Auto-Tiling](docs/images/guide/en/05-tile.png) | ![Scrollable Ribbon](docs/images/guide/en/06-tape.png) |
+| **Control Center Drawer & `Liquid Glass`** | **Per-App Audio Mixer** |
+| ![Control Center](docs/images/guide/en/11-control-center.png) | ![Per-App Audio Mixer](docs/images/guide/en/12-sound-mixer.png) |
+| **Glass Drop Shelf (`Super+D`)** | **Menu HUD Command Search (`Super+/`)** |
+| ![Drop Shelf](docs/images/guide/en/10-drop-shelf.png) | ![Menu HUD](docs/images/guide/en/02-menu-hud.png) |
+
 ## Shell features
 
-### Desktop and appearance
+### Desktop and real-time GPU `Liquid Glass`
 
-- Light and dark appearances, accent and selection colors, and adjustable UI text size.
+- Light and dark appearances, accent and selection colors, adjustable UI text size, and GTK 3/4 styling sync.
 - GPU-rounded client windows, shadows, and traffic-light window controls.
-- Frosted surfaces for panels, the Dock, menus, and the application switcher.
-  The current effect samples blurred wallpaper; live blur of windows beneath
-  panels is not implemented.
+- **Real-time GPU `Liquid Glass`**: panels, Control Center, Notification Center, the Dock, menus, Spotlight, HUD cards, and the Drop Shelf refract and blur live windows and wallpaper beneath them (Dual-Kawase + SDF bevel with dispersion and caustics) while skipping work on static frames (`0%` idle CPU).
 - Spring animations for windows and panels, minimizing into the Dock, and restoration.
 - Animation controls, reduced transparency, increased contrast, and large text.
 - Desktop files, folders, and `.desktop` launchers, rubber-band selection,
   drag-and-drop, context menus, and integration with the file manager.
 - Original Dawn, Aurora, and Mountain Lake wallpapers, plus custom PNG/JPEG/WebP
-  images. Wallpaper preparation happens outside the main event loop.
+  images with scheduled rotation. Wallpaper preparation happens outside the main event loop.
 - Fractional UI scaling and HiDPI support.
 
-### Menu bar and global menus
+### Menu bar, global menus, and `Menu HUD`
 
-- Caffeine: a cup next to the clock prevents sleep and screen blanking. Battery with percentage on laptops.
-- Active application, Window, and Help menus, a clock, and input-source switching.
+- Active application, Window, and Help menus, workspace mode pill, clock, and input-source switching.
+- **Instant Menu Command Search — `Menu HUD` (`Super+/`)**: flattens the active window's global menu tree and Feather's shell menus into a fast searchable command palette with breadcrumbs (`File ▸ Export ▸ …`), checkmarks, shortcut badges, and automatic cross-layout typo matching (`QWERTY ↔ ЙЦУКЕН`).
+- Caffeine: a cup next to the clock prevents sleep and screen blanking in one click. Battery with percentage on laptops.
 - Qt/KDE global menus through KDE Wayland AppMenu and DBusMenu.
 - GTK global menus through `gtk_shell1`, `org.gtk.Menus`, and `org.gtk.Actions`.
 - Nested menus, checkboxes, radio items, disabled actions, and keyboard navigation.
@@ -73,7 +91,7 @@ GTK, or Electron is not automatically guaranteed to provide a menu. Client-side
 window decoration requests are respected, avoiding an extra compositor title bar
 on top of an application's own decorations.
 
-### Dock, launcher, and search
+### Dock, Launchpad, Spotlight, and the App Ring (`Cmd`)
 
 - Pinned and running applications, running indicators, and grouped windows.
 - Hover magnification, launch bounce, adjustable icon size, auto-hide, and bottom,
@@ -82,45 +100,38 @@ on top of an application's own decorations.
 - Clicking the active application minimizes its window; clicking a minimized one
   restores it, while a background application is brought forward.
 - Trash with empty/full states, file drops, and confirmation before emptying.
-- Launchpad application grid with search, pages, scrolling, and dragging into the Dock.
-- Spotlight search: programs, open windows, settings sections, notes, files in the home folder and
-  simple expressions, with no index and no background work.
-- In-memory clipboard history and an emoji panel. Details (in Russian): [Spotlight](docs/SPOTLIGHT.md).
+- **Radial App Ring (short tap of `Super` / `Cmd`)**: opens a quick ring around the pointer selectable by flicking the mouse, arrows, `Tab`, or first letter; double-tapping “Cmd, Cmd” bounces straight back to the previous window.
+- Launchpad application grid (`Super+A`) with search, pages, scrolling, and dragging into the Dock.
+- Spotlight search (`Super+Space`): programs, open windows, settings sections, notes, files in the home folder, and
+  live math expressions, with no index and no background work.
+- In-memory clipboard history (`Super+Shift+V`) and an emoji panel (`Super+.`).
 - `.desktop` discovery, window matching through `app_id`, `StartupWMClass`, and known
   identifiers, with icons loaded from system themes.
 
-### Windows, workspaces, and gestures
+### Windows, three workspace modes (`Free` / `Tile` / `Tape`), Scratchpad, and Drop Shelf
 
-- Tiling: halves and quarters at screen edges, in the green button's menu and with Ctrl+Super+arrows.
+- **Three independent per-workspace layout modes (`Ctrl+Alt+M`)**, persisted across sessions:
+  1. **Free Windows (`Free`)** — classic macOS Tahoe floating windows with half/quarter snapping at screen edges, in the green button's menu, and via `Ctrl+Super+arrows`.
+  2. **Auto-Tiling (`Tile`)** — per-desktop BSP grid (Hyprland / COSMIC style): windows automatically divide the work area with live divider dragging, swapping, split-axis rotation, and single-tile zoom (`Super+arrows`, `Super+Shift+arrows`, `Ctrl+Super+arrows`, `Super+0`, `Super+F`).
+  3. **Scrollable Ribbon (`Tape`)** — infinite horizontal strip of full-height columns (Niri / PaperWM style): smooth analytic GPU-spring scrolling via **`Super+Mouse Wheel`** or **`Super+trackpad scroll`**, `28 px` peeking neighbor columns, width preset cycling on **`Super+R`** (`50% → 67% → 100% → 33%`), and `Super+←/→` / `Super+Home/End` navigation.
+- **Up to 16 workspaces (`Super+1…9` and `Ctrl+Alt+←/→`)**: direct jump by number `Cmd+1…9` (creating desktops on the fly and auto-pruning empty trailing ones), instant window carry on `Cmd+Shift+1…9`, and a **centered Liquid Glass HUD card** showing the desktop number and layout mode on every switch.
+- **Scratchpad Drawer (`Super+S` / `Super+Shift+S`)**: pull-down overlay layer above all workspaces — one window fills the screen, while multiple windows form a live tiled grid.
+- **Glass Drop Shelf (`Super+D` or shake pointer while dragging)**: floating Liquid Glass shelf for stashing files, folders, browser images, URLs, and text snippets across windows and workspaces.
+- **Picture-in-Picture & Ghost Mode (`Super+P` / `Super+Alt+P`)**: pins any window to a screen corner above all workspaces, with an optional *Click-Through* Ghost mode that passes clicks and scroll events straight through to the window underneath (hold `Super` to drag/resize).
 - Window memory: programs reopen where they were, and the previous session returns at login.
-- A scratchpad layer over all workspaces on Super+S: one window fills the screen, multiple windows
-  form a dynamic tiled grid with keyboard and mouse focus, swapping, axis rotation, live divider
-  resizing, equalizing, and single-tile zoom.
-- Move, resize, minimize, maximize, and fullscreen operations.
-- Alt+Tab / Super+Tab with most-recently-used ordering, mouse selection, and cancellation.
-- Cycling windows of the active application with Alt+` / Super+`.
-- Up to 16 workspaces, created as needed, with window moves and animated transitions.
-  Activating an application can switch to the workspace containing its window.
-- Mission Control: window overview, workspace strip, workspace creation/removal,
-  and dragging windows to another workspace.
-- Configurable hot corners for applications, search, overview, desktop,
-  Notification Center, or locking.
-- Three/four-finger swipes for workspaces, window overview, and Launchpad pages;
-  pinch gestures to open and close Launchpad.
+- `Alt+Tab` / `Super+Tab` MRU switcher and `` Alt+` `` / `` Super+` `` same-app window cycling.
+- **Mission Control (`Ctrl+Alt+↑`)**: window overview, workspace strip with live thumbnails and per-desktop mode pills, workspace creation/removal, and drag-to-move.
+- **Built-in Screenshots (`Print` / `Shift+Print` / `Alt+Print`) and Screen Recorder (`Super+Alt+5` / `Ctrl+Shift+Print`)** in MP4/WebM with audio.
+- Configurable hot corners and 3/4-finger libinput trackpad gestures.
 
-Gesture handling is implemented through libinput. Physical trackpad behavior in
-DRM remains part of hardware validation. See [windows and workspaces](docs/WINDOWS.md),
-[application switching](docs/SWITCHER.md), and [key bindings](docs/KEYBOARD.md).
+See the **[Illustrated User Guide](docs/USER_GUIDE.en.md)** for complete walkthroughs.
 
-### Notifications and sounds
+### Top drawers: Control Center, Per-App Audio Mixer, and Notifications
 
-- An `org.freedesktop.Notifications` server with banners, icons, replacement,
-  and application actions.
-- Notification Center with grouping, current-session history, and clearing.
-- Manual and scheduled Do Not Disturb, plus per-application banner and sound settings.
-- Critical notifications and `resident`, `transient`, and `suppress-sound` hints.
-- A shared sound worker for notifications, alerts/BEL, screenshots, and volume feedback,
-  using an available system audio player.
+- **Control Center Drawer (`Super+N`)**: quick tiles for Wi-Fi (with network & VPN picker), Bluetooth, Do Not Disturb, Night Shift, display brightness, and master audio.
+- **Per-App Audio Mixer** (in the menu-bar speaker popup, Control Center, and *System Settings → Sound*): independent volume slider, Mute, and output device routing (`↦` speakers / headphones / HDMI) for each playing application.
+- **Notification Center Drawer** (click the clock): `org.freedesktop.Notifications` server with banners, app grouping, action buttons, session history, and scheduled Do Not Disturb.
+- Shared sound worker for notifications, alerts/BEL, screenshots, and volume feedback.
 
 An ordinary nested instance does not claim the host session's notification service.
 See [notifications](docs/NOTIFICATIONS.md) and [system sounds](docs/SYSTEM_SOUNDS.md).
@@ -150,8 +161,8 @@ A single window contains **15 settings sections**. Preferences are stored in
 | Sound | Outputs, microphones, levels, mute, and system alerts |
 
 About This Computer shows CPU, memory, GPU, storage, and current session information.
-The built-in Activity Monitor shows shell memory, window count, and scale; it does
-not yet provide a process list. Screenshot output folder and format are configurable.
+Activity Monitor (`Ctrl+Alt+Del`) shows processes, CPU/memory/disk/network graphs, and lets
+you end unresponsive tasks. Screenshot output folder and format are configurable.
 
 ### Network, Bluetooth, and audio
 
@@ -253,6 +264,16 @@ debugging, and full IDE functionality are not implemented.
 - Programmer mode: binary, octal, decimal, hexadecimal, bitwise operations,
   and 8/16/32/64-bit word sizes.
 - Calculation history, keyboard input, and clipboard support.
+
+### Activity Monitor — `feather-monitor`
+
+- Opens with `Ctrl+Alt+Del` (pressing again brings the existing window forward).
+- *Processes*: per-process CPU, memory, and PID, sortable columns, search, and **End Task** (`Delete` sends graceful close then force-kills after 3 s; `Shift+Delete` terminates immediately).
+- *Performance*: live 60-second CPU, memory, disk, and network graphs.
+
+### App Store — `feather-store`
+
+- Browses and searches the Linux AppStream software catalog by category, with one-click install and removal via `PackageKit`.
 
 ## Sessions and Linux integration
 
@@ -555,43 +576,51 @@ instance in the outer session; account for this during testing.
 
 ## Keyboard shortcuts
 
-Super usually means the Windows / Command key. These are default bindings;
-many shell actions can be reassigned in System Settings.
+`Super` (`Cmd`) usually means the Windows / Command key. Letter and digit shortcuts work regardless of active keyboard layout; most shell actions can be reassigned in *System Settings → Keyboard*. See the **[Illustrated User Guide](docs/USER_GUIDE.en.md#12-cli-automation-featherctl--complete-keyboard-shortcut-reference)** for the complete cheat sheet.
 
 | Shortcut | Action |
 |---|---|
-| Super+Space | Spotlight search |
-| Ctrl+Super+arrows | Tile the window to a half or quarter of the screen |
-| Super+S / Super+Shift+S | Scratchpad layer / move the window there and back |
-| Super+Shift+V | Clipboard history |
-| Super+. | Emoji panel |
-| Super+A | Application grid |
-| Super+Enter / Super+T | Terminal |
-| Super+E | Files |
-| Super+N | Control Center |
-| Alt+Tab / Super+Tab | Application switcher |
+| `Super` *(short tap)* | Radial App Ring (`Super, Super` bounces back to previous window) |
+| `Super+Space` | Spotlight search (apps, windows, files, settings, live math) |
+| `Super+/` | **Menu HUD** — instant search across active window menu commands |
+| `Super+A` | Launchpad application grid |
+| `Super+Enter` / `Super+T` | Terminal |
+| `Super+E` | Files |
+| `Super+N` | Control Center top drawer |
+| `Super+D` *(or shake pointer while dragging)* | Glass Drop Shelf |
+| `Alt+Tab` / `Super+Tab` | Application switcher |
 | <kbd>Alt+&#96;</kbd> / <kbd>Super+&#96;</kbd> | Cycle windows of the active application |
-| Super+W / Super+Q | Close window / quit application |
-| Super+M / Super+F | Minimize / maximize |
-| Super+H / Super+Alt+H | Hide application / hide other applications |
-| Ctrl+Alt+← / → | Previous / next workspace |
-| Ctrl+Alt+Shift+← / → | Move window to the adjacent workspace |
-| Ctrl+Alt+↑ / ↓ | Window overview / close overview |
-| Super+L | Lock |
-| Print / Shift+Print / Alt+Print | Capture screen / region / window |
+| `Super+W` / `Super+Q` | Close window / quit application |
+| `Super+M` / `Super+F` | Minimize / maximize (or zoom tile/column) |
+| `Ctrl+Super+arrows` | Snap window to a half or quarter (in `Tile`/`Tape` — resize split/column) |
+| `Super+P` / `Super+Alt+P` | Picture-in-Picture (PiP) / Ghost *Click-Through* mode |
+| `Super+S` / `Super+Shift+S` | Scratchpad drawer / move window there and back |
+| `Super+Shift+V` | Clipboard history |
+| `Super+.` | Emoji panel |
+| `Super+H` / `Super+Alt+H` | Hide application / hide other applications |
+| **`Super+1…9`** / **`Super+Shift+1…9`** | Jump directly to Desktop `1…9` / carry active window to Desktop `1…9` |
+| `Ctrl+Alt+← / →` | Previous / next workspace |
+| `Ctrl+Alt+Shift+← / →` | Move window to the adjacent workspace |
+| `Ctrl+Alt+↑ / ↓` | Mission Control window overview / close overview |
+| **`Ctrl+Alt+M`** | Cycle workspace layout mode: **Free Windows → Auto-Tiling → Scrollable Ribbon** |
+| **`Super+Mouse Wheel / Trackpad`** *(in `Tape`)* | Smooth horizontal scrolling of the Scrollable Ribbon |
+| **`Super+R`** *(in `Tape`)* | Cycle ribbon column width preset: `50% → 67% → 100% → 33%` |
+| `Ctrl+Alt+Del` | Activity Monitor |
+| `Super+L` | Lock Screen |
+| `Print` / `Shift+Print` / `Alt+Print` | Capture screen / region / window |
+| **`Super+Alt+5`** (`⌥⌘5`) / `Ctrl+Shift+Print` | Screen Recorder HUD (MP4/WebM with audio) |
 
-### Tile management on the Scratchpad (`Super+S`)
+### Managing Auto-Tiling (`Tile`), Scrollable Ribbon (`Tape`), and Scratchpad (`Super+S`)
 
-When two or more windows live on the Scratchpad, they form a tiled layout with adjustable split dividers:
-
-| Action | Keys / Mouse |
+| Action | Keys / Scrolling / Mouse |
 |---|---|
-| Focus an adjacent tile | `Super+← / → / ↑ / ↓` |
-| Swap with an adjacent tile (or rotate the split axis left/right ↔ top/bottom when no neighbor exists along that direction) | `Super+Shift+← / → / ↑ / ↓`, or drag with `Super+LMB` onto another tile |
-| Resize the active tile (move its split divider, with key repeat while held) | `Ctrl+Super+← / → / ↑ / ↓` or `Alt+Super+← / → / ↑ / ↓` |
-| Resize dividers with the mouse | Drag an inner border between tiles with LMB, or `Super+RMB` anywhere inside a tile |
-| Reset splits back to 50/50 | `Super+0` (`Ctrl+Super+0`), or double-click an inner divider |
-| Zoom the active tile to full screen on the Scratchpad and back | `Super+F`, the green window button, or double-clicking the titlebar |
+| Focus an adjacent tile or ribbon column | `Super+← / → / ↑ / ↓` (`Super+Home / End` jumps to ribbon ends) |
+| Swap windows (or rotate split axis horizontal ↔ vertical at outer edge in `Tile` & Scratchpad) | `Super+Shift+← / → / ↑ / ↓` or drag titlebar / `Super+LMB` |
+| Scroll the Ribbon (`Tape`) horizontally | `Super+Mouse Wheel`, `Super+trackpad scroll`, or click a peeking neighbor column edge |
+| Cycle column width preset in `Tape` (`50% → 67% → 100% → 33%`) | `Super+R` |
+| Smoothly resize tile split or column width | `Ctrl+Super+← / → / ↑ / ↓`, `Alt+Super+← / → / ↑ / ↓`, drag inner border with LMB, or `Super+RMB` |
+| Reset splits / column widths back to `50 / 50` | `Super+0` (`Ctrl+Super+0`) or double-click an inner divider |
+| Temporarily zoom active tile/column to fill the workspace and restore | `Super+F` or the green window button |
 | Dismiss the Scratchpad | `Super+S` or click the frosted margin around the tiles |
 
 In Files: Space for Quick Look, Ctrl+L for path entry, Ctrl+H for hidden files,
