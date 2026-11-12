@@ -199,16 +199,7 @@ if [[ "$USER_MODE" -eq 0 ]]; then
     GREETD_DEST="${DESTDIR}${SYSCONFDIR}/greetd"
     install -d "$WSESSIONS_DEST" "$PAM_DEST" "$GREETD_DEST"
 
-    cat > "$WSESSIONS_DEST/feather-de-drm.desktop" <<'EOF'
-[Desktop Entry]
-Name=Пёрышко (прямой вывод DRM/KMS)
-Comment=Пёрышко напрямую на видеокарте (KMS/DRM), без промежуточного композитора
-Exec=feather-session
-Type=Application
-DesktopNames=FeatherDE
-Keywords=wayland;compositor;macos;feather;rust;drm;
-EOF
-    chmod 644 "$WSESSIONS_DEST/feather-de-drm.desktop"
+    install -Dm644 "$ROOT_DIR/session/feather-de-drm.desktop" "$WSESSIONS_DEST/feather-de-drm.desktop"
 
     if (( BUNDLE )); then
         install -Dm644 "$ROOT_DIR/etc/pam.d/feather-lock" "$PAM_DEST/feather-lock"
