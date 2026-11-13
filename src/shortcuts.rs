@@ -101,7 +101,7 @@ actions! {
     Close, "close", "Закрыть окно", SUPER, k::KEY_w;
     Quit, "quit", "Завершить программу", SUPER, k::KEY_q;
     Minimize, "minimize", "Свернуть окно", SUPER, k::KEY_m;
-    Maximize, "maximize", "Развернуть окно", SUPER, k::KEY_f;
+    Maximize, "maximize", "Полноэкранный режим", SUPER, k::KEY_f;
     Hide, "hide", "Скрыть программу", SUPER, k::KEY_h;
     HideOthers, "hide-others", "Скрыть остальные", SUPER | ALT, k::KEY_h;
     Mission, "mission", "Обзор окон и столов", CTRL | ALT, k::KEY_Up;
@@ -415,7 +415,7 @@ impl crate::FeatherCompositor {
             Action::Close => A::CloseTop,
             Action::Quit => A::Shell(S::QuitFocusedApp),
             Action::Minimize => A::MinimizeTop,
-            Action::Maximize => A::ToggleMaximizeTop,
+            Action::Maximize => A::ToggleFullscreenTop,
             Action::ScratchToggle => A::ScratchToggle,
             Action::ScratchMove => A::ScratchMove,
             Action::SpaceMode => A::SpaceModeCycle,

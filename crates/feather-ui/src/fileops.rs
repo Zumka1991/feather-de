@@ -106,11 +106,17 @@ pub fn remove_recursive(path: &Path) -> std::io::Result<()> {
 
 /// freedesktop.org trash: files/<name> plus info/<name>.trashinfo (home trash only)
 pub fn trash(paths: &[PathBuf]) -> usize {
+    trash_recorded(paths).1
+}
+
+/// Like [`trash`], but also returns the paths created inside `trash_files_dir()`.
+pub fn trash_recorded(paths: &[PathBuf]) -> (Vec<PathBuf>, usize) {
     let files = trash_files_dir();
     let info = files.with_file_name("info");
     if std::fs::create_dir_all(&files).is_err() || std::fs::create_dir_all(&info).is_err() {
-        return paths.len();
+        return (Vec::new(), paths.len());
     }
+    let mut moved = Vec::with_capacity(paths.len());
     let mut failed = 0;
     for path in paths {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -128,12 +134,14 @@ pub fn trash(paths: &[PathBuf]) -> usize {
         let ok = std::fs::write(&info_path, record).is_ok()
             && (std::fs::rename(path, &target).is_ok()
                 || (copy_recursive(path, &target).is_ok() && remove_recursive(path).is_ok()));
-        if !ok {
+        if ok {
+            moved.push(target);
+        } else {
             let _ = std::fs::remove_file(&info_path);
             failed += 1;
         }
     }
-    failed
+    (moved, failed)
 }
 
 pub fn percent_encode(path: &Path) -> String {
@@ -256,6 +264,19 @@ pub fn paste_with(
     ask: &mut dyn FnMut(&Path, bool) -> Conflict,
     tick: &mut dyn FnMut(),
 ) -> usize {
+    paste_with_recorded(sources, dir, cut, progress, ask, tick, &mut |_, _, _| {})
+}
+
+/// Like [`paste_with`], calling `on_done(source, target, replaced)` for each succeeded item.
+pub fn paste_with_recorded(
+    sources: &[PathBuf],
+    dir: &Path,
+    cut: bool,
+    progress: &Progress,
+    ask: &mut dyn FnMut(&Path, bool) -> Conflict,
+    tick: &mut dyn FnMut(),
+    on_done: &mut dyn FnMut(&Path, &Path, bool),
+) -> usize {
     let mut sizes = Vec::with_capacity(sources.len());
     for source in sources {
         sizes.push(tree_size(source, progress, tick));
@@ -318,7 +339,9 @@ pub fn paste_with(
         };
         let ok = ok && (!replace || remove_recursive(&target).is_ok() && std::fs::rename(&dest, &target).is_ok());
         tick();
-        if !ok && replace && dest.exists() {
+        if ok {
+            on_done(source, &target, replace);
+        } else if replace && dest.exists() {
             // The old item stays; a moved source goes back where it was
             if moved {
                 let _ = std::fs::rename(&dest, source);
@@ -327,6 +350,27 @@ pub fn paste_with(
             }
         }
         failed += usize::from(!ok);
+    }
+    failed
+}
+
+/// Moves each `(original_src, current_dst)` pair back from `current_dst` to `original_src`
+/// without overwriting an existing path at `original_src`. Returns the number of failures.
+pub fn undo_move(pairs: &[(PathBuf, PathBuf)]) -> usize {
+    let mut failed = 0;
+    for (src, dst) in pairs {
+        if !dst.exists() || src.exists() {
+            failed += 1;
+            continue;
+        }
+        if let Some(parent) = src.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let ok = std::fs::rename(dst, src).is_ok()
+            || (copy_recursive(dst, src).is_ok() && remove_recursive(dst).is_ok());
+        if !ok {
+            failed += 1;
+        }
     }
     failed
 }

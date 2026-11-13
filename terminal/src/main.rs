@@ -135,10 +135,12 @@ struct Selection {
 }
 
 enum Msg {
+    Appearance(ui_scale::Appearance),
     Paste(String),
 }
 
 struct App {
+    _appearance_watch: Option<feather_ui::appearance::Watcher>,
     registry_state: RegistryState,
     system_bell: Option<XdgSystemBellV1>,
     seat_state: SeatState,
@@ -249,17 +251,11 @@ fn save_font_size(size: f32) {
     });
 }
 
-/// Appearance chosen in Feather's settings (dark/light), else light
-fn system_dark() -> bool {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-    base.and_then(|b| std::fs::read_to_string(b.join("feather-de/settings.conf")).ok())
-        .is_some_and(|t| t.lines().any(|l| l.trim() == "appearance=dark"))
-}
-
 fn main() {
     let started = Instant::now();
     // Programs we open must not inherit an ignored SIGCHLD (see feather_ui::process)
     feather_ui::process::reap_children();
+    feather_ui::appearance::init();
     let mut args = std::env::args().skip(1);
     let mut cwd: Option<PathBuf> = None;
     let mut command: Option<Vec<String>> = None;
@@ -307,15 +303,26 @@ fn main() {
     let (tx, rx) = channel::channel::<Msg>();
     handle
         .insert_source(rx, |event, _, app| {
-            if let channel::Event::Msg(Msg::Paste(text)) = event {
-                app.paste_text(&text);
+            if let channel::Event::Msg(msg) = event {
+                match msg {
+                    Msg::Appearance(appearance) => {
+                        if feather_ui::appearance::sync(appearance) {
+                            app.apply_appearance(appearance);
+                        }
+                    }
+                    Msg::Paste(text) => app.paste_text(&text),
+                }
             }
         })
         .expect("канал");
 
     let rgba = shm.formats().contains(&wl_shm::Format::Abgr8888);
-    let dark = system_dark();
+    let dark = matches!(ui_scale::appearance(), ui_scale::Appearance::Dark);
     let mut app = App {
+        _appearance_watch: {
+            let tx = tx.clone();
+            feather_ui::appearance::watch(move |a| tx.send(Msg::Appearance(a)).is_ok()).ok()
+        },
         registry_state: RegistryState::new(&globals),
         system_bell: globals.bind(&qh, 1..=1, ()).ok(),
         seat_state: SeatState::new(&globals, &qh),
@@ -392,6 +399,17 @@ fn main() {
 }
 
 impl App {
+    fn apply_appearance(&mut self, appearance: ui_scale::Appearance) {
+        let dark = matches!(appearance, ui_scale::Appearance::Dark);
+        self.palette = if dark { Palette::dark() } else { Palette::light() };
+        for tab in &mut self.tabs {
+            tab.term.report_colors = (self.palette.fg, self.palette.bg);
+        }
+        self.full_redraw = true;
+        self.chrome_dirty = true;
+        self.needs_draw = true;
+    }
+
     fn install_debug_checks(&mut self) {
         let mode=std::env::var("FEATHER_TERMINAL_DEBUG").unwrap_or_default();
         let steps:Vec<(u64,u8)>=match mode.as_str(){

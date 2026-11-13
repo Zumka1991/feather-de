@@ -81,6 +81,7 @@ enum Msg {
     SaveChecked(PathBuf,Result<Option<bool>,String>),
     Listed(u64, Result<Vec<fsops::Entry>, String>),
     Done(usize, &'static str),
+    Trashed(Vec<PathBuf>, usize),
     /// Compress finished: the new archive, or bsdtar's error
     Archived(Result<PathBuf, String>, bool),
     /// This archive is unpacked: the new folder or file, or why not (a password may be asked)
@@ -88,7 +89,7 @@ enum Msg {
     /// A paste copied more (throttled), stopped on a taken name, or finished (failures)
     JobTick,
     Conflict(u64, PathBuf, bool),
-    PasteDone(u64, usize),
+    PasteDone(u64, usize, Vec<(PathBuf, PathBuf)>),
     Props(app::Props),
     ExternalFiles(Vec<PathBuf>),
     /// Text read from the clipboard for Ctrl+V in a field
@@ -243,6 +244,7 @@ fn main() {
                         } else { Vec::new() }
                     }
                     Msg::Done(failed, what) => files.app.operation_done(failed, what),
+                    Msg::Trashed(trashed, failed) => files.app.trash_done(trashed, failed),
                     Msg::Archived(result, compressed) => files.app.archive_done(result, compressed),
                     Msg::Extracted(id, archive, result) => files.app.extract_done(id, archive, result),
                     Msg::JobTick => {
@@ -253,9 +255,9 @@ fn main() {
                         files.app.job_conflict(id, target, is_dir);
                         Vec::new()
                     }
-                    Msg::PasteDone(id, failed) => {
+                    Msg::PasteDone(id, failed, recorded) => {
                         files.answers.remove(&id);
-                        files.app.paste_done(id, failed)
+                        files.app.paste_done_recorded(id, failed, recorded)
                     }
                     Msg::Props(props) => {
                         files.app.props_ready(props);
@@ -472,7 +474,8 @@ impl Files {
                             let mut for_all = None;
                             let mut last_tick = Instant::now();
                             let ticks = tx.clone();
-                            let failed = fsops::paste_with(
+                            let mut recorded = Vec::new();
+                            let failed = fsops::paste_with_recorded(
                                 &paths,
                                 &dir,
                                 cut,
@@ -496,8 +499,13 @@ impl Files {
                                         let _ = ticks.send(Msg::JobTick);
                                     }
                                 },
+                                &mut |src, dst, replaced| {
+                                    if !replaced {
+                                        recorded.push((src.to_path_buf(), dst.to_path_buf()));
+                                    }
+                                },
                             );
-                            let _ = tx.send(Msg::PasteDone(id, failed));
+                            let _ = tx.send(Msg::PasteDone(id, failed, recorded));
                         })
                         .expect("поток копирования");
                 }
@@ -509,8 +517,22 @@ impl Files {
                 Effect::Trash(paths) => {
                     let tx = self.tx.clone();
                     std::thread::spawn(move || {
+                        let (trashed, failed) = fsops::trash_recorded(&paths);
+                        let _ = tx.send(Msg::Trashed(trashed, failed));
+                    });
+                }
+                Effect::TrashNoUndo(paths, what) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
                         let failed = fsops::trash(&paths);
-                        let _ = tx.send(Msg::Done(failed, "Перемещение в Корзину"));
+                        let _ = tx.send(Msg::Done(failed, what));
+                    });
+                }
+                Effect::UndoMove(pairs) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let failed = fsops::undo_move(&pairs);
+                        let _ = tx.send(Msg::Done(failed, "Отмена перемещения"));
                     });
                 }
                 Effect::Restore(paths) => {

@@ -149,23 +149,40 @@ fn socket_path(n: u32) -> PathBuf {
     PathBuf::from(format!("{SOCKET_DIR}/X{n}"))
 }
 
+/// Places a display manager will not put on `PATH`. greetd/GDM often leave only
+/// `/usr/bin:/bin`, so a satellite installed with `cargo install` is invisible
+/// and every X client (Steam) starts with no `DISPLAY`.
+fn candidate_paths(home: Option<&Path>, exe: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    // The .deb carries its own build: Ubuntu 26.04 has no xwayland-satellite package
+    if let Some(exe) = exe.and_then(|p| p.parent()) {
+        paths.push(exe.join("../libexec/feather-de/xwayland-satellite"));
+    }
+    if let Some(home) = home {
+        paths.push(home.join(".local/bin/xwayland-satellite"));
+        paths.push(home.join(".cargo/bin/xwayland-satellite"));
+    }
+    paths.push(PathBuf::from("/usr/local/bin/xwayland-satellite"));
+    paths.push(PathBuf::from("/usr/bin/xwayland-satellite"));
+    paths
+}
+
 fn find_satellite() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("FEATHER_XWAYLAND_SATELLITE").map(PathBuf::from) {
         return p.is_file().then_some(p);
     }
-    // The .deb carries its own build: Ubuntu 26.04 has no xwayland-satellite package
-    let bundled = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("../libexec/feather-de/xwayland-satellite")))
-        .filter(|p| p.is_file());
-    if bundled.is_some() {
-        return bundled;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let exe = std::env::current_exe().ok();
+    if let Some(found) = candidate_paths(home.as_deref(), exe.as_deref()).into_iter().find(|p| p.is_file()) {
+        return Some(found);
     }
-    std::env::var_os("PATH")?
-        .to_str()?
-        .split(':')
-        .map(|d| Path::new(d).join("xwayland-satellite"))
-        .find(|p| p.is_file())
+    std::env::var_os("PATH").and_then(|path| {
+        path.to_str().and_then(|path| {
+            path.split(':')
+                .map(|d| Path::new(d).join("xwayland-satellite"))
+                .find(|p| p.is_file())
+        })
+    })
 }
 
 impl Xwayland {
@@ -363,5 +380,21 @@ mod tests {
         assert!(!lock_owner_alive(&stale));
         assert!(lock_owner_alive(&odd), "unknown format is never taken over");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn satellite_search_includes_user_bin_when_session_path_is_system_only() {
+        let paths = candidate_paths(
+            Some(std::path::Path::new("/home/ivan")),
+            Some(std::path::Path::new("/usr/bin/feather-de")),
+        );
+        assert!(
+            paths.iter().any(|p| p.ends_with(".local/bin/xwayland-satellite")),
+            "cargo/user install must be found without ~/.local/bin on PATH"
+        );
+        assert!(
+            paths.iter().any(|p| p.ends_with("libexec/feather-de/xwayland-satellite")),
+            "the package copy next to the binary stays first after the env override"
+        );
     }
 }

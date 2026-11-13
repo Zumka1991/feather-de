@@ -165,6 +165,21 @@ if [[ -d /sys/module/nvidia ]]; then
     fi
 fi
 
+USER_HOME="$(getent passwd "$LOGIN_USER" | cut -d: -f6 || true)"
+if [[ -n "$USER_HOME" && -d "$USER_HOME" ]]; then
+    USER_BASHRC="$USER_HOME/.bashrc"
+    if [[ -f "$USER_BASHRC" ]] && ! grep -qs 'feather-terminal-prompt' "$USER_BASHRC"; then
+        cat >> "$USER_BASHRC" <<'EOF'
+
+# feather-terminal-prompt: нейтральное приглашение в «Терминале» Пёрышка
+if [ "${TERM_PROGRAM:-}" = "Feather Terminal" ]; then
+    PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$ '
+fi
+EOF
+        chown "$LOGIN_USER:$(id -gn "$LOGIN_USER")" "$USER_BASHRC" || true
+    fi
+fi
+
 step "Готово"
 if [[ "$GREETD" == yes ]]; then
     cat <<EOF

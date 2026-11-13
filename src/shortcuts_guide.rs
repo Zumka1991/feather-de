@@ -319,8 +319,8 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         category: Category::Windows,
-        title: "Развернуть / увеличить окно",
-        desc: "Развернуть окно на рабочую область (в Авто-плитке и Ленте — временный зум на весь стол)",
+        title: "Полноэкранный режим",
+        desc: "Развернуть активное окно на весь экран (скрывает Dock и верхнюю панель) и вернуть обратно",
         keywords: "maximize zoom fullscreen развернуть увеличить весь экран зум",
         keys: KeySpec::Bound(ShortcutAction::Maximize),
     },

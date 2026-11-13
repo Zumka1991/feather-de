@@ -198,12 +198,17 @@ pub(crate) fn push_surface_tree(
     scale: f64,
     visual: crate::animation::Visual,
 ) {
-    push_window_surfaces(out, renderer, surface, location, scale, None, visual);
+    push_window_surfaces(out, renderer, surface, location, scale, None, None, visual);
 }
 
-/// Texture sizes (pixels) of every surface in a tree, keyed by render element id; surfaces
-/// with rotated/flipped buffers are left out (the corner shader assumes a normal transform)
-fn surface_tex_sizes(surface: &WlSurface) -> Vec<(smithay::backend::renderer::element::Id, smithay::utils::Size<i32, smithay::utils::Buffer>)> {
+/// Texture size in pixels and whether the buffer has an alpha channel.
+/// Rotated or flipped buffers are left out (the corner shader assumes a normal transform).
+fn surface_tex_info(
+    surface: &WlSurface,
+) -> Vec<(smithay::backend::renderer::element::Id, smithay::utils::Size<i32, smithay::utils::Buffer>, bool)> {
+    // Returns (id, tex_size, has_alpha).
+    // replace_alpha is only for opaque formats. Forcing alpha on an ARGB dmabuf turns a
+    // transparent parent (Firefox/Zen) into an opaque black plate over the content subsurface.
     use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
     let mut out = Vec::new();
     with_surface_tree_downward(
@@ -216,9 +221,14 @@ fn surface_tex_sizes(surface: &WlSurface) -> Vec<(smithay::backend::renderer::el
                 if data.buffer_transform() == smithay::utils::Transform::Normal {
                     if let Some(size) = data.buffer_size() {
                         let scale = data.buffer_scale();
+                        let has_alpha = match data.buffer() {
+                            Some(buf) => smithay::backend::renderer::buffer_has_alpha(buf).unwrap_or(true),
+                            None => true,
+                        };
                         out.push((
                             smithay::backend::renderer::element::Id::from_wayland_resource(s),
                             (size.w * scale, size.h * scale).into(),
+                            has_alpha,
                         ));
                     }
                 }
@@ -236,19 +246,36 @@ fn push_window_surfaces(
     surface: &WlSurface,
     location: Point<i32, Physical>,
     scale: f64,
-    clip: Option<(crate::rounded::Clip, &smithay::backend::renderer::gles::GlesTexProgram)>,
+    clip: Option<crate::rounded::Clip>,
+    program: Option<&smithay::backend::renderer::gles::GlesTexProgram>,
     visual: crate::animation::Visual,
 ) {
     let elems: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
         render_elements_from_surface_tree(renderer, surface, location, scale, visual.alpha, Kind::Unspecified);
-    let sizes = if clip.is_some() { surface_tex_sizes(surface) } else { Vec::new() };
+    let infos = if program.is_some() { surface_tex_info(surface) } else { Vec::new() };
     for elem in elems {
-        let origin = elem.geometry(Scale::from(1.0)).loc;
-        let tex = sizes.iter().find(|(id, _)| id == elem.id()).map(|(_, s)| *s);
+        let local = elem.geometry(Scale::from(1.0));
+        let info = infos.iter().find(|(id, _, _)| id == elem.id());
+        let tex = info.map(|(_, size, _)| *size);
+        // Opaque buffers only. An external sampler can still return alpha 0 for XRGB;
+        // an ARGB buffer keeps its real alpha so a transparent parent does not cover the page.
+        let replace_alpha = matches!(info, Some(&(_, _, false)));
+        let origin = local.loc;
         let rescaled = RescaleRenderElement::from_element(elem, origin, scale);
-        let element = match (clip, tex) {
-            (Some((clip, program)), Some(tex)) => SceneElement::Rounded(
-                crate::rounded::RoundedSurfaceElement::new(rescaled, program.clone(), clip, tex),
+        // Opaque dmabufs (Firefox/Zen XRGB) go through our shader even without rounded
+        // corners: the stock external sampler keeps a zero alpha and the window is black.
+        let element = match (program, tex, clip) {
+            (Some(program), Some(tex), Some(clip)) => SceneElement::Rounded(
+                crate::rounded::RoundedSurfaceElement::new(rescaled, program.clone(), clip, tex, replace_alpha),
+            ),
+            (Some(program), Some(tex), None) if replace_alpha => SceneElement::Rounded(
+                crate::rounded::RoundedSurfaceElement::new(
+                    rescaled,
+                    program.clone(),
+                    crate::rounded::Clip { geo: local, radius: 0.0, all_corners: false },
+                    tex,
+                    true,
+                ),
             ),
             _ => SceneElement::Surface(rescaled),
         };
@@ -1300,12 +1327,15 @@ pub(crate) fn push_window(
         // Popups (menus, dropdowns, tooltips) sit above their toplevel
         for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
             let loc = origin + win.geo_loc + popup_offset - popup.geometry().loc;
-            push_surface_tree(
+            // Popups share the opaque-buffer shader: a password dialog is often its own surface
+            push_window_surfaces(
                 &mut out,
                 renderer,
                 popup.wl_surface(),
                 to_phys_point(loc.x, loc.y, scale),
                 scale,
+                None,
+                rounded,
                 visual,
             );
         }
@@ -1313,28 +1343,25 @@ pub(crate) fn push_window(
         // maximized X window goes through the shader too (no corners): it is the one most
         // often upscaled, and the shader samples a magnified buffer bicubically. Fullscreen
         // windows keep direct scan-out (X ones get the full scale there anyway).
-        let clip = rounded.and_then(|program| {
-            let round = !win.maximized
-                && !win.fullscreen
-                && (win.has_titlebar() || !win.client_shadow);
-            let upscaled_x11 = win.maximized && !win.fullscreen && crate::xwayland::is_xwayland_surface(surface);
-            (round || upscaled_x11).then(|| {
-                let (cx, cy) = win.client_origin();
-                let geo = smithay::utils::Rectangle::new(
-                    to_phys_point(cx, cy, scale),
-                    (
-                        (win.width as f64 * scale).round() as i32,
-                        (win.height as f64 * scale).round() as i32,
-                    )
-                        .into(),
-                );
-                let clip = crate::rounded::Clip {
-                    geo,
-                    radius: if round { crate::theme::WINDOW_CORNER_RADIUS * scale as f32 } else { 0.0 },
-                    all_corners: !win.has_titlebar(),
-                };
-                (clip, program)
-            })
+        let round = !win.maximized
+            && !win.fullscreen
+            && (win.has_titlebar() || !win.client_shadow);
+        let upscaled_x11 = win.maximized && !win.fullscreen && crate::xwayland::is_xwayland_surface(surface);
+        let clip = (rounded.is_some() && (round || upscaled_x11)).then(|| {
+            let (cx, cy) = win.client_origin();
+            let geo = smithay::utils::Rectangle::new(
+                to_phys_point(cx, cy, scale),
+                (
+                    (win.width as f64 * scale).round() as i32,
+                    (win.height as f64 * scale).round() as i32,
+                )
+                    .into(),
+            );
+            crate::rounded::Clip {
+                geo,
+                radius: if round { crate::theme::WINDOW_CORNER_RADIUS * scale as f32 } else { 0.0 },
+                all_corners: !win.has_titlebar(),
+            }
         });
         push_window_surfaces(
             &mut out,
@@ -1343,6 +1370,7 @@ pub(crate) fn push_window(
             to_phys_point(origin.x, origin.y, scale),
             scale,
             clip,
+            rounded,
             visual,
         );
     }

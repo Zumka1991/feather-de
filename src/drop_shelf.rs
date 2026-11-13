@@ -437,6 +437,15 @@ impl DropShelf {
         &self.items
     }
 
+    #[inline]
+    pub fn pos(&self) -> Option<(f32, f32)> {
+        self.pos
+    }
+
+    pub fn set_pos(&mut self, pos: Option<(f32, f32)>) {
+        self.pos = pos.filter(|(x, y)| x.is_finite() && y.is_finite());
+    }
+
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
     }
@@ -1646,6 +1655,7 @@ impl FeatherCompositor {
             {
                 self.drop_shelf.open_at(Some(pos), screen, 0.0);
                 self.sync_drop_shelf_shell();
+                self.save_settings();
                 self.needs_redraw = true;
             }
             let over = self.drop_shelf.accepts_drop_at(pos.0, pos.1, screen);
@@ -1749,7 +1759,10 @@ impl FeatherCompositor {
     }
 
     pub fn drop_shelf_release(&mut self) -> bool {
-        if self.drop_shelf.gesture.take().is_some() {
+        if let Some(gesture) = self.drop_shelf.gesture.take() {
+            if matches!(gesture, PressGesture::MovePanel { .. }) {
+                self.save_settings();
+            }
             self.needs_redraw = true;
             return true;
         }

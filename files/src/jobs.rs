@@ -159,10 +159,22 @@ impl App {
         self.dirty = true;
     }
 
+    #[cfg(test)]
     pub fn paste_done(&mut self, id: u64, failed: usize) -> Vec<Effect> {
+        self.paste_done_recorded(id, failed, Vec::new())
+    }
+
+    pub fn paste_done_recorded(&mut self, id: u64, failed: usize, recorded: Vec<(PathBuf, PathBuf)>) -> Vec<Effect> {
         let Some(index) = self.jobs.iter().position(|j| j.id == id) else { return Vec::new() };
         let job = self.jobs.remove(index);
         self.conflicts.retain(|c| c.job != id);
+        if !job.progress.cancelled() && !recorded.is_empty() {
+            match job.kind {
+                Kind::Move => self.push_undo(UndoOp::Move(recorded)),
+                Kind::Copy => self.push_undo(UndoOp::Copy(recorded.into_iter().map(|(_, dst)| dst).collect())),
+                Kind::Extract => {}
+            }
+        }
         let what = job.kind.verb();
         if job.progress.cancelled() {
             self.flash(format!("{what} остановлено"));

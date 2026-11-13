@@ -418,14 +418,11 @@ impl FeatherCompositor {
         }
         self.scratch_adopt(idx);
         if !self.shell.scratch_open {
-            self.show_banner(Message {
-                icon: BannerIcon::Scratch,
-                title: "Окно на подложке",
-                detail: "Super + S показывает и прячет подложку",
-            });
+            self.set_scratch_open(true);
+        } else {
+            self.dock_model_dirty = true;
+            self.refresh_focus();
         }
-        self.dock_model_dirty = true;
-        self.refresh_focus();
     }
 
     /// A window joins: moved there, or opened while the Подложка is in front

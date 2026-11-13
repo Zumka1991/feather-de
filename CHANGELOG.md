@@ -2,6 +2,28 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-14 — Выпуск 0.20.7
+
+- **Запоминание позиции «Полки» (`DropShelf`)** (`src/settings.rs`, `src/drop_shelf.rs`, `src/main.rs`):
+  - В `Settings` добавлено поле `drop_shelf_pos` (`drop_shelf_pos=x,y` в `settings.conf`) с проверкой конечности координат при загрузке и сохранении.
+  - При перетаскивании заголовка Полки (`MovePanel` в `drop_shelf_release`) и при открытии встряхиванием (`drop_shelf_motion`) позиция асинхронно сохраняется на диск через `save_settings()` и восстанавливается при следующем запуске композитора (`state.drop_shelf.set_pos(...)`).
+- **Переход на шторку-Подложку при переносе окна по `Super + Shift + S`** (`src/scratch.rs`):
+  - В `scratch_move_focused()` при переносе активного окна с обычного рабочего стола на Подложку вместо показа баннера-подсказки сразу вызывается `set_scratch_open(true)` — шторка выдвигается автоматически вместе с перенесённым окном.
+- **Живая смена темы в открытых окнах «Терминала»** (`terminal/src/main.rs`):
+  - «Терминал» переведён на `feather_ui::appearance::init()` и `feather_ui::appearance::watch(...)` (как «Файлы», «Заметки» и остальные встроенные программы): при смене светлой/тёмной темы рабочего стола в уже открытых терминалах сразу обновляются палитра, цвета `report_colors` вкладок, хромированный заголовок и панель вкладок.
+- **Нейтральное приглашение bash в новой Ubuntu** (`packaging/setup-desktop.sh`):
+  - При первичной настройке системы (`setup-desktop.sh --user …`) в `~/.bashrc` пользователя добавляется условие для `TERM_PROGRAM="Feather Terminal"`, убирающее стандартное зелёное `PS1` из Ubuntu `/etc/skel/.bashrc`.
+- **Отмена операций (`Ctrl + Z`) в «Файлах»** (`crates/feather-ui/src/fileops.rs`, `files/src/app.rs`, `files/src/jobs.rs`, `files/src/main.rs`):
+  - Добавлен стек отмены (до 50 операций) по `Ctrl + Z`: отмена создания папки (удаление пустой или перенос непустой в Корзину; немедленное переименование новой папки объединяется с её созданием), переименования, удаления в Корзину (`trash_recorded` → `Effect::Restore`), копирования (безопасный перенос копий в Корзину) и перемещения (`paste_with_recorded` → `Effect::UndoMove` обратно в исходные пути без перезаписи существующих файлов).
+- **Полноэкранный режим по `Cmd + F` (`Super + F`) для любого приложения** (`src/shortcuts.rs`, `src/input.rs`, `src/window.rs`, `src/handlers.rs`, `src/shortcuts_guide.rs`):
+  - `Super + F` теперь переключает настоящий полноэкранный режим (`set_window_fullscreen`), скрывая Dock и верхнюю панель и возвращая окно обратно при повторном нажатии `Super + F`; снято ограничение `is_builtin()`, чтобы встроенные окна тоже могли переходить в полный экран.
+- **Меню верхней панели в тон её расцветки по обоям** (`src/theme.rs`, `src/shell.rs`):
+  - Добавлены `palette_for` и `draw_glass_panel_for`: выпадающие меню верхней панели (`menu_panels`) теперь используют ту же светлую/тёмную расцветку (`bar_colors().dark`), что и сама верхняя панель поверх текущих обоев.
+- **Интеграция PR #1 (`th3sl0wsn4il`): Steam `DISPLAY`, `linux-drm-syncobj` и чёрные окна Zen/Firefox** (`src/xwayland.rs`, `src/handlers.rs`, `src/main.rs`, `src/render.rs`, `src/rounded.rs`, `packaging/install.sh`, `session/feather-de-drm.desktop`, `docs/XWAYLAND.md`):
+  - Поиск `xwayland-satellite` в `~/.local/bin`, `~/.cargo/bin`, `/usr/local/bin`, `/usr/bin` и расширение `PATH` в `packaging/install.sh`; очищен `session/feather-de-drm.desktop` (`Exec=feather-session`).
+  - Фильтрация `dmabuf_render_formats()` без `DRM_FORMAT_MOD_INVALID`; освобождение уже сигналенных точек `DrmSyncPoint` в `AcquireBlocker` с резервным one-shot таймером; `replace_alpha` в `rounded.rs` только для непрозрачных буферов (`has_alpha=false`), включая нескруглённые окна.
+- **Проверено.** `cargo build --release --workspace` и `cargo build --release --bin feather-de` / `-p feather-files` без ошибок и предупреждений; `cargo test --release --bin feather-de -- settings::tests scratch::tests drop_shelf::tests` (25 passed), `cargo test --release -p feather-terminal` (26 passed), `cargo test --release -p feather-files` (46 passed, 1 ignored `app::tests::preview`, включая `ctrl_z_undoes_new_folder_rename_trash_and_paste`), `cargo test --release -p feather-ui` (24 + 1 passed) и `bash -n packaging/setup-desktop.sh`. Живой интерактивный запуск и DRM-сессия не проверялись.
+
 ## 2026-11-13 — Выпуск 0.20.6 (Claude)
 
 - **Пункт управления стал аккуратнее:** карточки с подсвеченной кромкой, круглые плашки переключателей,

@@ -371,6 +371,7 @@ pub struct Settings {
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
     pub dock: Option<Vec<String>>,
+    pub drop_shelf_pos: Option<(f32, f32)>,
     pub animations: bool,
     pub keyboard: Keyboard,
     pub keybindings: crate::shortcuts::Bindings,
@@ -426,6 +427,7 @@ impl Default for Settings {
             hot_corners: Default::default(),
             night: Default::default(),
             dock: None,
+            drop_shelf_pos: None,
             animations: true,
             keyboard: Keyboard::default(),
             keybindings: Default::default(),
@@ -616,6 +618,15 @@ impl Settings {
                 "default_browser" => s.default_browser = Some(v.to_string()),
                 "default_terminal" => s.default_terminal = Some(v.to_string()),
                 "default_file_manager" => s.default_file_manager = Some(v.to_string()),
+                "drop_shelf_pos" => {
+                    if let Some((xs, ys)) = v.split_once(',') {
+                        if let (Ok(x), Ok(y)) = (xs.trim().parse::<f32>(), ys.trim().parse::<f32>()) {
+                            if x.is_finite() && y.is_finite() {
+                                s.drop_shelf_pos = Some((x, y));
+                            }
+                        }
+                    }
+                }
                 "scale" => {
                     s.scale = v
                         .parse::<f64>()
@@ -879,6 +890,9 @@ impl Settings {
                     text.push_str(&format!("{key}={value}\n"));
                 }
             }
+        }
+        if let Some((x, y)) = self.drop_shelf_pos.filter(|(x, y)| x.is_finite() && y.is_finite()) {
+            text.push_str(&format!("drop_shelf_pos={x:.1},{y:.1}\n"));
         }
         if !self.monitor_layout.is_empty(){
             let rows:Vec<_>=self.monitor_layout.iter().take(16).map(|m|serde_json::json!({"name":m.name,"x":m.x,"y":m.y,"primary":m.primary})).collect();
@@ -1237,6 +1251,16 @@ mod tests {
                 allowed: true,
             }]
         );
+    }
+    #[test]
+    fn drop_shelf_pos_round_trip() {
+        let mut s = Settings::default();
+        assert_eq!(s.drop_shelf_pos, None);
+        s.drop_shelf_pos = Some((320.5, 144.0));
+        let back = Settings::parse(&s.text());
+        assert_eq!(back.drop_shelf_pos, Some((320.5, 144.0)));
+        let bad = Settings::parse("drop_shelf_pos=NaN,100\n");
+        assert_eq!(bad.drop_shelf_pos, None);
     }
 }
 

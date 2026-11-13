@@ -150,7 +150,7 @@ pub(crate) enum KeyAction {
     Shell(ShellClickAction),
     CloseTop,
     MinimizeTop,
-    ToggleMaximizeTop,
+    ToggleFullscreenTop,
     /// Ctrl+Super+arrow: the front window to a half or quarter of the screen
     Tile(crate::tiling::Dir),
     /// Clipboard history or the emoji panel
@@ -1207,7 +1207,7 @@ impl FeatherCompositor {
             Some(KeyAction::LarvisDesktop) => self.toggle_larvis_desktop(),
             // Larvis's desktop is not a window of the user: Cmd+W and Cmd+M leave it
             Some(KeyAction::CloseTop | KeyAction::MinimizeTop) if self.larvis_shown => self.leave_larvis_desktop(),
-            Some(KeyAction::ToggleMaximizeTop | KeyAction::Tile(_) | KeyAction::SpaceModeCycle | KeyAction::SpaceLayoutFocus(_) | KeyAction::SpaceLayoutFocusEdge(_) | KeyAction::SpaceLayoutSwap(_) | KeyAction::SpaceLayoutEqualize | KeyAction::SpaceLayoutCycleWidth | KeyAction::DropShelfToggle | KeyAction::PipToggle | KeyAction::PipGhostToggle) if self.larvis_shown => {}
+            Some(KeyAction::ToggleFullscreenTop | KeyAction::Tile(_) | KeyAction::SpaceModeCycle | KeyAction::SpaceLayoutFocus(_) | KeyAction::SpaceLayoutFocusEdge(_) | KeyAction::SpaceLayoutSwap(_) | KeyAction::SpaceLayoutEqualize | KeyAction::SpaceLayoutCycleWidth | KeyAction::DropShelfToggle | KeyAction::PipToggle | KeyAction::PipGhostToggle) if self.larvis_shown => {}
             Some(KeyAction::Tile(dir)) => {
                 self.tile_front_step(dir);
                 if self.shell.scratch_open {
@@ -1246,21 +1246,18 @@ impl FeatherCompositor {
                 }
                 self.refresh_focus();
             }
-            Some(KeyAction::ToggleMaximizeTop) => {
+            Some(KeyAction::ToggleFullscreenTop) => {
                 if let Some(i) = self.windows.iter().rposition(|w| w.is_visible()) {
                     if self.windows[i].pip {
                         let id = self.windows[i].id;
                         let _ = self.set_window_pip_state(id, false, false, true);
-                    } else if self.windows[i].space == crate::scratch::SCRATCH_SPACE {
-                        self.scratch_toggle_zoom();
-                    } else if self.windows[i].managed_layout && self.current_space_managed() {
-                        self.space_layout_toggle_zoom();
                     } else {
                         let r = self.window_monitor(i);
-                        let w = &mut self.windows[i];
-                        w.resize_anchor = None;
-                        w.maximize_on(!w.maximized, r);
+                        self.windows[i].resize_anchor = None;
+                        let on = !self.windows[i].fullscreen;
+                        self.set_window_fullscreen(i, on, r);
                     }
+                    self.refresh_focus();
                 }
             }
             None => {}

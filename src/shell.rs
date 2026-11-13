@@ -3983,6 +3983,8 @@ impl MacShell {
             .cc_backdrop
             .as_ref()
             .filter(|_| !crate::glass::live_glass_active() && menu_panels.is_empty() && !sp_open && dock_menu.is_none());
+        let menu_app = if self.bar_colors().dark { Appearance::Dark } else { Appearance::Light };
+        let mp = crate::theme::palette_for(menu_app);
         let icons = &mut self.icons;
         let emoji_cache = &mut self.emoji;
         let controls = &self.cc;
@@ -3996,27 +3998,27 @@ impl MacShell {
             };
 
             for (r, menu_rows_now, hovered) in &menu_panels {
-                draw_glass_panel(&mut pm, r.x, r.y, r.w, r.h, 12.0, true);
+                crate::theme::draw_glass_panel_for(&mut pm, r.x, r.y, r.w, r.h, 12.0, true, menu_app);
                 let mut y = r.y + MENU_PAD;
                 for (i, row) in menu_rows_now.iter().enumerate() {
                     match row {
                         MenuRow::Separator => {
                             let sy = y + MENU_SEP_H * 0.5;
-                            stroke_line(&mut pm, r.x + 14.0, sy, r.x + r.w - 14.0, sy, 1.0, p.separator);
+                            stroke_line(&mut pm, r.x + 14.0, sy, r.x + r.w - 14.0, sy, 1.0, mp.separator);
                             y += MENU_SEP_H;
                         }
                         MenuRow::Item { label, shortcut, action, checked, radio, submenu } => {
                             let enabled = action.is_some();
                             let hot = enabled && *hovered == Some(i);
                             if hot {
-                                fill_rounded_rect(&mut pm, r.x + 5.0, y, r.w - 10.0, MENU_ITEM_H, 6.0, p.accent);
+                                fill_rounded_rect(&mut pm, r.x + 5.0, y, r.w - 10.0, MENU_ITEM_H, 6.0, mp.accent);
                             }
                             let col = if hot {
-                                p.on_accent
+                                mp.on_accent
                             } else if enabled {
-                                p.text
+                                mp.text
                             } else {
-                                p.text_tertiary
+                                mp.text_tertiary
                             };
                             if *checked {
                                 fonts.draw_text(&mut pm, if *radio { "●" } else { "✓" }, r.x + 10.0, y + 3.5, 13.0, col, false);
@@ -4027,7 +4029,7 @@ impl MacShell {
                             let sw = if shortcut.is_empty() {
                                 0.0
                             } else {
-                                let sc = if hot { p.on_accent } else { p.text_tertiary };
+                                let sc = if hot { mp.on_accent } else { mp.text_tertiary };
                                 fonts.draw_text_right(&mut pm, shortcut, r.x + r.w - 14.0, y + 3.5, 13.0, sc, false) + 16.0
                             };
                             let inset=if let Some(badge)=input_badges.get(i){

@@ -88,6 +88,7 @@ use std::{
 
 use smithay::{
     backend::{
+        allocator::Modifier,
         drm::DrmNode,
         egl::EGLDevice,
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma},
@@ -949,6 +950,7 @@ impl FeatherCompositor {
             hot_corners: self.hot_corners.actions,
             night: self.night.prefs,
             dock: Some(self.dock_pins.clone()),
+            drop_shelf_pos: self.drop_shelf.pos(),
             animations: self.animations.enabled(),
             keyboard: self.keyboard_config.clone(),
             keybindings: self.keybindings.clone(),
@@ -2020,7 +2022,23 @@ fn setup_dmabuf(
     }
     tracing::info!("GPU: {gl_name}");
 
-    let formats = renderer.dmabuf_formats();
+    // Только форматы, которые GLES умеет читать как обычную текстуру.
+    // Внешние (external-only) сэмплеры отдают альфу 0, и окно становится чёрным.
+    // DRM_FORMAT_MOD_INVALID рядом с настоящими модификаторами заставляет Firefox
+    // и Zen выделить тайловый буфер и сэмплировать его как линейный — тоже чёрный квадрат.
+    let render = renderer.egl_context().dmabuf_render_formats();
+    let explicit: Vec<_> = render
+        .iter()
+        .filter(|fmt| fmt.modifier != Modifier::Invalid)
+        .cloned()
+        .collect();
+    let formats: Vec<_> = if !explicit.is_empty() {
+        explicit
+    } else if render.iter().next().is_some() {
+        render.iter().cloned().collect()
+    } else {
+        renderer.dmabuf_formats().iter().cloned().collect()
+    };
     let render_node = node_hint
         .or_else(|| {
             EGLDevice::device_for_display(renderer.egl_context().display())
@@ -2634,6 +2652,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     }
     state.start_desktop()?;
     state.start_drop_shelf()?;
+    state.drop_shelf.set_pos(saved.drop_shelf_pos);
     state.start_trash()?;
     state.start_app_watch()?;
     crate::apps::set_cursor_env(

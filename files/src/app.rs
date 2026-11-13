@@ -67,6 +67,8 @@ pub enum Effect {
     /// Answer for a job waiting on «уже существует» (the flag applies it to the rest)
     Resolve(u64, Conflict, bool),
     Trash(Vec<PathBuf>),
+    TrashNoUndo(Vec<PathBuf>, &'static str),
+    UndoMove(Vec<(PathBuf, PathBuf)>),
     /// Trash folder: put back (from .trashinfo), delete for good, empty it all
     Restore(Vec<PathBuf>),
     DeleteForever(Vec<PathBuf>),
@@ -232,6 +234,15 @@ struct QuickPreview {
     scroll: usize,
 }
 
+#[derive(Clone, Debug)]
+pub(super) enum UndoOp {
+    Rename { from: PathBuf, to: PathBuf },
+    CreateDir(PathBuf),
+    Trash(Vec<PathBuf>),
+    Copy(Vec<PathBuf>),
+    Move(Vec<(PathBuf, PathBuf)>),
+}
+
 pub struct App {
     preview: Option<QuickPreview>,
     preview_generation: u64,
@@ -288,6 +299,7 @@ pub struct App {
     props: Option<Props>,
     menu_hover: Option<usize>,
     clipboard: Option<(Vec<PathBuf>, bool)>,
+    undo_stack: Vec<UndoOp>,
     places: Vec<Place>,
     /// A disk being mounted: a second click on it waits for the first
     mounting: Option<PathBuf>,
@@ -362,6 +374,7 @@ impl App {
             props: None,
             menu_hover: None,
             clipboard: None,
+            undo_stack: Vec::new(),
             places: Vec::new(),
             mounting: None,
             generation: 0,
@@ -715,6 +728,76 @@ impl App {
         self.dirty = true;
     }
 
+    pub(super) fn push_undo(&mut self, op: UndoOp) {
+        if self.undo_stack.len() >= 50 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(op);
+    }
+
+    pub fn trash_done(&mut self, trashed: Vec<PathBuf>, failed: usize) -> Vec<Effect> {
+        if !trashed.is_empty() {
+            self.push_undo(UndoOp::Trash(trashed));
+        }
+        self.operation_done(failed, "Перемещение в Корзину")
+    }
+
+    fn undo(&mut self) -> Vec<Effect> {
+        let Some(op) = self.undo_stack.pop() else {
+            self.flash("Нечего отменять".into());
+            return Vec::new();
+        };
+        match op {
+            UndoOp::Rename { from, to } => {
+                if !to.exists() {
+                    self.flash("Не удалось отменить: файл не найден".into());
+                    return Vec::new();
+                }
+                if from.exists() {
+                    let name = from.file_name().unwrap_or_default().to_string_lossy();
+                    self.flash(format!("Не удалось отменить: «{name}» уже существует"));
+                    return Vec::new();
+                }
+                match std::fs::rename(&to, &from) {
+                    Ok(()) => {
+                        self.flash("Переименование отменено".into());
+                        self.reveal = Some(from);
+                        self.reload()
+                    }
+                    Err(err) => {
+                        self.flash(format!("Не удалось отменить переименование: {err}"));
+                        Vec::new()
+                    }
+                }
+            }
+            UndoOp::CreateDir(path) => {
+                if !path.exists() {
+                    self.flash("Папка уже удалена".into());
+                    return Vec::new();
+                }
+                if std::fs::remove_dir(&path).is_ok() {
+                    self.flash("Создание папки отменено".into());
+                    self.reload()
+                } else {
+                    self.flash("Папка перемещена в Корзину".into());
+                    vec![Effect::TrashNoUndo(vec![path], "Отмена создания папки")]
+                }
+            }
+            UndoOp::Trash(trashed) => {
+                self.flash("Возврат из Корзины…".into());
+                vec![Effect::Restore(trashed)]
+            }
+            UndoOp::Copy(dsts) => {
+                self.flash("Отмена копирования…".into());
+                vec![Effect::TrashNoUndo(dsts, "Отмена копирования")]
+            }
+            UndoOp::Move(pairs) => {
+                self.flash("Отмена перемещения…".into());
+                vec![Effect::UndoMove(pairs)]
+            }
+        }
+    }
+
     pub fn operation_done(&mut self, failed: usize, what: &str) -> Vec<Effect> {
         if failed > 0 {
             self.flash(format!("{what}: не удалось для {failed}"));
@@ -838,6 +921,15 @@ impl App {
         }
         match std::fs::rename(&path, &target) {
             Ok(()) => {
+                if let Some(UndoOp::CreateDir(created)) = self.undo_stack.last_mut() {
+                    if *created == path {
+                        *created = target.clone();
+                    } else {
+                        self.push_undo(UndoOp::Rename { from: path, to: target.clone() });
+                    }
+                } else {
+                    self.push_undo(UndoOp::Rename { from: path, to: target.clone() });
+                }
                 self.reveal = Some(target);
                 self.reload()
             }
@@ -852,6 +944,7 @@ impl App {
         let path = fsops::unique_name(&self.dir, "Новая папка");
         match std::fs::create_dir(&path) {
             Ok(()) => {
+                self.push_undo(UndoOp::CreateDir(path.clone()));
                 // Insert now so rename starts immediately; the watcher re-read keeps it in place
                 let name = path.file_name().unwrap().to_string_lossy().into_owned();
                 let modified = Some(std::time::SystemTime::now());
@@ -2085,6 +2178,7 @@ impl App {
                 Some('c') => return self.copy_selection(false),
                 Some('x') => return self.copy_selection(true),
                 Some('v') => return self.paste(),
+                Some('z') => return self.undo(),
                 Some('h') => {
                     self.show_hidden = !self.show_hidden;
                     self.refilter();
@@ -3543,6 +3637,58 @@ mod tests {
         app.press(BTN_LEFT, cx + cw * 0.5, cy, Mods::default());
         let effects = app.release(BTN_LEFT, cx + cw * 0.5, cy);
         assert!(effects.iter().any(|e| matches!(e, Effect::List(p, _) if *p == path)), "{effects:?}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ctrl_z_undoes_new_folder_rename_trash_and_paste() {
+        let root = fixture("undo");
+        let mut app = app_in(&root);
+        let ctrl = Mods { ctrl: true, ..Default::default() };
+        let ctrl_shift = Mods { ctrl: true, shift: true, ..Default::default() };
+
+        // 1. Create folder + immediate rename -> Ctrl+Z removes the created folder
+        app.key(0x6e, 0, Some("n"), ctrl_shift);
+        assert!(root.join("Новая папка").is_dir());
+        for ch in ["Т", "е", "с", "т"] {
+            app.key(0, 0, Some(ch), Mods::default());
+        }
+        app.key(0xff0d, 0, None, Mods::default());
+        assert!(root.join("Тест").is_dir());
+        app.key(0x7a, 0, Some("z"), ctrl);
+        assert!(!root.join("Тест").exists());
+
+        // 2. Rename existing folder -> Ctrl+Z renames it back
+        app.listed(app.generation, Ok(fsops::list(&root).unwrap()));
+        app.select_only(0);
+        let original = app.entry(0).path.clone();
+        app.start_rename();
+        for ch in ["П", "е", "р", "е", "и", "м"] {
+            app.key(0, 0, Some(ch), Mods::default());
+        }
+        app.key(0xff0d, 0, None, Mods::default());
+        let renamed = root.join("Переим");
+        assert!(renamed.is_dir() && !original.exists());
+        app.key(0x7a, 0, Some("z"), ctrl);
+        assert!(original.is_dir() && !renamed.exists());
+
+        // 3. Trash recorded -> Ctrl+Z produces Effect::Restore
+        app.trash_done(vec![PathBuf::from("/tmp/fake-trash/a")], 0);
+        assert_eq!(
+            app.key(0x7a, 0, Some("z"), ctrl),
+            vec![Effect::Restore(vec![PathBuf::from("/tmp/fake-trash/a")])]
+        );
+
+        // 4. Move recorded -> Ctrl+Z produces Effect::UndoMove
+        let src = root.join("a.txt");
+        let dst = root.join("sub/a.txt");
+        app.start_paste(vec![src.clone()], root.join("sub"), true);
+        app.paste_done_recorded(1, 0, vec![(src.clone(), dst.clone())]);
+        assert_eq!(
+            app.key(0x7a, 0, Some("z"), ctrl),
+            vec![Effect::UndoMove(vec![(src, dst)])]
+        );
+
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

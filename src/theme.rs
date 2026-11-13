@@ -168,7 +168,10 @@ pub struct Palette {
 }
 
 pub fn palette() -> Palette {
-    let app = appearance();
+    palette_for(appearance())
+}
+
+pub fn palette_for(app: Appearance) -> Palette {
     let hc = high_contrast();
     let opaque = reduce_transparency();
     let (ar, ag, ab) = accent_color().rgb(app);
@@ -541,9 +544,9 @@ pub fn fill_frosted(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f
     fill_wallpaper_frosted(pixmap, x, y, w, h, r);
 }
 
-fn live_glass_tint(strong: bool) -> Color {
+fn live_glass_tint_for(app: Appearance, strong: bool) -> Color {
     let hc = high_contrast();
-    match appearance() {
+    match app {
         Appearance::Light => {
             if strong {
                 rgba(250, 250, 252, if hc { 205 } else { 156 })
@@ -565,10 +568,14 @@ fn live_glass_tint(strong: bool) -> Color {
 /// translucent tint over GPU Live Liquid Glass (or static frosted desktop fallback),
 /// bright inner edge (Liquid Glass highlight) and a hairline outline.
 pub fn draw_glass_panel(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32, strong: bool) {
-    let p = palette();
+    draw_glass_panel_for(pixmap, x, y, w, h, r, strong, appearance());
+}
+
+pub fn draw_glass_panel_for(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32, strong: bool, app: Appearance) {
+    let p = palette_for(app);
     let live = crate::glass::live_glass_active();
     let tint = if live {
-        live_glass_tint(strong)
+        live_glass_tint_for(app, strong)
     } else if strong {
         p.glass_fill_strong
     } else {

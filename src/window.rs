@@ -622,7 +622,7 @@ impl ManagedWindow {
 
     pub fn has_titlebar(&self) -> bool {
         // On the Подложка windows go bare; a built-in window's bar is part of its own picture
-        self.ssd && !self.fullscreen && (self.space != crate::scratch::SCRATCH_SPACE || self.is_builtin())
+        self.is_builtin() || (self.ssd && !self.fullscreen && self.space != crate::scratch::SCRATCH_SPACE)
     }
 
     pub fn titlebar_h(&self) -> i32 {
@@ -994,7 +994,7 @@ impl ManagedWindow {
     }
 
     pub fn set_fullscreen(&mut self, fullscreen: bool, screen_w: i32, screen_h: i32) {
-        if fullscreen == self.fullscreen || self.is_builtin() {
+        if fullscreen == self.fullscreen {
             return;
         }
         if fullscreen {
@@ -1005,7 +1005,7 @@ impl ManagedWindow {
             self.x = 0;
             self.y = 0;
             self.set_xdg_state(xdg_toplevel::State::Fullscreen, true);
-            self.resize_client(screen_w, screen_h);
+            self.resize_client(screen_w, (screen_h - self.titlebar_h()).max(MIN_WINDOW_H));
         } else {
             self.fullscreen = false;
             self.set_xdg_state(xdg_toplevel::State::Fullscreen, false);
