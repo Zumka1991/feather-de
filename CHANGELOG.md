@@ -2,6 +2,15 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-13 — Выпуск 0.20.5
+
+- **Авторизация отправителей на приватных и управляющих интерфейсах D-Bus** (`src/dbus_auth.rs`, `src/api/server.rs`, `src/api/mod.rs`, `src/api/automation.rs`, `src/file_portal.rs`, `crates/feather-api/src/lib.rs`, `docs/API.md`):
+  - **`org.feather.ScreenCast1`** (`/org/feather/ScreenCast1`): добавлена строгая проверка `verify_portal_backend_for_screencast` на `Start` и `Stop` — вызовы разрешены только текущему владельцу `org.freedesktop.impl.portal.desktop.feather`, чей исполняемый файл `/proc/<pid>/exe` совпадает с запущенным `feather-de` и запущен с флагом `--file-portal`, а остановка потока `Stop` дополнительно проверяет совпадение уникального имени отправителя, создавшего поток.
+  - **`org.freedesktop.impl.portal.desktop.feather`** (`Chooser`, `AccessPortal`, `ScreenshotPortal`, `ScreenCastPortal`, `PortalSession::close` в `src/file_portal.rs`): добавлена проверка `verify_xdg_portal_frontend` на все методы `org.freedesktop.impl.portal.*` — прямые вызовы в обход брокера `xdg-desktop-portal` (`org.freedesktop.portal.Desktop`, исполняемый файл `xdg-desktop-portal`) и закрытие чужих сессий отклоняются с `org.freedesktop.DBus.Error.AccessDenied`.
+  - **`org.feather.Shell1`** (`/org/feather/Shell1`): добавлена проверка `verify_shell_caller` с ограниченным кэшем соединений — отклоняются все вызовы из изолированных песочниц (Flatpak, `xdg-dbus-proxy`, Bubblewrap, Snap) и процессов чужого UID (`org.feather.Shell1.Error.AccessDenied`), а методы `Screenshot` и `ObserveWindow` дополнительно учитывают глобальный запрет `ScreenCapturePolicy::Deny` в настройках конфиденциальности.
+- **Почему.** По находке аудита внешних D-Bus интерфейсов: без проверки отправителя на приватных интерфейсах любой процесс на сессионной шине мог вызвать `org.feather.ScreenCast1.Start` напрямую мимо портала и политики `Deny`, либо подделать `app_id` прямым вызовом `org.freedesktop.impl.portal.*`. Все проверки выполняются на фоновых потоках D-Bus без касания главного цикла событий (`0 %` ЦП в простое).
+- **Проверено.** Модульные тесты `dbus_auth::tests`, сквозной тест шины `api::tests::server_routes_every_method_on_a_real_bus` (включая отказ стороннему клиенту в `ScreenCast1.Start` / `Stop`), изолированная проверка с `feather-de --windowed` и `feather-de --file-portal` на приватной шине `dbus-run-session`, `cargo build --release --workspace` без предупреждений.
+
 ## 2026-11-13 — Выпуск 0.20.4
 
 - **Значки приложений Flatpak и Snap в оболочке Пёрышка** (`src/icons.rs`):

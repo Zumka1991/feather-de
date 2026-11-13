@@ -336,23 +336,18 @@ impl Chooser {
         options: Options,
         #[zbus(object_server)] server: &ObjectServer,
         #[zbus(header)] header: Header<'_>,
-    ) -> Reply {
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<Reply> {
+        let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         let _ = (app_id, parent_window);
         let mode = if get::<bool>(&options, "directory").unwrap_or(false) {
             Mode::Directory
         } else {
             Mode::Open
         };
-        self.choose(
-            server,
-            header.sender().unwrap().to_string(),
-            handle,
-            title,
-            options,
-            mode,
-            false,
-        )
-        .await
+        Ok(self
+            .choose(server, sender, handle, title, options, mode, false)
+            .await)
     }
     #[allow(clippy::too_many_arguments)]
     async fn save_file(
@@ -364,18 +359,13 @@ impl Chooser {
         options: Options,
         #[zbus(object_server)] server: &ObjectServer,
         #[zbus(header)] header: Header<'_>,
-    ) -> Reply {
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<Reply> {
+        let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         let _ = (app_id, parent_window);
-        self.choose(
-            server,
-            header.sender().unwrap().to_string(),
-            handle,
-            title,
-            options,
-            Mode::Save,
-            false,
-        )
-        .await
+        Ok(self
+            .choose(server, sender, handle, title, options, Mode::Save, false)
+            .await)
     }
     #[allow(clippy::too_many_arguments)]
     async fn save_files(
@@ -387,18 +377,13 @@ impl Chooser {
         options: Options,
         #[zbus(object_server)] server: &ObjectServer,
         #[zbus(header)] header: Header<'_>,
-    ) -> Reply {
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<Reply> {
+        let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         let _ = (app_id, parent_window);
-        self.choose(
-            server,
-            header.sender().unwrap().to_string(),
-            handle,
-            title,
-            options,
-            Mode::Directory,
-            true,
-        )
-        .await
+        Ok(self
+            .choose(server, sender, handle, title, options, Mode::Directory, true)
+            .await)
     }
 }
 pub const MAX_CAPTURE_APPS: usize = 64;
@@ -632,13 +617,16 @@ impl AccessPortal {
         subtitle: String,
         body: String,
         options: Options,
-    ) -> Reply {
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<Reply> {
+        crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         let _ = (parent_window, body);
         if !handle
             .as_str()
             .starts_with("/org/freedesktop/portal/desktop/request/")
         {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         }
         let label = if !subtitle.trim().is_empty() {
             subtitle
@@ -648,7 +636,7 @@ impl AccessPortal {
         let allowed =
             evaluate_and_record_portal_access(&portal_config_home(), &app_id, &label);
         if !allowed {
-            return (1, Options::new());
+            return Ok((1, Options::new()));
         }
         let choices: Vec<(String, String)> = get::<Vec<WireChoice>>(&options, "choices")
             .unwrap_or_default()
@@ -657,7 +645,7 @@ impl AccessPortal {
             .collect();
         let mut r = Options::new();
         r.insert("choices".into(), value(choices));
-        (0, r)
+        Ok((0, r))
     }
 }
 
@@ -682,34 +670,37 @@ impl ScreenshotPortal {
         app_id: String,
         parent_window: String,
         options: Options,
-    ) -> Reply {
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<Reply> {
+        crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         let _ = (parent_window, options);
         if !handle
             .as_str()
             .starts_with("/org/freedesktop/portal/desktop/request/")
         {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         }
         let cfg = portal_config_home();
         if !evaluate_and_record_portal_access(&cfg, &app_id, &app_id) {
-            return (1, Options::new());
+            return Ok((1, Options::new()));
         }
         let dir = cfg.join("feather-de/portal-screenshots");
         let Some(mut pm) = tiny_skia::Pixmap::new(1, 1) else {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         };
         pm.fill(tiny_skia::Color::from_rgba8(240, 242, 245, 255));
         let Ok(bytes) = pm.encode_png() else {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         };
         let Some(saved) =
             crate::screenshot::save_to(&bytes, Some(&dir), crate::screenshot::Format::Png)
         else {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         };
         let mut r = Options::new();
         r.insert("uri".into(), value(file_uri(&saved)));
-        (0, r)
+        Ok((0, r))
     }
 
     async fn pick_color(
@@ -718,25 +709,29 @@ impl ScreenshotPortal {
         app_id: String,
         parent_window: String,
         options: Options,
-    ) -> Reply {
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<Reply> {
+        crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         let _ = (parent_window, options);
         if !handle
             .as_str()
             .starts_with("/org/freedesktop/portal/desktop/request/")
         {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         }
         if !evaluate_and_record_portal_access(&portal_config_home(), &app_id, &app_id) {
-            return (1, Options::new());
+            return Ok((1, Options::new()));
         }
         let mut r = Options::new();
         r.insert("color".into(), value((0.0f64, 0.478f64, 1.0f64)));
-        (0, r)
+        Ok((0, r))
     }
 }
 
 #[derive(Clone, Debug)]
 struct CastSessionState {
+    sender: String,
     app_id: String,
     source_type: u32,
     cursor_mode: u32,
@@ -776,6 +771,7 @@ async fn cast_stop(conn: &zbus::Connection, stream: u64) -> zbus::Result<()> {
 
 struct PortalSession {
     path: OwnedObjectPath,
+    sender: String,
     sessions: Arc<Mutex<HashMap<String, CastSessionState>>>,
 }
 
@@ -783,10 +779,15 @@ struct PortalSession {
 impl PortalSession {
     async fn close(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(object_server)] server: &ObjectServer,
         #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
+        let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
+        if sender != self.sender {
+            return Err(zbus::fdo::Error::AccessDenied("session owner only".into()));
+        }
         let removed = self
             .sessions
             .lock()
@@ -836,8 +837,11 @@ impl ScreenCastPortal {
         session_handle: OwnedObjectPath,
         app_id: String,
         options: Options,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(object_server)] server: &ObjectServer,
-    ) -> Reply {
+    ) -> zbus::fdo::Result<Reply> {
+        let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         let _ = options;
         if !handle
             .as_str()
@@ -846,21 +850,22 @@ impl ScreenCastPortal {
                 .as_str()
                 .starts_with("/org/freedesktop/portal/desktop/session/")
         {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         }
         let cfg = portal_config_home();
         if !evaluate_and_record_portal_access(&cfg, &app_id, &app_id) {
-            return (1, Options::new());
+            return Ok((1, Options::new()));
         }
         let default_cursor = if read_cursor_preference(&cfg) { 2 } else { 1 };
         {
             let mut map = self.sessions.lock().unwrap();
             if map.len() >= 16 && !map.contains_key(session_handle.as_str()) {
-                return (2, Options::new());
+                return Ok((2, Options::new()));
             }
             map.insert(
                 session_handle.as_str().to_string(),
                 CastSessionState {
+                    sender: sender.clone(),
                     app_id,
                     source_type: 1,
                     cursor_mode: default_cursor,
@@ -874,6 +879,7 @@ impl ScreenCastPortal {
                 session_handle.clone(),
                 PortalSession {
                     path: session_handle.clone(),
+                    sender,
                     sessions: self.sessions.clone(),
                 },
             )
@@ -881,7 +887,7 @@ impl ScreenCastPortal {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let mut r = Options::new();
         r.insert("session_id".into(), value(format!("feather-cast-{id}")));
-        (0, r)
+        Ok((0, r))
     }
 
     async fn select_sources(
@@ -890,21 +896,27 @@ impl ScreenCastPortal {
         session_handle: OwnedObjectPath,
         app_id: String,
         options: Options,
-    ) -> Reply {
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<Reply> {
+        let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         if !handle
             .as_str()
             .starts_with("/org/freedesktop/portal/desktop/request/")
         {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         }
         let cfg = portal_config_home();
         if !evaluate_and_record_portal_access(&cfg, &app_id, &app_id) {
-            return (1, Options::new());
+            return Ok((1, Options::new()));
         }
         let mut map = self.sessions.lock().unwrap();
         let Some(sess) = map.get_mut(session_handle.as_str()) else {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         };
+        if sess.sender != sender {
+            return Err(zbus::fdo::Error::AccessDenied("session owner only".into()));
+        }
         if let Some(types) = get::<u32>(&options, "types") {
             let masked = types & 3;
             if masked != 0 {
@@ -916,30 +928,32 @@ impl ScreenCastPortal {
                 // Metadata is not offered: the cursor is drawn into the frame instead
                 sess.cursor_mode = if cm == 4 { 2 } else { cm };
             } else {
-                return (2, Options::new());
+                return Ok((2, Options::new()));
             }
         }
         if let Some(pm) = get::<u32>(&options, "persist_mode") {
             sess.persist_mode = pm.min(2);
         }
-        (0, Options::new())
+        Ok((0, Options::new()))
     }
 
     async fn start(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] conn: &zbus::Connection,
         handle: OwnedObjectPath,
         session_handle: OwnedObjectPath,
         app_id: String,
         parent_window: String,
         options: Options,
-    ) -> Reply {
+    ) -> zbus::fdo::Result<Reply> {
+        let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
         let _ = (parent_window, options);
         if !handle
             .as_str()
             .starts_with("/org/freedesktop/portal/desktop/request/")
         {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         }
         let cfg = portal_config_home();
         let sess = {
@@ -947,18 +961,21 @@ impl ScreenCastPortal {
             map.get(session_handle.as_str()).cloned()
         };
         let Some(sess) = sess else {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         };
+        if sess.sender != sender {
+            return Err(zbus::fdo::Error::AccessDenied("session owner only".into()));
+        }
         let effective_app = if app_id.is_empty() {
             &sess.app_id
         } else {
             &app_id
         };
         if !evaluate_and_record_portal_access(&cfg, effective_app, effective_app) {
-            return (1, Options::new());
+            return Ok((1, Options::new()));
         }
         if sess.stream.is_some() {
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         }
         // The compositor creates the PipeWire node; its number goes to the application
         let started = cast_start(conn, sess.cursor_mode).await;
@@ -966,7 +983,7 @@ impl ScreenCastPortal {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Портал: композитор не начал демонстрацию: {e}");
-                return (2, Options::new());
+                return Ok((2, Options::new()));
             }
         };
         let still_open = match self.sessions.lock().unwrap().get_mut(session_handle.as_str()) {
@@ -979,7 +996,7 @@ impl ScreenCastPortal {
         if !still_open {
             // Closed while the node was being created
             let _ = cast_stop(conn, stream).await;
-            return (2, Options::new());
+            return Ok((2, Options::new()));
         }
         let mut props = Options::new();
         props.insert("position".into(), value((x, y)));
@@ -1000,7 +1017,7 @@ impl ScreenCastPortal {
                 )),
             );
         }
-        (0, r)
+        Ok((0, r))
     }
 }
 

@@ -54,6 +54,11 @@ impl FeatherCompositor {
         if !self.api.as_ref().is_some_and(|api| api.automation_enabled) {
             return Err(unavailable("Управление интерфейсом Feather выключено (FEATHER_AUTOMATION=1)"));
         }
+        if !self.api_screen_capture_allowed() {
+            return Err(Error::AccessDenied(
+                "Захват экрана запрещён в настройках конфиденциальности".into(),
+            ));
+        }
         if self.lock.active || self.auth.is_open() || self.mission_open()
             || self.shell.launchpad.is_some() || self.shell.spotlight_open
             || self.shell.control_center_open || self.shell.center_open

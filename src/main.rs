@@ -47,6 +47,7 @@ mod system_preferences;
 mod wallpaper;
 mod file_portal;
 mod file_manager1;
+mod dbus_auth;
 mod polkit_agent;
 mod auth_dialog;
 mod first_run;

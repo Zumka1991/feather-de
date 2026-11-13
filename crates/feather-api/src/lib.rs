@@ -146,6 +146,8 @@ pub enum Error {
     InvalidArgs(String),
     /// Служба (звук, яркость, плеер) недоступна в этом сеансе
     Unavailable(String),
+    /// Вызов из изолированной песочницы или от неавторизованного отправителя
+    AccessDenied(String),
     Failed(String),
 }
 

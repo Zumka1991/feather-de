@@ -70,6 +70,7 @@
 - [x] Гашение экрана и сон по простою (idle-notify, idle-inhibit), logind; сроки до 5 часов — [LOCK_POWER.md](LOCK_POWER.md)
 - [x] Меню `🪶`: «Режим сна», «Перезагрузить…», «Выключить…» (с модальным подтверждением в стиле macOS), «Заблокировать экран» (`⌘L`) и управление питанием через `org.freedesktop.login1.Manager`
 - [x] Системные настройки → «Экран блокировки и энергосбережение» — [LOCK_POWER.md](LOCK_POWER.md)
+- [x] Авторизация отправителей на сессионной шине D-Bus: `org.feather.ScreenCast1` принимает вызовы только от собственного `feather-de --file-portal` (`org.freedesktop.impl.portal.desktop.feather`), `org.freedesktop.impl.portal.*` — только от `xdg-desktop-portal` (`org.freedesktop.portal.Desktop`), а `org.feather.Shell1` блокирует вызовы из изолированных песочниц (Flatpak, `xdg-dbus-proxy`, Snap) и уважает политику запрета захвата экрана — [API.md](API.md)
 
 Реализация проверена во вложенном режиме и на отдельной тестовой шине.
 Ручная приёмка настоящего PAM, DPMS и suspend/resume в DRM ещё за пользователем;

@@ -815,7 +815,23 @@ impl FeatherCompositor {
         Ok(Reply::Done)
     }
 
+    pub(super) fn api_screen_capture_allowed(&self) -> bool {
+        if self.screen_capture_policy != crate::file_portal::ScreenCapturePolicy::Deny {
+            return true;
+        }
+        self.screen_capture_apps.iter().any(|a| {
+            a.allowed
+                && (crate::file_portal::same_app_id(&a.id, "org.feather.Shell1")
+                    || crate::file_portal::same_app_id(&a.id, "featherctl"))
+        })
+    }
+
     fn api_screenshot(&mut self, target: Shot, reply: Responder) {
+        if !self.api_screen_capture_allowed() {
+            return reply.send(Err(Error::AccessDenied(
+                "Захват экрана запрещён в настройках конфиденциальности".into(),
+            )));
+        }
         let target = match target {
             Shot::Screen => crate::screenshot::Target::Screen,
             Shot::Window => match self.window_target(|_| true) {
@@ -911,6 +927,7 @@ mod tests {
                     Call::SetVolume(p) => Some(Ok(Reply::Percent(p))),
                     Call::ChangeVolume(d) => Some(Ok(Reply::Percent(step_percent(40, d)))),
                     Call::Screenshot(_) => Some(Ok(Reply::Path("/tmp/shot.png".into()))),
+                    Call::CastStart(..) => Some(Ok(Reply::Cast { stream: 42, node: 99, rect: (0, 0, 1920, 1080) })),
                     Call::FocusWindow(404) => Some(Err(Error::NotFound("Нет окна 404".into()))),
                     // A request the loop could not finish: the responder is dropped unanswered
                     Call::CloseWindow(_) => None,
@@ -981,6 +998,54 @@ mod tests {
         let a = o.args().unwrap();
         assert_eq!((a.id, a.app_id.as_str(), a.title.as_str()), (9, "foot", "Терминал"));
         assert_eq!(focus.next().unwrap().args().unwrap().id, 9);
+        // Private org.feather.ScreenCast1 refuses any peer that is not the Feather portal backend
+        let rogue_cast = conn.call_method(
+            Some(name),
+            feather_api::CAST_PATH,
+            Some(feather_api::CAST_INTERFACE),
+            "Start",
+            &(2u32, ""),
+        );
+        assert!(rogue_cast.is_err(), "ScreenCast1 must reject non-portal callers");
+        let portal_conn = zbus::blocking::connection::Builder::session()
+            .unwrap()
+            .name("org.freedesktop.impl.portal.desktop.feather")
+            .unwrap()
+            .build()
+            .unwrap();
+        let ok_cast: (u64, u32, i32, i32, i32, i32) = portal_conn
+            .call_method(
+                Some(name),
+                feather_api::CAST_PATH,
+                Some(feather_api::CAST_INTERFACE),
+                "Start",
+                &(2u32, ""),
+            )
+            .unwrap()
+            .body()
+            .deserialize()
+            .unwrap();
+        assert_eq!((ok_cast.0, ok_cast.1), (42, 99));
+        assert!(
+            conn.call_method(
+                Some(name),
+                feather_api::CAST_PATH,
+                Some(feather_api::CAST_INTERFACE),
+                "Stop",
+                &(42u64,),
+            )
+            .is_err(),
+            "ScreenCast1.Stop must reject non-portal callers"
+        );
+        portal_conn
+            .call_method(
+                Some(name),
+                feather_api::CAST_PATH,
+                Some(feather_api::CAST_INTERFACE),
+                "Stop",
+                &(42u64,),
+            )
+            .unwrap();
         // A second compositor on the same bus leaves the owner alone
         let owner = zbus::blocking::fdo::DBusProxy::new(&conn).unwrap().get_name_owner(name.try_into().unwrap()).unwrap();
         let (r2, _s2) = channel::sync_channel::<Request>(1);
