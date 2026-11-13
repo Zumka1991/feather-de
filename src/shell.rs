@@ -2662,30 +2662,35 @@ impl MacShell {
     }
 
     fn cc_layout_for(screen_w: i32) -> (R, Vec<(R, CcItem)>) {
-        let w = 324.0;
+        let w = 360.0;
         let x = screen_w as f32 - w - 8.0;
-        let y = TOP_BAR_HEIGHT as f32 + 5.0;
+        let y = TOP_BAR_HEIGHT as f32 + 6.0;
         let p = 12.0;
-        let col = (w - p * 3.0) * 0.5;
+        let gap = 8.0;
+        let col = (w - p * 2.0 - gap) * 0.5;
+        let right = x + p + col + gap;
         let mut items = Vec::new();
         let mut cy = y + p;
-        items.push((R::new(x + p, cy, col, 50.0), CcItem::Wifi));
-        items.push((R::new(x + p, cy + 56.0, col, 50.0), CcItem::Bluetooth));
-        items.push((R::new(x + p * 2.0 + col, cy, col, 50.0), CcItem::Focus));
-        items.push((R::new(x + p * 2.0 + col, cy + 56.0, col, 50.0), CcItem::DarkMode));
-        cy += 106.0 + p;
-        items.push((R::new(x + p, cy, w - p * 2.0, 58.0), CcItem::Brightness));
-        cy += 58.0 + p;
-        items.push((R::new(x + p, cy, w - p * 2.0, 58.0), CcItem::Volume));
-        cy += 58.0 + p;
-        items.push((R::new(x + p, cy, w - p * 2.0, 58.0), CcItem::Media));
-        cy += 58.0 + p;
-        items.push((R::new(x + p, cy, col, 50.0), CcItem::Scale));
-        items.push((R::new(x + p * 2.0 + col, cy, col, 50.0), CcItem::Wallpaper));
-        cy += 50.0 + p;
-        items.push((R::new(x + p, cy, w - p * 2.0, 40.0), CcItem::Layout));
-        cy += 40.0 + p;
+        items.push((R::new(x + p, cy, col, 56.0), CcItem::Wifi));
+        items.push((R::new(x + p, cy + 56.0 + gap, col, 56.0), CcItem::Bluetooth));
+        items.push((R::new(right, cy, col, 56.0), CcItem::Focus));
+        items.push((R::new(right, cy + 56.0 + gap, col, 56.0), CcItem::DarkMode));
+        cy += 112.0 + gap * 2.0;
+        for item in [CcItem::Brightness, CcItem::Volume, CcItem::Media] {
+            items.push((R::new(x + p, cy, w - p * 2.0, 62.0), item));
+            cy += 62.0 + gap;
+        }
+        items.push((R::new(x + p, cy, col, 56.0), CcItem::Scale));
+        items.push((R::new(right, cy, col, 56.0), CcItem::Wallpaper));
+        cy += 56.0 + gap;
+        items.push((R::new(x + p, cy, w - p * 2.0, 44.0), CcItem::Layout));
+        cy += 44.0 + p;
         (R::new(x, y, w, cy - y), items)
+    }
+
+    /// The slider inside a Brightness or Volume card
+    fn cc_slider_rect(r: R) -> R {
+        R::new(r.x + 14.0, r.y + 34.0, r.w - 28.0, 18.0)
     }
 
     pub fn ensure_cc_backdrop(&mut self) {
@@ -2708,18 +2713,9 @@ impl MacShell {
         crate::theme::set_glass_origin(ox, oy);
         let mut pixels = tiny_skia::Pixmap::new(bounds.size.w as u32, bounds.size.h as u32).unwrap();
         let mut pm = pixels.as_mut();
-        draw_glass_panel(&mut pm, panel.x - ox, panel.y - oy, panel.w, panel.h, 22.0, false);
-        let hc = crate::theme::high_contrast();
-        let card = if appearance() == Appearance::Dark {
-            rgba(255, 255, 255, if hc { 38 } else { 20 })
-        } else {
-            rgba(255, 255, 255, if hc { 215 } else { 140 })
-        };
+        draw_glass_panel(&mut pm, panel.x - ox, panel.y - oy, panel.w, panel.h, crate::control_panel::PANEL_RADIUS, false);
         for (r, _) in items {
-            fill_rounded_rect(&mut pm, r.x - ox, r.y - oy, r.w, r.h, 14.0, card);
-            if hc {
-                stroke_rounded_rect(&mut pm, r.x - ox + 0.5, r.y - oy + 0.5, r.w - 1.0, r.h - 1.0, 13.5, 0.75, palette().separator);
-            }
+            crate::control_panel::card(&mut pm, R::new(r.x - ox, r.y - oy, r.w, r.h));
         }
         CcBackdrop { bounds, pixels }
     }
@@ -3070,16 +3066,16 @@ impl MacShell {
                     CcItem::Focus => return Some(ShellClickAction::ToggleDoNotDisturb),
                     CcItem::DarkMode => return Some(ShellClickAction::ToggleAppearance),
                     CcItem::Brightness => {
-                        match self.cc.start_brightness(R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),mx) {
+                        match self.cc.start_brightness(Self::cc_slider_rect(*r),mx) {
                             Some(v) => return Some(ShellClickAction::SetBrightness(v)),
                             None => self.cc.error=Some("Яркость этого дисплея недоступна: нет подсветки и монитор не отвечает по DDC/CI".into()),
                         }
                     }
                     CcItem::Volume => {
-                        if my<r.y+28.0 {
+                        if my<r.y+31.0 {
                             if mx<r.x+45.0 {return Some(self.cc.mute());}
                             self.cc.open(crate::control_panel::Page::Sound);
-                        } else {self.cc.start_slider(R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),mx);}
+                        } else {self.cc.start_slider(Self::cc_slider_rect(*r),mx);}
                     }
                     CcItem::Media => {
                         if let Some(player) = &self.cc.media {
@@ -3278,15 +3274,22 @@ impl MacShell {
         let _ = ctx.draw(|buf| {
             // Tahoe: fill the menu bar tint directly in a single pass instead of
             // zeroing the whole buffer and rasterizing a full-screen tiny_skia mask.
-            let tc = bar.tint.premultiply().to_color_u8();
-            let px = [tc.red(), tc.green(), tc.blue(), tc.alpha()];
-            for chunk in buf.chunks_exact_mut(4) {
-                chunk.copy_from_slice(&px);
+            // The tint is a little denser at the top edge and thins towards the desktop,
+            // so the bar reads as a veil over the wallpaper rather than a slab on it.
+            let fade = bar.tint.alpha() < 1.0;
+            for (row, line) in buf.chunks_exact_mut(pw as usize * 4).enumerate() {
+                let t = row as f32 / (ph - 1).max(1) as f32;
+                let tint = if fade { with_alpha(bar.tint, bar.tint.alpha() * (1.22 - 0.5 * t)) } else { bar.tint };
+                let tc = tint.premultiply().to_color_u8();
+                let px = [tc.red(), tc.green(), tc.blue(), tc.alpha()];
+                for chunk in line.chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&px);
+                }
             }
             if let Some(mut pm) = PixmapMut::from_bytes(buf, pw as u32, ph as u32) {
                 let text_y = (lh - 13.0) * 0.5 - 1.5;
                 let highlight = |pm: &mut PixmapMut, x0: f32, x1: f32| {
-                    fill_rounded_rect(pm, x0, 2.0, x1 - x0, lh - 4.0, 6.0, bar.highlight);
+                    fill_rounded_rect(pm, x0, 2.0, x1 - x0, lh - 4.0, 7.0, bar.highlight);
                 };
 
                 // Left: logo, app menu, Window, Help — all of them real menus
@@ -3303,7 +3306,11 @@ impl MacShell {
                 };
                 let shelf_reserved = if shelf.1 > 0 { 46.0 } else if shelf.0 { 30.0 } else { 0.0 };
                 let pip_reserved = if pip_state.is_some() { 30.0 } else { 0.0 };
-                let right_reserved = fonts.measure_text(&clock, 13.0, false).max(146.0) + 222.0+tray_width+if battery.is_some(){72.0}else{0.0}+if scratch.1>0{46.0}else{0.0}+shelf_reserved+pip_reserved+mode_reserved;
+                // The clock's slot is measured with every digit as the widest one, so the
+                // status items do not shuffle when a minute changes; the moon sits in it.
+                let steady: String = clock.chars().map(|c| if c.is_ascii_digit() { '0' } else { c }).collect();
+                let clock_width = fonts.measure_text(&steady, 13.0, false).ceil() + if dnd { 22.0 } else { 0.0 };
+                let right_reserved = clock_width + 222.0+tray_width+if battery.is_some(){72.0}else{0.0}+if scratch.1>0{46.0}else{0.0}+shelf_reserved+pip_reserved+mode_reserved;
                 for (label, menu, bold, enabled) in &menus {
                     let available = lw - right_reserved - x - 12.0;
                     if available < 24.0 { break; }
@@ -3320,11 +3327,10 @@ impl MacShell {
                 // A fixed grid keeps targets aligned when the source or clock changes.
                 let mut rx=lw-14.0;
                 let cw=fonts.measure_text(&clock,13.0,false);
-                let clock_width=cw.max(146.0);
-                if center_open||hover==Some(TopbarItem::Clock){highlight(&mut pm,rx-clock_width-4.0,lw-5.0);}
+                if center_open||hover==Some(TopbarItem::Clock){highlight(&mut pm,rx-clock_width-8.0,lw-6.0);}
                 fonts.draw_text(&mut pm,&clock,rx-cw,text_y,13.0,bar.text,false);
-                if dnd {crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Moon,rx-cw-12.0,lh*0.5,bar.text,false);}
-                hits.push((rx-clock_width-4.0,lw,TopbarItem::Clock));rx-=clock_width+14.0;
+                if dnd {crate::control_panel::moon(&mut pm,rx-cw-13.0,lh*0.5,0.78,bar.text);}
+                hits.push((rx-clock_width-8.0,lw,TopbarItem::Clock));rx-=clock_width+16.0;
                 if hover==Some(TopbarItem::Caffeine){highlight(&mut pm,rx-29.0,rx-1.0);}
                 crate::theme::draw_caffeine_icon(&mut pm,rx-15.0,lh*0.5,1.0,bar.text,caffeine);
                 hits.push((rx-30.0,rx,TopbarItem::Caffeine));rx-=30.0;
@@ -3384,7 +3390,7 @@ impl MacShell {
                     fonts.draw_text(&mut pm,&label,rx-width+7.0,text_y+0.5,12.0,bar.text,false);
                     hits.push((rx-width,rx,TopbarItem::Battery));rx-=width;
                 }
-                for (hit,opened) in [(TopbarItem::ControlCenter,cc_open&&!sound_open),(TopbarItem::Spotlight,sp_open),(TopbarItem::Wifi,cc_open&&!sound_open),(TopbarItem::Sound,sound_open)]{
+                for (hit,opened) in [(TopbarItem::ControlCenter,cc_open&&!sound_open),(TopbarItem::Spotlight,sp_open),(TopbarItem::Wifi,false),(TopbarItem::Sound,sound_open)]{
                     if hit==TopbarItem::Wifi&&!has_wifi {continue;}
                     if opened||hover==Some(hit){highlight(&mut pm,rx-29.0,rx-1.0);}
                     let center=rx-15.0;
@@ -3392,7 +3398,7 @@ impl MacShell {
                         TopbarItem::ControlCenter=>draw_control_center_icon(&mut pm,center,lh*0.5,bar.text),
                         TopbarItem::Spotlight=>draw_search_icon(&mut pm,center,lh*0.5,5.0,bar.text),
                         TopbarItem::Wifi=>draw_wifi_icon(&mut pm,center,lh*0.5-2.0,bar.text,wifi),
-                        TopbarItem::Sound=>crate::control_panel::speaker(&mut pm,center-0.5,lh*0.5,0.72,bar.text,muted),_=>{}
+                        TopbarItem::Sound=>crate::control_panel::speaker(&mut pm,center,lh*0.5,0.76,bar.text,muted),_=>{}
                     }
                     hits.push((rx-30.0,rx,hit));rx-=30.0;
                 }
@@ -3911,7 +3917,7 @@ impl MacShell {
         let menu_panels: Vec<_> = raw_menus.into_iter().map(|(r, rows, hovered)| (local(r), rows, hovered)).collect();
         let cc = if self.control_center_open {
             let (panel, items) = self.cc_live();
-            self.overlay_glass.push((panel, 22.0, 1.0));
+            self.overlay_glass.push((panel, crate::control_panel::PANEL_RADIUS, 1.0));
             (local(panel), items.into_iter().map(|(r, item)| (local(r), item)).collect::<Vec<_>>())
         } else {
             (R::new(0.0, 0.0, 0.0, 0.0), Vec::new())
@@ -4048,71 +4054,67 @@ impl MacShell {
                         pm.data_mut()[start..start + source_stride].copy_from_slice(source);
                     }
                 } else {
-                    draw_glass_panel(&mut pm, panel.x, panel.y, panel.w, panel.h, 22.0, false);
+                    draw_glass_panel(&mut pm, panel.x, panel.y, panel.w, panel.h, crate::control_panel::PANEL_RADIUS, false);
                 }
-                let card = if dark { rgba(255, 255, 255, 20) } else { rgba(255, 255, 255, 140) };
+                use crate::control_panel::{self as cp, Icon};
                 // Hover: global pointer → this buffer's local coordinates
                 let cc_hover = controls.hover.map(|(x, y)| (x - ox, y - oy));
                 for (r, item) in items {
-                    if cc_backdrop.is_none() { fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 14.0, card); }
-                    if cc_hover.is_some_and(|(x, y)| r.contains(x, y)) {
-                        fill_rounded_rect(&mut pm, r.x, r.y, r.w, r.h, 14.0, if dark { rgba(255, 255, 255, 18) } else { rgba(255, 255, 255, 110) });
-                    }
-                    let toggle = |pm: &mut PixmapMut, fonts: &mut FontSystem, on: bool, title: &str, sub: &str, icon:crate::control_panel::Icon| {
-                        let (cx, cy) = (r.x + 25.0, r.y + r.h * 0.5);
-                        fill_circle(pm, cx, cy, 14.0, if on { p.accent } else { p.control_fill });
-                        crate::control_panel::icon(pm,icon,cx,cy,if on {p.on_accent} else {p.text_secondary},false);
-                        fonts.draw_text_clipped(pm, title, r.x + 46.0, r.y + r.h * 0.5 - 15.0, r.w - 52.0, 13.0, p.text, true);
-                        fonts.draw_text_clipped(pm, sub, r.x + 46.0, r.y + r.h * 0.5 + 1.0, r.w - 52.0, 11.5, p.text_secondary, false);
+                    if cc_backdrop.is_none() { cp::card(&mut pm, *r); }
+                    if cc_hover.is_some_and(|(x, y)| r.contains(x, y)) { cp::card_hover(&mut pm, *r); }
+                    let mid = r.y + r.h * 0.5;
+                    // Two lines beside a plate; a title too long for the tile gets a size smaller
+                    let lines = |pm: &mut PixmapMut, fonts: &mut FontSystem, title: &str, sub: &str| {
+                        let room = r.w - 48.0 - 8.0;
+                        let size = if fonts.measure_text(title, 13.0, true) > room { 12.0 } else { 13.0 };
+                        fonts.draw_text_clipped(pm, title, r.x + 48.0, mid - 15.5, room, size, p.text, true);
+                        fonts.draw_text_clipped(pm, sub, r.x + 48.0, mid + 1.5, room, 11.5, p.text_secondary, false);
+                    };
+                    let toggle = |pm: &mut PixmapMut, fonts: &mut FontSystem, on: bool, title: &str, sub: &str, icon: Icon| {
+                        cp::disc(pm, r.x + 26.0, mid, 15.0, on);
+                        cp::icon(pm, icon, r.x + 26.0, mid, if on { p.on_accent } else { p.text }, false);
+                        lines(pm, fonts, title, sub);
+                    };
+                    let tile = |pm: &mut PixmapMut, fonts: &mut FontSystem, title: &str, sub: &str, icon: Icon| {
+                        cp::chip(pm, r.x + 26.0, mid);
+                        cp::icon(pm, icon, r.x + 26.0, mid, p.text, false);
+                        lines(pm, fonts, title, sub);
+                    };
+                    // A slider card: glyph, title, value on the right, the slider under them
+                    let header = |pm: &mut PixmapMut, fonts: &mut FontSystem, icon: Icon, title: &str, value: &str, muted: bool| {
+                        cp::icon(pm, icon, r.x + 24.0, r.y + 18.0, p.text, muted);
+                        fonts.draw_text(pm, title, r.x + 42.0, r.y + 9.5, 13.0, p.text, true);
+                        fonts.draw_text_right(pm, value, r.x + r.w - 14.0, r.y + 11.0, 11.5, p.text_secondary, false);
                     };
                     match item {
-                        CcItem::Wifi => toggle(&mut pm, fonts, wifi, "Wi‑Fi", controls.wifi.subtitle(),crate::control_panel::Icon::Wifi),
-                        CcItem::Bluetooth => toggle(
-                            &mut pm,
-                            fonts,
-                            controls.bluetooth.available && controls.bluetooth.powered,
-                            "Bluetooth",
-                            controls.bluetooth.subtitle(),
-                            crate::control_panel::Icon::Bluetooth,
-                        ),
-                        CcItem::Focus => toggle(&mut pm, fonts, dnd, "Не беспокоить", if dnd { "Вкл." } else { "Выкл." },crate::control_panel::Icon::Moon),
-                        CcItem::DarkMode => toggle(&mut pm, fonts, dark, "Тёмный режим", if dark { "Вкл." } else { "Выкл." },crate::control_panel::Icon::Contrast),
+                        CcItem::Wifi => toggle(&mut pm, fonts, wifi, "Wi‑Fi", controls.wifi.subtitle(), Icon::Wifi),
+                        CcItem::Bluetooth => toggle(&mut pm, fonts, controls.bluetooth.available && controls.bluetooth.powered, "Bluetooth", controls.bluetooth.subtitle(), Icon::Bluetooth),
+                        CcItem::Focus => toggle(&mut pm, fonts, dnd, "Не беспокоить", if dnd { "Вкл." } else { "Выкл." }, Icon::Moon),
+                        CcItem::DarkMode => toggle(&mut pm, fonts, dark, "Тёмный режим", if dark { "Вкл." } else { "Выкл." }, Icon::Contrast),
                         CcItem::Brightness => match controls.shown_brightness() {
                             Some(b) => {
-                                crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Sun,r.x+25.0,r.y+16.0,p.text,false);
-                                fonts.draw_text(&mut pm,"Дисплей",r.x+46.0,r.y+7.0,13.0,p.text,true);
-                                fonts.draw_text_right(&mut pm,&format!("{}%",(b*100.0).round() as u32),r.x+r.w-14.0,r.y+8.0,11.0,p.text_secondary,false);
-                                crate::control_panel::slider(&mut pm,R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),b,true);
+                                header(&mut pm, fonts, Icon::Sun, "Дисплей", &format!("{}%", (b * 100.0).round() as u32), false);
+                                cp::slider(&mut pm, Self::cc_slider_rect(*r), b, true);
                             }
                             None => {
-                                crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Sun,r.x+25.0,r.y+27.0,p.text_secondary,false);
-                                fonts.draw_text(&mut pm,"Дисплей",r.x+46.0,r.y+10.0,13.0,p.text,true);
-                                fonts.draw_text_clipped(&mut pm,"Яркость недоступна",r.x+46.0,r.y+29.0,r.w-58.0,11.5,p.text_secondary,false);
+                                header(&mut pm, fonts, Icon::Sun, "Дисплей", "", false);
+                                fonts.draw_text_clipped(&mut pm, "Яркость этого дисплея недоступна", r.x + 14.0, r.y + 35.0, r.w - 28.0, 11.5, p.text_secondary, false);
                             }
                         },
                         CcItem::Volume => {
-                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Speaker,r.x+25.0,r.y+16.0,p.text,controls.audio.current().is_some_and(|s|s.muted));
-                            fonts.draw_text(&mut pm,"Звук",r.x+46.0,r.y+7.0,13.0,p.text,true);
-                            let sub=controls.audio.current().map(|s| if s.muted {"Без звука".into()} else {format!("{}% · Устройства ›",(vol*100.0).round() as u32)}).unwrap_or_else(||"Нет устройств ›".into());
-                            fonts.draw_text_right(&mut pm,&sub,r.x+r.w-14.0,r.y+8.0,11.0,p.text_secondary,false);
-                            crate::control_panel::slider(&mut pm,R::new(r.x+14.0,r.y+30.0,r.w-28.0,20.0),vol,controls.audio.current().is_some());
+                            let current = controls.audio.current();
+                            let muted = current.is_some_and(|s| s.muted);
+                            let sub = current.map(|s| if s.muted { "Без звука ›".into() } else { format!("{}% ›", (vol * 100.0).round() as u32) }).unwrap_or_else(|| "Нет устройств ›".into());
+                            header(&mut pm, fonts, Icon::Speaker, "Звук", &sub, muted);
+                            cp::slider(&mut pm, Self::cc_slider_rect(*r), vol, current.is_some());
                         }
-                        CcItem::Media => crate::control_panel::paint_media(&mut pm, fonts, controls.media.as_ref(), *r),
-                        CcItem::Scale => {
-                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Scale,r.x+23.0,r.y+25.0,p.text_secondary,false);
-                            fonts.draw_text(&mut pm, "Масштаб", r.x + 42.0, r.y + 8.0, 13.0, p.text, true);
-                            fonts.draw_text(&mut pm, &scale_pct, r.x + 42.0, r.y + 26.0, 12.0, p.text_secondary, false);
-                        }
-                        CcItem::Wallpaper => {
-                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Wallpaper,r.x+23.0,r.y+25.0,p.text_secondary,false);
-                            fonts.draw_text(&mut pm, "Обои", r.x + 42.0, r.y + 8.0, 13.0, p.text, true);
-                            fonts.draw_text_clipped(&mut pm, theme_name, r.x + 42.0, r.y + 26.0, r.w - 50.0, 12.0, p.text_secondary, false);
-                        }
+                        CcItem::Media => cp::paint_media(&mut pm, fonts, controls.media.as_ref(), *r),
+                        CcItem::Scale => tile(&mut pm, fonts, "Масштаб", &scale_pct, Icon::Scale),
+                        CcItem::Wallpaper => tile(&mut pm, fonts, "Обои", theme_name, Icon::Wallpaper),
                         CcItem::Layout => {
-                            crate::control_panel::icon(&mut pm,crate::control_panel::Icon::Keyboard,r.x+25.0,r.y+20.0,p.text_secondary,false);
-                            fonts.draw_text(&mut pm, "Источник ввода", r.x + 46.0, r.y + 11.5, 13.0, p.text, true);
-                            let name = active_input_label;
-                            fonts.draw_text_right(&mut pm, name, r.x + r.w - 14.0, r.y + 11.5, 13.0, p.text_secondary, false);
+                            cp::icon(&mut pm, Icon::Keyboard, r.x + 26.0, mid, p.text, false);
+                            fonts.draw_text(&mut pm, "Источник ввода", r.x + 48.0, mid - 8.5, 13.0, p.text, true);
+                            fonts.draw_text_right(&mut pm, active_input_label, r.x + r.w - 14.0, mid - 8.5, 13.0, p.text_secondary, false);
                         }
                     }
                 }
@@ -5036,6 +5038,128 @@ mod appmenu_tests {
             }
         }
         sheet.save(out).unwrap();
+    }
+
+    /// Visual check: the menu bar with every status item and Control Center with its pages
+    /// over a bundled wallpaper, light and dark. Writes PNGs into the directory
+    /// FEATHER_CC_SHOWCASE (run with --ignored). Nothing of the system is touched.
+    #[test]
+    #[ignore = "writes screenshots: FEATHER_CC_SHOWCASE=/dir cargo test --release control_center_showcase -- --ignored"]
+    fn control_center_showcase() {
+        let Some(out) = std::env::var_os("FEATHER_CC_SHOWCASE") else { return };
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let (lw, lh, scale) = (1440, 900, 2.0f32);
+        let (pw, ph) = ((lw as f32 * scale) as i32, (lh as f32 * scale) as i32);
+        let (crop_w, crop_h) = ((760.0 * scale) as i32, (520.0 * scale) as i32);
+        use crate::control_panel::Page;
+        for (look, wallpaper, tag) in [(Appearance::Light, 0usize, "light"), (Appearance::Dark, 1, "dark")] {
+            let wall = image::load_from_memory(crate::wallpaper::bundled_bytes(wallpaper)).unwrap()
+                .resize_to_fill(pw as u32, ph as u32, image::imageops::FilterType::Triangle).to_rgba8().into_raw();
+            crate::theme::with_render_settings(scale, look, || {
+                let mut fonts = FontSystem::new();
+                let registry = AppRegistry::new();
+                let mut shell = MacShell::new(lw, lh);
+                shell.toasts.clear();
+                let glass = crate::wallpaper::glass(&wall, (pw, ph), ((pw / 8).max(8), (ph / 8).max(8)), if look == Appearance::Dark { 0.8 } else { 1.0 });
+                shell.install_asset(crate::raster::Asset::Wallpaper { pixels: Vec::new(), size: (pw, ph), image: None, glass, preview: Default::default() });
+                let net = |label: &str, strength: u8, active: bool, security| crate::controls::network::Network {
+                    ssid: label.as_bytes().to_vec(), label: label.into(), device: "/d".into(), ap: format!("/ap/{label}"),
+                    saved: active.then(|| "/s".to_string()), security, strength, active,
+                };
+                use crate::controls::network::Security;
+                shell.cc.wifi = crate::controls::network::Wifi {
+                    available: true, enabled: true, hardware: true, connected: Some("Feather 5G".into()),
+                    networks: vec![net("Feather 5G", 92, true, Security::Psk), net("Кофейня", 71, false, Security::Open), net("Sosedi_2.4", 48, false, Security::Psk), net("TP-Link_A1F0", 30, false, Security::Psk)],
+                    ..Default::default()
+                };
+                shell.wifi_enabled = true;
+                shell.cc.bluetooth = crate::controls::bluetooth::Bluetooth {
+                    available: true, powered: true, connected: Some("AirPods Pro".into()),
+                    devices: vec![
+                        crate::controls::bluetooth::BtDevice { path: "/1".into(), name: "AirPods Pro".into(), icon: "audio-headphones".into(), paired: true, connected: true, battery: Some(85), ..Default::default() },
+                        crate::controls::bluetooth::BtDevice { path: "/2".into(), name: "MX Master 3".into(), icon: "input-mouse".into(), paired: true, ..Default::default() },
+                        crate::controls::bluetooth::BtDevice { path: "/3".into(), name: "Keychron K2".into(), icon: "input-keyboard".into(), ..Default::default() },
+                    ],
+                    ..Default::default()
+                };
+                shell.cc.audio = crate::controls::Audio {
+                    default: "usb".into(),
+                    sinks: vec![
+                        crate::controls::Sink { name: "usb".into(), label: "USB · Наушники".into(), channels: vec![40000, 40000], ..Default::default() },
+                        crate::controls::Sink { name: "hdmi".into(), label: "HDMI · Монитор".into(), channels: vec![30000, 30000], ..Default::default() },
+                    ],
+                    ..Default::default()
+                };
+                shell.cc.media = Some(crate::mpris::Player { identity: "Rhythmbox".into(), title: "Тяжёлые времена".into(), artist: "Цифей".into(), playing: true, can_next: true, can_previous: true, ..Default::default() });
+                shell.scratch_count = 3;
+                shell.shelf_count = 1;
+                shell.dnd_enabled = true;
+                shell.battery = Some(crate::battery::Battery { percent: 78, charging: false, full: false, seconds: 0 });
+                let frame = |shell: &mut MacShell, fonts: &mut FontSystem, name: &str| {
+                    shell.topbar_dirty = true;
+                    shell.ensure_topbar_rendered(fonts, "Файлы", "EN");
+                    let mut bar = Vec::new();
+                    let _ = shell.topbar_buffer.render().draw(|d| { bar.extend_from_slice(d); Ok::<_, ()>(Vec::new()) });
+                    let mut over: Option<(Vec<u8>, Rectangle<i32, Buffer>)> = None;
+                    if shell.has_visible_overlay() {
+                        // Second paint is the steady cost: fonts and glyphs are warm
+                        for _ in 0..2 {
+                            shell.overlay_dirty = true;
+                            let started = Instant::now();
+                            shell.ensure_overlay_rendered(fonts, &registry, "EN");
+                            eprintln!("{name}-{tag}: overlay paint {:.2} ms", started.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        let mut o = Vec::new();
+                        let _ = shell.overlay_buffer.render().draw(|d| { o.extend_from_slice(d); Ok::<_, ()>(Vec::new()) });
+                        over = Some((o, shell.overlay_geometry));
+                    }
+                    let bar_h = (TOP_BAR_HEIGHT as f32 * scale) as i32;
+                    let h = if over.is_some() { crop_h } else { bar_h * 3 };
+                    let mut shot = image::RgbaImage::new(crop_w as u32, h as u32);
+                    let x0 = pw - crop_w;
+                    for y in 0..h {
+                        for x in 0..crop_w {
+                            let sx = x0 + x;
+                            let i = ((y * pw + sx) * 4) as usize;
+                            let mut c = [wall[i] as f32, wall[i + 1] as f32, wall[i + 2] as f32];
+                            let mut blend = |p: &[u8]| {
+                                let a = p[3] as f32 / 255.0;
+                                for k in 0..3 { c[k] = p[k] as f32 + c[k] * (1.0 - a); }
+                            };
+                            if y < bar_h { let b = ((y * pw + sx) * 4) as usize; blend(&bar[b..b + 4]); }
+                            if let Some((o, g)) = &over {
+                                let (ox, oy) = (sx - g.loc.x, y - g.loc.y);
+                                if ox >= 0 && oy >= 0 && ox < g.size.w && oy < g.size.h {
+                                    let j = ((oy * g.size.w + ox) * 4) as usize;
+                                    blend(&o[j..j + 4]);
+                                }
+                            }
+                            shot.put_pixel(x as u32, y as u32, image::Rgba([c[0] as u8, c[1] as u8, c[2] as u8, 255]));
+                        }
+                    }
+                    shot.save(out.join(format!("{name}-{tag}.png"))).unwrap();
+                };
+                frame(&mut shell, &mut fonts, "1-bar");
+                shell.control_center_open = true;
+                frame(&mut shell, &mut fonts, "2-control-center");
+                // As in a session: glass and cards come from the prepared plate
+                shell.cc_backdrop = Some(MacShell::raster_cc_backdrop((lw, lh)));
+                for _ in 0..3 {
+                    shell.overlay_dirty = true;
+                    let started = Instant::now();
+                    shell.ensure_overlay_rendered(&mut fonts, &registry, "EN");
+                    eprintln!("control-center-{tag} with the prepared plate: {:.2} ms", started.elapsed().as_secs_f64() * 1000.0);
+                }
+                shell.cc_backdrop = None;
+                for (name, page) in [("3-wifi", Page::Wifi), ("4-bluetooth", Page::Bluetooth), ("5-sound", Page::Sound)] {
+                    shell.cc.open(page);
+                    frame(&mut shell, &mut fonts, name);
+                }
+                shell.cc.close();
+                shell.control_center_open = false;
+            });
+        }
     }
 
     #[test]

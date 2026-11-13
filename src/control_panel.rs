@@ -600,14 +600,15 @@ impl Panel {
     }
     pub fn paint(&self, pm: &mut PixmapMut, fonts: &mut FontSystem, p: R) {
         let pal = palette();
-        let heading = with_alpha(pal.text, 0.90);
-        draw_glass_panel(pm, p.x, p.y, p.w, p.h, 22.0, false);
-        if let Some((_, r)) = self.hover_target(p) {
-            let tint = if appearance() == Appearance::Dark { rgba(255, 255, 255, 22) } else { rgba(0, 0, 0, 16) };
-            fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 8.0, tint);
+        let heading = pal.text_secondary;
+        draw_glass_panel(pm, p.x, p.y, p.w, p.h, PANEL_RADIUS, false);
+        let hover = self.hover_target(p);
+        if let Some((_, r)) = hover.filter(|(key, _)| *key != 1) {
+            let tint = if appearance() == Appearance::Dark { rgba(255, 255, 255, 22) } else { rgba(0, 0, 0, 14) };
+            fill_rounded_rect(pm, r.x, r.y, r.w, r.h, 10.0, tint);
         }
         if !self.sound_only {
-            fonts.draw_text(pm, "‹", p.x + 16.0, p.y + 10.0, 24.0, pal.text, false);
+            back_button(pm, p.x + 28.0, p.y + 26.0, hover.is_some_and(|(key, _)| key == 1));
         }
         let title = match self.page {
             Page::Wifi => "Wi‑Fi",
@@ -616,36 +617,20 @@ impl Panel {
             Page::Password => "Подключение",
             _ => "",
         };
-        fonts.draw_text(pm, title, p.x + if self.sound_only { 18.0 } else { 48.0 }, p.y + 17.0, 15.0, pal.text, true);
+        fonts.draw_text(pm, title, p.x + if self.sound_only { 18.0 } else { 52.0 }, p.y + 17.0, 15.0, pal.text, true);
+        // A hairline under the page's own action and one above the link to Settings
+        let rule = |pm: &mut PixmapMut, y: f32| fill_rounded_rect(pm, p.x + 18.0, p.y + y, p.w - 36.0, 0.75, 0.35, pal.separator);
+        // One row of a list: a round plate with the glyph, two lines of text
+        let row_text = |pm: &mut PixmapMut, fonts: &mut FontSystem, y: f32, name: &str, sub: &str, active: bool, right: f32| {
+            fonts.draw_text_clipped(pm, name, p.x + 52.0, y + 2.5, p.w - 70.0 - right, 13.0, pal.text, active);
+            fonts.draw_text_clipped(pm, sub, p.x + 52.0, y + 19.0, p.w - 70.0 - right, 10.5, pal.text_secondary, false);
+        };
         if self.page == Page::Wifi {
             let can = self.wifi.available && self.wifi.hardware;
-            fill_rounded_rect(
-                pm,
-                p.x + p.w - 59.0,
-                p.y + 15.0,
-                40.0,
-                22.0,
-                11.0,
-                if can && self.wifi.enabled {
-                    pal.accent
-                } else {
-                    pal.control_fill
-                },
-            );
-            fill_circle(
-                pm,
-                p.x + p.w - if self.wifi.enabled { 29.0 } else { 49.0 },
-                p.y + 26.0,
-                8.0,
-                pal.on_accent,
-            );
+            switch(pm, p.x + p.w - 59.0, p.y + 15.0, can && self.wifi.enabled);
             fonts.draw_text_clipped(
                 pm,
-                if self.wifi.enabled && self.wifi.available && self.wifi.hardware {
-                    "Обновить сети ↻"
-                } else {
-                    self.wifi.subtitle()
-                },
+                if self.wifi.enabled && can { "Обновить сети ↻" } else { self.wifi.subtitle() },
                 p.x + 18.0,
                 p.y + 58.0,
                 p.w - 36.0,
@@ -653,43 +638,20 @@ impl Panel {
                 heading,
                 false,
             );
+            rule(pm, 85.0);
             if self.wifi.enabled && self.wifi.available {
-                for (row, n) in self
-                    .wifi
-                    .networks
-                    .iter()
-                    .skip(self.scroll)
-                    .take(5)
-                    .enumerate()
-                {
+                for (row, n) in self.wifi.networks.iter().skip(self.scroll).take(5).enumerate() {
                     let y = p.y + 88.0 + row as f32 * 38.0;
                     if y + 38.0 > p.y + p.h - 90.0 {
                         break;
                     }
                     if n.active {
-                        fill_rounded_rect(
-                            pm,
-                            p.x + 10.0,
-                            y,
-                            p.w - 20.0,
-                            34.0,
-                            8.0,
-                            with_alpha(pal.accent, 0.14),
-                        );
+                        fill_rounded_rect(pm, p.x + 10.0, y, p.w - 20.0, 34.0, 10.0, with_alpha(pal.accent, 0.13));
                     }
-                    draw_wifi_icon(pm, p.x + 28.0, y + 17.0, pal.text, true);
-                    fonts.draw_text_clipped(
-                        pm,
-                        &n.label,
-                        p.x + 49.0,
-                        y + 3.0,
-                        p.w - 104.0,
-                        13.0,
-                        pal.text,
-                        n.active,
-                    );
+                    disc(pm, p.x + 29.0, y + 17.0, 13.0, n.active);
+                    wifi_signal(pm, p.x + 29.0, y + 17.6, if n.active { pal.on_accent } else { pal.text }, n.strength);
                     let sub = if n.active {
-                        "Подключено · нажмите, чтобы отключить"
+                        "Подключено"
                     } else if n.saved.is_some() {
                         "Сохранённая сеть"
                     } else if n.security == Security::Open {
@@ -697,69 +659,25 @@ impl Panel {
                     } else {
                         "Защищённая сеть"
                     };
-                    fonts.draw_text_clipped(
-                        pm,
-                        sub,
-                        p.x + 49.0,
-                        y + 19.0,
-                        p.w - 69.0,
-                        10.0,
-                        pal.text_secondary,
-                        false,
-                    );
-                    fonts.draw_text_right(
-                        pm,
-                        &format!("{}%", n.strength),
-                        p.x + p.w - 18.0,
-                        y + 4.0,
-                        10.0,
-                        pal.text_secondary,
-                        false,
-                    );
+                    let locked = n.security != Security::Open;
+                    row_text(pm, fonts, y, &n.label, sub, n.active, if locked && n.active { 44.0 } else { 22.0 });
+                    let mut right = p.x + p.w - 28.0;
+                    if n.active {
+                        checkmark(pm, right, y + 17.0, pal.accent);
+                        right -= 22.0;
+                    }
+                    if locked {
+                        lock(pm, right, y + 16.0, pal.text_tertiary);
+                    }
                 }
                 if self.wifi.networks.is_empty() {
-                    fonts.draw_text(
-                        pm,
-                        "Сети пока не найдены",
-                        p.x + 18.0,
-                        p.y + 100.0,
-                        12.0,
-                        pal.text_secondary,
-                        false,
-                    );
+                    fonts.draw_text(pm, "Сети пока не найдены", p.x + 18.0, p.y + 100.0, 12.0, pal.text_secondary, false);
                 }
             }
-            fonts.draw_text(
-                pm,
-                "Настройки сети…",
-                p.x + 18.0,
-                p.y + p.h - 29.0,
-                12.0,
-                pal.accent,
-                false,
-            );
+            rule(pm, p.h - 45.0);
+            fonts.draw_text(pm, "Настройки сети…", p.x + 18.0, p.y + p.h - 32.0, 12.5, pal.text, false);
         } else if self.page == Page::Bluetooth {
-            let can = self.bluetooth.available;
-            fill_rounded_rect(
-                pm,
-                p.x + p.w - 59.0,
-                p.y + 15.0,
-                40.0,
-                22.0,
-                11.0,
-                if can && self.bluetooth.powered {
-                    pal.accent
-                } else {
-                    pal.control_fill
-                },
-            );
-            fill_circle(
-                pm,
-                p.x + p.w - if self.bluetooth.powered { 29.0 } else { 49.0 },
-                p.y + 26.0,
-                8.0,
-                pal.on_accent,
-            );
+            switch(pm, p.x + p.w - 59.0, p.y + 15.0, self.bluetooth.available && self.bluetooth.powered);
             fonts.draw_text_clipped(
                 pm,
                 if self.bluetooth.powered && self.bluetooth.available {
@@ -778,43 +696,20 @@ impl Panel {
                 heading,
                 false,
             );
+            rule(pm, 85.0);
             if self.bluetooth.powered && self.bluetooth.available {
-                for (row, d) in self
-                    .bluetooth
-                    .devices
-                    .iter()
-                    .skip(self.scroll)
-                    .take(5)
-                    .enumerate()
-                {
+                for (row, d) in self.bluetooth.devices.iter().skip(self.scroll).take(5).enumerate() {
                     let y = p.y + 88.0 + row as f32 * 38.0;
                     if y + 38.0 > p.y + p.h - 90.0 {
                         break;
                     }
                     if d.connected {
-                        fill_rounded_rect(
-                            pm,
-                            p.x + 10.0,
-                            y,
-                            p.w - 20.0,
-                            34.0,
-                            8.0,
-                            with_alpha(pal.accent, 0.14),
-                        );
+                        fill_rounded_rect(pm, p.x + 10.0, y, p.w - 20.0, 34.0, 10.0, with_alpha(pal.accent, 0.13));
                     }
-                    icon(pm, Icon::Bluetooth, p.x + 28.0, y + 17.0, pal.text, false);
-                    fonts.draw_text_clipped(
-                        pm,
-                        &d.name,
-                        p.x + 49.0,
-                        y + 3.0,
-                        p.w - 104.0,
-                        13.0,
-                        pal.text,
-                        d.connected,
-                    );
+                    disc(pm, p.x + 29.0, y + 17.0, 13.0, d.connected);
+                    device_glyph(pm, &d.icon, p.x + 29.0, y + 17.0, if d.connected { pal.on_accent } else { pal.text });
                     let sub = if d.connected {
-                        "Подключено · нажмите, чтобы отключить"
+                        "Подключено"
                     } else if self.bluetooth.connecting.as_deref() == Some(d.path.as_str()) {
                         "Подключение… · нажмите, чтобы отменить"
                     } else if d.paired {
@@ -822,59 +717,22 @@ impl Panel {
                     } else {
                         d.kind_label()
                     };
-                    fonts.draw_text_clipped(
-                        pm,
-                        sub,
-                        p.x + 49.0,
-                        y + 19.0,
-                        p.w - 69.0,
-                        10.0,
-                        pal.text_secondary,
-                        false,
-                    );
+                    row_text(pm, fonts, y, &d.name, sub, d.connected, if d.battery.is_some() { 64.0 } else { 0.0 });
                     if let Some(battery) = d.battery {
-                        fonts.draw_text_right(
-                            pm,
-                            &format!("{battery}%"),
-                            p.x + p.w - 18.0,
-                            y + 4.0,
-                            10.0,
-                            pal.text_secondary,
-                            false,
-                        );
+                        draw_battery_icon(pm, p.x + p.w - 31.0, y + 17.0, pal.text_secondary, battery, false, battery <= 15);
+                        fonts.draw_text_right(pm, &format!("{battery}%"), p.x + p.w - 47.0, y + 10.5, 11.0, pal.text_secondary, false);
                     }
                 }
                 if self.bluetooth.devices.is_empty() {
-                    fonts.draw_text(
-                        pm,
-                        "Устройства пока не найдены",
-                        p.x + 18.0,
-                        p.y + 100.0,
-                        12.0,
-                        pal.text_secondary,
-                        false,
-                    );
+                    fonts.draw_text(pm, "Устройства пока не найдены", p.x + 18.0, p.y + 100.0, 12.0, pal.text_secondary, false);
                 }
             }
-            fonts.draw_text(
-                pm,
-                "Настройки Bluetooth…",
-                p.x + 18.0,
-                p.y + p.h - 29.0,
-                12.0,
-                pal.accent,
-                false,
-            );
+            rule(pm, p.h - 45.0);
+            fonts.draw_text(pm, "Настройки Bluetooth…", p.x + 18.0, p.y + p.h - 32.0, 12.5, pal.text, false);
         } else if self.page == Page::Sound {
-            icon(
-                pm,
-                Icon::Speaker,
-                p.x + 28.0,
-                p.y + 68.0,
-                pal.text,
-                self.audio.current().is_some_and(|s| s.muted),
-            );
             let muted = self.audio.current().is_some_and(|s| s.muted);
+            disc(pm, p.x + 29.0, p.y + 67.0, 13.0, !muted && self.audio.current().is_some());
+            speaker(pm, p.x + 29.5, p.y + 67.0, 0.72, if muted || self.audio.current().is_none() { pal.text } else { pal.on_accent }, muted);
             fonts.draw_text(
                 pm,
                 if muted {
@@ -882,8 +740,8 @@ impl Panel {
                 } else {
                     "Выключить звук"
                 },
-                p.x + 50.0,
-                p.y + 57.0,
+                p.x + 52.0,
+                p.y + 58.0,
                 13.0,
                 pal.text,
                 false,
@@ -907,8 +765,8 @@ impl Panel {
                 pm,
                 "Устройство вывода",
                 p.x + 18.0,
-                p.y + 129.0,
-                12.0,
+                p.y + 130.0,
+                11.5,
                 heading,
                 true,
             );
@@ -935,8 +793,8 @@ impl Panel {
                         y,
                         p.w - 20.0,
                         32.0,
-                        8.0,
-                        with_alpha(pal.accent, 0.14),
+                        10.0,
+                        with_alpha(pal.accent, 0.13),
                     );
                 }
                 fonts.draw_text_clipped(
@@ -950,19 +808,19 @@ impl Panel {
                     active,
                 );
                 if active {
-                    fonts.draw_text(pm, "✓", p.x + p.w - 31.0, y + 7.0, 13.0, pal.accent, true);
+                    checkmark(pm, p.x + p.w - 28.0, y + 16.0, pal.accent);
                 }
             }
             if stream_rows > 0 {
                 let hdr_y = p.y + 151.0 + rows as f32 * OUTPUT_ROW + 7.0;
                 self.streams_top.set(hdr_y);
-                fill_rounded_rect(pm, p.x + 18.0, hdr_y - 3.0, p.w - 36.0, 0.75, 0.35, pal.glass_outline);
+                fill_rounded_rect(pm, p.x + 18.0, hdr_y - 3.0, p.w - 36.0, 0.75, 0.35, pal.separator);
                 fonts.draw_text(
                     pm,
                     "Программы",
                     p.x + 18.0,
-                    hdr_y + 2.0,
-                    12.0,
+                    hdr_y + 3.0,
+                    11.5,
                     heading,
                     true,
                 );
@@ -986,14 +844,7 @@ impl Panel {
                     .enumerate()
                 {
                     let ry = streams_y0 + row as f32 * STREAM_ROW;
-                    icon(
-                        pm,
-                        Icon::Speaker,
-                        p.x + 25.0,
-                        ry + 11.0,
-                        if stream.muted { pal.text_tertiary } else { pal.text },
-                        stream.muted,
-                    );
+                    speaker(pm, p.x + 26.0, ry + 11.0, 0.72, if stream.muted { pal.text_tertiary } else { pal.text }, stream.muted);
                     let title_max = if multi_sink { p.w - 160.0 } else { p.w - 60.0 };
                     fonts.draw_text_clipped(
                         pm,
@@ -1007,8 +858,7 @@ impl Panel {
                     );
                     if multi_sink {
                         let pill = R::new(p.x + p.w - 112.0, ry + 1.0, 96.0, 20.0);
-                        fill_rounded_rect(pm, pill.x, pill.y, pill.w, pill.h, 6.0, pal.control_fill);
-                        stroke_rounded_rect(pm, pill.x, pill.y, pill.w, pill.h, 6.0, 0.5, pal.glass_outline);
+                        fill_rounded_rect(pm, pill.x, pill.y, pill.w, pill.h, 10.0, quiet_fill());
                         let route = format!("↦ {}", self.stream_sink_label(stream));
                         fonts.draw_text_clipped(
                             pm,
@@ -1042,15 +892,8 @@ impl Panel {
                 self.streams_top.set(0.0);
             }
             if !self.sound_only {
-                fonts.draw_text(
-                    pm,
-                    "Настройки звука…",
-                    p.x + 18.0,
-                    p.y + p.h - 29.0,
-                    12.0,
-                    pal.accent,
-                    false,
-                );
+                fill_rounded_rect(pm, p.x + 18.0, p.y + p.h - 45.0, p.w - 36.0, 0.75, 0.35, pal.separator);
+                fonts.draw_text(pm, "Настройки звука…", p.x + 18.0, p.y + p.h - 32.0, 12.5, pal.text, false);
             }
         } else if self.page == Page::Password {
             let name = self
@@ -1083,8 +926,8 @@ impl Panel {
                 p.y + 129.0,
                 p.w - 36.0,
                 36.0,
-                9.0,
-                pal.control_fill,
+                10.0,
+                quiet_fill(),
             );
             self.password.draw_masked(pm, fonts, p.x + 28.0, p.y + 139.0, p.w - 56.0, 13.0, pal.text, pal.accent);
             fonts.draw_text(
@@ -1114,7 +957,7 @@ impl Panel {
                 p.y + p.h - 61.0,
                 p.w - 36.0,
                 37.0,
-                10.0,
+                12.0,
                 pal.accent,
             );
             fonts.draw_text_centered(
@@ -1158,22 +1001,225 @@ impl Panel {
         }
     }
 }
-pub fn slider(pm: &mut PixmapMut, r: R, value: f32, enabled: bool) {
-    let p = palette();
-    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, p.control_fill);
-    if enabled {
-        fill_rounded_rect(
-            pm,
-            r.x,
-            r.y,
-            (r.w * value).max(r.h),
-            r.h,
-            r.h / 2.0,
-            p.accent,
-        );
-    }
-    stroke_rounded_rect(pm, r.x, r.y, r.w, r.h, r.h / 2.0, 0.5, p.glass_outline);
+/// Corner radii of Control Center: the panel and the cards inside it
+pub const PANEL_RADIUS: f32 = 26.0;
+pub const CARD_RADIUS: f32 = 16.0;
+
+fn scaled() -> tiny_skia::Transform {
+    tiny_skia::Transform::from_scale(ui_scale(), ui_scale())
 }
+
+/// A stroke with round caps and joins, so glyphs read as one drawn line
+fn stroke_path(pm: &mut PixmapMut, path: Option<tiny_skia::Path>, width: f32, color: Color) {
+    let Some(path) = path else { return };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    let stroke = tiny_skia::Stroke {
+        width,
+        line_cap: tiny_skia::LineCap::Round,
+        line_join: tiny_skia::LineJoin::Round,
+        ..Default::default()
+    };
+    pm.stroke_path(&path, &paint, &stroke, scaled(), None);
+}
+
+fn fill_shape(pm: &mut PixmapMut, path: Option<tiny_skia::Path>, color: Color) {
+    let Some(path) = path else { return };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(color);
+    paint.anti_alias = true;
+    pm.fill_path(&path, &paint, tiny_skia::FillRule::Winding, scaled(), None);
+}
+
+fn polyline(points: &[(f32, f32)], close: bool) -> Option<tiny_skia::Path> {
+    let mut pb = tiny_skia::PathBuilder::new();
+    for (i, (x, y)) in points.iter().enumerate() {
+        if i == 0 { pb.move_to(*x, *y) } else { pb.line_to(*x, *y) }
+    }
+    if close { pb.close(); }
+    pb.finish()
+}
+
+fn arc_points(out: &mut Vec<(f32, f32)>, cx: f32, cy: f32, r: f32, a0: f32, a1: f32) {
+    let steps = 18;
+    for k in 0..=steps {
+        let t = a0 + (a1 - a0) * k as f32 / steps as f32;
+        out.push((cx + r * t.cos(), cy + r * t.sin()));
+    }
+}
+
+fn arc(cx: f32, cy: f32, r: f32, a0: f32, a1: f32) -> Option<tiny_skia::Path> {
+    let mut points = Vec::with_capacity(19);
+    arc_points(&mut points, cx, cy, r, a0, a1);
+    polyline(&points, false)
+}
+
+/// The colour moved towards white: the lit top of a gradient
+fn lift(c: Color, t: f32) -> Color {
+    Color::from_rgba(c.red() + (1.0 - c.red()) * t, c.green() + (1.0 - c.green()) * t, c.blue() + (1.0 - c.blue()) * t, c.alpha()).unwrap_or(c)
+}
+
+fn quiet_fill() -> Color {
+    if appearance() == Appearance::Dark { rgba(255, 255, 255, 30) } else { rgba(0, 0, 0, 22) }
+}
+
+/// A card of Control Center: translucent surface with a rim lit from above. The prepared
+/// backdrop and the live paint both come here, so the two always agree.
+pub fn card(pm: &mut PixmapMut, r: R) {
+    let dark = appearance() == Appearance::Dark;
+    let hc = high_contrast();
+    let fill = if dark { rgba(255, 255, 255, if hc { 38 } else { 22 }) } else { rgba(255, 255, 255, if hc { 215 } else { 150 }) };
+    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, CARD_RADIUS, fill);
+    let (top, bottom) = if dark { (rgba(255, 255, 255, 38), rgba(255, 255, 255, 8)) } else { (rgba(255, 255, 255, 215), rgba(255, 255, 255, 70)) };
+    if let Some(path) = rounded_rect_path(r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, CARD_RADIUS - 0.5) {
+        let mut paint = tiny_skia::Paint { anti_alias: true, ..Default::default() };
+        match tiny_skia::LinearGradient::new(
+            tiny_skia::Point::from_xy(0.0, r.y),
+            tiny_skia::Point::from_xy(0.0, r.y + r.h),
+            vec![tiny_skia::GradientStop::new(0.0, top), tiny_skia::GradientStop::new(1.0, bottom)],
+            tiny_skia::SpreadMode::Pad,
+            tiny_skia::Transform::identity(),
+        ) {
+            Some(shader) => paint.shader = shader,
+            None => paint.set_color(top),
+        }
+        pm.stroke_path(&path, &paint, &tiny_skia::Stroke { width: 1.0, ..Default::default() }, scaled(), None);
+    }
+    if hc {
+        stroke_rounded_rect(pm, r.x + 0.5, r.y + 0.5, r.w - 1.0, r.h - 1.0, CARD_RADIUS - 0.5, 0.75, palette().separator);
+    }
+}
+
+/// The pointer over a card
+pub fn card_hover(pm: &mut PixmapMut, r: R) {
+    let tint = if appearance() == Appearance::Dark { rgba(255, 255, 255, 16) } else { rgba(255, 255, 255, 105) };
+    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, CARD_RADIUS, tint);
+}
+
+/// Round plate under a glyph: the accent, lit from above, when the thing is on
+pub fn disc(pm: &mut PixmapMut, cx: f32, cy: f32, r: f32, on: bool) {
+    if on {
+        let accent = palette().accent;
+        if let Some(path) = tiny_skia::PathBuilder::from_circle(cx, cy, r) {
+            fill_path_gradient(pm, &path, cy - r, cy + r, lift(accent, 0.24), accent);
+        }
+    } else {
+        fill_circle(pm, cx, cy, r, quiet_fill());
+    }
+}
+
+/// Rounded-square plate under the glyph of a tile that is not a switch
+pub fn chip(pm: &mut PixmapMut, cx: f32, cy: f32) {
+    fill_rounded_rect(pm, cx - 15.0, cy - 15.0, 30.0, 30.0, 9.0, quiet_fill());
+}
+
+fn knob(pm: &mut PixmapMut, cx: f32, cy: f32, r: f32) {
+    fill_circle(pm, cx, cy + 0.8, r + 0.6, rgba(0, 0, 0, 34));
+    fill_circle(pm, cx, cy, r, rgba(255, 255, 255, 255));
+}
+
+/// A 40×22 switch
+pub fn switch(pm: &mut PixmapMut, x: f32, y: f32, on: bool) {
+    if on {
+        let accent = palette().accent;
+        if let Some(path) = rounded_rect_path(x, y, 40.0, 22.0, 11.0) {
+            fill_path_gradient(pm, &path, y, y + 22.0, lift(accent, 0.16), accent);
+        }
+    } else {
+        fill_rounded_rect(pm, x, y, 40.0, 22.0, 11.0, quiet_fill());
+    }
+    knob(pm, x + if on { 29.0 } else { 11.0 }, y + 11.0, 9.0);
+}
+
+/// The round «back» button of a detail page
+fn back_button(pm: &mut PixmapMut, cx: f32, cy: f32, hot: bool) {
+    let pal = palette();
+    let fill = if hot { with_alpha(pal.text, 0.16) } else { quiet_fill() };
+    fill_circle(pm, cx, cy, 14.0, fill);
+    stroke_path(pm, polyline(&[(cx + 2.0, cy - 5.0), (cx - 3.0, cy), (cx + 2.0, cy + 5.0)], false), 1.8, pal.text);
+}
+
+fn checkmark(pm: &mut PixmapMut, cx: f32, cy: f32, color: Color) {
+    stroke_path(pm, polyline(&[(cx - 4.6, cy + 0.4), (cx - 1.4, cy + 3.6), (cx + 4.8, cy - 3.8)], false), 1.8, color);
+}
+
+fn lock(pm: &mut PixmapMut, cx: f32, cy: f32, color: Color) {
+    fill_rounded_rect(pm, cx - 4.0, cy - 0.8, 8.0, 6.2, 1.6, color);
+    stroke_path(pm, arc(cx, cy - 1.2, 2.5, std::f32::consts::PI, std::f32::consts::TAU), 1.3, color);
+}
+
+/// Wi‑Fi fan whose arcs say how strong the signal is
+fn wifi_signal(pm: &mut PixmapMut, cx: f32, cy: f32, color: Color, strength: u8) {
+    let bars = match strength { 0..=34 => 1, 35..=64 => 2, _ => 3 };
+    let (a0, a1) = (-std::f32::consts::FRAC_PI_4 * 3.0, -std::f32::consts::FRAC_PI_4);
+    for (i, r) in [4.2f32, 7.6].into_iter().enumerate() {
+        let ink = if i + 2 <= bars { color } else { with_alpha(color, 0.3) };
+        stroke_path(pm, arc(cx, cy + 3.6, r, a0, a1), 1.5, ink);
+    }
+    fill_circle(pm, cx, cy + 3.4, 1.4, color);
+}
+
+/// What kind of thing a Bluetooth device is, from its BlueZ icon name
+fn device_glyph(pm: &mut PixmapMut, name: &str, x: f32, y: f32, color: Color) {
+    use std::f32::consts::PI;
+    if name.starts_with("audio-head") {
+        stroke_path(pm, arc(x, y + 0.5, 5.6, PI, PI * 2.0), 1.5, color);
+        fill_rounded_rect(pm, x - 7.0, y + 0.2, 3.4, 5.8, 1.5, color);
+        fill_rounded_rect(pm, x + 3.6, y + 0.2, 3.4, 5.8, 1.5, color);
+    } else if name.starts_with("audio-") {
+        speaker(pm, x + 0.5, y, 0.72, color, false);
+    } else if name == "input-keyboard" {
+        stroke_rounded_rect(pm, x - 7.5, y - 4.5, 15.0, 9.0, 2.2, 1.3, color);
+        for i in -1..=1 {
+            fill_circle(pm, x + i as f32 * 3.4, y - 1.4, 0.8, color);
+        }
+        stroke_path(pm, polyline(&[(x - 3.4, y + 1.8), (x + 3.4, y + 1.8)], false), 1.3, color);
+    } else if name == "input-mouse" || name == "input-tablet" {
+        stroke_rounded_rect(pm, x - 4.2, y - 6.5, 8.4, 13.0, 4.2, 1.4, color);
+        stroke_path(pm, polyline(&[(x, y - 4.0), (x, y - 1.4)], false), 1.4, color);
+    } else if name.starts_with("phone") {
+        stroke_rounded_rect(pm, x - 4.2, y - 6.8, 8.4, 13.6, 2.2, 1.4, color);
+        fill_circle(pm, x, y + 4.2, 0.9, color);
+    } else {
+        bluetooth_rune(pm, x, y, 0.68, color);
+    }
+}
+
+fn bluetooth_rune(pm: &mut PixmapMut, x: f32, y: f32, s: f32, color: Color) {
+    let at = |a: f32, b: f32| (x + a * s, y + b * s);
+    stroke_path(pm, polyline(&[at(-5.0, -5.0), at(5.0, 5.0), at(0.0, 10.0), at(0.0, -10.0), at(5.0, -5.0), at(-5.0, 5.0)], false), 1.5, color);
+}
+
+/// Crescent: a disc with a smaller one bitten out of its upper right
+pub fn moon(pm: &mut PixmapMut, x: f32, y: f32, s: f32, color: Color) {
+    let (big, small, apart, turn) = (7.6 * s, 6.4 * s, 4.4 * s, -0.62f32);
+    let alpha = ((apart * apart + big * big - small * small) / (2.0 * apart * big)).acos();
+    let gamma = (big * alpha.sin()).atan2(big * alpha.cos() - apart);
+    let (bx, by) = (x - 0.9 * s, y + 0.6 * s);
+    let (sx, sy) = (bx + apart * turn.cos(), by + apart * turn.sin());
+    let mut points = Vec::with_capacity(40);
+    arc_points(&mut points, bx, by, big, turn + alpha, turn + std::f32::consts::TAU - alpha);
+    arc_points(&mut points, sx, sy, small, turn + std::f32::consts::TAU - gamma, turn + gamma);
+    fill_shape(pm, polyline(&points, true), color);
+}
+
+/// A capsule with the accent up to the value and a white knob at its end. The geometry of
+/// `r` is also the hit area, so the knob stays inside it.
+pub fn slider(pm: &mut PixmapMut, r: R, value: f32, enabled: bool) {
+    let half = r.h / 2.0;
+    fill_rounded_rect(pm, r.x, r.y, r.w, r.h, half, quiet_fill());
+    if !enabled {
+        return;
+    }
+    let accent = palette().accent;
+    let w = (r.w * value.clamp(0.0, 1.0)).max(r.h);
+    if let Some(path) = rounded_rect_path(r.x, r.y, w, r.h, half) {
+        fill_path_gradient(pm, &path, r.y, r.y + r.h, lift(accent, 0.16), accent);
+    }
+    knob(pm, r.x + w - half, r.y + half, half - 1.5);
+}
+
 /// Centres of ⏮ ⏯ ⏭ on the «Сейчас исполняется» card
 fn media_buttons(r: R) -> [f32; 3] {
     [r.x + r.w - 92.0, r.x + r.w - 60.0, r.x + r.w - 28.0]
@@ -1197,17 +1243,38 @@ pub fn media_hit(player: &crate::mpris::Player, r: R, x: f32) -> crate::mpris::C
     }
 }
 
+/// The cover's place on the media card: a note on a warm plate while something plays
+fn media_cover(pm: &mut PixmapMut, x: f32, y: f32, size: f32, live: bool) {
+    let ink = if live {
+        if let Some(path) = rounded_rect_path(x, y, size, size, 9.0) {
+            fill_path_gradient(pm, &path, y, y + size, rgba(255, 106, 112, 255), rgba(246, 48, 84, 255));
+        }
+        rgba(255, 255, 255, 255)
+    } else {
+        fill_rounded_rect(pm, x, y, size, size, 9.0, quiet_fill());
+        palette().text_tertiary
+    };
+    let (cx, cy) = (x + size * 0.5 - 0.6, y + size * 0.5 + 0.4);
+    fill_circle(pm, cx - 3.4, cy + 4.4, 2.3, ink);
+    fill_circle(pm, cx + 4.4, cy + 2.8, 2.3, ink);
+    stroke_path(pm, polyline(&[(cx - 1.8, cy + 4.4), (cx - 1.8, cy - 5.0), (cx + 6.0, cy - 6.6), (cx + 6.0, cy + 2.8)], false), 1.5, ink);
+    stroke_path(pm, polyline(&[(cx - 1.8, cy - 4.0), (cx + 6.0, cy - 5.6)], false), 2.2, ink);
+}
+
 pub fn paint_media(pm: &mut PixmapMut, fonts: &mut FontSystem, player: Option<&crate::mpris::Player>, r: R) {
     let pal = palette();
+    let cover = 38.0;
+    let cy = r.y + r.h * 0.5;
+    media_cover(pm, r.x + 11.0, cy - cover * 0.5, cover, player.is_some());
+    let text_x = r.x + 11.0 + cover + 11.0;
     let Some(player) = player else {
-        fonts.draw_text(pm, "Не исполняется", r.x + 16.0, r.y + 20.0, 13.0, pal.text_secondary, false);
+        fonts.draw_text(pm, "Не исполняется", text_x, cy - 8.5, 13.0, pal.text_secondary, false);
         return;
     };
     let [prev, play, next] = media_buttons(r);
-    let width = prev - 18.0 - (r.x + 16.0);
-    fonts.draw_text_clipped(pm, &player.title, r.x + 16.0, r.y + 11.0, width, 13.0, pal.text, true);
-    fonts.draw_text_clipped(pm, player.subtitle(), r.x + 16.0, r.y + 30.0, width, 11.5, pal.text_secondary, false);
-    let cy = r.y + r.h * 0.5;
+    let width = prev - 18.0 - text_x;
+    fonts.draw_text_clipped(pm, &player.title, text_x, cy - 16.0, width, 13.0, pal.text, true);
+    fonts.draw_text_clipped(pm, player.subtitle(), text_x, cy + 1.5, width, 11.5, pal.text_secondary, false);
     let ink = |on: bool| if on { pal.text } else { pal.text_tertiary };
     media_glyph(pm, MediaGlyph::Previous, prev, cy, ink(player.can_previous));
     media_glyph(pm, if player.playing { MediaGlyph::Pause } else { MediaGlyph::Play }, play, cy, pal.text);
@@ -1223,48 +1290,44 @@ enum MediaGlyph {
 }
 
 fn media_glyph(pm: &mut PixmapMut, kind: MediaGlyph, x: f32, y: f32, color: Color) {
+    // Filled triangles with a hair of round stroke, so the tips are not needle-sharp
     let triangle = |pm: &mut PixmapMut, tip: f32, base: f32, h: f32| {
-        let mut path = tiny_skia::PathBuilder::new();
-        path.move_to(x + base, y - h);
-        path.line_to(x + tip, y);
-        path.line_to(x + base, y + h);
-        path.close();
-        if let Some(path) = path.finish() {
-            let mut paint = tiny_skia::Paint::default();
-            paint.set_color(color);
-            paint.anti_alias = true;
-            pm.fill_path(&path, &paint, tiny_skia::FillRule::Winding, tiny_skia::Transform::from_scale(ui_scale(), ui_scale()), None);
-        }
+        let path = polyline(&[(x + base, y - h), (x + tip, y), (x + base, y + h)], true);
+        fill_shape(pm, path.clone(), color);
+        stroke_path(pm, path, 1.2, color);
     };
     match kind {
-        MediaGlyph::Play => triangle(pm, 7.0, -5.0, 7.0),
+        MediaGlyph::Play => triangle(pm, 6.5, -4.5, 6.2),
         MediaGlyph::Pause => {
-            fill_rounded_rect(pm, x - 5.5, y - 7.0, 4.0, 14.0, 1.0, color);
-            fill_rounded_rect(pm, x + 1.5, y - 7.0, 4.0, 14.0, 1.0, color);
+            fill_rounded_rect(pm, x - 5.5, y - 6.5, 4.0, 13.0, 1.4, color);
+            fill_rounded_rect(pm, x + 1.5, y - 6.5, 4.0, 13.0, 1.4, color);
         }
         MediaGlyph::Next => {
-            triangle(pm, 1.0, -8.0, 6.0);
-            triangle(pm, 9.0, 0.0, 6.0);
+            triangle(pm, 0.5, -7.5, 5.0);
+            triangle(pm, 8.5, 0.5, 5.0);
         }
         MediaGlyph::Previous => {
-            triangle(pm, -1.0, 8.0, 6.0);
-            triangle(pm, -9.0, 0.0, 6.0);
+            triangle(pm, -0.5, 7.5, 5.0);
+            triangle(pm, -8.5, -0.5, 5.0);
         }
     }
 }
 
-/// Speaker, crossed out when muted; `s` scales it (the menu bar one is smaller)
+/// Speaker: a solid cone with two waves, or a cross when muted; `s` scales it (the menu
+/// bar one is smaller)
 pub fn speaker(pm: &mut PixmapMut, x: f32, y: f32, s: f32, color: Color, muted: bool) {
-    let line = |pm: &mut PixmapMut, a: f32, b: f32, c: f32, d: f32| stroke_line(pm, x + a * s, y + b * s, x + c * s, y + d * s, 1.5, color);
-    for (a, b, c, d) in [(-9., -3., -5., -3.), (-5., -3., 1., -8.), (1., -8., 1., 8.), (1., 8., -5., 3.), (-5., 3., -9., 3.), (-9., 3., -9., -3.)] {
-        line(pm, a, b, c, d);
-    }
+    let at = |a: f32, b: f32| (x + a * s, y + b * s);
+    let width = if s < 0.9 { 1.35 } else { 1.5 };
+    let cone = polyline(&[at(-9.0, -2.6), at(-5.8, -2.6), at(-1.2, -6.6), at(-1.2, 6.6), at(-5.8, 2.6), at(-9.0, 2.6)], true);
+    fill_shape(pm, cone.clone(), color);
+    stroke_path(pm, cone, 1.3, color);
     if muted {
-        line(pm, 5., -4., 11., 4.);
-        line(pm, 5., 4., 11., -4.);
+        stroke_path(pm, polyline(&[at(3.4, -3.4), at(9.6, 3.4)], false), width, color);
+        stroke_path(pm, polyline(&[at(3.4, 3.4), at(9.6, -3.4)], false), width, color);
     } else {
-        line(pm, 5., -5., 8., 0.);
-        line(pm, 8., 0., 5., 5.);
+        let (cx, cy) = at(0.2, 0.0);
+        stroke_path(pm, arc(cx, cy, 4.4 * s, -0.72, 0.72), width, color);
+        stroke_path(pm, arc(cx, cy, 8.2 * s, -0.78, 0.78), width, color);
     }
 }
 
@@ -1281,72 +1344,41 @@ pub enum Icon {
     Keyboard,
 }
 pub fn icon(pm: &mut PixmapMut, kind: Icon, x: f32, y: f32, color: Color, muted: bool) {
-    let line = |pm: &mut PixmapMut, a: f32, b: f32, c: f32, d: f32| {
-        stroke_line(pm, x + a, y + b, x + c, y + d, 1.5, color)
-    };
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
     match kind {
-        Icon::Wifi => draw_wifi_icon(pm, x, y, color, true),
-        Icon::Bluetooth => {
-            for (a, b, c, d) in [
-                (0., -10., 0., 10.),
-                (0., -10., 6., -5.),
-                (6., -5., -6., 5.),
-                (-6., -5., 6., 5.),
-                (6., 5., 0., 10.),
-            ] {
-                line(pm, a, b, c, d);
-            }
-        }
-        Icon::Moon => {
-            let mut path = tiny_skia::PathBuilder::new();
-            path.move_to(x + 4.0, y - 7.0);
-            path.cubic_to(x - 10.0, y - 10.0, x - 10.0, y + 10.0, x + 4.0, y + 7.0);
-            path.cubic_to(x - 4.0, y + 5.0, x - 4.0, y - 5.0, x + 4.0, y - 7.0);
-            path.close();
-            if let Some(path) = path.finish() {
-                let mut paint = tiny_skia::Paint::default();
-                paint.set_color(color);
-                paint.anti_alias = true;
-                pm.fill_path(
-                    &path,
-                    &paint,
-                    tiny_skia::FillRule::Winding,
-                    tiny_skia::Transform::from_scale(ui_scale(), ui_scale()),
-                    None,
-                );
-            }
-        }
+        Icon::Wifi => wifi_signal(pm, x, y + 0.6, color, 100),
+        Icon::Bluetooth => bluetooth_rune(pm, x, y, 0.78, color),
+        Icon::Moon => moon(pm, x, y, 1.0, color),
         Icon::Contrast => {
-            stroke_rounded_rect(pm, x - 8., y - 8., 16., 16., 8., 1.5, color);
-            fill_rounded_rect(pm, x - 6., y - 6., 6., 12., 2., color);
+            stroke_circle(pm, x, y, 7.2, 1.5, color);
+            let mut half = Vec::with_capacity(20);
+            arc_points(&mut half, x, y, 4.6, FRAC_PI_2, FRAC_PI_2 * 3.0);
+            fill_shape(pm, polyline(&half, true), color);
         }
         Icon::Sun => {
-            stroke_rounded_rect(pm, x - 4., y - 4., 8., 8., 4., 1.5, color);
+            stroke_circle(pm, x, y, 3.6, 1.5, color);
             for i in 0..8 {
-                let a = i as f32 * std::f32::consts::FRAC_PI_4;
-                line(pm, a.cos() * 7., a.sin() * 7., a.cos() * 10., a.sin() * 10.);
+                let (sin, cos) = (i as f32 * FRAC_PI_4).sin_cos();
+                stroke_path(pm, polyline(&[(x + cos * 6.6, y + sin * 6.6), (x + cos * 8.8, y + sin * 8.8)], false), 1.5, color);
             }
         }
-        Icon::Speaker => speaker(pm, x, y, 1.0, color, muted),
+        Icon::Speaker => speaker(pm, x, y, 0.92, color, muted),
         Icon::Scale => {
-            stroke_rounded_rect(pm, x - 8., y - 7., 16., 14., 2., 1.5, color);
-            line(pm, -4., 3., 4., -3.);
-            line(pm, 0., -3., 4., -3.);
-            line(pm, 4., -3., 4., 1.);
+            stroke_rounded_rect(pm, x - 7.5, y - 6.5, 15.0, 13.0, 3.0, 1.4, color);
+            stroke_path(pm, polyline(&[(x - 3.2, y + 2.8), (x + 3.2, y - 2.8)], false), 1.4, color);
+            stroke_path(pm, polyline(&[(x - 0.6, y - 2.8), (x + 3.2, y - 2.8), (x + 3.2, y + 1.0)], false), 1.4, color);
         }
         Icon::Wallpaper => {
-            stroke_rounded_rect(pm, x - 9., y - 7., 18., 14., 2., 1.5, color);
-            line(pm, -7., 5., -1., -1.);
-            line(pm, -1., -1., 2., 2.);
-            line(pm, 2., 2., 6., -3.);
-            fill_circle(pm, x - 4., y - 3., 1.5, color);
+            stroke_rounded_rect(pm, x - 8.0, y - 6.5, 16.0, 13.0, 3.0, 1.4, color);
+            stroke_path(pm, polyline(&[(x - 6.0, y + 4.2), (x - 1.6, y - 0.4), (x + 1.2, y + 2.2), (x + 3.4, y + 0.2), (x + 6.0, y + 3.2)], false), 1.4, color);
+            fill_circle(pm, x + 3.4, y - 2.8, 1.4, color);
         }
         Icon::Keyboard => {
-            stroke_rounded_rect(pm, x - 10., y - 6., 20., 12., 2., 1.5, color);
+            stroke_rounded_rect(pm, x - 9.0, y - 5.5, 18.0, 11.0, 2.8, 1.4, color);
             for i in -2..=2 {
-                fill_circle(pm, x + i as f32 * 3., y - 2., 0.8, color);
+                fill_circle(pm, x + i as f32 * 3.0, y - 1.8, 0.8, color);
             }
-            line(pm, -5., 2., 5., 2.);
+            stroke_path(pm, polyline(&[(x - 4.2, y + 2.0), (x + 4.2, y + 2.0)], false), 1.4, color);
         }
     }
 }
