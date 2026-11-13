@@ -549,19 +549,64 @@ fn live_glass_tint_for(app: Appearance, strong: bool) -> Color {
     match app {
         Appearance::Light => {
             if strong {
-                rgba(250, 250, 252, if hc { 205 } else { 156 })
+                rgba(250, 250, 252, if hc { 228 } else { 198 })
             } else {
-                rgba(246, 246, 248, if hc { 188 } else { 130 })
+                rgba(246, 246, 248, if hc { 188 } else { 134 })
             }
         }
         Appearance::Dark => {
             if strong {
-                rgba(38, 38, 43, if hc { 208 } else { 160 })
+                rgba(36, 36, 42, if hc { 232 } else { 202 })
             } else {
-                rgba(34, 34, 39, if hc { 190 } else { 134 })
+                rgba(34, 34, 39, if hc { 190 } else { 138 })
             }
         }
     }
+}
+
+#[inline]
+pub fn srgb_u8_to_linear(v: u8) -> f32 {
+    let c = v as f32 / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Fast 4×4 WCAG relative-luminance probe of `GLASS_BG` under logical rect `(x, y, w, h)`
+/// inside the current buffer (`GLASS_ORIGIN`). Zero allocations, ~16 texel reads.
+fn sample_glass_luma(x: f32, y: f32, w: f32, h: f32) -> Option<f32> {
+    let (ox, oy) = GLASS_ORIGIN.with(|o| o.get());
+    GLASS_BG.with(|g| {
+        let (bg, sx, sy) = g.borrow().as_ref().map(|(b, sx, sy)| (b.clone(), *sx, *sy))?;
+        let (bw, bh) = (bg.width() as i32, bg.height() as i32);
+        if bw <= 0 || bh <= 0 || sx <= 0.0 || sy <= 0.0 {
+            return None;
+        }
+        let data = bg.data();
+        let (mut sum, mut n) = (0.0f32, 0.0f32);
+        for gy in 0..4 {
+            let py = oy + y + h * ((gy as f32 + 0.5) * 0.25);
+            let iy = ((py / sy).floor() as i32).clamp(0, bh - 1) as usize;
+            for gx in 0..4 {
+                let px = ox + x + w * ((gx as f32 + 0.5) * 0.25);
+                let ix = ((px / sx).floor() as i32).clamp(0, bw - 1) as usize;
+                let p = &data[(iy * bw as usize + ix) * 4..][..4];
+                let a = p[3] as f32;
+                if a < 1.0 {
+                    continue;
+                }
+                let inv = 255.0 / a;
+                let r = srgb_u8_to_linear((p[0] as f32 * inv).round().clamp(0.0, 255.0) as u8);
+                let gr = srgb_u8_to_linear((p[1] as f32 * inv).round().clamp(0.0, 255.0) as u8);
+                let b = srgb_u8_to_linear((p[2] as f32 * inv).round().clamp(0.0, 255.0) as u8);
+                sum += 0.2126 * r + 0.7152 * gr + 0.0722 * b;
+                n += 1.0;
+            }
+        }
+        (n > 0.0).then_some(sum / n)
+    })
 }
 
 /// Glass panel used by menus, Spotlight, Control Center, notifications and Drop Shelf:
@@ -598,6 +643,94 @@ pub fn draw_glass_panel_for(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f
     if !painted { fill_rounded_rect(pixmap, x, y, w, h, r, tint); }
     stroke_rounded_rect(pixmap, x + 0.75, y + 0.75, w - 1.5, h - 1.5, r - 0.75, 1.0, p.glass_edge);
     stroke_rounded_rect(pixmap, x - 0.25, y - 0.25, w + 0.5, h + 0.5, r + 0.25, 0.5, p.glass_outline);
+}
+
+/// High-contrast liquid-glass menu card (top bar drop-downs, tray & Dock context menus).
+/// Requires ~12 pt padding around `(x, y, w, h)` in the target buffer (already provided by
+/// `overlay_panel_rects` `.grow(16.0)`): draws an exterior-only halo shadow that never muddies
+/// the translucent glass interior, and locally boosts tint opacity when the wallpaper behind
+/// the menu opposes the menu's polarity (e.g. dark mountain slopes under a light menu, or
+/// bright sunlit clouds under a dark menu).
+pub fn draw_menu_panel_for(pixmap: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, r: f32, app: Appearance) {
+    let hc = high_contrast();
+    let opaque = reduce_transparency();
+    let live = crate::glass::live_glass_active();
+    // Exterior-only multi-ring drop shadow: touches zero pixels inside (x, y, w, h)
+    let shadow_mul = if app == Appearance::Dark { 1.35 } else { 1.0 };
+    for (expand, width, base_a) in [
+        (1.0f32, 2.0f32, 34.0f32),
+        (2.8, 2.4, 22.0),
+        (5.2, 3.0, 13.0),
+        (8.4, 3.8, 6.0),
+    ] {
+        let a = (base_a * shadow_mul).round().clamp(0.0, 255.0) as u8;
+        stroke_rounded_rect(
+            pixmap,
+            x - expand,
+            y - expand + 1.5,
+            w + expand * 2.0,
+            h + expand * 2.0,
+            r + expand,
+            width,
+            rgba(0, 0, 0, a),
+        );
+    }
+
+    let bg_luma = if opaque { None } else { sample_glass_luma(x, y, w, h) };
+    let tint = match app {
+        Appearance::Light => {
+            if opaque {
+                rgba(250, 250, 252, 255)
+            } else {
+                // Boost white frost when sitting over dark rocks/trees so the card stays crisp
+                let oppose = bg_luma.map_or(0.35, |l| ((0.42 - l) / 0.42).clamp(0.0, 1.0));
+                let base = if live { 206.0 } else { 220.0 };
+                let a = if hc { 242 } else { (base + oppose * 22.0).round().clamp(0.0, 244.0) as u8 };
+                rgba(250, 251, 253, a)
+            }
+        }
+        Appearance::Dark => {
+            if opaque {
+                rgba(42, 42, 46, 255)
+            } else {
+                // Boost charcoal frost when sitting over bright sky/sunlight
+                let oppose = bg_luma.map_or(0.35, |l| ((l - 0.18) / 0.55).clamp(0.0, 1.0));
+                let base = if live { 210.0 } else { 222.0 };
+                let a = if hc { 244 } else { (base + oppose * 22.0).round().clamp(0.0, 245.0) as u8 };
+                rgba(34, 35, 40, a)
+            }
+        }
+    };
+
+    let painted = if live || opaque {
+        false
+    } else if let Some(path) = rounded_rect_path(x, y, w, h, r) {
+        let origin = GLASS_ORIGIN.with(|o| o.get());
+        GLASS_BG.with(|g| {
+            if let Some((bg, sx, sy)) = g.borrow().as_ref() {
+                let _profile = crate::cpu_profile::Span::new(crate::cpu_profile::Part::Frosted);
+                crate::ui_raster::frosted(pixmap, &path, ui_scale(), bg.as_ref().as_ref(), (*sx, *sy), origin, Some(tint));
+                true
+            } else {
+                false
+            }
+        })
+    } else {
+        return;
+    };
+    if !painted {
+        fill_rounded_rect(pixmap, x, y, w, h, r, tint);
+    }
+    let edge = match app {
+        Appearance::Light => rgba(255, 255, 255, 225),
+        Appearance::Dark => rgba(255, 255, 255, if hc { 105 } else { 62 }),
+    };
+    let outline = match app {
+        Appearance::Light => rgba(0, 0, 0, if hc { 110 } else { 48 }),
+        Appearance::Dark => rgba(0, 0, 0, if hc { 195 } else { 150 }),
+    };
+    stroke_rounded_rect(pixmap, x + 0.75, y + 0.75, w - 1.5, h - 1.5, r - 0.75, 1.0, edge);
+    stroke_rounded_rect(pixmap, x - 0.25, y - 0.25, w + 0.5, h + 0.5, r + 0.25, 0.75, outline);
 }
 
 /// Separable box blur (3 passes ≈ gaussian) of a single-channel float image

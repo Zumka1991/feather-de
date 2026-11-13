@@ -305,6 +305,7 @@ pub struct Panel {
     pub confirming: bool,
     pub queued_mode: Option<(usize, bool)>,
     pub scroll: f32,
+    pub picker_scroll: f32,
     pub audio_drag: Option<(R, crate::controls::Control)>,
     pub audio_sent_volume: Option<f32>,
 }
@@ -1036,6 +1037,7 @@ impl Panel {
             if sym == keysyms::KEY_Escape {
                 self.autostart_picker = false;
                 self.autostart_query.clear();
+                self.picker_scroll = 0.0;
                 return None;
             }
             if matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter) {
@@ -1046,7 +1048,7 @@ impl Panel {
             if self.autostart_query.key(sym, utf8.as_deref(), ctrl, shift)
                 == feather_ui::input::Edit::Changed
             {
-                self.scroll = 0.0;
+                self.picker_scroll = 0.0;
             }
             return None;
         }
@@ -1054,6 +1056,7 @@ impl Panel {
             if sym == keysyms::KEY_Escape {
                 self.privacy_picker = false;
                 self.privacy_query.clear();
+                self.picker_scroll = 0.0;
                 return None;
             }
             if matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter) {
@@ -1064,13 +1067,14 @@ impl Panel {
             if self.privacy_query.key(sym, utf8.as_deref(), ctrl, shift)
                 == feather_ui::input::Edit::Changed
             {
-                self.scroll = 0.0;
+                self.picker_scroll = 0.0;
             }
             return None;
         }
         if sym == keysyms::KEY_Escape {
             self.time_editing = false;
             self.zone_picker = false;
+            self.picker_scroll = 0.0;
             return None;
         }
         if matches!(sym, keysyms::KEY_Return | keysyms::KEY_KP_Enter) {
@@ -1091,7 +1095,7 @@ impl Panel {
         *text = std::mem::take(text).with_limit(if query { 64 } else { 16 });
         let edit = text.key(sym, utf8.as_deref(), ctrl, shift);
         if query && edit == feather_ui::input::Edit::Changed {
-            self.scroll = 0.0;
+            self.picker_scroll = 0.0;
         }
         None
     }
@@ -2264,12 +2268,13 @@ impl Panel {
                         Some(Action::AutostartSearchFocus),
                     );
                     let query = self.autostart_query.to_lowercase();
-                    let matches: Vec<_> = state
+                    let filtered: Vec<_> = state
                         .apps
                         .iter()
                         .filter(|a| app_matches(a, &query))
-                        .take(8)
                         .collect();
+                    let offset = self.picker_offset(filtered.len());
+                    let matches: Vec<_> = filtered.into_iter().skip(offset).take(8).collect();
                     if matches.is_empty() {
                         l.fixed(
                             R::new(sheet.x + 16.0, sheet.y + 88.0, sw - 32.0, 28.0),
@@ -2428,12 +2433,13 @@ impl Panel {
                         Some(Action::PrivacySearchFocus),
                     );
                     let query = self.privacy_query.to_lowercase();
-                    let matches: Vec<_> = state
+                    let filtered: Vec<_> = state
                         .apps
                         .iter()
                         .filter(|a| app_matches(a, &query))
-                        .take(8)
                         .collect();
+                    let offset = self.picker_offset(filtered.len());
+                    let matches: Vec<_> = filtered.into_iter().skip(offset).take(8).collect();
                     if matches.is_empty() {
                         l.fixed(
                             R::new(sheet.x + 16.0, sheet.y + 88.0, sw - 32.0, 28.0),
@@ -2541,10 +2547,15 @@ impl Panel {
                         Some(Action::ZoneSearchFocus),
                     );
                     let query = self.zone_query.to_lowercase();
-                    for (i, zone) in state
+                    let filtered: Vec<_> = state
                         .zones
                         .iter()
                         .filter(|z| zone_matches(z, &query))
+                        .collect();
+                    let offset = self.picker_offset(filtered.len());
+                    for (i, zone) in filtered
+                        .into_iter()
+                        .skip(offset)
                         .take(8)
                         .enumerate()
                     {
@@ -2939,7 +2950,38 @@ impl Panel {
             .find(|i| i.action.as_ref().is_some_and(&predicate))
             .map(|i| (i.rect.x + i.rect.w / 2.0, i.rect.y + i.rect.h / 2.0))
     }
+    fn picker_total(&self, c: &Context<'_>) -> Option<usize> {
+        if self.page == Page::Defaults && self.autostart_picker {
+            let q = self.autostart_query.to_lowercase();
+            Some(c.system.apps.iter().filter(|a| app_matches(a, &q)).count())
+        } else if self.page == Page::Privacy && self.privacy_picker {
+            let q = self.privacy_query.to_lowercase();
+            Some(c.system.apps.iter().filter(|a| app_matches(a, &q)).count())
+        } else if self.page == Page::DateTime && self.zone_picker {
+            let q = self.zone_query.to_lowercase();
+            Some(c.system.zones.iter().filter(|z| zone_matches(z, &q)).count())
+        } else {
+            None
+        }
+    }
+    fn picker_offset(&self, total: usize) -> usize {
+        ((self.picker_scroll / 30.0).round() as usize).min(total.saturating_sub(8))
+    }
     pub fn scroll_by(&mut self, delta: f64, w: f32, h: f32, c: &Context<'_>) -> bool {
+        if let Some(total) = self.picker_total(c) {
+            let max_scroll = total.saturating_sub(8) as f32 * 30.0;
+            let old = self.picker_scroll;
+            self.picker_scroll = (old + delta as f32 * 3.0).clamp(0.0, max_scroll);
+            return self.picker_scroll != old;
+        }
+        if self.apps_picker.is_some()
+            || self.cursor_picker
+            || self.choice_menu.is_some()
+            || (self.page == Page::Keyboard && self.adding)
+            || self.wifi_target.is_some()
+        {
+            return false;
+        }
         let bottom = self
             .controls(w, h, c)
             .iter()
@@ -3019,6 +3061,16 @@ impl Panel {
                 continue;
             }
             self.paint_control(pm, fonts, control, (ox, oy), c, hovered == Some(i));
+        }
+        if let Some(total) = self.picker_total(c).filter(|&n| n > 8) {
+            let sw = (w - 120.0).min(440.0);
+            let sx = (w - sw) / 2.0;
+            let track_h = 8.0 * 30.0 - 2.0;
+            let thumb_h = (track_h * (8.0 / total as f32)).max(24.0);
+            let max_off = total - 8;
+            let offset = self.picker_offset(total);
+            let thumb_y = oy + 88.0 + (track_h - thumb_h) * (offset as f32 / max_off as f32);
+            fill_rounded_rect(pm, ox + sx + sw - 10.0, thumb_y, 3.5, thumb_h, 1.75, with_alpha(p.text_secondary, 0.45));
         }
     }
     /// The applied wallpaper on a small monitor (menu bar and Dock marks over the real
@@ -4051,6 +4103,7 @@ impl crate::FeatherCompositor {
                 self.system_settings.page = page;
                 self.system_settings.adding = false;
                 self.system_settings.scroll = 0.0;
+                self.system_settings.picker_scroll = 0.0;
                 self.open_or_focus_builtin(crate::apps::BuiltinWindowKind::SystemSettings);
                 if page == Page::Sound {
                     if let Some(controls) = &self.controls { let _ = controls.send(crate::controls::Control::RefreshAudio); }
@@ -4078,7 +4131,7 @@ impl crate::FeatherCompositor {
             Action::ScreenCapturePicker(open) => {
                 self.system_settings.privacy_picker = open;
                 self.system_settings.privacy_query.clear();
-                self.system_settings.scroll = 0.0;
+                self.system_settings.picker_scroll = 0.0;
             }
             Action::PrivacySearchFocus => {}
             Action::PrivacySearchSubmit => {
@@ -4127,7 +4180,7 @@ impl crate::FeatherCompositor {
                 }
                 self.system_settings.privacy_picker = false;
                 self.system_settings.privacy_query.clear();
-                self.system_settings.scroll = 0.0;
+                self.system_settings.picker_scroll = 0.0;
             }
             Action::ToggleScreenCaptureApp(id) => {
                 if let Some(app) = self
@@ -4206,7 +4259,7 @@ impl crate::FeatherCompositor {
                 self.system_settings.apps_picker = None;
                 self.system_settings.autostart_picker = open;
                 self.system_settings.autostart_query.clear();
-                self.system_settings.scroll = 0.0;
+                self.system_settings.picker_scroll = 0.0;
             }
             Action::AutostartSearchFocus => {}
             Action::AutostartSearchSubmit => {
@@ -4227,7 +4280,7 @@ impl crate::FeatherCompositor {
                 ));
                 self.system_settings.autostart_picker = false;
                 self.system_settings.autostart_query.clear();
-                self.system_settings.scroll = 0.0;
+                self.system_settings.picker_scroll = 0.0;
             }
             Action::ClipboardHistory => {
                 let on = !self.clip_history.enabled;
@@ -4261,14 +4314,14 @@ impl crate::FeatherCompositor {
             Action::ZonePicker => {
                 self.system_settings.zone_picker = !self.system_settings.zone_picker;
                 self.system_settings.zone_query.clear();
-                self.system_settings.scroll = 0.0;
+                self.system_settings.picker_scroll = 0.0;
                 self.system_settings.time_editing = false;
             }
             Action::ZoneSearchFocus => {}
             Action::Timezone(zone) => {
                 self.request_system_preference(crate::system_preferences::Command::Timezone(zone));
                 self.system_settings.zone_picker = false;
-                self.system_settings.scroll = 0.0;
+                self.system_settings.picker_scroll = 0.0;
             }
             Action::ZoneSearchSubmit => {
                 let query = self.system_settings.zone_query.to_lowercase();
@@ -5438,5 +5491,99 @@ mod tests {
             .controls(800.0, 540.0, &c)
             .iter()
             .any(|i| matches!(i.action, Some(Action::ApplyMode))));
+    }
+
+    #[test]
+    fn picker_scrolls_independently_from_page_and_resets_on_search() {
+        let mode = Mode { width: 1280, height: 800, refresh: 60000 };
+        let mut sys = crate::system_preferences::State::default();
+        sys.time.available = true;
+        sys.zones = std::sync::Arc::new((0..20).map(|i| format!("Region/City_{i:02}")).collect());
+        sys.apps = std::sync::Arc::new(
+            (0..15)
+                .map(|i| crate::system_preferences::DesktopApp {
+                    id: format!("app-{i:02}.desktop"),
+                    name: format!("App {i:02}"),
+                    exec: format!("app-{i:02}"),
+                    browser: false,
+                    terminal: false,
+                    file_manager: false,
+                })
+                .collect(),
+        );
+        let c = Context {
+            system: sys,
+            pointer: crate::settings::Pointer::default(),
+            power: crate::power::Preferences::default(),
+            power_ready: true,
+            pointer_managed: true,
+            keyboard: &Keyboard::default(),
+            active: 0,
+            animations: true,
+            dock_zoom: false,
+            restore_session: false,
+            battery: None,
+            clipboard_history: true,
+            scale: 1.0,
+            xwayland_hidpi: true,
+            display_name: "Window",
+            monitors: Vec::new(),
+            modes: &[mode],
+            current: mode,
+            direct: false,
+            wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
+            wallpaper_image: None,
+            wallpaper_prefs: Default::default(),
+            wallpaper_preview: Default::default(),
+            dnd: false,
+            dnd_schedule: Some((1320, 420)),
+            notify_sounds: true,
+            sounds: Default::default(),
+            audio: Default::default(),
+            wifi: Default::default(),
+            bluetooth: Default::default(),
+            hot_corners: Default::default(),
+            night: crate::night::Preferences { manual: false, schedule: Some((1320, 420)), kelvin: 3400 },
+            night_active: true,
+            notify_apps: &[],
+            sticky_keys: false,
+            screen_capture_policy: crate::file_portal::ScreenCapturePolicy::Ask,
+            screen_capture_cursor: true,
+            screen_capture_apps: &[],
+        };
+        let mut p = Panel {
+            page: Page::DateTime,
+            zone_picker: true,
+            ..Default::default()
+        };
+        let first_zones = |panel: &Panel, ctx: &Context<'_>| -> Vec<String> {
+            panel
+                .controls(800.0, 540.0, ctx)
+                .into_iter()
+                .filter_map(|i| match i.action {
+                    Some(Action::Timezone(z)) => Some(z),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(first_zones(&p, &c)[0], "Region/City_00");
+        assert!(p.scroll_by(40.0, 800.0, 540.0, &c));
+        assert_eq!(p.scroll, 0.0);
+        assert!(p.picker_scroll > 0.0);
+        assert_ne!(first_zones(&p, &c)[0], "Region/City_00");
+        // Typing in search resets picker_scroll back to the top
+        p.edit_key(b'1' as u32, Some('1'), false, false);
+        assert_eq!(p.picker_scroll, 0.0);
+        // Autostart picker also scrolls
+        p.zone_picker = false;
+        p.page = Page::Defaults;
+        p.autostart_picker = true;
+        assert!(p.scroll_by(40.0, 800.0, 540.0, &c));
+        assert!(p.picker_scroll > 0.0);
+        assert_eq!(p.scroll, 0.0);
+        // Background page does not scroll when a popup menu is open
+        p.autostart_picker = false;
+        p.apps_picker = Some(crate::system_preferences::DefaultKind::Browser);
+        assert!(!p.scroll_by(40.0, 800.0, 540.0, &c));
     }
 }

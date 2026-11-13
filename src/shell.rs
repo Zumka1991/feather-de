@@ -55,7 +55,49 @@ fn black_buffer() -> MemoryRenderBuffer {
     b
 }
 
-/// Menu bar colours for the wallpaper under it (macOS Tahoe adapts them the same way)
+/// Perceptual WCAG relative-luminance profile of the wallpaper strip under the menu bar,
+/// sampled on the real screen pixels (never pre-darkened by system appearance).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarProfile {
+    pub mean: f32,
+    pub low: f32,
+    pub high: f32,
+}
+
+#[inline]
+fn linear_to_srgb(y: f32) -> f32 {
+    let y = y.clamp(0.0, 1.0);
+    if y <= 0.0031308 {
+        y * 12.92
+    } else {
+        1.055 * y.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+#[inline]
+fn srgb_to_linear(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[inline]
+fn veiled_luma(y_bg: f32, veil_srgb: f32, alpha: f32) -> f32 {
+    let s = linear_to_srgb(y_bg);
+    srgb_to_linear(s * (1.0 - alpha) + veil_srgb * alpha)
+}
+
+#[inline]
+pub fn wcag_contrast(y1: f32, y2: f32) -> f32 {
+    let (hi, lo) = if y1 >= y2 { (y1, y2) } else { (y2, y1) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Menu bar colours for the wallpaper under it (macOS Tahoe adapts them the same way,
+/// dynamically adjusting veil density so tricky sky/sunset/split wallpapers always meet WCAG AA)
 #[derive(Clone, Copy)]
 pub struct BarColors {
     pub tint: Color,
@@ -69,45 +111,140 @@ pub struct BarColors {
 
 impl BarColors {
     pub fn for_background(dark: bool) -> Self {
+        Self::with_alpha(dark, if dark { 0.16 } else { 0.28 })
+    }
+
+    fn with_alpha(dark: bool, veil_alpha: f32) -> Self {
         let opaque = crate::theme::reduce_transparency();
         let hc = crate::theme::high_contrast();
+        let alpha_u8 = ((veil_alpha + if hc { 0.14 } else { 0.0 }).clamp(0.0, 0.85) * 255.0).round() as u8;
         if dark {
             Self {
-                tint: if opaque { rgba(34, 34, 38, 255) } else { rgba(0, 0, 0, 36) },
-                text: rgba(255, 255, 255, if hc { 255 } else { 240 }),
-                dim: rgba(255, 255, 255, if hc { 170 } else { 120 }),
-                highlight: rgba(255, 255, 255, if hc { 64 } else { 42 }),
-                chip: rgba(255, 255, 255, 50),
-                dark,
+                tint: if opaque { rgba(34, 34, 38, 255) } else { rgba(10, 12, 16, alpha_u8) },
+                text: rgba(255, 255, 255, if hc { 255 } else { 246 }),
+                dim: rgba(255, 255, 255, if hc { 180 } else { 136 }),
+                highlight: rgba(255, 255, 255, if hc { 76 } else { 52 }),
+                chip: rgba(255, 255, 255, 58),
+                dark: true,
             }
         } else {
             Self {
-                tint: if opaque { rgba(244, 244, 246, 255) } else { rgba(255, 255, 255, 70) },
-                text: rgba(0, 0, 0, if hc { 255 } else { 225 }),
-                dim: rgba(0, 0, 0, if hc { 155 } else { 105 }),
-                highlight: rgba(0, 0, 0, if hc { 44 } else { 28 }),
-                chip: rgba(0, 0, 0, 34),
-                dark,
+                tint: if opaque { rgba(244, 244, 246, 255) } else { rgba(250, 251, 254, alpha_u8) },
+                text: rgba(0, 0, 0, if hc { 255 } else { 236 }),
+                dim: rgba(0, 0, 0, if hc { 165 } else { 120 }),
+                highlight: rgba(0, 0, 0, if hc { 52 } else { 36 }),
+                chip: rgba(0, 0, 0, 42),
+                dark: false,
             }
         }
     }
+
+    pub fn from_profile(profile: BarProfile) -> Self {
+        if crate::theme::reduce_transparency() {
+            return Self::for_background(appearance() == Appearance::Dark);
+        }
+        let base_d = 0.16f32;
+        let base_l = 0.28f32;
+        // Minimum dark veil alpha so white text (~0.93 luma) reaches >= 6.0 on mean and >= 4.5 on p90
+        // even at the slightly lighter bottom edge of the bar gradient (0.90x veil).
+        let solve = |lo_init: f32, ok: &dyn Fn(f32) -> bool| -> f32 {
+            if ok(lo_init) {
+                return lo_init;
+            }
+            let (mut lo, mut hi) = (lo_init, 0.76f32);
+            for _ in 0..12 {
+                let mid = 0.5 * (lo + hi);
+                if ok(mid) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            hi
+        };
+        let alpha_d = solve(base_d, &|a| {
+            let eff = 0.88 * a;
+            wcag_contrast(0.93, veiled_luma(profile.mean, 0.047, eff)) >= 6.4
+                && wcag_contrast(0.93, veiled_luma(profile.high, 0.047, eff)) >= 4.8
+        });
+        let alpha_l = solve(base_l, &|a| {
+            let eff = 0.88 * a;
+            wcag_contrast(veiled_luma(profile.mean, 0.984, eff), 0.008) >= 9.6
+                && wcag_contrast(veiled_luma(profile.low, 0.984, eff), 0.008) >= 8.4
+        });
+        // Pick the polarity that needs less extra veil over its natural baseline, with a slight
+        // perceptual bias towards crisp white text on deep saturated twilight/emerald skies.
+        let dark = (alpha_d - base_d) <= (alpha_l - base_l) + 0.06;
+        Self::with_alpha(dark, if dark { alpha_d } else { alpha_l })
+    }
 }
 
-/// Mean luminance (0…1) of the wallpaper under the menu bar, from the blurred copy
-pub fn bar_luma(glass: &tiny_skia::Pixmap, screen_h: i32) -> f32 {
-    let rows = ((TOP_BAR_HEIGHT as f32 / screen_h.max(1) as f32) * glass.height() as f32).ceil().max(1.0) as usize;
-    let w = glass.width() as usize;
-    let data = glass.data();
-    let (mut sum, mut n) = (0.0f32, 0.0f32);
-    for px in data[..(rows.min(glass.height() as usize) * w * 4)].chunks_exact(4) {
-        let a = px[3] as f32;
-        if a < 1.0 { continue; }
-        // Unpremultiplied sRGB, Rec. 709 weights: good enough to pick black or white text
-        let c = |v: u8| v as f32 / a;
-        sum += 0.2126 * c(px[0]) + 0.7152 * c(px[1]) + 0.0722 * c(px[2]);
-        n += 1.0;
+/// Samples the top menu-bar strip across 64 horizontal columns, weighting the left menu zone
+/// (`0..38%`) and right status/clock zone (`62..100%`) twice as heavily as the empty centre.
+pub fn analyze_bar(sample: &tiny_skia::Pixmap, screen_h: i32) -> BarProfile {
+    let rows = ((TOP_BAR_HEIGHT as f32 / screen_h.max(1) as f32) * sample.height() as f32)
+        .ceil()
+        .max(1.0) as usize;
+    let rows = rows.min(sample.height() as usize);
+    let w = sample.width() as usize;
+    if w == 0 || rows == 0 {
+        return BarProfile { mean: 1.0, low: 1.0, high: 1.0 };
     }
-    if n == 0.0 { 1.0 } else { sum / n }
+    let data = sample.data();
+    let cols = w.min(64);
+    let mut weighted = [0.0f32; 128];
+    let mut count = 0usize;
+    let mut sum = 0.0f32;
+    for c in 0..cols {
+        let x0 = c * w / cols;
+        let x1 = ((c + 1) * w / cols).max(x0 + 1).min(w);
+        let (mut c_sum, mut c_n) = (0.0f32, 0.0f32);
+        for y in 0..rows {
+            for x in x0..x1 {
+                let px = &data[(y * w + x) * 4..][..4];
+                let a = px[3] as f32;
+                if a < 1.0 {
+                    continue;
+                }
+                let inv = 255.0 / a;
+                let r = crate::theme::srgb_u8_to_linear((px[0] as f32 * inv).round().clamp(0.0, 255.0) as u8);
+                let g = crate::theme::srgb_u8_to_linear((px[1] as f32 * inv).round().clamp(0.0, 255.0) as u8);
+                let b = crate::theme::srgb_u8_to_linear((px[2] as f32 * inv).round().clamp(0.0, 255.0) as u8);
+                c_sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                c_n += 1.0;
+            }
+        }
+        if c_n > 0.0 {
+            let luma = c_sum / c_n;
+            let frac = (c as f32 + 0.5) / cols as f32;
+            let copies = if !(0.38..=0.62).contains(&frac) { 2 } else { 1 };
+            for _ in 0..copies {
+                if count < weighted.len() {
+                    weighted[count] = luma;
+                    count += 1;
+                    sum += luma;
+                }
+            }
+        }
+    }
+    if count == 0 {
+        return BarProfile { mean: 1.0, low: 1.0, high: 1.0 };
+    }
+    let slice = &mut weighted[..count];
+    slice.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let low = slice[(count - 1) * 10 / 100];
+    let high = slice[(count - 1) * 90 / 100];
+    BarProfile {
+        mean: sum / count as f32,
+        low,
+        high,
+    }
+}
+
+/// Mean luminance (0…1) of the wallpaper under the menu bar
+#[cfg(test)]
+pub fn bar_luma(glass: &tiny_skia::Pixmap, screen_h: i32) -> f32 {
+    analyze_bar(glass, screen_h).mean
 }
 
 /// True when a tray icon is too close in brightness to the bar to stand out; it then gets
@@ -1065,6 +1202,7 @@ pub struct MacShell {
     pub dock_hidden: bool,
     /// Wallpaper under the menu bar is dark (None until the first wallpaper arrives)
     pub bar_on_dark: Option<bool>,
+    pub bar_profile: Option<BarProfile>,
     pub launchpad_bg_key: Option<(WallpaperTheme, i32, i32, bool)>,
     launchpad_bg_requested: Option<crate::raster::BackgroundKey>,
     pub raster: Option<crate::raster::RasterSender>,
@@ -1205,6 +1343,7 @@ impl MacShell {
             mission_dim: black_buffer(),
             dock_hidden: false,
             bar_on_dark: None,
+            bar_profile: None,
             launchpad_bg_key: None,
             launchpad_bg_requested: None,
             raster: None,
@@ -1726,12 +1865,13 @@ impl MacShell {
     }
 
     pub fn bar_colors(&self) -> BarColors {
-        let dark = if crate::theme::reduce_transparency() {
-            appearance() == Appearance::Dark
-        } else {
-            self.bar_on_dark.unwrap_or(appearance() == Appearance::Dark)
-        };
-        BarColors::for_background(dark)
+        if crate::theme::reduce_transparency() {
+            return BarColors::for_background(appearance() == Appearance::Dark);
+        }
+        match self.bar_profile {
+            Some(profile) => BarColors::from_profile(profile),
+            None => BarColors::for_background(self.bar_on_dark.unwrap_or(appearance() == Appearance::Dark)),
+        }
     }
 
     /// Middle of the menu bar's cup, for end-to-end checks
@@ -2133,10 +2273,16 @@ impl MacShell {
             crate::raster::Asset::WallpaperError(_)=>return false,
             crate::raster::Asset::Wallpaper { pixels,size,image, glass, mut preview } => {
                 let (w, h) = (glass.width(), glass.height());
-                let dark = bar_luma(&glass, self.screen_h) < 0.5;
+                // Measure the real undarkened screen preview when available so Dark mode's
+                // 0.8× frosted-glass multiplier never tricks a bright sky (e.g. Mountain Lake)
+                // into rendering unreadable white bar text.
+                let sample = preview.thumb.as_deref().unwrap_or(&glass);
+                let profile = analyze_bar(sample, self.screen_h);
+                let dark = BarColors::from_profile(profile).dark;
                 preview.bar_dark = dark;
                 self.wallpaper_preview = preview;
-                if self.bar_on_dark != Some(dark) {
+                if self.bar_profile != Some(profile) || self.bar_on_dark != Some(dark) {
+                    self.bar_profile = Some(profile);
                     self.bar_on_dark = Some(dark);
                     self.topbar_dirty = true;
                 }
@@ -3279,7 +3425,7 @@ impl MacShell {
             let fade = bar.tint.alpha() < 1.0;
             for (row, line) in buf.chunks_exact_mut(pw as usize * 4).enumerate() {
                 let t = row as f32 / (ph - 1).max(1) as f32;
-                let tint = if fade { with_alpha(bar.tint, bar.tint.alpha() * (1.22 - 0.5 * t)) } else { bar.tint };
+                let tint = if fade { with_alpha(bar.tint, bar.tint.alpha() * (1.12 - 0.24 * t)) } else { bar.tint };
                 let tc = tint.premultiply().to_color_u8();
                 let px = [tc.red(), tc.green(), tc.blue(), tc.alpha()];
                 for chunk in line.chunks_exact_mut(4) {
@@ -3974,6 +4120,7 @@ impl MacShell {
         } else {
             Vec::new()
         };
+        let dock_menu_on_bar = self.dock_menu.as_ref().is_some_and(|m| !m.follow_dock && m.rect.y <= TOP_BAR_HEIGHT as f32 + 16.0);
         let mut dock_menu = self.dock_menu.clone();
         if let Some(m) = dock_menu.as_mut() {
             self.overlay_glass.push((m.rect, 12.0, 0.9));
@@ -3998,13 +4145,16 @@ impl MacShell {
             };
 
             for (r, menu_rows_now, hovered) in &menu_panels {
-                crate::theme::draw_glass_panel_for(&mut pm, r.x, r.y, r.w, r.h, 12.0, true, menu_app);
+                crate::theme::draw_menu_panel_for(&mut pm, r.x, r.y, r.w, r.h, 12.0, menu_app);
+                let sep_col = with_alpha(mp.text, if crate::theme::high_contrast() { 0.30 } else { 0.14 });
+                let muted_col = with_alpha(mp.text_secondary, 0.72);
+                let shortcut_col = with_alpha(mp.text_secondary, 0.84);
                 let mut y = r.y + MENU_PAD;
                 for (i, row) in menu_rows_now.iter().enumerate() {
                     match row {
                         MenuRow::Separator => {
                             let sy = y + MENU_SEP_H * 0.5;
-                            stroke_line(&mut pm, r.x + 14.0, sy, r.x + r.w - 14.0, sy, 1.0, mp.separator);
+                            stroke_line(&mut pm, r.x + 14.0, sy, r.x + r.w - 14.0, sy, 1.0, sep_col);
                             y += MENU_SEP_H;
                         }
                         MenuRow::Item { label, shortcut, action, checked, radio, submenu } => {
@@ -4018,7 +4168,7 @@ impl MacShell {
                             } else if enabled {
                                 mp.text
                             } else {
-                                mp.text_tertiary
+                                muted_col
                             };
                             if *checked {
                                 fonts.draw_text(&mut pm, if *radio { "●" } else { "✓" }, r.x + 10.0, y + 3.5, 13.0, col, false);
@@ -4029,7 +4179,7 @@ impl MacShell {
                             let sw = if shortcut.is_empty() {
                                 0.0
                             } else {
-                                let sc = if hot { mp.on_accent } else { mp.text_tertiary };
+                                let sc = if hot { mp.on_accent } else if enabled { shortcut_col } else { muted_col };
                                 fonts.draw_text_right(&mut pm, shortcut, r.x + r.w - 14.0, y + 3.5, 13.0, sc, false) + 16.0
                             };
                             let inset=if let Some(badge)=input_badges.get(i){
@@ -4224,14 +4374,16 @@ impl MacShell {
 
             if let Some(m) = dock_menu.as_ref() {
                 let r = m.rect;
-                draw_glass_panel(&mut pm, r.x, r.y, r.w, r.h, 12.0, true);
+                let dm_app = if dock_menu_on_bar { menu_app } else { appearance() };
+                let dp = if dock_menu_on_bar { &mp } else { &p };
+                crate::theme::draw_menu_panel_for(&mut pm, r.x, r.y, r.w, r.h, 12.0, dm_app);
                 for (i, (label, _)) in m.items.iter().enumerate() {
                     let y = r.y + MENU_PAD + i as f32 * MENU_ITEM_H;
                     let hot = m.hovered == Some(i);
                     if hot {
-                        fill_rounded_rect(&mut pm, r.x + 5.0, y, r.w - 10.0, MENU_ITEM_H, 6.0, p.accent);
+                        fill_rounded_rect(&mut pm, r.x + 5.0, y, r.w - 10.0, MENU_ITEM_H, 6.0, dp.accent);
                     }
-                    fonts.draw_text(&mut pm, label, r.x + 14.0, y + 3.5, 13.0, if hot { p.on_accent } else { p.text }, false);
+                    fonts.draw_text(&mut pm, label, r.x + 14.0, y + 3.5, 13.0, if hot { dp.on_accent } else { dp.text }, false);
                 }
             }
 
@@ -4932,6 +5084,84 @@ mod appmenu_tests {
         assert!(!tray_icon_needs_chip(&empty, false));
     }
 
+    #[test]
+    fn smart_bar_contrast_guarantees_wcag_readability_on_all_wallpapers() {
+        let check_profile = |name: &str, profile: BarProfile| -> bool {
+            let bar = BarColors::from_profile(profile);
+            let eff_a = bar.tint.alpha() * 0.90;
+            let (worst_cr, mean_cr) = if bar.dark {
+                (
+                    wcag_contrast(0.93, veiled_luma(profile.high, 0.047, eff_a)),
+                    wcag_contrast(0.93, veiled_luma(profile.mean, 0.047, eff_a)),
+                )
+            } else {
+                (
+                    wcag_contrast(veiled_luma(profile.low, 0.984, eff_a), 0.008),
+                    wcag_contrast(veiled_luma(profile.mean, 0.984, eff_a), 0.008),
+                )
+            };
+            assert!(
+                worst_cr >= 4.45 && mean_cr >= 5.9,
+                "{name}: insufficient bar contrast (dark={}, alpha={:.2}, mean_cr={mean_cr:.2}, worst_cr={worst_cr:.2}, profile={profile:?})",
+                bar.dark,
+                bar.tint.alpha()
+            );
+            bar.dark
+        };
+
+        // Bundled wallpapers (including Mountain Lake #2, Dunes #4, Emerald #6) must choose the
+        // exact same polarity in Light and Dark mode, unaffected by the 0.8x glass multiplier.
+        for i in 0..crate::wallpaper::COUNT {
+            let img = image::load_from_memory(crate::wallpaper::bundled_bytes(i))
+                .unwrap()
+                .resize_to_fill(384, 216, image::imageops::FilterType::Triangle)
+                .to_rgba8();
+            let preview = crate::wallpaper::preview(img.as_raw(), (384, 216), None);
+            let prof = analyze_bar(preview.thumb.as_deref().unwrap(), 900);
+            let dark_from_real = check_profile(crate::wallpaper::NAMES[i], prof);
+            if i == 2 {
+                assert!(!dark_from_real, "Mountain Lake sky is bright: top bar must use dark text in both modes");
+            }
+            for look in [Appearance::Light, Appearance::Dark] {
+                crate::theme::with_render_settings(1.0, look, || {
+                    let mut shell = MacShell::new(1440, 900);
+                    let glass = crate::wallpaper::glass(
+                        img.as_raw(),
+                        (384, 216),
+                        (180, 112),
+                        if look == Appearance::Dark { 0.8 } else { 1.0 },
+                    );
+                    shell.install_asset(crate::raster::Asset::Wallpaper {
+                        pixels: Vec::new(),
+                        size: (384, 216),
+                        image: None,
+                        glass,
+                        preview: preview.clone(),
+                    });
+                    assert_eq!(shell.bar_colors().dark, dark_from_real, "polarity flipped for {}", crate::wallpaper::NAMES[i]);
+                });
+            }
+        }
+
+        // Adversarial synthetic cases: mid-grey and 50/50 black-white split
+        let mut mid = tiny_skia::Pixmap::new(64, 32).unwrap();
+        mid.fill(tiny_skia::Color::from_rgba8(124, 128, 134, 255));
+        check_profile("mid-grey", analyze_bar(&mid, 900));
+
+        let mut split = tiny_skia::Pixmap::new(64, 32).unwrap();
+        split.fill(tiny_skia::Color::from_rgba8(12, 14, 18, 255));
+        split.fill_rect(
+            tiny_skia::Rect::from_xywh(32.0, 0.0, 32.0, 32.0).unwrap(),
+            &tiny_skia::Paint {
+                shader: tiny_skia::Shader::SolidColor(tiny_skia::Color::from_rgba8(245, 245, 248, 255)),
+                ..Default::default()
+            },
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        check_profile("50/50 split", analyze_bar(&split, 900));
+    }
+
     /// Visual check: the menu bar over every wallpaper, light and dark, with typical tray
     /// icons, hovered language badge and the open input menu. Writes one PNG to
     /// FEATHER_MENUBAR_SHEET (run with --ignored).
@@ -4941,7 +5171,7 @@ mod appmenu_tests {
         let Some(out) = std::env::var_os("FEATHER_MENUBAR_SHEET") else { return };
         let (lw, lh, scale) = (1440, 900, 2.0f32);
         let (pw, ph) = ((lw as f32 * scale) as i32, (lh as f32 * scale) as i32);
-        let crop_w = 1300 * scale as i32;
+        let crop_w = lw * scale as i32;
         let (bar_h, menu_h) = ((TOP_BAR_HEIGHT as f32 * scale) as i32, (150.0 * scale) as i32);
         let icon = |f: &dyn Fn(u32, u32) -> [u8; 4]| {
             let mut p = tiny_skia::Pixmap::new(40, 40).unwrap();
@@ -4967,7 +5197,7 @@ mod appmenu_tests {
             ("yellow", icon(&disc([250, 215, 40]))),
             ("navy", icon(&disc([20, 30, 80]))),
         ].into_iter().map(|(k, pixels)| crate::tray::Item { key: k.into(), title: k.into(), icon_name: String::new(), pixels, menu_only: false, attention: false }).collect();
-        let mut sources: Vec<(String, Vec<u8>)> = (0..3).map(|i| {
+        let mut sources: Vec<(String, Vec<u8>)> = (0..crate::wallpaper::COUNT).map(|i| {
             let img = image::load_from_memory(crate::wallpaper::bundled_bytes(i)).unwrap()
                 .resize_to_fill(pw as u32, ph as u32, image::imageops::FilterType::Triangle).to_rgba8();
             (crate::wallpaper::NAMES[i].to_string(), img.into_raw())
@@ -4980,6 +5210,7 @@ mod appmenu_tests {
         let row_h = bar_h * 3 + menu_h + 16;
         let mut sheet = image::RgbaImage::new(crop_w as u32 * 2 + 20, row_h as u32 * sources.len() as u32);
         for (row, (_, wall)) in sources.iter().enumerate() {
+            let preview = crate::wallpaper::preview(wall, (pw, ph), None);
             for (col, look) in [Appearance::Light, Appearance::Dark].into_iter().enumerate() {
                 crate::theme::with_render_settings(scale, look, || {
                     let mut fonts = FontSystem::new();
@@ -4987,7 +5218,7 @@ mod appmenu_tests {
                     let mut shell = MacShell::new(lw, lh);
                     shell.toasts.clear();
                     let glass = crate::wallpaper::glass(wall, (pw, ph), ((pw / 8).max(8), (ph / 8).max(8)), if look == Appearance::Dark { 0.8 } else { 1.0 });
-                    shell.install_asset(crate::raster::Asset::Wallpaper { pixels: Vec::new(), size: (pw, ph), image: None, glass, preview: Default::default() });
+                    shell.install_asset(crate::raster::Asset::Wallpaper { pixels: Vec::new(), size: (pw, ph), image: None, glass, preview: preview.clone() });
                     shell.set_tray_items(items.clone());
                     let mut frame = |shell: &mut MacShell, fonts: &mut FontSystem, top: i32| {
                         shell.topbar_dirty = true;

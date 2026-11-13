@@ -135,6 +135,10 @@ enum Hit {
     ConfirmOk,
     ConfirmCancel,
     PasswordField,
+    OpenWithField,
+    OpenWithItem(usize),
+    OpenWithOk,
+    OpenWithCancel,
     JobCancel(u64),
     ConflictReplace,
     ConflictKeep,
@@ -168,6 +172,15 @@ enum MenuAction {
     OpenWith,
     /// The program at this place in `App::open_with`
     OpenWithApp(usize),
+    /// Open custom application / command dialog for the target file
+    OpenWithOther,
+}
+
+struct OpenWithDialog {
+    path: PathBuf,
+    input: feather_ui::input::TextInput,
+    apps: Vec<crate::openwith::Handler>,
+    scroll: f32,
 }
 
 /// «Свойства»: filled on a worker; the size of a folder arrives later.
@@ -281,8 +294,12 @@ pub struct App {
     menu: Option<Menu>,
     /// Programs that can open the file in the «Открыть с помощью» menu
     open_with: Vec<(PathBuf, crate::openwith::Handler)>,
+    /// File currently targeted by «Открыть с помощью»
+    open_with_target: Option<PathBuf>,
     /// Read on the first «Открыть с помощью», refreshed when programs change
     open_with_db: Option<crate::openwith::Db>,
+    /// Modal dialog for picking any app or entering a custom command
+    open_with_dialog: Option<OpenWithDialog>,
     /// Where the last context menu was opened: «Открыть с помощью» shows its list there
     menu_at: (f32, f32),
     confirm: Option<Confirm>,
@@ -361,7 +378,9 @@ impl App {
             rubber_base: HashSet::new(),
             menu: None,
             open_with: Vec::new(),
+            open_with_target: None,
             open_with_db: None,
+            open_with_dialog: None,
             menu_at: (0.0, 0.0),
             confirm: None,
             password: Default::default(),
@@ -849,7 +868,9 @@ impl App {
 
     /// The text field that has the keyboard, in the order `key` serves them
     fn active_field(&mut self) -> Option<&mut feather_ui::input::TextInput> {
-        if matches!(self.confirm, Some(Confirm::Password(..))) {
+        if let Some(dlg) = self.open_with_dialog.as_mut() {
+            Some(&mut dlg.input)
+        } else if matches!(self.confirm, Some(Confirm::Password(..))) {
             Some(&mut self.password)
         } else if self.path_edit.is_some() {
             self.path_edit.as_mut()
@@ -864,7 +885,9 @@ impl App {
 
     /// The search text changed outside `key` (cut, paste): filter again
     fn field_edited(&mut self) {
-        if self.confirm.is_none() && self.path_edit.is_none() && self.rename.is_none() && self.search_focus {
+        if let Some(dlg) = self.open_with_dialog.as_mut() {
+            dlg.scroll = 0.0;
+        } else if self.confirm.is_none() && self.path_edit.is_none() && self.rename.is_none() && self.search_focus {
             self.scroll = 0.0;
             self.refilter();
         }
@@ -1099,6 +1122,62 @@ impl App {
         ((x, y, w, h), (x + w - 20.0 - bw * 2.0 - 10.0, y + h - 46.0, bw, 30.0), (x + w - 20.0 - bw, y + h - 46.0, bw, 30.0))
     }
 
+    fn open_with_rects(&self) -> ((f32, f32, f32, f32), (f32, f32, f32, f32), (f32, f32, f32, f32), (f32, f32, f32, f32)) {
+        let w = (self.w - SIDEBAR_W - 24.0).min(420.0).max(260.0);
+        let h = (self.h - TOOLBAR_H - 24.0).min(360.0).max(220.0);
+        let x = SIDEBAR_W + ((self.w - SIDEBAR_W - w) / 2.0).max(8.0);
+        let y = TOOLBAR_H + 12.0;
+        let bw = 96.0;
+        (
+            (x, y, w, h),
+            (x + 20.0, y + 68.0, w - 40.0, 28.0),
+            (x + w - 20.0 - bw * 2.0 - 10.0, y + h - 42.0, bw, 28.0),
+            (x + w - 20.0 - bw, y + h - 42.0, bw, 28.0),
+        )
+    }
+
+    fn open_with_visible_rows(&self) -> usize {
+        let ((_, _, _, h), _, _, _) = self.open_with_rects();
+        ((h - 156.0) / 28.0).floor().max(1.0) as usize
+    }
+
+    fn open_with_filtered(dlg: &OpenWithDialog) -> Vec<usize> {
+        let q = dlg.input.to_lowercase();
+        dlg.apps.iter().enumerate().filter(|(_, a)| a.matches(&q)).map(|(i, _)| i).collect()
+    }
+
+    fn open_with_offset(dlg: &OpenWithDialog, total: usize, visible: usize) -> usize {
+        ((dlg.scroll / 28.0).round() as usize).min(total.saturating_sub(visible))
+    }
+
+    fn open_open_with_dialog(&mut self, path: PathBuf) {
+        if !self.open_with_db.as_ref().is_some_and(|db| db.fresh()) {
+            self.open_with_db = Some(crate::openwith::Db::system());
+        }
+        let apps = self.open_with_db.as_ref().map(crate::openwith::Db::all_apps).unwrap_or_default();
+        self.open_with_dialog = Some(OpenWithDialog {
+            path,
+            input: Default::default(),
+            apps,
+            scroll: 0.0,
+        });
+        self.dirty = true;
+    }
+
+    fn submit_open_with_dialog(&mut self) {
+        let Some(dlg) = self.open_with_dialog.as_ref() else { return };
+        let cmd = dlg.input.text().trim().to_string();
+        if cmd.is_empty() {
+            return;
+        }
+        let path = dlg.path.clone();
+        self.open_with_dialog = None;
+        if let Err(e) = crate::openwith::launch_custom(&cmd, &path) {
+            self.flash(format!("Не удалось запустить «{cmd}»: {e}"));
+        }
+        self.dirty = true;
+    }
+
     /// The password field under the sheet's title
     fn password_rect(&self) -> (f32, f32, f32, f32) {
         let ((x, y, w, _), _, _) = self.confirm_rects();
@@ -1227,6 +1306,27 @@ impl App {
         }
         if self.picker.is_none() && inside(self.title_rect()) {
             return Hit::Title;
+        }
+        if let Some(dlg) = &self.open_with_dialog {
+            let (sheet, field, cancel, ok) = self.open_with_rects();
+            if inside(ok) {
+                return Hit::OpenWithOk;
+            }
+            if inside(cancel) {
+                return Hit::OpenWithCancel;
+            }
+            if inside(field) {
+                return Hit::OpenWithField;
+            }
+            let filtered = Self::open_with_filtered(dlg);
+            let visible = self.open_with_visible_rows();
+            let offset = Self::open_with_offset(dlg, filtered.len(), visible);
+            for (row, idx) in filtered.into_iter().skip(offset).take(visible).enumerate() {
+                if inside((sheet.0 + 16.0, sheet.1 + 104.0 + row as f32 * 28.0, sheet.2 - 32.0, 26.0)) {
+                    return Hit::OpenWithItem(idx);
+                }
+            }
+            return Hit::Nothing;
         }
         if self.confirm.is_some() {
             let (_, cancel, ok) = self.confirm_rects();
@@ -1579,6 +1679,33 @@ impl App {
         if button != BTN_LEFT {
             return effects;
         }
+        if self.open_with_dialog.is_some() {
+            match hit {
+                Hit::OpenWithOk => self.submit_open_with_dialog(),
+                Hit::OpenWithCancel => {
+                    self.open_with_dialog = None;
+                    self.dirty = true;
+                }
+                Hit::OpenWithField => {
+                    let (_, (fx, _, fw, _), _, _) = self.open_with_rects();
+                    if let Some(dlg) = self.open_with_dialog.as_mut() {
+                        dlg.input.click(&mut self.fonts, x - fx - 10.0, fw - 20.0, 13.0, false, mods.shift);
+                    }
+                }
+                Hit::OpenWithItem(idx) => {
+                    if let Some(dlg) = self.open_with_dialog.take() {
+                        if let Some(app) = dlg.apps.get(idx) {
+                            if let Err(e) = app.launch(&dlg.path) {
+                                self.flash(format!("Не удалось запустить «{}»: {e}", app.name));
+                            }
+                        }
+                        self.dirty = true;
+                    }
+                }
+                _ => {}
+            }
+            return Vec::new();
+        }
         if self.confirm.is_some() {
             return match hit {
                 Hit::ConfirmOk => self.confirm_ok(),
@@ -1658,7 +1785,7 @@ impl App {
                     self.cursor = None;
                 }
             }
-            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::PasswordField | Hit::Title | Hit::PropsClose | Hit::Nothing => {}
+            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::PasswordField | Hit::OpenWithField | Hit::OpenWithItem(_) | Hit::OpenWithOk | Hit::OpenWithCancel | Hit::Title | Hit::PropsClose | Hit::Nothing => {}
             Hit::JobCancel(_) | Hit::ConflictReplace | Hit::ConflictKeep | Hit::ConflictSkip | Hit::ConflictAll => {}
         }
         effects
@@ -1741,6 +1868,21 @@ impl App {
                 let old = p.scroll;
                 p.scroll = (p.scroll as f32 + dy / 18.0).round().clamp(0.0, max as f32) as usize;
                 self.dirty |= p.scroll != old;
+            }
+            return;
+        }
+        if self.open_with_dialog.is_some() {
+            let visible = self.open_with_visible_rows();
+            if let Some(dlg) = self.open_with_dialog.as_mut() {
+                let total = Self::open_with_filtered(dlg).len();
+                let max_scroll = total.saturating_sub(visible) as f32 * 28.0;
+                let before = dlg.scroll;
+                dlg.scroll = (dlg.scroll + dy).clamp(0.0, max_scroll);
+                if dlg.scroll != before {
+                    self.dirty = true;
+                    let (x, y) = self.pointer;
+                    self.hover = self.hit(x, y);
+                }
             }
             return;
         }
@@ -1996,6 +2138,14 @@ impl App {
                     }
                 }
                 self.open_with.clear();
+                self.open_with_target = None;
+                Vec::new()
+            }
+            MenuAction::OpenWithOther => {
+                if let Some(path) = self.open_with_target.take() {
+                    self.open_with.clear();
+                    self.open_open_with_dialog(path);
+                }
                 Vec::new()
             }
         }
@@ -2009,19 +2159,29 @@ impl App {
         }
         let Some(db) = self.open_with_db.as_ref() else { return };
         let handlers = db.handlers(&path);
+        self.open_with_target = Some(path.clone());
         self.open_with = handlers.into_iter().map(|h| (path.clone(), h)).collect();
         self.open_with_menu(self.menu_at.0, self.menu_at.1);
     }
 
     fn open_with_menu(&mut self, x: f32, y: f32) {
         if self.open_with.is_empty() {
-            self.flash("Нет программ для файлов этого типа".into());
+            if let Some(path) = self.open_with_target.take() {
+                self.open_open_with_dialog(path);
+            }
             return;
         }
-        // A long list would leave the window: the most fitting programs are first anyway
-        let room = ((self.h - 24.0) / 24.0).max(1.0) as usize;
-        self.open_with.truncate(room);
-        let items = self.open_with.iter().enumerate().map(|(i, (_, h))| (h.name.clone(), Some(MenuAction::OpenWithApp(i)))).collect();
+        // Leave room for separator + «Другое приложение…» at the bottom of the menu
+        let room = ((self.h - 24.0) / 24.0).max(3.0) as usize;
+        self.open_with.truncate(room.saturating_sub(2));
+        let mut items: Vec<(String, Option<MenuAction>)> = self
+            .open_with
+            .iter()
+            .enumerate()
+            .map(|(i, (_, h))| (h.name.clone(), Some(MenuAction::OpenWithApp(i))))
+            .collect();
+        items.push((String::new(), None));
+        items.push(("Другое приложение…".into(), Some(MenuAction::OpenWithOther)));
         self.set_menu(x, y, items);
     }
 
@@ -2035,6 +2195,31 @@ impl App {
         self.rename_at = None;
         if let Some(effects) = self.conflict_key(sym) {
             return effects;
+        }
+        if self.open_with_dialog.is_some() {
+            match sym {
+                K::Return | K::KP_Enter => self.submit_open_with_dialog(),
+                K::Escape => self.open_with_dialog = None,
+                _ if mods.ctrl && !mods.alt && letter == Some('v') => return vec![Effect::PasteText],
+                _ if mods.ctrl && !mods.alt && matches!(letter, Some('c' | 'x')) => {
+                    if let Some(field) = self.active_field() {
+                        let Some(copied) = field.selected_text().map(str::to_owned) else { return Vec::new() };
+                        if letter == Some('x') {
+                            field.key(0xff08, None, false, false);
+                            self.field_edited();
+                        }
+                        return vec![Effect::CopyText(copied)];
+                    }
+                }
+                _ => {
+                    if let Some(dlg) = self.open_with_dialog.as_mut() {
+                        if dlg.input.key(raw, text, mods.ctrl, mods.shift) == feather_ui::input::Edit::Changed {
+                            dlg.scroll = 0.0;
+                        }
+                    }
+                }
+            }
+            return Vec::new();
         }
         if matches!(self.confirm, Some(Confirm::Password(..))) {
             match sym {
@@ -2274,6 +2459,7 @@ impl App {
         self.paint_jobs(pm);
         self.paint_menu(pm);
         self.paint_confirm(pm);
+        self.paint_open_with(pm);
         self.paint_conflict(pm);
         self.paint_props(pm);
         self.paint_picker(pm);
@@ -2809,6 +2995,85 @@ impl App {
         self.fonts.draw_text_centered(pm, action, ax + aw / 2.0, ay + 7.5, 13.0, rgba(255, 255, 255, 255), false);
     }
 
+    fn paint_open_with(&mut self, pm: &mut PixmapMut) {
+        let Some(dlg) = self.open_with_dialog.as_ref() else { return };
+        let ((x, y, w, h), (fx, fy, fw, fh), (cx, cy, cw, ch), (ax, ay, aw, ah)) = self.open_with_rects();
+        for i in 1..=5 {
+            let e = i as f32 * 2.0;
+            theme::fill_rrect(pm, x - e, y - e + 6.0, w + 2.0 * e, h + 2.0 * e, 14.0 + e, rgba(0, 0, 0, 7));
+        }
+        theme::fill_rrect(pm, x, y, w, h, 14.0, colors::glass());
+        theme::stroke_rrect(pm, x + 0.5, y + 0.5, w - 1.0, h - 1.0, 13.5, 1.0, colors::separator());
+        let name = dlg.path.file_name().unwrap_or_default().to_string_lossy();
+        let title = format!("Открыть «{name}»");
+        self.fonts.draw_text_clipped(pm, &title, x + 20.0, y + 18.0, w - 40.0, 14.0, colors::text(), true);
+        self.fonts.draw_text_clipped(
+            pm,
+            "Выберите программу или введите команду / путь",
+            x + 20.0,
+            y + 42.0,
+            w - 40.0,
+            12.0,
+            colors::secondary(),
+            false,
+        );
+        let a = colors::accent();
+        let ring = tiny_skia::Color::from_rgba(a.red(), a.green(), a.blue(), 110.0 / 255.0).unwrap_or(a);
+        theme::fill_rrect(pm, fx, fy, fw, fh, 7.0, colors::window());
+        theme::stroke_rrect(pm, fx - 1.0, fy - 1.0, fw + 2.0, fh + 2.0, 8.0, 2.5, ring);
+        theme::stroke_rrect(pm, fx, fy, fw, fh, 7.0, 0.6, colors::separator());
+        if dlg.input.is_empty() {
+            self.fonts.draw_text_clipped(pm, "Команда, путь или поиск…", fx + 10.0, fy + 7.0, fw - 20.0, 13.0, colors::tertiary(), false);
+        }
+        dlg.input.draw(pm, &mut self.fonts, fx + 10.0, fy + 7.0, fw - 20.0, 13.0, false, colors::text(), true, colors::accent());
+
+        let filtered = Self::open_with_filtered(dlg);
+        let total = filtered.len();
+        let visible = self.open_with_visible_rows();
+        let offset = Self::open_with_offset(dlg, total, visible);
+        if filtered.is_empty() {
+            self.fonts.draw_text_clipped(
+                pm,
+                "Совпадений в списке нет — нажмите «Открыть» для запуска команды",
+                x + 20.0,
+                y + 112.0,
+                w - 40.0,
+                12.0,
+                colors::secondary(),
+                false,
+            );
+        } else {
+            for (row, idx) in filtered.into_iter().skip(offset).take(visible).enumerate() {
+                let ry = y + 104.0 + row as f32 * 28.0;
+                let hovered = self.hover == Hit::OpenWithItem(idx);
+                if hovered {
+                    theme::fill_rrect(pm, x + 16.0, ry, w - 32.0, 26.0, 6.0, colors::accent());
+                }
+                let ink = if hovered { rgba(255, 255, 255, 255) } else { colors::text() };
+                self.fonts.draw_text_clipped(pm, &dlg.apps[idx].name, x + 26.0, ry + 6.0, w - 52.0, 13.0, ink, false);
+            }
+            if total > visible {
+                let track_h = visible as f32 * 28.0 - 4.0;
+                let thumb_h = (track_h * (visible as f32 / total as f32)).max(20.0);
+                let max_off = total - visible;
+                let thumb_y = y + 105.0 + (track_h - thumb_h) * (offset as f32 / max_off as f32);
+                let sec = colors::secondary();
+                let bar = tiny_skia::Color::from_rgba(sec.red(), sec.green(), sec.blue(), 0.45).unwrap_or(sec);
+                theme::fill_rrect(pm, x + w - 10.0, thumb_y, 3.5, thumb_h, 1.75, bar);
+            }
+        }
+
+        theme::fill_rrect(pm, cx, cy, cw, ch, ch / 2.0, colors::control());
+        self.fonts.draw_text_centered(pm, "Отменить", cx + cw / 2.0, cy + 7.5, 13.0, colors::text(), false);
+        let ok_col = if dlg.input.text().trim().is_empty() {
+            tiny_skia::Color::from_rgba(a.red(), a.green(), a.blue(), 0.45).unwrap_or(a)
+        } else {
+            a
+        };
+        theme::fill_rrect(pm, ax, ay, aw, ah, ah / 2.0, ok_col);
+        self.fonts.draw_text_centered(pm, "Открыть", ax + aw / 2.0, ay + 7.5, 13.0, rgba(255, 255, 255, 255), false);
+    }
+
     fn paint_menu(&mut self, pm: &mut PixmapMut) {
         let Some(menu) = self.menu.as_ref() else { return };
         let (x, y, w, h) = self.menu_rect(menu);
@@ -2951,14 +3216,21 @@ mod tests {
         assert!(app.menu_action(MenuAction::OpenWith).is_empty());
         let menu = app.menu.as_ref().unwrap();
         assert_eq!((menu.x, menu.y), (40.0, 30.0));
-        assert_eq!(labels(&app), ["GIMP", "Просмотр изображений"]);
+        assert_eq!(labels(&app), ["GIMP", "Просмотр изображений", "", "Другое приложение…"]);
         assert_eq!(app.open_with[0].1.command(&root.join("photo.png")), ["true", root.join("photo.png").to_string_lossy().as_ref()]);
-        // A type no program declares: a message instead of an empty menu
+        // Choosing «Другое приложение…» opens the custom command / all-apps dialog
+        app.menu = None;
+        app.menu_action(MenuAction::OpenWithOther);
+        assert!(app.open_with_dialog.is_some());
+        app.key(0xff1b, 1, None, Mods::default());
+        assert!(app.open_with_dialog.is_none());
+        // A type no program declares opens the custom dialog directly instead of an empty menu
         app.menu = None;
         app.open_menu(Hit::Item(at(&app, "file2.txt")), 10.0, 10.0);
         app.menu = None;
         app.menu_action(MenuAction::OpenWith);
         assert!(app.menu.is_none());
+        assert!(app.open_with_dialog.is_some());
     }
 
     #[test]

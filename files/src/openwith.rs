@@ -216,6 +216,13 @@ impl Db {
         }
         out
     }
+
+    /// All visible installed applications, sorted by name
+    pub fn all_apps(&self) -> Vec<Handler> {
+        let mut out: Vec<Handler> = self.apps.iter().filter(|a| !a.no_display).cloned().collect();
+        out.sort_by_cached_key(|a| a.name.to_lowercase());
+        out
+    }
 }
 
 fn parse_desktop(path: &Path, id: String, name_keys: &[&str]) -> Option<Handler> {
@@ -366,17 +373,52 @@ impl Handler {
         out
     }
 
+    pub fn matches(&self, query_lower: &str) -> bool {
+        query_lower.is_empty()
+            || self.name.to_lowercase().contains(query_lower)
+            || self.id.to_lowercase().contains(query_lower)
+            || self.exec.to_lowercase().contains(query_lower)
+    }
+
     /// Starts the program on `file`; it is never waited for (our SIGCHLD handler reaps it)
     pub fn launch(&self, file: &Path) -> std::io::Result<()> {
         let argv = self.command(file);
         let (program, args) = argv.split_first().ok_or(std::io::ErrorKind::InvalidInput)?;
-        let mut cmd = std::process::Command::new(program);
-        cmd.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        if let Some(dir) = file.parent() {
-            cmd.current_dir(dir);
-        }
-        cmd.spawn().map(drop)
+        spawn_detached(program, args, file)
     }
+}
+
+fn spawn_detached(program: &str, args: &[String], file: &Path) -> std::io::Result<()> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(dir) = file.parent() {
+        cmd.current_dir(dir);
+    }
+    cmd.spawn().map(drop)
+}
+
+/// Launches a user-typed command line or executable path on `file`.
+pub fn launch_custom(command: &str, file: &Path) -> std::io::Result<()> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "пустая команда"));
+    }
+    if Path::new(trimmed).is_file() {
+        return spawn_detached(trimmed, &[file.to_string_lossy().into_owned()], file);
+    }
+    let handler = Handler {
+        id: String::new(),
+        name: trimmed.to_string(),
+        exec: trimmed.to_string(),
+        icon: None,
+        file: PathBuf::new(),
+        no_display: false,
+        mimes: Vec::new(),
+    };
+    handler.launch(file)
 }
 
 #[cfg(test)]
@@ -434,5 +476,21 @@ mod tests {
         // No field code: the file is appended
         assert_eq!(h("viewer").command(f), ["viewer", "/home/u/Мой файл.txt"]);
         assert!(glob_match("*.tar.gz", "a.tar.gz") && glob_match("makefile", "makefile") && !glob_match("*.rs", "a.rsx"));
+    }
+
+    #[test]
+    fn all_apps_sorts_visible_and_launch_custom_rejects_empty() {
+        let root = fixture("all-apps");
+        app(&root, "z.desktop", "Zeta", "zeta %f", "");
+        app(&root, "a.desktop", "Alpha", "alpha %f", "");
+        fs::write(
+            root.join("data/applications/hidden.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Hidden\nExec=hidden %f\nNoDisplay=true\n",
+        )
+        .unwrap();
+        let db = Db::load(&[root.join("data")], &[root.join("config")]);
+        let names: Vec<_> = db.all_apps().into_iter().map(|a| a.name).collect();
+        assert_eq!(names, ["Alpha", "Zeta"]);
+        assert!(launch_custom("   ", Path::new("/tmp/x")).is_err());
     }
 }
