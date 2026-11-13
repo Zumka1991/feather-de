@@ -2,6 +2,13 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-13 — Выпуск 0.20.4
+
+- **Значки приложений Flatpak и Snap в оболочке Пёрышка** (`src/icons.rs`):
+  - В `IconLoader::search_dirs` добавлен полный поиск значков по каталогам экспорта Flatpak (`~/.local/share/flatpak/exports/share/icons`, `/var/lib/flatpak/exports/share/icons`), Snap (`/var/lib/snapd/desktop/icons`), всем базам из `$XDG_DATA_HOME` / `$XDG_DATA_DIRS`, `~/.local/share/pixmaps`, а также резервный поиск по кэшированным значкам `128×128` / `64×64` каталога Flathub AppStream.
+  - В `IconLoader::find` добавлено снятие суффиксов `.svg` / `.png`, если они указаны прямо в поле `Icon=` `.desktop`-файла. Исправляет отображение значков у установленных из Flathub приложений (например, `Zen Browser` — `app.zen_browser.zen.svg`) в Launchpad, Dock, Spotlight, трее и на рабочем столе.
+- **Проверено.** `cargo test --release --bin feather-de` (229 модульных тестов, включая `flatpak_and_snap_export_icon_bases_are_included` и `flatpak_exported_svg_and_suffixed_icon_names_resolve`), `cargo build --release --workspace` без предупреждений.
+
 ## 2026-11-12 — Выпуск 0.20.3
 
 - **Поддержка каталога Flathub (Flatpak) во встроенном «Магазине программ»** (`store/src/flatpak.rs`, `store/src/catalog.rs`, `store/src/app.rs`, `store/src/packagekit.rs`, `src/app_watch.rs`):

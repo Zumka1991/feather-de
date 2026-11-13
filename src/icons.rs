@@ -280,6 +280,76 @@ fn theme_app_dirs(theme_root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+fn push_unique_dir(dirs: &mut Vec<PathBuf>, candidate: PathBuf) {
+    let norm = candidate.to_string_lossy();
+    let trimmed = norm.trim_end_matches('/');
+    if !trimmed.is_empty()
+        && !dirs
+            .iter()
+            .any(|d| d.to_string_lossy().trim_end_matches('/') == trimmed)
+    {
+        dirs.push(PathBuf::from(trimmed));
+    }
+}
+
+/// Base `…/icons` directories in lookup order: user `$XDG_DATA_HOME/icons`, user Flatpak
+/// exports (`~/.local/share/flatpak/exports/share/icons`), `$XDG_DATA_DIRS/icons`, and
+/// system Flatpak/Snap exports even when the greeter left them out of `$XDG_DATA_DIRS`.
+fn icon_theme_bases(
+    home: &Path,
+    xdg_data_home: Option<&str>,
+    xdg_data_dirs: Option<&str>,
+    flatpak_user_dir: Option<&str>,
+    flatpak_system_dir: Option<&str>,
+) -> Vec<PathBuf> {
+    let data_home = xdg_data_home
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"));
+    let user_flatpak = flatpak_user_dir
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_home.join("flatpak"));
+    let sys_flatpak = flatpak_system_dir
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/var/lib/flatpak"));
+
+    let mut bases = Vec::new();
+    push_unique_dir(&mut bases, data_home.join("icons"));
+    if !home.as_os_str().is_empty() {
+        push_unique_dir(&mut bases, home.join(".icons"));
+    }
+    push_unique_dir(&mut bases, user_flatpak.join("exports/share/icons"));
+
+    let system = xdg_data_dirs
+        .filter(|v| !v.is_empty())
+        .unwrap_or("/usr/local/share:/usr/share");
+    for d in system.split(':').filter(|d| !d.is_empty()) {
+        push_unique_dir(&mut bases, Path::new(d).join("icons"));
+    }
+    push_unique_dir(&mut bases, sys_flatpak.join("exports/share/icons"));
+    push_unique_dir(&mut bases, PathBuf::from("/var/lib/snapd/desktop/icons"));
+    bases
+}
+
+fn flatpak_appstream_icon_dirs(flatpak_root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let flathub = flatpak_root.join("appstream/flathub");
+    let Ok(entries) = std::fs::read_dir(flathub) else {
+        return out;
+    };
+    for arch in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        for size in ["128x128", "64x64"] {
+            let dir = arch.join("active/icons").join(size);
+            if dir.is_dir() {
+                out.push(dir);
+            }
+        }
+    }
+    out
+}
+
 impl IconLoader {
     pub fn new() -> Self {
         Self {
@@ -291,7 +361,20 @@ impl IconLoader {
 
     fn search_dirs(&mut self) -> &[PathBuf] {
         self.search_dirs.get_or_insert_with(|| {
-            let home = std::env::var("HOME").unwrap_or_default();
+            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+            let xdg_home = std::env::var("XDG_DATA_HOME").ok();
+            let xdg_dirs = std::env::var("XDG_DATA_DIRS").ok();
+            let fp_user = std::env::var("FLATPAK_USER_DIR").ok();
+            let fp_sys = std::env::var("FLATPAK_SYSTEM_DIR").ok();
+
+            let bases = icon_theme_bases(
+                &home,
+                xdg_home.as_deref(),
+                xdg_dirs.as_deref(),
+                fp_user.as_deref(),
+                fp_sys.as_deref(),
+            );
+
             let mut themes: Vec<String> = Vec::new();
             if let Some(t) = user_icon_theme() {
                 // Papirus-Dark only overrides a few icons; its parent has the full set
@@ -309,14 +392,42 @@ impl IconLoader {
             }
             let mut dirs = Vec::new();
             for t in &themes {
-                for base in [
-                    format!("{home}/.local/share/icons"),
-                    "/usr/share/icons".to_string(),
-                ] {
-                    dirs.extend(theme_app_dirs(&Path::new(&base).join(t)));
+                for base in &bases {
+                    dirs.extend(theme_app_dirs(&base.join(t)));
                 }
             }
-            dirs.push(PathBuf::from("/usr/share/pixmaps"));
+
+            let data_home = xdg_home
+                .as_deref()
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/share"));
+            for pix in [
+                data_home.join("pixmaps"),
+                PathBuf::from("/usr/local/share/pixmaps"),
+                PathBuf::from("/usr/share/pixmaps"),
+                PathBuf::from("/var/lib/snapd/desktop/icons"),
+            ] {
+                if pix.is_dir() {
+                    push_unique_dir(&mut dirs, pix);
+                }
+            }
+            let user_fp = fp_user
+                .as_deref()
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| data_home.join("flatpak"));
+            let sys_fp = fp_sys
+                .as_deref()
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/var/lib/flatpak"));
+            for dir in flatpak_appstream_icon_dirs(&user_fp)
+                .into_iter()
+                .chain(flatpak_appstream_icon_dirs(&sys_fp))
+            {
+                push_unique_dir(&mut dirs, dir);
+            }
             dirs
         })
     }
@@ -334,11 +445,15 @@ impl IconLoader {
         let found = if name.starts_with('/') {
             Path::new(name).is_file().then(|| PathBuf::from(name))
         } else {
+            let stem = name
+                .strip_suffix(".svg")
+                .or_else(|| name.strip_suffix(".png"))
+                .unwrap_or(name);
             let dirs = self.search_dirs().to_vec();
             dirs.iter().find_map(|d| {
                 ["svg", "png"]
                     .iter()
-                    .map(|ext| d.join(format!("{name}.{ext}")))
+                    .map(|ext| d.join(format!("{stem}.{ext}")))
                     .find(|p| p.is_file())
             })
         };
@@ -616,5 +731,61 @@ mod tests {
         // The cached fallback picture does not answer for a key made after the change
         let key = IconKey::new(&icon, "X", 64);
         assert!(IconKey { dirs: key.dirs.wrapping_add(1), ..key.clone() } != key);
+    }
+
+    #[test]
+    fn flatpak_and_snap_export_icon_bases_are_included() {
+        let bases = icon_theme_bases(
+            Path::new("/home/u"),
+            None,
+            Some("/usr/local/share:/usr/share:/var/lib/flatpak/exports/share/"),
+            None,
+            None,
+        );
+        assert!(bases.contains(&PathBuf::from("/home/u/.local/share/icons")));
+        assert!(bases.contains(&PathBuf::from(
+            "/home/u/.local/share/flatpak/exports/share/icons"
+        )));
+        assert!(bases.contains(&PathBuf::from("/var/lib/flatpak/exports/share/icons")));
+        assert!(bases.contains(&PathBuf::from("/var/lib/snapd/desktop/icons")));
+        // Trailing-slash duplicate from XDG_DATA_DIRS is collapsed to a single entry
+        let sys_fp_count = bases
+            .iter()
+            .filter(|p| p.as_path() == Path::new("/var/lib/flatpak/exports/share/icons"))
+            .count();
+        assert_eq!(sys_fp_count, 1);
+    }
+
+    #[test]
+    fn flatpak_exported_svg_and_suffixed_icon_names_resolve() {
+        let tmp = std::env::temp_dir().join(format!("feather-icons-fp-{}", std::process::id()));
+        let apps = tmp.join("exports/share/icons/hicolor/scalable/apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        let svg = r##"<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+            <rect width="1024" height="1024" rx="185" fill="#202020"/>
+            <circle cx="512" cy="512" r="240" stroke="#F2F0E3" stroke-width="50" fill="none"/>
+        </svg>"##;
+        std::fs::write(apps.join("app.zen_browser.zen.svg"), svg).unwrap();
+
+        let bases = icon_theme_bases(
+            &tmp,
+            None,
+            Some("/usr/share"),
+            tmp.to_str(),
+            None,
+        );
+        let mut search = Vec::new();
+        for base in &bases {
+            search.extend(theme_app_dirs(&base.join("hicolor")));
+        }
+        let mut loader = IconLoader::new();
+        loader.search_dirs = Some(search);
+        assert!(loader.find("app.zen_browser.zen").is_some());
+        assert!(loader.find("app.zen_browser.zen.svg").is_some());
+        let pm = loader.load("app.zen_browser.zen", 128, true).expect("SVG icon rasterizes");
+        assert_eq!((pm.width(), pm.height()), (128, 128));
+        assert!(opaque_bbox(&pm).is_some());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
