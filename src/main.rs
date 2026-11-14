@@ -952,6 +952,7 @@ impl FeatherCompositor {
             dock: Some(self.dock_pins.clone()),
             drop_shelf_pos: self.drop_shelf.pos(),
             animations: self.animations.enabled(),
+            animation_speed: crate::animation::speed(),
             keyboard: self.keyboard_config.clone(),
             keybindings: self.keybindings.clone(),
             display: self.display_preference.clone(),
@@ -2635,6 +2636,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.start_wallpaper_cycle();
     state.system_worker=Some(crate::system_preferences::Worker::new(&state.loop_handle,saved.default_browser.clone(),saved.default_terminal.clone(),saved.default_file_manager.clone())?);
     state.refresh_input_source(0);
+    crate::animation::set_speed(saved.animation_speed);
     state.animations.set_enabled(saved.animations,&state.windows,&state.shell);
     if let crate::backend::Backend::Drm(d)=&state.backend {
         let specs=d.specs();

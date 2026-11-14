@@ -1,5 +1,37 @@
 //! Frame-driven spring motion. No animation timers and no rasterized intermediate frames.
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU32, Ordering},
+    time::Instant,
+};
+
+/// Пределы общего множителя скорости анимаций: вдвое медленнее … вдвое быстрее.
+pub const SPEED_MIN: f64 = 0.5;
+pub const SPEED_MAX: f64 = 2.0;
+/// Множитель хранится как биты f32; 1.0 — скорость по умолчанию.
+static SPEED: AtomicU32 = AtomicU32::new(0x3F80_0000);
+
+/// Общая скорость анимаций: пружины проходят время быстрее или медленнее,
+/// поэтому пропорции между ними сохраняются.
+pub fn speed() -> f64 {
+    f64::from(f32::from_bits(SPEED.load(Ordering::Relaxed)))
+}
+
+pub fn set_speed(value: f64) {
+    let v = if value.is_finite() { value.clamp(SPEED_MIN, SPEED_MAX) } else { 1.0 };
+    SPEED.store((v as f32).to_bits(), Ordering::Relaxed);
+}
+
+/// Положение ползунка 0…1 ↔ скорость: логарифмическая шкала, середина — 1×.
+pub fn speed_to_slider(speed: f64) -> f64 {
+    ((speed.clamp(SPEED_MIN, SPEED_MAX).log2() + 1.0) / 2.0).clamp(0.0, 1.0)
+}
+
+pub fn slider_to_speed(t: f64) -> f64 {
+    // Шаг — одно деление шкалы (десятая часть), как у скорости указателя.
+    let t = (t.clamp(0.0, 1.0) * 10.0).round() / 10.0;
+    (2.0_f64.powf(t * 2.0 - 1.0) * 100.0).round() / 100.0
+}
 
 use crate::{
     shell::{MacShell, OverlayKind, R},
@@ -329,7 +361,8 @@ impl Animations {
         }
         let dt = self
             .last_frame
-            .map_or(0.0, |last| now.duration_since(last).as_secs_f64());
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f64())
+            * speed();
         self.windows
             .retain(|id, _| windows.iter().any(|w| w.id == *id && w.mapped));
         for w in windows.iter().filter(|w| w.mapped) {
@@ -596,6 +629,36 @@ impl Animations {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn speed_slider_is_logarithmic_and_snaps() {
+        assert_eq!(super::slider_to_speed(0.5), 1.0);
+        assert_eq!(super::slider_to_speed(0.0), super::SPEED_MIN);
+        assert_eq!(super::slider_to_speed(1.0), super::SPEED_MAX);
+        assert_eq!(super::slider_to_speed(0.53), 1.0);
+        for i in 0..=10 {
+            let t = f64::from(i) / 10.0;
+            let back = super::speed_to_slider(super::slider_to_speed(t));
+            assert!((back - t).abs() < 0.01, "{t} -> {back}");
+        }
+        assert_eq!(super::speed_to_slider(10.0), 1.0);
+    }
+
+    #[test]
+    fn faster_time_settles_spring_sooner() {
+        // Множитель скорости масштабирует dt: при 2× пружина успокаивается вдвое быстрее.
+        let settle = |k: f64| {
+            let mut s = Spring::new(0.0, 1.0);
+            let mut frames = 0;
+            while s.active() {
+                s.advance(k / 120.0);
+                frames += 1;
+            }
+            frames
+        };
+        let (normal, fast, slow) = (settle(1.0), settle(2.0), settle(0.5));
+        assert!(fast * 2 <= normal + 1 && fast * 2 >= normal - 1, "{fast} vs {normal}");
+        assert!(slow >= normal * 2 - 1, "{slow} vs {normal}");
+    }
     use super::*;
 
     #[test]

@@ -373,6 +373,8 @@ pub struct Settings {
     pub dock: Option<Vec<String>>,
     pub drop_shelf_pos: Option<(f32, f32)>,
     pub animations: bool,
+    /// Общий множитель скорости анимаций (0,5…2, по умолчанию 1)
+    pub animation_speed: f64,
     pub keyboard: Keyboard,
     pub keybindings: crate::shortcuts::Bindings,
     pub display: Option<Display>,
@@ -429,6 +431,7 @@ impl Default for Settings {
             dock: None,
             drop_shelf_pos: None,
             animations: true,
+            animation_speed: 1.0,
             keyboard: Keyboard::default(),
             keybindings: Default::default(),
             display: None,
@@ -721,6 +724,13 @@ impl Settings {
                         s.animations = v;
                     }
                 }
+                "animation_speed" => {
+                    if let Ok(v) = v.parse::<f64>() {
+                        if v.is_finite() {
+                            s.animation_speed = v.clamp(crate::animation::SPEED_MIN, crate::animation::SPEED_MAX);
+                        }
+                    }
+                }
                 "dock" => {
                     s.dock = Some(
                         v.split(',')
@@ -820,6 +830,7 @@ impl Settings {
         text.push_str(&format!("idle_lock_minutes={}\nidle_blank_minutes={}\nidle_suspend_minutes={}\n",self.power.lock,self.power.blank,self.power.suspend));
         text.push_str(&format!("keyboard_caps={}\nkeyboard_typography={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\nkeyboard_app_ring={}\n", self.keyboard.caps.id(), self.keyboard.typography, self.keyboard.repeat_delay, self.keyboard.repeat_rate, self.keyboard.app_ring));
         for line in self.keybindings.lines() { text.push_str(&line); }
+        text.push_str(&format!("animation_speed={}\n", self.animation_speed));
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("restore_session={}\n", self.restore_session));
         text.push_str(&format!("caffeine={}\n", self.caffeine));
@@ -1160,6 +1171,16 @@ mod tests {
             Settings::parse("keyboard_layouts=,,bogus").keyboard,
             Keyboard::default()
         );
+    }
+    #[test]
+    fn animation_speed_round_trips_and_clamps() {
+        assert_eq!(Settings::default().animation_speed, 1.0);
+        let mut s = Settings::default();
+        s.animation_speed = 1.41;
+        assert_eq!(Settings::parse(&s.text()).animation_speed, 1.41);
+        assert_eq!(Settings::parse("animation_speed=9").animation_speed, 2.0);
+        assert_eq!(Settings::parse("animation_speed=NaN").animation_speed, 1.0);
+        assert_eq!(Settings::parse("animation_speed=0.1").animation_speed, 0.5);
     }
     #[test]
     fn appearance_accent_highlight_and_text_size_round_trip() {

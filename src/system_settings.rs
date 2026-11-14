@@ -245,6 +245,7 @@ pub enum Action {
     CursorSize(u32),
     /// Set from where the slider was clicked (-1…1)
     PointerSpeed(f64),
+    AnimationSpeed(f64),
     NaturalMouse,
     NaturalTouchpad,
     TapToClick,
@@ -693,6 +694,16 @@ fn wallpaper_card(card: R, preview: &crate::wallpaper::Preview) -> WallpaperCard
     WallpaperCardGeometry { height, screen, info: R::new(ix, card.y + 18.0, card.x + card.w - 18.0 - ix, height - 36.0) }
 }
 /// «3 ч 05 мин», «25 мин», «меньше минуты»
+/// «Обычная» для 1×, иначе множитель по-русски: «1,5×», «0,75×».
+fn speed_label(speed: f64) -> String {
+    if (speed - 1.0).abs() < 0.005 {
+        return "Обычная".into();
+    }
+    let text = format!("{:.2}", speed);
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{}×", text.replace('.', ","))
+}
+
 fn duration_label(secs: u64) -> String {
     let minutes = secs.div_ceil(60);
     match minutes {
@@ -1739,6 +1750,16 @@ impl Panel {
                     Style::Toggle(c.animations),
                     Some(Action::Animations),
                 );
+                if c.animations {
+                    let speed = crate::animation::speed();
+                    let r = l.row(86.0, "Скорость анимаций", speed_label(speed), Style::Row, None);
+                    l.push(
+                        R::new(r.x + 14.0, r.y + 40.0, r.w - 28.0, 34.0),
+                        "",
+                        Style::Slider(crate::animation::speed_to_slider(speed) as f32),
+                        Some(Action::AnimationSpeed(speed)),
+                    );
+                }
                 l.row(
                     52.0,
                     "Программы GTK в стиле Пёрышка",
@@ -2919,6 +2940,10 @@ impl Panel {
                 let t = ((x - control.rect.x - 10.0) / (control.rect.w - 20.0)).clamp(0.0, 1.0);
                 // Snap to tenths, like the tick marks.
                 Some(Action::PointerSpeed(((t as f64 * 2.0 - 1.0) * 10.0).round() / 10.0))
+            }
+            (Style::Slider(_), Some(Action::AnimationSpeed(_))) => {
+                let t = ((x - control.rect.x - 10.0) / (control.rect.w - 20.0)).clamp(0.0, 1.0);
+                Some(Action::AnimationSpeed(crate::animation::slider_to_speed(t as f64)))
             }
             (Style::Volume(_), Some(Action::Audio(command))) => {
                 let value = ((x-control.rect.x-10.0)/(control.rect.w-20.0)).clamp(0.0, 1.0);
@@ -4609,6 +4634,12 @@ impl crate::FeatherCompositor {
                     self.save_settings();
                 }
             }
+            Action::AnimationSpeed(speed) => {
+                if speed.is_finite() && (speed - crate::animation::speed()).abs() > 1e-6 {
+                    crate::animation::set_speed(speed);
+                    self.save_settings();
+                }
+            }
             Action::PointerSpeed(speed) => {
                 if speed.is_finite() {
                     self.pointer_config.speed = speed.clamp(-1.0, 1.0);
@@ -4896,6 +4927,13 @@ pub fn draw_input_badge(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn animation_speed_label() {
+        assert_eq!(super::speed_label(1.0), "Обычная");
+        assert_eq!(super::speed_label(1.5), "1,5×");
+        assert_eq!(super::speed_label(0.76), "0,76×");
+        assert_eq!(super::speed_label(2.0), "2×");
+    }
     use super::*;
     #[test]
     fn date_entry_search_and_ntp_guard_use_visible_actions() {

@@ -860,7 +860,7 @@ impl DropShelf {
         let dt = match self.last_tick.replace(now) {
             Some(prev) => now.saturating_duration_since(prev).as_secs_f64().clamp(0.001, 0.05),
             None => 1.0 / 120.0,
-        };
+        } * crate::animation::speed();
         let omega = 40.0_f64;
         let displacement = self.anim_pos - target;
         let c = self.anim_vel + omega * displacement;
