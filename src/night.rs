@@ -121,12 +121,12 @@ impl crate::FeatherCompositor {
             }
             use smithay::reexports::drm::control::Device;
             for head in &d.heads {
-            let size = d.fd.get_crtc(head.crtc).map(|c| c.gamma_length() as usize).unwrap_or(0);
+            let size = head.fd.get_crtc(head.crtc).map(|c| c.gamma_length() as usize).unwrap_or(0);
             if size < 2 {
                 continue;
             }
             let [r, g, b] = ramps(size, kelvin_rgb(kelvin));
-            if let Err(e) = d.fd.set_gamma(head.crtc, &r, &g, &b) {
+            if let Err(e) = head.fd.set_gamma(head.crtc, &r, &g, &b) {
                 tracing::warn!("Ночной режим: гамма не применена: {e}");
             }
             }

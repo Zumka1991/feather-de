@@ -1,11 +1,14 @@
 //! Direct DRM/KMS backend: one scanout and damage history per connected connector.
-//! The primary GPU is shared by all outputs; hotplug is driven by udev, never polling.
+//! The primary GPU renders every output; hotplug is driven by udev, never polling.
+//! Connectors of other GPUs (hybrid laptops, docks) are scanned out by their own device:
+//! the frame is still composed by the primary renderer into a linear buffer both can use.
 use crate::{render::OutputElement, FeatherCompositor};
 use smithay::{
     backend::{
         allocator::{
+            dmabuf::AsDmabuf,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
-            Fourcc,
+            Allocator, Fourcc, Modifier,
         },
         drm::{
             exporter::gbm::GbmFramebufferExporter,
@@ -14,13 +17,13 @@ use smithay::{
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{gles::GlesRenderer, ImportDma},
+        renderer::{gles::GlesRenderer, Bind, ImportDma},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent},
     },
     output::OutputModeSource,
     reexports::{
-        calloop::LoopHandle,
+        calloop::{LoopHandle, RegistrationToken},
         drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
@@ -39,8 +42,20 @@ pub type GbmDrmOutputManager = DrmOutputManager<
     DrmDeviceFd,
 >;
 const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
+const MAX_HEADS: usize = 8;
+const OPEN_FLAGS: OFlags = OFlags::RDWR.union(OFlags::CLOEXEC).union(OFlags::NOCTTY).union(OFlags::NONBLOCK);
+/// A video card other than the rendering one: only its connectors are used
+pub struct Gpu {
+    pub manager: GbmDrmOutputManager,
+    pub device: u64,
+    pub path: PathBuf,
+    token: RegistrationToken,
+}
 pub struct Head {
     pub output: GbmDrmOutput,
+    /// The card this connector belongs to (`dev_t`): CRTC handles repeat between cards
+    pub device: u64,
+    pub fd: DrmDeviceFd,
     pub connector: connector::Handle,
     pub crtc: crtc::Handle,
     pub name: String,
@@ -75,6 +90,12 @@ pub struct DrmBackend {
     pub session: LibSeatSession,
     pub renderer: GlesRenderer,
     pub manager: GbmDrmOutputManager,
+    pub extra: Vec<Gpu>,
+    /// Cards that appeared (`Some(path)`) or went away since the last `flush_hotplug`
+    pub gpu_events: Vec<(u64, Option<PathBuf>)>,
+    pub device: u64,
+    gbm: GbmDevice<DrmDeviceFd>,
+    handle: LoopHandle<'static, FeatherCompositor>,
     pub heads: Vec<Head>,
     pub libinput: Libinput,
     pub render_node: Option<DrmNode>,
@@ -133,18 +154,106 @@ impl DrmBackend {
             })
             .collect()
     }
+    /// Every card is scanned again; a card that fails keeps the others working
     pub fn rescan(
         &mut self,
         saved: Option<&crate::settings::Display>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let drm = self.manager.device();
+        let primary = scan(&mut self.manager, &mut self.renderer, &mut self.heads, self.device, &self.fd, saved);
+        for g in &mut self.extra {
+            let fd = g.manager.device().device_fd().clone();
+            if let Err(e) = scan(&mut g.manager, &mut self.renderer, &mut self.heads, g.device, &fd, saved) {
+                tracing::warn!("DRM {}: {e}", g.path.display());
+            }
+        }
+        primary
+    }
+    /// Opens another card for its connectors. The primary renderer draws straight into
+    /// that card's linear buffers when it can import them; otherwise the frame is drawn
+    /// into a linear buffer of the primary card that the other one imports for scanout.
+    fn open_secondary(&mut self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+        let fd = self.session.open(path, OPEN_FLAGS).map_err(|e| format!("{}: {e}", path.display()))?;
+        let fd = DrmDeviceFd::new(DeviceFd::from(fd));
+        let device = DrmNode::from_file(&fd)?.dev_id() as u64;
+        if device == self.device || self.extra.iter().any(|g| g.device == device) {
+            return Ok(());
+        }
+        let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
+        let gbm = GbmDevice::new(fd.clone())?;
+        let linear: Vec<_> = self
+            .renderer
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .filter(|f| f.modifier == Modifier::Linear)
+            .copied()
+            .collect();
+        let mut own = GbmAllocator::new(gbm.clone(), GbmBufferFlags::SCANOUT);
+        let direct = own
+            .create_buffer(256, 256, COLOR_FORMATS[0], &[Modifier::Linear])
+            .ok()
+            .and_then(|b| b.export().ok())
+            .is_some_and(|mut d| self.renderer.bind(&mut d).is_ok());
+        let allocator = if direct { own } else { GbmAllocator::new(self.gbm.clone(), GbmBufferFlags::RENDERING) };
+        // No cursor plane and no client scanout here: both need buffers of this very card
+        let manager = GbmDrmOutputManager::new(
+            drm,
+            allocator,
+            GbmFramebufferExporter::new(gbm, None),
+            None,
+            COLOR_FORMATS,
+            linear,
+        );
+        let token = self.handle.insert_source(notifier, move |event, metadata, state| match event {
+            DrmEvent::VBlank(crtc) => state.on_drm_vblank(device, crtc, metadata.take()),
+            DrmEvent::Error(e) => tracing::warn!("DRM: {e}"),
+        })?;
+        tracing::info!(
+            "DRM: вторая видеокарта {} ({})",
+            path.display(),
+            if direct { "отрисовка в её буферы" } else { "вывод буферов основной карты" }
+        );
+        self.extra.push(Gpu { manager, device, path: path.to_path_buf(), token });
+        Ok(())
+    }
+    /// Cards plugged in or removed while running (docks, external GPUs)
+    fn apply_gpu_events(&mut self) {
+        for (device, path) in std::mem::take(&mut self.gpu_events) {
+            match path {
+                Some(path) => {
+                    if let Err(e) = self.open_secondary(&path) {
+                        tracing::warn!("DRM: видеокарта {} не подключена: {e}", path.display());
+                    }
+                }
+                None => {
+                    let Some(i) = self.extra.iter().position(|g| g.device == device) else { continue };
+                    self.heads.retain(|h| h.device != device);
+                    let gone = self.extra.remove(i);
+                    self.handle.remove(gone.token);
+                    tracing::info!("DRM: видеокарта {} отключена", gone.path.display());
+                }
+            }
+        }
+    }
+}
+fn scan(
+    manager: &mut GbmDrmOutputManager,
+    renderer: &mut GlesRenderer,
+    heads: &mut Vec<Head>,
+    device: u64,
+    fd: &DrmDeviceFd,
+    saved: Option<&crate::settings::Display>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    {
+        let room = MAX_HEADS.saturating_sub(heads.iter().filter(|h| h.device != device).count());
+        let drm = manager.device();
         let res = drm.resource_handles()?;
         let connectors: Vec<_> = res
             .connectors()
             .iter()
             .filter_map(|c| drm.get_connector(*c, true).ok())
             .filter(|c| c.state() == connector::State::Connected && !c.modes().is_empty())
-            .take(8)
+            .take(room)
             .collect();
         let candidates: Vec<Vec<usize>> = connectors
             .iter()
@@ -158,10 +267,9 @@ impl DrmBackend {
                     .collect();
                 choices.sort_unstable();
                 choices.dedup();
-                if let Some(existing) = self
-                    .heads
+                if let Some(existing) = heads
                     .iter()
-                    .find(|h| h.connector == c.handle())
+                    .find(|h| h.device == device && h.connector == c.handle())
                     .and_then(|h| res.crtcs().iter().position(|v| *v == h.crtc))
                 {
                     if let Some(i) = choices.iter().position(|n| *n == existing) {
@@ -173,7 +281,10 @@ impl DrmBackend {
             .collect();
         let assignments = crate::monitors::assign_crtcs(&candidates, res.crtcs().len());
         // Drop disconnected/reassigned scanouts first, freeing their CRTCs and planes.
-        self.heads.retain_mut(|h| {
+        heads.retain_mut(|h| {
+            if h.device != device {
+                return true;
+            }
             let keep = connectors.iter().enumerate().any(|(i, c)| {
                 c.handle() == h.connector
                     && assignments[i].is_some_and(|a| res.crtcs()[a] == h.crtc)
@@ -192,7 +303,7 @@ impl DrmBackend {
                 tracing::warn!("DRM: нет свободного CRTC для {:?}", info.handle());
                 continue;
             };
-            if let Some(h) = self.heads.iter_mut().find(|h| h.connector == info.handle()) {
+            if let Some(h) = heads.iter_mut().find(|h| h.device == device && h.connector == info.handle()) {
                 h.modes = info.modes().to_vec();
                 h.physical_mm = info
                     .size()
@@ -230,12 +341,12 @@ impl DrmBackend {
                     &DrmOutputRenderElements::default(),
                 )
             };
-            let output = match create(mode, &mut self.manager, &mut self.renderer) {
+            let output = match create(mode, manager, renderer) {
                 Ok(o) => o,
                 Err(e) if mode != preferred => {
                     tracing::warn!("DRM {name}: сохранённый режим недоступен: {e:?}");
                     mode = preferred;
-                    match create(mode, &mut self.manager, &mut self.renderer) {
+                    match create(mode, manager, renderer) {
                         Ok(o) => o,
                         Err(e) => {
                             tracing::warn!("DRM {name}: {e:?}");
@@ -259,8 +370,10 @@ impl DrmBackend {
                 mode.size().0,
                 mode.size().1
             );
-            self.heads.push(Head {
+            heads.push(Head {
                 output,
+                device,
+                fd: fd.clone(),
                 connector: info.handle(),
                 crtc,
                 name,
@@ -280,8 +393,12 @@ impl DrmBackend {
                 render_at: None,
             });
         }
-        Ok(())
     }
+    Ok(())
+}
+/// `FEATHER_SINGLE_GPU=1` — только основная видеокарта, как до поддержки нескольких
+fn single_gpu() -> bool {
+    std::env::var_os("FEATHER_SINGLE_GPU").is_some_and(|v| v != "0")
 }
 pub fn init(
     handle: &LoopHandle<'static, FeatherCompositor>,
@@ -293,17 +410,18 @@ pub fn init(
     let fd = session
         .open(
             &path,
-            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
+            OPEN_FLAGS,
         )
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
     let (drm, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd.clone())?;
+    let primary_gbm = gbm.clone();
     let egl = unsafe { EGLDisplay::new(gbm.clone())? };
     let context = EGLContext::new(&egl)?;
     let renderer = unsafe { GlesRenderer::new(context)? };
     let node = DrmNode::from_file(&fd).ok();
-    let device_id = node.map(|n| n.dev_id());
+    let device = node.map(|n| n.dev_id() as u64).unwrap_or(0);
     let render_node = node.and_then(|n| n.node_with_type(NodeType::Render).and_then(Result::ok));
     let formats = renderer.egl_context().dmabuf_render_formats().clone();
     let manager = GbmDrmOutputManager::new(
@@ -313,7 +431,7 @@ pub fn init(
             GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
         ),
         GbmFramebufferExporter::new(gbm.clone(), render_node),
-        Some(gbm),
+        Some(gbm.clone()),
         COLOR_FORMATS,
         formats,
     );
@@ -339,8 +457,8 @@ pub fn init(
             state.slow_steps.note(started.elapsed(), format_args!("событие ввода"));
         },
     )?;
-    handle.insert_source(drm_notifier, |event, metadata, state| match event {
-        DrmEvent::VBlank(crtc) => state.on_drm_vblank(crtc, metadata.take()),
+    handle.insert_source(drm_notifier, move |event, metadata, state| match event {
+        DrmEvent::VBlank(crtc) => state.on_drm_vblank(device, crtc, metadata.take()),
         DrmEvent::Error(e) => tracing::warn!("DRM: {e}"),
     })?;
     handle.insert_source(notifier, |event, _, state| match event {
@@ -348,21 +466,23 @@ pub fn init(
         SessionEvent::ActivateSession => state.on_session_activate(),
     })?;
     handle.insert_source(UdevBackend::new(&seat)?, move |event, _, state| {
-        let id = match event {
-            UdevEvent::Added { device_id, .. }
-            | UdevEvent::Changed { device_id }
-            | UdevEvent::Removed { device_id } => device_id,
-        };
-        if Some(id) == device_id {
-            if let crate::backend::Backend::Drm(d) = &mut state.backend {
-                d.hotplug_pending = true;
-            }
+        let crate::backend::Backend::Drm(d) = &mut state.backend else { return };
+        match event {
+            UdevEvent::Added { device_id, path } if !single_gpu() => d.gpu_events.push((device_id as u64, Some(path))),
+            UdevEvent::Removed { device_id } => d.gpu_events.push((device_id as u64, None)),
+            _ => {}
         }
+        d.hotplug_pending = true;
     })?;
     let mut backend = DrmBackend {
         session,
         renderer,
         manager,
+        extra: Vec::new(),
+        gpu_events: Vec::new(),
+        device,
+        gbm: primary_gbm,
+        handle: handle.clone(),
         heads: Vec::new(),
         libinput,
         render_node,
@@ -375,6 +495,13 @@ pub fn init(
         connector_name: String::new(),
         modes: Vec::new(),
     };
+    if !single_gpu() {
+        for other in all_gpus(&seat).unwrap_or_default().into_iter().filter(|p| *p != path) {
+            if let Err(e) = backend.open_secondary(&other) {
+                tracing::warn!("DRM: видеокарта {} не подключена: {e}", other.display());
+            }
+        }
+    }
     backend.rescan(saved)?;
     let name = backend
         .heads
@@ -493,10 +620,10 @@ fn deadline_wait(period: std::time::Duration, frame_cost: std::time::Duration) -
 }
 
 impl FeatherCompositor {
-    pub fn on_drm_vblank(&mut self, crtc: crtc::Handle, meta: Option<smithay::backend::drm::DrmEventMetadata>) {
+    pub fn on_drm_vblank(&mut self, device: u64, crtc: crtc::Handle, meta: Option<smithay::backend::drm::DrmEventMetadata>) {
         use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
         if let crate::backend::Backend::Drm(d) = &mut self.backend {
-            if let Some(h) = d.heads.iter_mut().find(|h| h.crtc == crtc && h.pending) {
+            if let Some(h) = d.heads.iter_mut().find(|h| h.device == device && h.crtc == crtc && h.pending) {
                 let success = match h.output.frame_submitted() {
                     Ok(feedback) => {
                         if let Some(mut feedback) = feedback.flatten() {
@@ -539,6 +666,7 @@ impl FeatherCompositor {
                 return;
             }
             d.hotplug_pending = false;
+            d.apply_gpu_events();
             if let Err(e) = d.rescan(self.display_preference.as_ref()) {
                 tracing::warn!("DRM hotplug: {e}");
                 return;
@@ -562,6 +690,9 @@ impl FeatherCompositor {
                 tracing::warn!("Не удалось погасить вывод перед сменой VT: {e}");
             }
             d.manager.pause();
+            for g in &mut d.extra {
+                g.manager.pause();
+            }
             d.active = false;
         }
     }
@@ -579,6 +710,11 @@ impl FeatherCompositor {
             if let Err(err) = d.manager.activate(true) {
                 tracing::warn!("DRM: не удалось активировать: {err}");
                 return;
+            }
+            for g in &mut d.extra {
+                if let Err(err) = g.manager.activate(true) {
+                    tracing::warn!("DRM {}: не удалось активировать: {err}", g.path.display());
+                }
             }
             for h in &mut d.heads {
                 h.output.reset_buffers();
