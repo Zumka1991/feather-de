@@ -18,7 +18,7 @@ pub struct InputSource {
     pub badge: &'static str,
     pub short: &'static str,
 }
-pub const SOURCES: [InputSource; 12] = [
+pub const SOURCES: [InputSource; 13] = [
     InputSource {
         id: "us",
         label: "ABC — США",
@@ -29,6 +29,13 @@ pub const SOURCES: [InputSource; 12] = [
         id: "ru",
         label: "Русская",
         badge: "РУ",
+        short: "RU",
+    },
+    // «раскладка(вариант)»: точка и запятая без Shift, цифры через Shift
+    InputSource {
+        id: "ru(typewriter)",
+        label: "Русская — машинопись",
+        badge: "РМ",
         short: "RU",
     },
     InputSource {
@@ -267,14 +274,24 @@ impl Keyboard {
     pub fn sources(&self) -> Vec<InputSource> {
         self.layouts.iter().filter_map(|s| source(s)).collect()
     }
+    /// XKB layout and variant lists: the id `ru(typewriter)` is layout `ru`, variant `typewriter`
+    pub fn layout_variant(&self) -> (String, String) {
+        let split = |id: &String| match id.strip_suffix(')').and_then(|s| s.split_once('(')) {
+            Some((layout, variant)) => (layout.to_string(), variant.to_string()),
+            None => (id.clone(), String::new()),
+        };
+        let (layouts, variants): (Vec<_>, Vec<_>) = self.layouts.iter().map(split).unzip();
+        (layouts.join(","), variants.join(","))
+    }
     pub fn compile(&self) -> Result<String, String> {
         let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let (layouts, variants) = self.layout_variant();
         xkb::Keymap::new_from_names(
             &ctx,
             "evdev",
             "pc105",
-            &self.layouts.join(","),
-            "",
+            &layouts,
+            &variants,
             Some(self.options()),
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )
@@ -1231,6 +1248,15 @@ mod tests {
             (bad.accent_color, bad.highlight_color, bad.text_size, bad.high_contrast, bad.reduce_transparency, bad.sticky_keys),
             (AccentColor::Blue, None, TextSize::Default, false, false, false)
         );
+    }
+    #[test]
+    fn typewriter_is_a_variant_of_the_russian_layout() {
+        let k = Keyboard { layouts: vec!["us".into(), "ru(typewriter)".into(), "de".into()], ..Default::default() };
+        assert_eq!(k.layout_variant(), ("us,ru,de".into(), ",typewriter,".into()));
+        let map = k.compile().unwrap();
+        assert!(map.contains("Russian (typewriter)"), "вариант не попал в раскладку");
+        let saved = Settings::parse("keyboard_layouts=us,ru(typewriter)\n").keyboard.layouts;
+        assert_eq!(saved, ["us", "ru(typewriter)"]);
     }
     #[test]
     fn each_offered_input_source_and_shortcut_compiles() {

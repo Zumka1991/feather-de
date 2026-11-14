@@ -2354,12 +2354,12 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         socket_name, init_scale, phys_w, phys_h
     );
 
-    let keyboard_layouts=saved.keyboard.layouts.join(",");
+    let (keyboard_layouts, keyboard_variants) = saved.keyboard.layout_variant();
     let xkb_config = XkbConfig {
         rules: "",
         model: "pc105",
         layout: &keyboard_layouts,
-        variant: "",
+        variant: &keyboard_variants,
         options: Some(saved.keyboard.options()),
     };
     let keyboard = seat.add_keyboard(xkb_config, saved.keyboard.repeat_delay as i32, saved.keyboard.repeat_rate as i32)?;
