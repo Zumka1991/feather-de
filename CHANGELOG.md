@@ -2,6 +2,21 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-14 — Замок принимает пароль на Astra (PR #2, @th3sl0wsn4il)
+
+- **Что.** `/etc/pam.d/feather-lock` подключает только один общий стек: `common-auth` /
+  `common-account` (Debian/Ubuntu/Astra), а перед ними `pam_parsec_mac.so` с
+  `module_unknown=ignore` — обязателен на Astra и пропускается, где модуля нет. `install.sh`
+  на Arch (нет `common-auth`, есть `system-auth`) заменяет строки на `auth include system-auth`
+  и `account include system-auth` — без `@include`, это синтаксис патчей Debian. Тот же стек
+  пишут `build-deb.sh` и `install-ubuntu.sh`.
+- **Почему.** `include` отсутствующего файла (`system-auth` на Astra) роняет весь стек: верный
+  пароль получает отказ, и сеанс после блокировки не открывается.
+- **Проверено.** Тестовые стеки через `pam_start_confdir` на libpam 1.7.0: include
+  несуществующего файла → «Permission denied»; строка Parsec без модуля → Success для auth и
+  account. Подмена `install.sh` проверена на поддельном `pam.d` только с `system-auth`.
+  `bash -n` для трёх скриптов. На Astra и Arch вживую не проверялось.
+
 ## 2026-11-14 — Выпуск 0.20.8
 
 - **Прокрутка колёсиком и тачпадом в модальных списках «Системных настроек»** (`src/system_settings.rs`):

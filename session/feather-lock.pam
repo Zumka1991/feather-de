@@ -1,5 +1,14 @@
 #%PAM-1.0
-# Arch Linux / distributions providing system-auth. Adapt to the distribution's
-# screen-lock PAM stack when packaging (for example common-auth on Debian).
-auth include system-auth
-account include system-auth
+# Экран блокировки Пёрышка.
+#
+# Один include. Второй файл (system-auth на Debian/Astra или common-auth на Arch),
+# если его нет, роняет весь стек: верный пароль отвечает отказом.
+# pam_parsec_mac.so обязателен там, где модуль установлен (Astra, как у fly-dm).
+# Где модуля нет, module_unknown=ignore пропускает строку.
+# install.sh на Arch подменяет их на «auth/account include system-auth».
+
+auth [success=ok module_unknown=ignore default=bad] pam_parsec_mac.so
+@include common-auth
+
+account [success=ok module_unknown=ignore default=bad] pam_parsec_mac.so labelselect=appset
+@include common-account
