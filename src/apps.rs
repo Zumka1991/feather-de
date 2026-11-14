@@ -177,6 +177,18 @@ pub fn pin_position(pins: &[String], shown: &[String], id: &str, at: Option<usiz
     }
 }
 
+/// Icon name for a window no .desktop file claims. Steam names Proton/native game windows
+/// `steam_app_<appid>` but installs their icon as `steam_icon_<appid>`.
+pub fn window_icon_name(app_id: &str) -> Option<String> {
+    if app_id.is_empty() {
+        return None;
+    }
+    match app_id.strip_prefix("steam_app_") {
+        Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => Some(format!("steam_icon_{n}")),
+        _ => Some(app_id.to_string()),
+    }
+}
+
 /// "firefox" for a snap's "firefox_firefox.desktop": its windows then join a pinned "firefox"
 fn snap_app_name(stem: &str) -> Option<&str> {
     stem.split_once('_').filter(|(snap, app)| snap == app).map(|(snap, _)| snap)
@@ -1677,6 +1689,14 @@ mod trash_icon_preview {
 #[cfg(test)]
 mod desktop_scan_tests {
     use super::*;
+
+    #[test]
+    fn steam_game_windows_use_steam_icon_names() {
+        assert_eq!(window_icon_name("steam_app_8500").as_deref(), Some("steam_icon_8500"));
+        assert_eq!(window_icon_name("steam_app_default").as_deref(), Some("steam_app_default"));
+        assert_eq!(window_icon_name("org.kde.dolphin").as_deref(), Some("org.kde.dolphin"));
+        assert_eq!(window_icon_name(""), None);
+    }
 
     #[test]
     fn steam_game_shortcuts_do_not_swallow_steam() {

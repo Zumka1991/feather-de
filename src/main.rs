@@ -639,7 +639,7 @@ impl FeatherCompositor {
                     w.title.clone(),
                     AppIcon {
                         kind: crate::apps::IconKind::GenericApp,
-                        name: (!w.app_id.is_empty()).then(|| w.app_id.clone()),
+                        name: crate::apps::window_icon_name(&w.app_id),
                     },
                 )
             }

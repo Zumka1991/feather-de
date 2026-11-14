@@ -2,6 +2,17 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-14 — Значки игр Steam в Доке
+
+- **Что.** Окно без своего `.desktop` с app_id `steam_app_<N>` берёт значок
+  `steam_icon_<N>` (`apps::window_icon_name`), а поиск значков смотрит и в
+  `~/.var/app/com.valvesoftware.Steam/.local/share/icons` — туда Flatpak-Steam кладёт значки игр.
+- **Почему.** Proton/XWayland-окна игр называются `steam_app_8500`, а Steam ставит значок как
+  `steam_icon_8500`, да ещё в домашнюю папку песочницы: Док показывал заглушку.
+- **Проверка.** Тесты `steam_game_windows_use_steam_icon_names` и
+  `flatpak_and_snap_export_icon_bases_are_included`; на машине пользователя значки EVE
+  (8500) лежат в `…/com.valvesoftware.Steam/.local/share/icons/hicolor/*/apps/`.
+
 ## 2026-11-14 — Выпуск 0.21.0 (Claude)
 
 - **Скорость анимаций.** В Системных настройках → Оформление новый ползунок «Скорость

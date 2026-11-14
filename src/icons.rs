@@ -321,6 +321,10 @@ fn icon_theme_bases(
         push_unique_dir(&mut bases, home.join(".icons"));
     }
     push_unique_dir(&mut bases, user_flatpak.join("exports/share/icons"));
+    // Flatpak Steam writes its games' steam_icon_<appid> into its own sandbox home
+    if !home.as_os_str().is_empty() {
+        push_unique_dir(&mut bases, home.join(".var/app/com.valvesoftware.Steam/.local/share/icons"));
+    }
 
     let system = xdg_data_dirs
         .filter(|v| !v.is_empty())
@@ -748,6 +752,9 @@ mod tests {
         )));
         assert!(bases.contains(&PathBuf::from("/var/lib/flatpak/exports/share/icons")));
         assert!(bases.contains(&PathBuf::from("/var/lib/snapd/desktop/icons")));
+        assert!(bases.contains(&PathBuf::from(
+            "/home/u/.var/app/com.valvesoftware.Steam/.local/share/icons"
+        )));
         // Trailing-slash duplicate from XDG_DATA_DIRS is collapsed to a single entry
         let sys_fp_count = bases
             .iter()
