@@ -379,13 +379,19 @@ pick between them at every login.
 **One command** (x86_64, run as a regular user — the script asks for sudo itself):
 
 ```bash
-curl -fsSL https://zumka1991.github.io/feather-de/arch/install.sh | bash
+curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
 ```
 
-The script ([packaging/get-arch.sh](packaging/get-arch.sh)) adds the `[feather-de]` repository
-and its signing key, installs `feather-de` plus what Control Center needs (PipeWire,
-NetworkManager, BlueZ, emoji, xdg-desktop-portal, Poppler). NetworkManager is enabled only if
-nothing else manages the network yet. `| bash -s -- --minimal` installs Feather alone.
+It is the same command as on Ubuntu: on a pacman system it runs the Arch installer
+([packaging/get-arch.sh](packaging/get-arch.sh), also at `…/feather-de/arch/install.sh`). It adds
+the `[feather-de]` repository and its signing key and installs everything at once: `feather-de`
+plus what Control Center needs (PipeWire, NetworkManager, BlueZ, emoji, xdg-desktop-portal,
+Poppler); a desktop set like `feather-desktop` on Ubuntu (Firefox, LibreOffice, video, music,
+printing, codecs, Flatpak for the Store — see `DESKTOP_SET` in the script); interface locales;
+and, where there is no login screen (bare Arch), greetd with Feather's own login screen. An
+existing SDDM/GDM is left alone. NetworkManager is enabled only if nothing else manages the
+network yet. Options via `| bash -s -- OPTION`: `--minimal` (Feather alone), `--tuigreet`,
+`--greetd`, `--no-greetd`.
 
 **Manual setup.** Packages are signed with the same key as the APT repository
 (`D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4`):

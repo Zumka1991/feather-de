@@ -3,6 +3,8 @@
 #
 #   curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
 #
+# На Arch Linux та же команда запускает установщик для Arch (arch/install.sh, get-arch.sh).
+#
 # Параметры (через «| bash -s -- ПАРАМЕТРЫ»): --minimal — только Пёрышко, без набора программ
 # feather-desktop; --tuigreet, --greetd, --no-greetd — как у setup-desktop. Запускать обычным пользователем: sudo скрипт попросит сам (через «| sudo bash»
 # экран входа настраивается на того, кто вызвал sudo).
@@ -32,6 +34,23 @@ main() {
             *) die "Неизвестный параметр: $arg (есть --minimal, --tuigreet, --greetd, --no-greetd)" ;;
         esac
     done
+
+    # Arch Linux и производные (apt нет, есть pacman): там свой репозиторий и свой установщик
+    # (packaging/get-arch.sh), параметры те же. FEATHER_ARCH_INSTALLER=путь — проверка
+    # неопубликованного установщика.
+    if ! command -v apt-get >/dev/null && command -v pacman >/dev/null; then
+        local arch_installer rc=0
+        arch_installer="$(mktemp)"
+        if [[ -n "${FEATHER_ARCH_INSTALLER:-}" ]]; then
+            cp "$FEATHER_ARCH_INSTALLER" "$arch_installer"
+        else
+            curl -fsSL "$REPO_URL/arch/install.sh" -o "$arch_installer" \
+                || { rm -f "$arch_installer"; die "Не удалось скачать установщик для Arch Linux: $REPO_URL/arch/install.sh"; }
+        fi
+        bash "$arch_installer" "$@" || rc=$?
+        rm -f "$arch_installer"
+        exit "$rc"
+    fi
 
     # Экран входа Пёрышка открывается для этого пользователя
     local login_user="$USER"

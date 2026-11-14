@@ -218,6 +218,14 @@ fn own_program(name: &str) -> Option<String> {
         .map(|path| format!("'{}'", path.display().to_string().replace('\'', "'\\''")))
 }
 
+/// Aliases of the Files / Terminal entries, whose ids stay "dolphin" / "konsole" for saved Dock
+/// pins. With Feather's own program installed the KDE one is a different application: aliasing
+/// its .desktop would swallow Dolphin / Konsole on a KDE system (gone from Launchpad, their
+/// windows counted as ours). Without our program the entry *is* the KDE one.
+fn legacy_aliases(own: bool, kde: &'static str, ours: &'static str) -> Vec<&'static str> {
+    if own { vec![ours] } else { vec![kde, ours] }
+}
+
 /// Feather's file manager, else Dolphin
 pub fn files_command() -> String {
     own_program("feather-files").unwrap_or_else(|| "dolphin".into())
@@ -277,7 +285,7 @@ impl AppRegistry {
             // Id stays "dolphin" so saved Dock pins keep working; our own Files app is used
             // when it sits next to the compositor binary
             AppEntry::new("dolphin", "Файлы", "Файловый менеджер", IconKind::Finder, Exec(files_command()), true)
-                .with_aliases(&["org.kde.dolphin", "feather-files"])
+                .with_aliases(&legacy_aliases(own_program("feather-files").is_some(), "org.kde.dolphin", "feather-files"))
                 .with_own_icon(),
             // The icon comes from whichever firefox .desktop is installed (apt, snap, flatpak);
             // without Firefox (a fresh Feather OS) the pin is hidden like the ones below
@@ -287,7 +295,7 @@ impl AppRegistry {
             // not the icon theme's utilities-terminal from its .desktop) when installed
             {
                 let terminal = AppEntry::new("konsole", "Терминал", "Терминал", IconKind::Terminal, Exec(terminal_command()), true)
-                    .with_aliases(&["org.kde.konsole", "feather-terminal"]);
+                    .with_aliases(&legacy_aliases(own_program("feather-terminal").is_some(), "org.kde.konsole", "feather-terminal"));
                 if own_program("feather-terminal").is_some() { terminal.with_own_icon() } else { terminal }
             },
             // Pinned only where installed: elsewhere they are removed below (as Firefox above)
@@ -1712,6 +1720,32 @@ mod desktop_scan_tests {
         let mut names: Vec<_> = apps.iter().map(|a| a.name.as_str()).collect();
         names.sort();
         assert_eq!(names, ["Dota 2", "Path of Exile", "Steam"]);
+    }
+
+    #[test]
+    fn own_terminal_does_not_swallow_konsole_on_kde() {
+        let dir = std::env::temp_dir().join(format!("feather-apps-kde-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("org.kde.konsole.desktop"), "[Desktop Entry]\nName=Konsole\nExec=konsole\nIcon=utilities-terminal\n").unwrap();
+        fs::write(dir.join("feather-terminal.desktop"), "[Desktop Entry]\nName=Терминал\nExec=feather-terminal\nStartupWMClass=feather-terminal\n").unwrap();
+        let terminal = |own: bool| {
+            let exec = if own { "'/usr/bin/feather-terminal'" } else { "konsole" };
+            AppEntry::new("konsole", "Терминал", "", IconKind::Terminal, AppAction::Exec(exec.into()), true)
+                .with_aliases(&legacy_aliases(own, "org.kde.konsole", "feather-terminal"))
+        };
+        // Feather's Terminal installed: Konsole stays a separate program with its own windows
+        let mut apps = vec![terminal(true)];
+        AppRegistry::scan_desktop_dir(&dir, &mut apps, 1);
+        assert_eq!(apps.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["Терминал", "Konsole"]);
+        let registry = AppRegistry { apps };
+        assert_eq!(registry.app_for_app_id("org.kde.konsole"), Some(1));
+        assert_eq!(registry.app_for_app_id("feather-terminal"), Some(0));
+        // No Terminal of ours: the pinned entry is Konsole itself, as before
+        let mut apps = vec![terminal(false)];
+        AppRegistry::scan_desktop_dir(&dir, &mut apps, 1);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(AppRegistry { apps }.app_for_app_id("org.kde.konsole"), Some(0));
     }
 
     #[test]

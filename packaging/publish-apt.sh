@@ -105,7 +105,8 @@ pre{background:#f5f5f7;padding:12px 14px;border-radius:10px;overflow-x:auto}h2{m
 <body><h1>Пёрышко (Feather DE)</h1>
 <p>Рабочий стол Wayland в стиле macOS для Ubuntu 24.04 и новее (amd64) и Arch Linux (x86_64).</p>
 <h2>Одной командой</h2>
-<p>Подходит и для Ubuntu Server без рабочего стола: ставит Пёрышко, его экран входа и всё нужное.
+<p>Одна команда для Ubuntu и Arch Linux. Подходит и для системы без рабочего стола (Ubuntu Server,
+голый Arch): ставит Пёрышко, набор программ, экран входа и всё нужное.
 Запускайте обычным пользователем, пароль sudo скрипт спросит сам.</p>
 <pre>curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash</pre>
 <h2>Файлом .deb</h2>
@@ -120,10 +121,9 @@ sudo apt-get update &amp;&amp; sudo apt-get install feather-de</pre>
 <p>Отпечаток ключа: <code>D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4</code>.
 Обновления приходят вместе с системой: <code>sudo apt upgrade</code>.</p>
 <h2>Arch Linux</h2>
-<p>Свой репозиторий pacman (x86_64), подписан тем же ключом. Ставит Пёрышко ещё одним сеансом
-рядом с вашим рабочим столом и подскажет, где выбрать его на экране входа:</p>
-<pre>curl -fsSL https://zumka1991.github.io/feather-de/arch/install.sh | bash</pre>
-<p>Или вручную:</p>
+<p>Свой репозиторий pacman (x86_64), подписан тем же ключом. Команда выше ставит Пёрышко ещё одним
+сеансом рядом с вашим рабочим столом и подскажет, где выбрать его на экране входа; только
+Пёрышко, без набора программ — <code>… | bash -s -- --minimal</code>. Репозиторий вручную:</p>
 <pre>curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo pacman-key --add -
 sudo pacman-key --lsign-key D5E6C2628719EF1D60685758C7F944C1485C5FC4
 printf '\n[feather-de]\nSigLevel = Required\nServer = https://zumka1991.github.io/feather-de/arch/$arch\n' | sudo tee -a /etc/pacman.conf
