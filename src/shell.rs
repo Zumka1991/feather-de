@@ -1050,8 +1050,9 @@ pub struct MacShell {
     topbar_hits: Vec<(f32, f32, TopbarItem)>,
     status_hover: Option<TopbarItem>,
     pub tray_items: Vec<crate::tray::Item>,
-    /// Pre-scaled tray tiles + `needs_chip` per `(index, px_size, bar_dark)`
-    tray_tile_cache: std::collections::HashMap<(usize, u32, bool), (tiny_skia::Pixmap, bool)>,
+    /// Pre-scaled tray tiles + `needs_chip` per `(index, px_size, bar_dark, ink rgba)`;
+    /// template conversion (`tray_icon`) runs only on a miss
+    tray_tile_cache: std::collections::HashMap<(usize, u32, bool, u32), (tiny_skia::Pixmap, bool)>,
     /// Larvis's desktop: None without one, Some(shown) while it runs
     larvis: Option<bool>,
     /// Larvis's nested desktop draws no menu bar: the main session's bar covers its place
@@ -2570,6 +2571,11 @@ impl MacShell {
             self.topbar_dirty = true;
         }
     }
+    /// Re-render tray tiles (template/colour switch in Settings)
+    pub fn invalidate_tray_icons(&mut self){
+        self.tray_tile_cache.clear();
+        if !self.tray_items.is_empty(){self.topbar_dirty=true;}
+    }
     pub fn set_tray_items(&mut self,items:Vec<crate::tray::Item>){
         if self.tray_menu.as_ref().is_some_and(|m|!items.iter().any(|i|i.key==m.0)){self.close_menus();}
         if self.tray_items!=items{
@@ -3581,8 +3587,11 @@ impl MacShell {
                     if hover==Some(TopbarItem::Tray(index)){highlight(&mut pm,rx-27.0,rx-1.0);}
                     // A client pixmap is authoritative; an unresolved theme name
                     // must not replace it with the generic application fallback.
-                    let icon=if item.pixels.is_none()&&!item.icon_name.is_empty(){
-                        icons.get(&{let mut key=crate::icons::IconKey::new(&AppIcon{kind:crate::apps::IconKind::GenericApp,name:Some(item.icon_name.clone())},"",to_phys(18) as u32);key.initial.clear();key})
+                    // In template mode a resolvable `-symbolic` name (vector, made for panels)
+                    // beats the client's small raster; otherwise the pixmap stays authoritative.
+                    let by_name=!item.icon_name.is_empty()&&(item.pixels.is_none()||(!crate::tray_icon::colored()&&item.icon_name.ends_with("-symbolic")));
+                    let icon=if by_name{
+                        icons.get(&crate::icons::IconKey::tray(&item.icon_name,to_phys(72) as u32))
                     }else{None};
                     let source=icon.or(item.pixels.as_deref());
                     if let Some(image)=source {
@@ -3590,9 +3599,14 @@ impl MacShell {
                         // cache resampled tile + alpha contrast check across hover/clock redraws.
                         let size=(18.0*ui_scale()).round().max(1.0);
                         let px_size=size as u32;
-                        let cache_key=(index,px_size,bar.dark);
+                        let ink={let c=bar.text.to_color_u8();u32::from_be_bytes([c.red(),c.green(),c.blue(),c.alpha()])};
+                        let cache_key=(index,px_size,bar.dark,ink);
                         if !tray_tile_cache.contains_key(&cache_key) {
-                            if let Some(mut tile)=tiny_skia::Pixmap::new(px_size,px_size) {
+                            // Menu-bar template: one ink colour, size and optical centre
+                            let template=if crate::tray_icon::colored(){None}else{crate::tray_icon::render(image,px_size,bar.text)};
+                            if let Some(tile)=template {
+                                tray_tile_cache.insert(cache_key,(tile,false));
+                            } else if let Some(mut tile)=tiny_skia::Pixmap::new(px_size,px_size) {
                                 tile.draw_pixmap(0,0,image.as_ref(),&tiny_skia::PixmapPaint{quality:tiny_skia::FilterQuality::Bilinear,..Default::default()},tiny_skia::Transform::from_scale(size/image.width() as f32,size/image.height() as f32),None);
                                 let chip=tray_icon_needs_chip(&tile,bar.dark);
                                 tray_tile_cache.insert(cache_key,(tile,chip));

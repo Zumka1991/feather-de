@@ -346,7 +346,12 @@ fn pixmap(value: &OwnedValue) -> Option<Arc<tiny_skia::Pixmap>> {
         .filter(|(w, h, b)| {
             *w > 0 && *h > 0 && *w <= 512 && *h <= 512 && b.len() == *w as usize * *h as usize * 4
         })
-        .min_by_key(|(w, h, _)| (w - 40).abs() + (h - 40).abs())?;
+        // Самый крупный из достаточных (≥ 64): у Telegram 16×16 и 64×64 одинаково далеки
+        // от 40, и раньше брался 16×16, растянутый в кляксу
+        .min_by_key(|(w, h, _)| {
+            let side = (*w).min(*h);
+            if side >= 64 { (0, side) } else { (1, -side) }
+        })?;
     let mut image = tiny_skia::Pixmap::new(w as u32, h as u32)?;
     for (argb, rgba) in data
         .chunks_exact(4)
@@ -360,19 +365,10 @@ fn pixmap(value: &OwnedValue) -> Option<Arc<tiny_skia::Pixmap>> {
             argb[0],
         ]);
     }
-    let mut small = tiny_skia::Pixmap::new(40, 40)?;
-    small.draw_pixmap(
-        0,
-        0,
-        image.as_ref(),
-        &tiny_skia::PixmapPaint {
-            quality: tiny_skia::FilterQuality::Bilinear,
-            ..Default::default()
-        },
-        tiny_skia::Transform::from_scale(40.0 / w as f32, 40.0 / h as f32),
-        None,
-    );
-    Some(Arc::new(small))
+    // Крупные — усреднением по площади, а не билинейкой в разы (лесенка и «грязь»)
+    Some(Arc::new(
+        crate::tray_icon::fit_within(&image, crate::tray_icon::ANALYSIS_MAX).unwrap_or(image),
+    ))
 }
 async fn load_item(conn: &Connection, entry: &mut Entry) -> zbus::Result<()> {
     let p = proxy(conn, entry, "org.freedesktop.DBus.Properties", &entry.path).await?;
@@ -813,7 +809,15 @@ mod tests {
             .unwrap();
         let image = pixmap(&value).unwrap();
         assert_eq!(&image.data()[..4], &[128, 0, 50, 128]);
-        assert_eq!(image.width(), 40);
+        assert_eq!(image.width(), 1, "мелкий пиксмап не растягивается");
+        // Из 16×16 и 64×64 берётся 64×64; 512×512 усредняется до ANALYSIS_MAX
+        let sizes = |list: Vec<(i32, i32, Vec<u8>)>| {
+            let p = pixmap(&OwnedValue::try_from(Value::from(list)).unwrap()).unwrap();
+            (p.width(), p.height())
+        };
+        let solid = |n: i32| vec![255u8; (n * n * 4) as usize];
+        assert_eq!(sizes(vec![(16, 16, solid(16)), (16, 16, solid(16)), (64, 64, solid(64))]), (64, 64));
+        assert_eq!(sizes(vec![(512, 512, solid(512)), (22, 22, solid(22))]), (96, 96));
         for (w, h, data) in [(0, 2, vec![]), (513, 1, vec![]), (2, 2, vec![0; 15])] {
             assert!(
                 pixmap(&OwnedValue::try_from(Value::from(vec![(w, h, data)])).unwrap()).is_none()

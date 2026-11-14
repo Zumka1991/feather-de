@@ -375,6 +375,8 @@ pub struct Settings {
     pub animations: bool,
     /// Общий множитель скорости анимаций (0,5…2, по умолчанию 1)
     pub animation_speed: f64,
+    /// Оригинальные цветные значки трея вместо шаблонных монохромных
+    pub tray_colored_icons: bool,
     pub keyboard: Keyboard,
     pub keybindings: crate::shortcuts::Bindings,
     pub display: Option<Display>,
@@ -432,6 +434,7 @@ impl Default for Settings {
             drop_shelf_pos: None,
             animations: true,
             animation_speed: 1.0,
+            tray_colored_icons: false,
             keyboard: Keyboard::default(),
             keybindings: Default::default(),
             display: None,
@@ -590,6 +593,11 @@ impl Settings {
                 "restore_session" => {
                     if let Ok(b) = v.parse() {
                         s.restore_session = b;
+                    }
+                }
+                "tray_colored_icons" => {
+                    if let Ok(b) = v.parse() {
+                        s.tray_colored_icons = b;
                     }
                 }
                 "show_about" => {
@@ -831,6 +839,7 @@ impl Settings {
         text.push_str(&format!("keyboard_caps={}\nkeyboard_typography={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\nkeyboard_app_ring={}\n", self.keyboard.caps.id(), self.keyboard.typography, self.keyboard.repeat_delay, self.keyboard.repeat_rate, self.keyboard.app_ring));
         for line in self.keybindings.lines() { text.push_str(&line); }
         text.push_str(&format!("animation_speed={}\n", self.animation_speed));
+        text.push_str(&format!("tray_colored_icons={}\n", self.tray_colored_icons));
         text.push_str(&format!("show_about={}\n", self.show_about));
         text.push_str(&format!("restore_session={}\n", self.restore_session));
         text.push_str(&format!("caffeine={}\n", self.caffeine));
@@ -1171,6 +1180,13 @@ mod tests {
             Settings::parse("keyboard_layouts=,,bogus").keyboard,
             Keyboard::default()
         );
+    }
+    #[test]
+    fn tray_colored_icons_round_trips() {
+        assert!(!Settings::default().tray_colored_icons);
+        let mut s = Settings::default();
+        s.tray_colored_icons = true;
+        assert!(Settings::parse(&s.text()).tray_colored_icons);
     }
     #[test]
     fn animation_speed_round_trips_and_clamps() {

@@ -29,6 +29,8 @@ pub struct IconKey {
     pub dark: bool,
     /// `ICON_DIRS` when the key was made
     dirs: u64,
+    /// Значок трея: сначала symbolic/tray/panel-вариант, без подложки-сквиркла приложения
+    pub tray: bool,
 }
 impl IconKey {
     pub fn new(icon: &crate::shell::AppIcon, label: &str, px: u32) -> Self {
@@ -43,8 +45,60 @@ impl IconKey {
             px,
             dark: appearance() == Appearance::Dark,
             dirs: ICON_DIRS.load(Ordering::Relaxed),
+            tray: false,
         }
     }
+    /// Ключ значка трея (`IconName` элемента StatusNotifierItem)
+    pub fn tray(name: &str, px: u32) -> Self {
+        let mut key = Self::new(
+            &crate::shell::AppIcon {
+                kind: crate::apps::IconKind::GenericApp,
+                name: Some(name.to_string()),
+            },
+            "",
+            px,
+        );
+        key.initial.clear();
+        key.tray = true;
+        key
+    }
+}
+
+/// Имена, под которыми приложения кладут значок для панели, в порядке предпочтения:
+/// монохромные `-symbolic`, затем `-tray`/`-panel`, затем само имя. Для пути — те же
+/// варианты рядом с файлом.
+pub fn tray_icon_candidates(name: &str) -> Vec<String> {
+    let path = Path::new(name);
+    let (dir, file) = if name.starts_with('/') {
+        (path.parent().map(Path::to_path_buf), path.file_name().and_then(|f| f.to_str()).unwrap_or(name))
+    } else {
+        (None, name)
+    };
+    let (stem, ext) = match file.rsplit_once('.') {
+        Some((stem, ext)) if matches!(ext, "svg" | "png") => (stem, Some(ext)),
+        _ => (file, None),
+    };
+    let mut out = Vec::new();
+    let already = ["-symbolic", "-tray", "-panel", "_tray_mono", "-mono"].iter().any(|s| stem.ends_with(s));
+    if !already {
+        for suffix in ["-symbolic", "-tray-symbolic", "-panel-symbolic", "-tray", "-panel", "_tray_mono", "-mono"] {
+            let variant = format!("{stem}{suffix}");
+            match &dir {
+                Some(dir) => {
+                    for e in ["svg", "png"] {
+                        out.push(dir.join(format!("{variant}.{e}")).to_string_lossy().into_owned());
+                    }
+                }
+                None => out.push(variant),
+            }
+        }
+    }
+    out.push(match (&dir, ext) {
+        (Some(_), _) => name.to_string(),
+        (None, Some(_)) => file.to_string(),
+        (None, None) => stem.to_string(),
+    });
+    out
 }
 
 /// A small preview survives eviction, so cache pressure never turns an app into a
@@ -210,6 +264,8 @@ impl IconCache {
 /// Filesystem lookup and decoding owned exclusively by the raster worker.
 pub struct IconLoader {
     search_dirs: Option<Vec<PathBuf>>,
+    /// Папки тем для значков трея: apps/status/panel и symbolic любого размера
+    tray_dirs: Option<Vec<PathBuf>>,
     paths: HashMap<String, Option<PathBuf>>,
     /// `ICON_DIRS` the folders and found paths were read under
     dirs: u64,
@@ -277,6 +333,35 @@ fn theme_app_dirs(theme_root: &Path) -> Vec<PathBuf> {
     // Biggest first; tiny 16/22/24 px variants are useless for the Dock
     dirs.retain(|d| dir_score(d) >= 48);
     dirs.sort_by_key(|d| std::cmp::Reverse(dir_score(d)));
+    dirs
+}
+
+/// Панельные папки темы: значки состояния и symbolic-версии, векторные первыми
+fn theme_tray_dirs(theme_root: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let Ok(level1) = std::fs::read_dir(theme_root) else {
+        return dirs;
+    };
+    let tray_category = |n: &std::ffi::OsStr| matches!(n.to_str(), Some("apps" | "status" | "panel"));
+    for e in level1.flatten() {
+        let Ok(level2) = std::fs::read_dir(e.path()) else { continue };
+        // hicolor/Adwaita: <size>/<category>; breeze: <category>/<size>
+        let breeze = tray_category(&e.file_name());
+        for c in level2.flatten() {
+            if (breeze || tray_category(&c.file_name())) && c.path().is_dir() {
+                dirs.push(c.path());
+            }
+        }
+    }
+    let rank = |d: &PathBuf| {
+        let s = d.to_string_lossy();
+        (
+            !(s.contains("symbolic") || s.contains("scalable")),
+            !s.ends_with("panel"),
+            std::cmp::Reverse(dir_score(d)),
+        )
+    };
+    dirs.sort_by_key(rank);
     dirs
 }
 
@@ -358,13 +443,16 @@ impl IconLoader {
     pub fn new() -> Self {
         Self {
             search_dirs: None,
+            tray_dirs: None,
             paths: HashMap::new(),
             dirs: ICON_DIRS.load(Ordering::Relaxed),
         }
     }
 
     fn search_dirs(&mut self) -> &[PathBuf] {
-        self.search_dirs.get_or_insert_with(|| {
+        let mut tray_dirs = None;
+        let tray = &mut self.tray_dirs;
+        let dirs = self.search_dirs.get_or_insert_with(|| {
             let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
             let xdg_home = std::env::var("XDG_DATA_HOME").ok();
             let xdg_dirs = std::env::var("XDG_DATA_DIRS").ok();
@@ -395,11 +483,14 @@ impl IconLoader {
                 }
             }
             let mut dirs = Vec::new();
+            let mut tray = Vec::new();
             for t in &themes {
                 for base in &bases {
                     dirs.extend(theme_app_dirs(&base.join(t)));
+                    tray.extend(theme_tray_dirs(&base.join(t)));
                 }
             }
+            tray_dirs = Some(tray);
 
             let data_home = xdg_home
                 .as_deref()
@@ -433,6 +524,33 @@ impl IconLoader {
                 push_unique_dir(&mut dirs, dir);
             }
             dirs
+        });
+        if tray_dirs.is_some() {
+            *tray = tray_dirs;
+        }
+        dirs
+    }
+
+    /// Первый найденный вариант значка трея: в панельных папках тем, затем как обычно
+    fn find_tray(&mut self, candidates: &[String]) -> Option<PathBuf> {
+        self.search_dirs();
+        let tray = self.tray_dirs.clone().unwrap_or_default();
+        candidates.iter().find_map(|name| {
+            if name.starts_with('/') {
+                return self.find(name);
+            }
+            let key = format!("tray:{name}");
+            if let Some(cached) = self.paths.get(&key) {
+                if cached.is_some() {
+                    return cached.clone();
+                }
+                return self.find(name);
+            }
+            let found = tray.iter().find_map(|d| {
+                ["svg", "png"].iter().map(|ext| d.join(format!("{name}.{ext}"))).find(|p| p.is_file())
+            });
+            self.paths.insert(key, found.clone());
+            found.or_else(|| self.find(name))
         })
     }
 
@@ -441,6 +559,7 @@ impl IconLoader {
         if dirs != self.dirs {
             self.dirs = dirs;
             self.search_dirs = None;
+            self.tray_dirs = None;
             self.paths.clear();
         }
         if let Some(cached) = self.paths.get(name) {
@@ -470,11 +589,18 @@ impl IconLoader {
             .and_then(|p| rasterize(&p, px))
             .map(|raw| macify(raw, px, dark))
     }
+    /// Значок трея как есть, без сквиркла приложения: его форма нужна шаблону строки меню
+    fn load_tray(&mut self, name: &str, px: u32) -> Option<Pixmap> {
+        self.find_tray(&tray_icon_candidates(name)).and_then(|path| rasterize(&path, px))
+    }
     pub fn load_app(
         &mut self,
         key: &IconKey,
         fonts: &mut crate::text::FontSystem,
     ) -> Option<Pixmap> {
+        if key.tray {
+            return key.icon.name.as_deref().and_then(|name| self.load_tray(name, key.px));
+        }
         if let Some(pixmap) = key
             .icon
             .name

@@ -246,6 +246,7 @@ pub enum Action {
     /// Set from where the slider was clicked (-1…1)
     PointerSpeed(f64),
     AnimationSpeed(f64),
+    TrayColoredIcons,
     NaturalMouse,
     NaturalTouchpad,
     TapToClick,
@@ -1760,6 +1761,13 @@ impl Panel {
                         Some(Action::AnimationSpeed(speed)),
                     );
                 }
+                l.row(
+                    52.0,
+                    "Цветные значки в строке меню",
+                    "Оригинальные значки трея вместо монохромных".into(),
+                    Style::Toggle(crate::tray_icon::colored()),
+                    Some(Action::TrayColoredIcons),
+                );
                 l.row(
                     52.0,
                     "Программы GTK в стиле Пёрышка",
@@ -4633,6 +4641,11 @@ impl crate::FeatherCompositor {
                     self.apply_pointer_config();
                     self.save_settings();
                 }
+            }
+            Action::TrayColoredIcons => {
+                crate::tray_icon::set_colored(!crate::tray_icon::colored());
+                self.shell.invalidate_tray_icons();
+                self.save_settings();
             }
             Action::AnimationSpeed(speed) => {
                 if speed.is_finite() && (speed - crate::animation::speed()).abs() > 1e-6 {
