@@ -72,6 +72,33 @@ pub fn live_glass_active() -> bool {
 const KAWASE_HALO: i32 = 14;
 /// Extra border in `1/4`-resolution pixels around a panel's physical box for bevel refraction.
 const REFRACT_PAD: i32 = 4;
+/// Distance between Kawase taps in source texels
+const KAWASE_SPREAD: f32 = 1.15;
+
+/// Bottom of the menu bar in output uv (`0.0` when this head shows no bar). Blur inside this
+/// band reads only the band itself: the Kawase radius (tens of pixels) is wider than the 24 pt
+/// bar, and without the limit a bright maximized window right under it washed the bar out.
+fn topbar_band_uv(specs: &[GlassSpec], view: crate::monitors::Rect, scale: f64, out_size: (i32, i32)) -> f32 {
+    let Some(spec) = specs.iter().find(|s| s.key == KEY_TOPBAR && s.visual.alpha > 0.001) else { return 0.0 };
+    let r = spec_output_rect(spec, view, scale);
+    let bottom = r.loc.y + r.size.h;
+    if r.loc.y > 0 || bottom <= 0 || r.loc.x >= out_size.0 || r.loc.x + r.size.w <= 0 || out_size.1 <= 0 {
+        return 0.0;
+    }
+    (bottom.min(out_size.1) as f32 / out_size.1 as f32).min(1.0)
+}
+
+/// Lowest uv a pixel inside the band may sample in a texture `size` texels tall: the centre of
+/// the last texel lying wholly in the band, so linear filtering never reaches below the bar.
+/// `1.0` (no limit) without a band.
+fn band_sample_limit(band_uv: f32, size: i32) -> f32 {
+    if band_uv <= 0.0 || size <= 0 {
+        return 1.0;
+    }
+    // The tolerance absorbs f32 noise when the band edge falls on a texel edge
+    let last = ((band_uv as f64 * size as f64 + 1e-3).floor() as i32 - 1).max(0);
+    (last as f32 + 0.5) / size as f32
+}
 
 const DOWN_SHADER: &str = r#"
 #version 100
@@ -98,9 +125,14 @@ uniform float tint;
 
 uniform vec2 halfpixel;
 uniform vec4 uv_clamp;
+// Menu bar band: (bottom edge in uv, lowest source uv a pixel inside the band may read)
+uniform vec2 band;
 
 vec4 tap(vec2 uv) {
-    return texture2D(tex, clamp(uv, uv_clamp.xy, uv_clamp.zw));
+    vec4 lim = uv_clamp;
+    if (v_coords.y < band.x)
+        lim.w = min(lim.w, band.y);
+    return texture2D(tex, clamp(uv, lim.xy, lim.zw));
 }
 
 void main() {
@@ -139,9 +171,14 @@ uniform float tint;
 
 uniform vec2 halfpixel;
 uniform vec4 uv_clamp;
+// Menu bar band: (bottom edge in uv, lowest source uv a pixel inside the band may read)
+uniform vec2 band;
 
 vec4 tap(vec2 uv) {
-    return texture2D(tex, clamp(uv, uv_clamp.xy, uv_clamp.zw));
+    vec4 lim = uv_clamp;
+    if (v_coords.y < band.x)
+        lim.w = min(lim.w, band.y);
+    return texture2D(tex, clamp(uv, lim.xy, lim.zw));
 }
 
 void main() {
@@ -191,10 +228,12 @@ uniform float radius;
 // 0.0 .. 1.2: optical bevel refraction & specular rim strength
 uniform float refract_strength;
 uniform float scale_px;
+// Lowest uv the panel reads: the menu bar stays inside its own band of the blur
+uniform float uv_max_y;
 
 vec2 clamp_uv(vec2 uv) {
     vec2 half_texel = vec2(0.5) / tex_size;
-    return clamp(uv, half_texel, vec2(1.0) - half_texel);
+    return clamp(uv, half_texel, vec2(1.0 - half_texel.x, min(1.0 - half_texel.y, uv_max_y)));
 }
 
 void main() {
@@ -326,6 +365,8 @@ struct GlassHead {
     last_snap: Option<WorldSnap>,
     /// Regions of `blur_tex` (in `l0_size` coordinates) whose Dual-Kawase blur is up to date
     valid_blur: Vec<Rectangle<i32, Physical>>,
+    /// Bottom of the menu bar as a fraction of the output height (`0.0` without a bar)
+    band_uv: f32,
     slots: HashMap<u64, SlotTrack>,
 }
 
@@ -347,6 +388,7 @@ impl GlassState {
         let pass_uniforms = [
             UniformName::new("halfpixel", UniformType::_2f),
             UniformName::new("uv_clamp", UniformType::_4f),
+            UniformName::new("band", UniformType::_2f),
         ];
         let glass_uniforms = [
             UniformName::new("tex_size", UniformType::_2f),
@@ -356,6 +398,7 @@ impl GlassState {
             UniformName::new("radius", UniformType::_1f),
             UniformName::new("refract_strength", UniformType::_1f),
             UniformName::new("scale_px", UniformType::_1f),
+            UniformName::new("uv_max_y", UniformType::_1f),
         ];
         let down_program = match renderer.compile_custom_texture_shader(DOWN_SHADER, &pass_uniforms) {
             Ok(p) => p,
@@ -475,6 +518,11 @@ impl GlassState {
             Some(_) => {}
         }
         head.last_snap = Some(snap);
+        let band_uv = topbar_band_uv(specs, view, scale, out_size);
+        if head.band_uv != band_uv {
+            head.band_uv = band_uv;
+            head.valid_blur.clear();
+        }
 
         // Project every visible glass panel's animated output rect into `l0_size` coords.
         // When a panel is actively springing (`!visual.identity()`), cover its full resting +
@@ -565,6 +613,7 @@ impl GlassState {
             l0_size,
             l1_size,
             l2_size,
+            band_uv,
             &batches,
         )
         .is_ok()
@@ -627,6 +676,7 @@ impl GlassState {
             radius_phys: spec.radius * scale as f32,
             strength: spec.strength,
             scale_px: scale as f32,
+            uv_max_y: if spec.key == KEY_TOPBAR { band_sample_limit(head.band_uv, head.l0_size.1) } else { 1.0 },
         })
     }
 }
@@ -683,6 +733,7 @@ fn create_head(
         scene_dirty: true,
         last_snap: None,
         valid_blur: Vec::new(),
+        band_uv: 0.0,
         slots: HashMap::new(),
     })
 }
@@ -699,6 +750,7 @@ fn run_kawase_batches(
     l0: (i32, i32),
     l1: (i32, i32),
     l2: (i32, i32),
+    band_uv: f32,
     boxes0: &[Rectangle<i32, Physical>],
 ) -> Result<(), GlesError> {
     let b1 = Rectangle::from_size(l1.into());
@@ -727,13 +779,13 @@ fn run_kawase_batches(
     }
 
     // Pass 1: scene_tex (l0) -> down1_tex (l1)
-    kawase_pass(renderer, scene_tex, down1_tex, l0, l1, &m1_down, down_program, 1.15)?;
+    kawase_pass(renderer, scene_tex, down1_tex, l0, l1, &m1_down, down_program, band_uv)?;
     // Pass 2: down1_tex (l1) -> down2_tex (l2)
-    kawase_pass(renderer, down1_tex, down2_tex, l1, l2, &m2_down, down_program, 1.15)?;
+    kawase_pass(renderer, down1_tex, down2_tex, l1, l2, &m2_down, down_program, band_uv)?;
     // Pass 3: down2_tex (l2) -> down1_tex (l1)
-    kawase_pass(renderer, down2_tex, down1_tex, l2, l1, &m1_up, up_program, 1.15)?;
+    kawase_pass(renderer, down2_tex, down1_tex, l2, l1, &m1_up, up_program, band_uv)?;
     // Pass 4: down1_tex (l1) -> blur_tex (l0)
-    kawase_pass(renderer, down1_tex, blur_tex, l1, l0, boxes0, up_program, 1.15)?;
+    kawase_pass(renderer, down1_tex, blur_tex, l1, l0, boxes0, up_program, band_uv)?;
     Ok(())
 }
 
@@ -746,8 +798,9 @@ fn kawase_pass(
     dst_size: (i32, i32),
     dirty_dst: &[Rectangle<i32, Physical>],
     program: &GlesTexProgram,
-    spread: f32,
+    band_uv: f32,
 ) -> Result<(), GlesError> {
+    let spread = KAWASE_SPREAD;
     let mut fb = renderer.bind(dst_tex)?;
     let mut frame = renderer.render(&mut fb, dst_size.into(), Transform::Normal)?;
     let hp_x = (0.5 * spread) / src_size.0.max(1) as f32;
@@ -757,6 +810,7 @@ fn kawase_pass(
     let uniforms = [
         Uniform::new("halfpixel", (hp_x, hp_y)),
         Uniform::new("uv_clamp", (eps_x, eps_y, 1.0 - eps_x, 1.0 - eps_y)),
+        Uniform::new("band", (band_uv, band_sample_limit(band_uv, src_size.1))),
     ];
     let src_rect = Rectangle::<f64, Buffer>::from_size((src_size.0 as f64, src_size.1 as f64).into());
     let dst_rect = Rectangle::<i32, Physical>::from_size(dst_size.into());
@@ -913,6 +967,7 @@ pub struct GlassElement {
     radius_phys: f32,
     strength: f32,
     scale_px: f32,
+    uv_max_y: f32,
 }
 
 impl Element for GlassElement {
@@ -1011,6 +1066,7 @@ impl RenderElement<GlesRenderer> for GlassElement {
             Uniform::new("radius", self.radius_phys * scale_k),
             Uniform::new("refract_strength", self.strength),
             Uniform::new("scale_px", self.scale_px * scale_k),
+            Uniform::new("uv_max_y", self.uv_max_y),
         ];
         frame.override_default_tex_program(self.program.clone(), uniforms.to_vec());
         let res = RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
@@ -1056,6 +1112,53 @@ mod tests {
             miss.iter().all(|m| !m.overlaps(topbar)),
             "Topbar must stay valid when damage is near the Dock"
         );
+    }
+
+    fn topbar_spec(screen_w: i32) -> GlassSpec {
+        GlassSpec {
+            key: KEY_TOPBAR,
+            rect: R::new(0.0, 0.0, screen_w as f32, crate::theme::TOP_BAR_HEIGHT as f32),
+            radius: 0.0,
+            strength: 0.72,
+            visual: Visual::default(),
+        }
+    }
+
+    #[test]
+    fn band_limit_stays_on_texel_centres_inside_the_band() {
+        assert_eq!(band_sample_limit(0.0, 270), 1.0);
+        let band = 24.0 / 1080.0;
+        for (size, centre) in [(270, 5.5), (135, 2.5), (67, 0.5), (112, 1.5)] {
+            assert!((band_sample_limit(band, size) * size as f32 - centre).abs() < 1e-3, "{size}");
+        }
+    }
+
+    #[test]
+    fn menu_bar_blur_never_reads_a_maximized_window_under_it() {
+        for (w, h, scale) in [(1920, 1080, 1.0), (2560, 1440, 1.0), (1440, 900, 2.0), (1366, 768, 1.0), (1280, 800, 1.25)] {
+            let view = crate::monitors::Rect { x: 0, y: 0, w, h };
+            let out = ((w as f64 * scale) as i32, (h as f64 * scale) as i32);
+            let band = topbar_band_uv(&[topbar_spec(w)], view, scale, out);
+            assert!(band > 0.0, "{w}x{h}");
+            // The maximized window starts right under the bar
+            let window_top = crate::tiling::work_area(view).y as f32 / h as f32;
+            assert!(window_top >= band - 1e-6, "{w}x{h}: window under the bar");
+            let (l0w, l0h) = head_l0_size(view);
+            let l1 = ((l0w / 2).max(8), (l0h / 2).max(8));
+            let l2 = ((l1.0 / 2).max(4), (l1.1 / 2).max(4));
+            for size in [l0h, l1.1, l2.1] {
+                // Linear filtering at the limit touches only the texel centred there
+                let reach = band_sample_limit(band, size) * size as f32 + 0.5;
+                assert!(reach <= band * size as f32 + 1e-3, "{w}x{h}@{scale}: level {size} reads below the bar");
+            }
+        }
+    }
+
+    #[test]
+    fn no_band_on_heads_without_the_menu_bar() {
+        let side = crate::monitors::Rect { x: 1920, y: 0, w: 1920, h: 1080 };
+        assert_eq!(topbar_band_uv(&[topbar_spec(1920)], side, 1.0, (1920, 1080)), 0.0);
+        assert_eq!(topbar_band_uv(&[], crate::monitors::Rect { x: 0, y: 0, w: 1920, h: 1080 }, 1.0, (1920, 1080)), 0.0);
     }
 
     #[test]

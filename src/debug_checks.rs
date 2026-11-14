@@ -3731,7 +3731,30 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
                 fs_specs.len()
             );
 
-            eprintln!("{LOG} Dual-Kawase live blur, upright UV refraction, 0-pass uncovered damage isolation and fullscreen scanout bypass passed");
+            // A bright maximized window right under the menu bar must not wash the bar out:
+            // its blur reads only the band behind the bar (the wallpaper)
+            s.windows.clear();
+            let bar_points = [(sw / 2, 12), (sw / 2, 22), (sw / 3, 22)];
+            let (_, _, bare) = capture_offscreen(s);
+            let area = crate::tiling::work_area(crate::monitors::Rect { x: 0, y: 0, w: sw, h: sh });
+            let mut maxed = paint_solid_window(905, area.x, area.y, area.w, area.h, [255, 255, 255, 255]);
+            maxed.maximized = true;
+            s.windows.push(maxed);
+            let (pw, _, lit) = capture_offscreen(s);
+            for (lx, ly) in bar_points {
+                let px = ((lx as f64 * scale).round() as i32).clamp(0, pw - 1);
+                let py = (ly as f64 * scale).round() as i32;
+                let i = ((py * pw + px) as usize) * 4;
+                let diff = (0..3).map(|c| (bare[i + c] as i32 - lit[i + c] as i32).abs()).max().unwrap_or(0);
+                assert!(
+                    diff <= 6,
+                    "{LOG} menu bar at ({lx},{ly}) lit up over a maximized white window: {:?} -> {:?}",
+                    &bare[i..i + 4],
+                    &lit[i..i + 4]
+                );
+            }
+
+            eprintln!("{LOG} Dual-Kawase live blur, upright UV refraction, 0-pass uncovered damage isolation and fullscreen scanout bypass, unlit menu bar over a maximized window passed");
             s.loop_signal.stop();
         })?;
     }
