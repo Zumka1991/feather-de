@@ -149,6 +149,7 @@ pub enum Action {
     DndSchedule,
     DndWindow,
     NotifySounds,
+    DndUrgent,
     AlertSounds,
     AlertTone,
     AlertVolume(u8),
@@ -339,6 +340,8 @@ pub struct Context<'a> {
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
+    /// «Не беспокоить» still lets critical (urgency 2) banners through
+    pub dnd_urgent: bool,
     pub sounds: crate::sounds::Preferences,
     pub audio: crate::controls::Audio,
     pub wifi: crate::controls::network::Wifi,
@@ -383,6 +386,8 @@ pub struct FrameJob {
     pub dnd: bool,
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_sounds: bool,
+    /// «Не беспокоить» still lets critical (urgency 2) banners through
+    pub dnd_urgent: bool,
     pub sounds: crate::sounds::Preferences,
     pub audio: crate::controls::Audio,
     pub wifi: crate::controls::network::Wifi,
@@ -437,6 +442,7 @@ impl FrameJob {
             dnd: c.dnd,
             dnd_schedule: c.dnd_schedule,
             notify_sounds: c.notify_sounds,
+            dnd_urgent: c.dnd_urgent,
             sounds: c.sounds,
             audio: c.audio.clone(),
             wifi: c.wifi.clone(),
@@ -483,6 +489,7 @@ impl FrameJob {
             dnd: self.dnd,
             dnd_schedule: self.dnd_schedule,
             notify_sounds: self.notify_sounds,
+            dnd_urgent: self.dnd_urgent,
             sounds: self.sounds,
             audio: self.audio.clone(),
             wifi: self.wifi.clone(),
@@ -1658,11 +1665,13 @@ impl Panel {
             Page::Notifications => {
                 l.hero(Page::Notifications);
                 l.begin();
-                l.row(52.0, "Не беспокоить", "Всё уходит в центр уведомлений, баннер только у срочных".into(), Style::Toggle(c.dnd), Some(Action::DoNotDisturb));
+                let quiet = if c.dnd_urgent { "Всё уходит в центр уведомлений, баннер только у срочных" } else { "Всё уходит в центр уведомлений, без баннеров" };
+                l.row(52.0, "Не беспокоить", quiet.into(), Style::Toggle(c.dnd), Some(Action::DoNotDisturb));
                 l.row(52.0, "По расписанию", "Каждый день в выбранные часы".into(), Style::Toggle(c.dnd_schedule.is_some()), Some(Action::DndSchedule));
                 if let Some(window) = c.dnd_schedule {
                     l.choice(48.0, "Время", String::new(), crate::shell::dnd_window_label(window), Some(Action::ChoiceMenu(Some(Choice::DndWindow))));
                 }
+                l.row(52.0, "Срочные уведомления", "Пробиваются через «Не беспокоить»".into(), Style::Toggle(c.dnd_urgent), Some(Action::DndUrgent));
                 l.row(52.0, "Звук уведомлений", "Короткий сигнал при появлении баннера".into(), Style::Toggle(c.notify_sounds), Some(Action::NotifySounds));
                 l.end();
                 l.header("Уведомления программ");
@@ -3788,6 +3797,7 @@ impl crate::FeatherCompositor {
             dnd: self.shell.dnd_active(),
             dnd_schedule: self.shell.dnd_schedule,
             notify_sounds: self.shell.notify_sounds,
+            dnd_urgent: self.shell.dnd_urgent,
             sounds: self.sound_preferences,
             audio: self.shell.cc.audio.clone(),
             wifi: self.shell.cc.wifi.clone(),
@@ -4105,6 +4115,10 @@ impl crate::FeatherCompositor {
             Action::PreviewAlert => {self.play_effect(crate::sounds::Effect::Alert(self.sound_preferences.tone),true);}
             Action::NotifySounds => {
                 self.shell.notify_sounds = !self.shell.notify_sounds;
+                self.save_settings();
+            }
+            Action::DndUrgent => {
+                self.shell.dnd_urgent = !self.shell.dnd_urgent;
                 self.save_settings();
             }
             Action::NotifyDelivery(index) => {
@@ -5036,6 +5050,7 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            dnd_urgent: true,
             sounds: Default::default(),
             audio: Default::default(),
             wifi: Default::default(),
@@ -5514,6 +5529,7 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            dnd_urgent: true,
             sounds: Default::default(),
             audio: Default::default(),
             wifi: Default::default(),
@@ -5589,6 +5605,7 @@ mod tests {
             dnd: false,
             dnd_schedule: Some((1320, 420)),
             notify_sounds: true,
+            dnd_urgent: true,
             sounds: Default::default(),
             audio: Default::default(),
             wifi: Default::default(),

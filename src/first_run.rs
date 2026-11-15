@@ -947,6 +947,7 @@ mod tests {
             dnd: false,
             dnd_schedule: None,
             notify_sounds: true,
+            dnd_urgent: true,
             sounds: Default::default(),
             audio: Default::default(),
             wifi: Default::default(),

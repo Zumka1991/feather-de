@@ -1147,6 +1147,8 @@ pub struct MacShell {
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub notify_apps_changed: bool,
     pub notify_sounds: bool,
+    /// «Не беспокоить» still lets critical (urgency 2) banners through
+    pub dnd_urgent: bool,
 
     pub overlay_buffer: MemoryRenderBuffer,
     pub overlay_dirty: bool,
@@ -1306,6 +1308,7 @@ impl MacShell {
             notify_apps: Vec::new(),
             notify_apps_changed: false,
             notify_sounds: true,
+            dnd_urgent: true,
             overlay_buffer: new_buffer(1, 1),
             overlay_dirty: true,
             overlay_painted: Vec::new(),
@@ -1436,7 +1439,8 @@ impl MacShell {
     }
 
     /// A client notification (org.freedesktop.Notifications). With «Не беспокоить» or an
-    /// open center only critical ones show a banner; the rest go straight to the center.
+    /// open center only critical ones show a banner (with «Не беспокоить» none at all when
+    /// `dnd_urgent` is off); the rest go straight to the center.
     pub fn show_notification(&mut self, n: crate::notifications::Incoming, registry: &AppRegistry) {
         let app = [n.desktop_entry.as_str(), n.app_name.as_str()]
             .into_iter()
@@ -1485,7 +1489,10 @@ impl MacShell {
             return;
         }
         let quiet = self.dnd_active() || self.center_open || delivery == crate::notifications::Delivery::CenterOnly;
-        if quiet && !n.critical {
+        // A sender's «В центре» route and the open center always admit critical banners;
+        // «Не беспокоить» does only while «Срочные уведомления» is on.
+        let urgent = n.critical && (self.dnd_urgent || !self.dnd_active());
+        if quiet && !urgent {
             self.to_history(toast);
             return;
         }
@@ -5499,6 +5506,17 @@ mod appmenu_tests {
         shell.show_notification(urgent, &registry);
         assert_eq!(shell.toasts.iter().map(|t| t.id).collect::<Vec<_>>(), [4, 2]);
         assert_eq!(shell.history[0].id, 3);
+        // «Срочные уведомления» off: under «Не беспокоить» even a critical one stays quiet
+        shell.dnd_urgent = false;
+        let mut urgent = incoming(5, &[]); urgent.critical = true; urgent.timeout = None;
+        shell.show_notification(urgent, &registry);
+        assert_eq!(shell.toasts.iter().map(|t| t.id).collect::<Vec<_>>(), [4, 2]);
+        assert_eq!(shell.history[0].id, 5);
+        // …and shows again once «Не беспокоить» is off
+        shell.dnd_enabled = false;
+        let mut urgent = incoming(6, &[]); urgent.critical = true; urgent.timeout = None;
+        shell.show_notification(urgent, &registry);
+        assert_eq!(shell.toasts[0].id, 6);
     }
 
     #[test]

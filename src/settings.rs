@@ -384,6 +384,8 @@ pub struct Settings {
     pub dnd_schedule: Option<(u16, u16)>,
     pub notify_apps: Vec<crate::notifications::AppPolicy>,
     pub notify_sounds: bool,
+    /// «Не беспокоить» still lets critical (urgency 2) banners through
+    pub dnd_urgent: bool,
     pub sounds: crate::sounds::Preferences,
     pub hot_corners: [crate::hot_corners::HotAction; 4],
     pub night: crate::night::Preferences,
@@ -444,6 +446,7 @@ impl Default for Settings {
             dnd_schedule: None,
             notify_apps: Vec::new(),
             notify_sounds: true,
+            dnd_urgent: true,
             sounds: Default::default(),
             hot_corners: Default::default(),
             night: Default::default(),
@@ -719,6 +722,11 @@ impl Settings {
                         s.notify_sounds = v;
                     }
                 }
+                "dnd_urgent" => {
+                    if let Ok(v) = v.parse() {
+                        s.dnd_urgent = v;
+                    }
+                }
                 "dock_size" => {
                     if let Some(v) = v.parse::<f32>().ok().filter(|v| crate::theme::DOCK_SIZES.contains(v)) {
                         s.dock_size = v;
@@ -866,7 +874,7 @@ impl Settings {
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
         text.push_str(&format!("xwayland_hidpi={}\n", self.xwayland_hidpi));
         text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_edge={}\ngtk_theme={}\n", self.dock_size, self.dock_autohide, self.dock_edge.id(), self.gtk_theme));
-        text.push_str(&format!("notify_sounds={}\n", self.notify_sounds));
+        text.push_str(&format!("notify_sounds={}\ndnd_urgent={}\n", self.notify_sounds, self.dnd_urgent));
         text.push_str(&format!("alert_sounds={}\nalert_sound={}\nalert_volume={}\ninterface_sounds={}\nvolume_feedback={}\n",
             self.sounds.alerts,self.sounds.tone.id(),self.sounds.volume,self.sounds.interface,self.sounds.volume_feedback));
         text.push_str(&format!("auto_headphones={}\n", self.sounds.auto_headphones));
@@ -1055,12 +1063,14 @@ mod tests {
         s.do_not_disturb = true;
         assert!(s.notify_sounds);
         s.notify_sounds = false;
+        assert!(s.dnd_urgent);
+        s.dnd_urgent = false;
         s.notify_apps = vec![
             AppPolicy { key: "org.telegram.desktop".into(), label: "Telegram".into(), delivery: Delivery::CenterOnly },
             AppPolicy { key: "firefox".into(), label: "Firefox".into(), delivery: Delivery::Off },
         ];
         let restored = Settings::parse(&s.text());
-        assert!(restored.do_not_disturb && !restored.notify_sounds);
+        assert!(restored.do_not_disturb && !restored.notify_sounds && !restored.dnd_urgent);
         assert_eq!(restored.dnd_schedule, None);
         use crate::hot_corners::HotAction as H;
         assert_eq!(restored.hot_corners, [H::None; 4]);

@@ -947,6 +947,7 @@ impl FeatherCompositor {
             dnd_schedule: self.shell.dnd_schedule,
             notify_apps: self.shell.notify_apps.clone(),
             notify_sounds: self.shell.notify_sounds,
+            dnd_urgent: self.shell.dnd_urgent,
             sounds: self.sound_preferences,
             hot_corners: self.hot_corners.actions,
             night: self.night.prefs,
@@ -2559,6 +2560,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
             shell.dnd_schedule = saved.dnd_schedule;
             shell.notify_apps = saved.notify_apps.clone();
             shell.notify_sounds = saved.notify_sounds;
+            shell.dnd_urgent = saved.dnd_urgent;
             shell
         },
         windows: Vec::new(),
