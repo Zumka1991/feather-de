@@ -147,11 +147,11 @@ impl BarColors {
         let base_l = 0.28f32;
         // Minimum dark veil alpha so white text (~0.93 luma) reaches >= 6.0 on mean and >= 4.5 on p90
         // even at the slightly lighter bottom edge of the bar gradient (0.90x veil).
-        let solve = |lo_init: f32, ok: &dyn Fn(f32) -> bool| -> f32 {
+        let solve = |lo_init: f32, cap: f32, ok: &dyn Fn(f32) -> bool| -> f32 {
             if ok(lo_init) {
                 return lo_init;
             }
-            let (mut lo, mut hi) = (lo_init, 0.76f32);
+            let (mut lo, mut hi) = (lo_init, cap);
             for _ in 0..12 {
                 let mid = 0.5 * (lo + hi);
                 if ok(mid) {
@@ -162,12 +162,19 @@ impl BarColors {
             }
             hi
         };
-        let alpha_d = solve(base_d, &|a| {
+        let white_ok = |a: f32| {
             let eff = 0.88 * a;
             wcag_contrast(0.93, veiled_luma(profile.mean, 0.047, eff)) >= 6.4
                 && wcag_contrast(0.93, veiled_luma(profile.high, 0.047, eff)) >= 4.8
-        });
-        let alpha_l = solve(base_l, &|a| {
+        };
+        // The dark appearance always has a dark bar with white text and icons, whatever the
+        // wallpaper: black symbols on a bright sky looked foreign next to dark windows and
+        // the dark Dock. A bright wallpaper just gets a denser smoked veil (up to 0.85).
+        if appearance() == Appearance::Dark {
+            return Self::with_alpha(true, solve(base_d, 0.85, &white_ok));
+        }
+        let alpha_d = solve(base_d, 0.76, &white_ok);
+        let alpha_l = solve(base_l, 0.76, &|a| {
             let eff = 0.88 * a;
             wcag_contrast(veiled_luma(profile.mean, 0.984, eff), 0.008) >= 9.6
                 && wcag_contrast(veiled_luma(profile.low, 0.984, eff), 0.008) >= 8.4
@@ -5146,8 +5153,9 @@ mod appmenu_tests {
             bar.dark
         };
 
-        // Bundled wallpapers (including Mountain Lake #2, Dunes #4, Emerald #6) must choose the
-        // exact same polarity in Light and Dark mode, unaffected by the 0.8x glass multiplier.
+        // Bundled wallpapers (including Mountain Lake #2, Dunes #4, Emerald #6): the light
+        // appearance follows the wallpaper, unaffected by the glass multiplier; the dark one
+        // always has white text on a veil dense enough to read it.
         for i in 0..crate::wallpaper::COUNT {
             let img = image::load_from_memory(crate::wallpaper::bundled_bytes(i))
                 .unwrap()
@@ -5157,8 +5165,13 @@ mod appmenu_tests {
             let prof = analyze_bar(preview.thumb.as_deref().unwrap(), 900);
             let dark_from_real = check_profile(crate::wallpaper::NAMES[i], prof);
             if i == 2 {
-                assert!(!dark_from_real, "Mountain Lake sky is bright: top bar must use dark text in both modes");
+                assert!(!dark_from_real, "Mountain Lake sky is bright: the light appearance uses dark text");
             }
+            crate::theme::with_render_settings(1.0, Appearance::Dark, || {
+                let bar = BarColors::from_profile(prof);
+                let cr = wcag_contrast(0.93, veiled_luma(prof.mean, 0.047, bar.tint.alpha() * 0.90));
+                assert!(bar.dark && cr >= 4.5, "{}: dark appearance, white text contrast {cr:.2}", crate::wallpaper::NAMES[i]);
+            });
             for look in [Appearance::Light, Appearance::Dark] {
                 crate::theme::with_render_settings(1.0, look, || {
                     let mut shell = MacShell::new(1440, 900);
@@ -5175,7 +5188,8 @@ mod appmenu_tests {
                         glass,
                         preview: preview.clone(),
                     });
-                    assert_eq!(shell.bar_colors().dark, dark_from_real, "polarity flipped for {}", crate::wallpaper::NAMES[i]);
+                    let expected = look == Appearance::Dark || dark_from_real;
+                    assert_eq!(shell.bar_colors().dark, expected, "wrong polarity for {} ({look:?})", crate::wallpaper::NAMES[i]);
                 });
             }
         }
