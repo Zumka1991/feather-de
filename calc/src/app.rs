@@ -906,7 +906,7 @@ impl App {
                     self.expr_line = format!("arcsin({})", Self::format_number(x));
                     self.set_value(self.from_angle(x.asin()));
                 } else {
-                    let unit = if self.radians { " рад" } else { "°" };
+                    let unit = if self.radians { feather_ui::i18n::tr_static(" рад") } else { "°" };
                     self.expr_line = format!("sin({}{unit})", Self::format_number(x));
                     self.set_value(self.to_angle(x).sin());
                 }
@@ -917,7 +917,7 @@ impl App {
                     self.expr_line = format!("arccos({})", Self::format_number(x));
                     self.set_value(self.from_angle(x.acos()));
                 } else {
-                    let unit = if self.radians { " рад" } else { "°" };
+                    let unit = if self.radians { feather_ui::i18n::tr_static(" рад") } else { "°" };
                     self.expr_line = format!("cos({}{unit})", Self::format_number(x));
                     self.set_value(self.to_angle(x).cos());
                 }
@@ -928,7 +928,7 @@ impl App {
                     self.expr_line = format!("arctan({})", Self::format_number(x));
                     self.set_value(self.from_angle(x.atan()));
                 } else {
-                    let unit = if self.radians { " рад" } else { "°" };
+                    let unit = if self.radians { feather_ui::i18n::tr_static(" рад") } else { "°" };
                     self.expr_line = format!("tan({}{unit})", Self::format_number(x));
                     self.set_value(self.to_angle(x).tan());
                 }

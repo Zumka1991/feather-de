@@ -2983,7 +2983,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             s.apply_system_setting(A::Page(Page::Language));
         })?;
         at(state, 1400, |s| {
-            assert_eq!(crate::theme::lang(), Lang::Ru);
+            assert_eq!(crate::theme::lang(), Lang::En);
             assert_eq!(crate::theme::region(), Region::Ru);
             assert!(crate::theme::use_24h_time());
             assert!(crate::theme::first_weekday_monday());

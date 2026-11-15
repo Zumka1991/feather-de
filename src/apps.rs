@@ -1724,6 +1724,8 @@ mod desktop_scan_tests {
 
     #[test]
     fn own_terminal_does_not_swallow_konsole_on_kde() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         let dir = std::env::temp_dir().join(format!("feather-apps-kde-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("org.kde.konsole.desktop"), "[Desktop Entry]\nName=Konsole\nExec=konsole\nIcon=utilities-terminal\n").unwrap();

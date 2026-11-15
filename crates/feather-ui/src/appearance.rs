@@ -35,7 +35,7 @@ impl Default for ThemeConfig {
             text_size: TextSize::Default,
             high_contrast: false,
             reduce_transparency: false,
-            lang: Lang::Ru,
+            lang: Lang::En,
             region: Region::Ru,
             use_24h_time: true,
             first_weekday_monday: true,

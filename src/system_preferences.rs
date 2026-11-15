@@ -690,21 +690,6 @@ fn format_bytes_ru(bytes: u64) -> String {
     }
 }
 
-fn cores_ru(n: usize) -> String {
-    let rem100 = n % 100;
-    let rem10 = n % 10;
-    let word = if (11..=19).contains(&rem100) {
-        "ядер"
-    } else {
-        match rem10 {
-            1 => "ядро",
-            2..=4 => "ядра",
-            _ => "ядер",
-        }
-    };
-    format!("{n} {word}")
-}
-
 fn collapse_spaces(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -744,16 +729,16 @@ fn parse_cpu_info(text: &str) -> String {
     let cleaned = if let Some((left, right)) = cleaned.split_once('@') {
         let freq = right
             .trim()
-            .replace("GHz", " ГГц")
-            .replace("MHz", " МГц")
-            .replace('.', ",");
+            .replace("GHz", &format!(" {}", feather_ui::i18n::tr_static("ГГц")))
+            .replace("MHz", &format!(" {}", feather_ui::i18n::tr_static("МГц")));
+        let freq = if feather_ui::i18n::decimal_comma() { freq.replace('.', ",") } else { freq };
         format!("{} · {}", collapse_spaces(left), collapse_spaces(&freq))
     } else {
         collapse_spaces(&cleaned)
     };
     let cores = phys_cores.or((logical_threads > 0).then_some(logical_threads));
     match cores {
-        Some(n) => format!("{cleaned} ({})", cores_ru(n)),
+        Some(n) => format!("{cleaned} ({})", feather_ui::i18n::cores_count(n)),
         None => cleaned,
     }
 }
@@ -1477,6 +1462,8 @@ mod tests {
     }
     #[test]
     fn hardware_parsers_format_cpu_memory_gpu_and_disks() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         let cpu = parse_cpu_info(
             "processor\t: 0\nmodel name\t: Intel(R) Core(TM) i5-8600K CPU @ 3.60GHz\ncpu cores\t: 6\n",
         );

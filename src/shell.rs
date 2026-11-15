@@ -4529,7 +4529,7 @@ impl MacShell {
         draw_glass_panel(pm, r.x, r.y, r.w, r.h, 18.0, false);
         let [prev, next, title] = Self::calendar_buttons(r);
         let title_ink = if hover == Some(CenterHit::Month(0)) && today.is_none() { p.accent } else { p.text };
-        let name = format!("{} {year}", MONTHS[month as usize - 1]);
+        let name = format!("{} {year}", feather_ui::i18n::tr_static(MONTHS[month as usize - 1]));
         fonts.draw_text(pm, &name, title.0.x + 8.0, r.y + 14.0, 15.0, title_ink, true);
         for (b, delta) in [prev, next] {
             if hover == Some(CenterHit::Month(delta)) {

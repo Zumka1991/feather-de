@@ -213,15 +213,11 @@ pub fn navigate(n: usize, cur: usize, dir: Dir) -> usize {
 
 /// «1 окно», «3 окна», «5 окон»
 pub fn windows_label(n: usize, hidden: bool) -> String {
-    let word = match (n % 10, n % 100) {
-        (1, r) if r != 11 => "окно",
-        (2..=4, r) if !(12..=14).contains(&r) => "окна",
-        _ => "окон",
-    };
+    let count = feather_ui::i18n::windows_count(n);
     if hidden {
-        format!("{n} {word} · свёрнуто")
+        format!("{count} · {}", feather_ui::i18n::tr_static("свёрнуто"))
     } else {
-        format!("{n} {word}")
+        count
     }
 }
 
@@ -922,6 +918,8 @@ mod tests {
 
     #[test]
     fn keys_and_labels() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         use smithay::input::keyboard::keysyms as k;
         let f = FeatherCompositor::ring_key_for;
         assert_eq!(f(k::KEY_Tab, None, false), Some(RingKey::Step(1)));

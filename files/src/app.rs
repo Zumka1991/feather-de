@@ -2878,7 +2878,7 @@ impl App {
         let size_text = match p.size {
             Some(bytes) => {
                 let human = human_size(bytes);
-                let exact = format!("{bytes} байт").chars().rev().collect::<Vec<_>>().chunks(3).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join(" ").chars().rev().collect::<String>();
+                let exact = format!("{bytes} {}", feather_ui::i18n::tr_static("байт")).chars().rev().collect::<Vec<_>>().chunks(3).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join(" ").chars().rev().collect::<String>();
                 format!("{}{human} ({exact})", if p.partial { "более " } else { "" })
             }
             None => "Подсчёт…".into(),
@@ -3125,24 +3125,24 @@ pub(crate) fn shortcut_letter(sym: smithay_client_toolkit::seat::keyboard::Keysy
 
 /// 1536 → "1,5 КБ"
 pub fn human_size(bytes: u64) -> String {
-    let units = ["байт", "КБ", "МБ", "ГБ", "ТБ"];
+    let units: [&str; 5] = ["байт", "КБ", "МБ", "ГБ", "ТБ"].map(feather_ui::i18n::tr_static);
     let mut v = bytes as f64;
     let mut u = 0;
     while v >= 1000.0 && u < units.len() - 1 {
         v /= 1000.0;
         u += 1;
     }
-    if u == 0 { format!("{bytes} байт") } else { format!("{:.1} {}", v, units[u]).replace('.', ",") }
+    if u == 0 {
+        format!("{bytes} {}", units[0])
+    } else {
+        let text = format!("{v:.1}");
+        format!("{} {}", if feather_ui::i18n::decimal_comma() { text.replace('.', ",") } else { text }, units[u])
+    }
 }
 
 /// "1 объект", "3 объекта", "12 объектов"
 pub fn objects(n: usize) -> String {
-    let word = match (n % 10, n % 100) {
-        (1, r) if r != 11 => "объект",
-        (2..=4, r) if !(12..=14).contains(&r) => "объекта",
-        _ => "объектов",
-    };
-    format!("{n} {word}")
+    feather_ui::i18n::items_count(n)
 }
 
 /// ⏏: a triangle over a bar, `size` points square
@@ -3176,6 +3176,8 @@ mod tests {
 
     #[test]
     fn long_names_fit_the_menu() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         let root = fixture("longmenu");
         let long = "feather-de-apt-signing-key-very-long-name-backup.asc";
         std::fs::write(root.join(long), "x").unwrap();
@@ -3509,6 +3511,8 @@ mod tests {
 
     #[test]
     fn plural_forms() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         assert_eq!([objects(1), objects(3), objects(5), objects(11), objects(22)], ["1 объект", "3 объекта", "5 объектов", "11 объектов", "22 объекта"]);
     }
 

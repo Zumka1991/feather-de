@@ -418,7 +418,7 @@ impl Default for Settings {
             high_contrast: false,
             reduce_transparency: false,
             sticky_keys: false,
-            language: crate::theme::Lang::Ru,
+            language: crate::theme::Lang::En,
             region: crate::theme::Region::Ru,
             use_24h_time: true,
             first_weekday_monday: true,

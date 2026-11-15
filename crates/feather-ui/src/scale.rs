@@ -12,7 +12,7 @@ static HIGHLIGHT_COLOR: AtomicU8 = AtomicU8::new(255); // 255 = None ("accent")
 static TEXT_SIZE: AtomicU8 = AtomicU8::new(1); // TextSize::Default (100%)
 static HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
 static REDUCE_TRANSPARENCY: AtomicBool = AtomicBool::new(false);
-static LANG: AtomicU8 = AtomicU8::new(0); // Lang::Ru
+static LANG: AtomicU8 = AtomicU8::new(0); // Lang::En
 static REGION: AtomicU8 = AtomicU8::new(0); // Region::Ru
 static USE_24H_TIME: AtomicBool = AtomicBool::new(true);
 static FIRST_WEEKDAY_MONDAY: AtomicBool = AtomicBool::new(true);
@@ -273,6 +273,7 @@ pub fn with_render_settings<T>(scale: f32, appearance: Appearance, draw: impl Fn
         text_size: TextSize::Default,
         high_contrast: false,
         reduce_transparency: false,
+        // Source strings are Russian: an untranslated render keeps them as they are
         lang: Lang::Ru,
     };
     let _restore = Restore(RENDER_SETTINGS.with(|s| s.replace(Some(snap))));

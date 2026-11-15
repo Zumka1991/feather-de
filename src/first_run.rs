@@ -971,7 +971,7 @@ mod tests {
         wiz.step = 0;
         assert_eq!(
             wiz.hit(100.0, 175.0, 640.0, 496.0, &ctx),
-            Some(Action::Language(Lang::Ru))
+            Some(Action::Language(Lang::En))
         );
         assert_eq!(
             wiz.hit(550.0, 464.0, 640.0, 496.0, &ctx),

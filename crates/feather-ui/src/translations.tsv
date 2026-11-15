@@ -912,3 +912,225 @@ Flathub (Flatpak)	Flathub (Flatpak)	Flathub (Flatpak)	Flathub (Flatpak)	Flathub 
 Не удалось загрузить каталог Flathub. Проверьте подключение к интернету	Could not load the Flathub catalog. Check your Internet connection	No se pudo cargar el catálogo de Flathub. Comprueba la conexión a Internet	Flathub-Katalog konnte nicht geladen werden. Prüfe die Internetverbindung	Impossible de charger le catalogue Flathub. Vérifiez la connexion Internet	无法加载 Flathub 目录。请检查网络连接
 Flatpak не установлен	Flatpak is not installed	Flatpak no está instalado	Flatpak ist nicht installiert	Flatpak n’est pas installé	未安装 Flatpak
 Не удалось запустить Flatpak	Could not start Flatpak	No se pudo iniciar Flatpak	Flatpak konnte nicht gestartet werden	Impossible de lancer Flatpak	无法启动 Flatpak
+# ── File manager: menus, dialogs, status ──
+Вырезать	Cut	Cortar	Ausschneiden	Couper	剪切
+Открыть с помощью…	Open With…	Abrir con…	Öffnen mit …	Ouvrir avec…	打开方式…
+Открыть в приложении	Open in Application	Abrir en la aplicación	In Anwendung öffnen	Ouvrir dans l’application	在应用程序中打开
+Другое приложение…	Other Application…	Otra aplicación…	Andere Anwendung…	Autre application…	其他应用程序…
+Выберите программу или введите команду / путь	Choose an application or enter a command / path	Elige una aplicación o introduce un comando / ruta	Wähle ein Programm oder gib einen Befehl / Pfad ein	Choisissez une application ou saisissez une commande / un chemin	选择应用程序或输入命令 / 路径
+Команда, путь или поиск…	Command, path or search…	Comando, ruta o búsqueda…	Befehl, Pfad oder Suche …	Commande, chemin ou recherche…	命令、路径或搜索…
+Совпадений в списке нет — нажмите «Открыть» для запуска команды	No matches in the list — click Open to run the command	No hay coincidencias en la lista: pulsa Abrir para ejecutar el comando	Keine Treffer in der Liste – klicke auf „Öffnen“, um den Befehl auszuführen	Aucune correspondance dans la liste — cliquez sur « Ouvrir » pour lancer la commande	列表中没有匹配项——点按“打开”以运行命令
+Свойства папки	Get Info	Obtener información	Informationen	Lire les informations	显示简介
+Скрытые файлы	Hidden Files	Archivos ocultos	Versteckte Dateien	Fichiers masqués	隐藏文件
+Значки	Icons	Iconos	Symbole	Icônes	图标
+Список	List	Lista	Liste	Liste	列表
+Упорядочить	Sort By	Ordenar por	Sortieren nach	Trier par	排序方式
+Дата изменения	Date Modified	Fecha de modificación	Änderungsdatum	Date de modification	修改日期
+Удалить навсегда…	Delete Permanently…	Eliminar permanentemente…	Endgültig löschen …	Supprimer définitivement…	永久删除…
+Содержит	Contains	Contiene	Enthält	Contient	包含
+Создан	Created	Creado	Erstellt	Création	创建时间
+Открыт	Opened	Abierto	Geöffnet	Ouverture	打开时间
+Права	Permissions	Permisos	Zugriffsrechte	Permissions	权限
+Подсчёт…	Calculating…	Calculando…	Wird berechnet …	Calcul en cours…	正在计算…
+Папка пуста	Folder is Empty	La carpeta está vacía	Der Ordner ist leer	Le dossier est vide	文件夹为空
+Пустой файл	Empty File	Archivo vacío	Leere Datei	Fichier vide	空文件
+Показана начальная часть файла	Showing the beginning of the file	Se muestra el principio del archivo	Dateianfang wird angezeigt	Début du fichier affiché	显示文件开头部分
+Не удаётся открыть папку	Can’t open the folder	No se puede abrir la carpeta	Der Ordner kann nicht geöffnet werden	Impossible d’ouvrir le dossier	无法打开文件夹
+Нечего отменять	Nothing to undo	Nada que deshacer	Nichts zum Widerrufen	Rien à annuler	没有可撤销的操作
+Не удалось отменить: файл не найден	Couldn’t undo: file not found	No se pudo deshacer: archivo no encontrado	Widerrufen nicht möglich: Datei nicht gefunden	Annulation impossible : fichier introuvable	无法撤销：找不到文件
+Папка уже удалена	The folder has already been deleted	La carpeta ya se ha eliminado	Der Ordner wurde bereits gelöscht	Le dossier a déjà été supprimé	文件夹已被删除
+Переименование отменено	Rename undone	Cambio de nombre deshecho	Umbenennen widerrufen	Renommage annulé	已撤销重命名
+Создание папки отменено	Folder creation undone	Creación de carpeta deshecha	Ordnererstellung widerrufen	Création du dossier annulée	已撤销新建文件夹
+Папка перемещена в Корзину	Folder moved to Trash	Carpeta movida a la Papelera	Ordner in den Papierkorb gelegt	Dossier placé dans la Corbeille	文件夹已移到废纸篓
+Отмена создания папки	Undoing folder creation	Deshaciendo la creación de la carpeta	Ordnererstellung wird widerrufen	Annulation de la création du dossier	正在撤销新建文件夹
+Возврат из Корзины…	Restoring from Trash…	Restaurando desde la Papelera…	Wird aus dem Papierkorb zurückgelegt …	Remise depuis la Corbeille…	正在从废纸篓恢复…
+Отмена копирования	Undoing copy	Deshaciendo la copia	Kopieren wird widerrufen	Annulation de la copie	正在撤销拷贝
+Отмена копирования…	Undoing copy…	Deshaciendo la copia…	Kopieren wird widerrufen …	Annulation de la copie…	正在撤销拷贝…
+Отмена перемещения	Undoing move	Deshaciendo el movimiento	Bewegen wird widerrufen	Annulation du déplacement	正在撤销移动
+Отмена перемещения…	Undoing move…	Deshaciendo el movimiento…	Bewegen wird widerrufen …	Annulation du déplacement…	正在撤销移动…
+Корзина очищается…	Emptying Trash…	Vaciando la Papelera…	Papierkorb wird entleert …	Vidage de la Corbeille…	正在清倒废纸篓…
+Остановка…	Stopping…	Deteniendo…	Wird angehalten …	Arrêt…	正在停止…
+Применить ко всем	Apply to All	Aplicar a todos	Auf alle anwenden	Appliquer à tous	应用到全部
+Оставить оба	Keep Both	Conservar ambos	Beide behalten	Conserver les deux	保留两者
+Прервать	Stop	Detener	Abbrechen	Arrêter	停止
+Не закрывать	Don’t Close	No cerrar	Nicht schließen	Ne pas fermer	不要关闭
+Копирование ещё не закончено	Copying isn’t finished yet	La copia aún no ha terminado	Das Kopieren ist noch nicht abgeschlossen	La copie n’est pas terminée	拷贝尚未完成
+Если закрыть окно, копирование прервётся. Недокопированный файл будет удалён.	If you close the window, copying will stop. The partly copied file will be deleted.	Si cierras la ventana, la copia se detendrá. El archivo copiado parcialmente se eliminará.	Wenn du das Fenster schließt, wird das Kopieren abgebrochen. Die teilweise kopierte Datei wird gelöscht.	Si vous fermez la fenêtre, la copie s’arrêtera. Le fichier partiellement copié sera supprimé.	如果关闭窗口，拷贝将中止，未拷贝完的文件将被删除。
+Распаковка ещё не закончена	Extraction isn’t finished yet	La extracción aún no ha terminado	Das Entpacken ist noch nicht abgeschlossen	L’extraction n’est pas terminée	解压尚未完成
+Если закрыть окно, распаковка прервётся. Уже распакованное будет удалено.	If you close the window, extraction will stop. Files already extracted will be deleted.	Si cierras la ventana, la extracción se detendrá. Lo ya extraído se eliminará.	Wenn du das Fenster schließt, wird das Entpacken abgebrochen. Bereits entpackte Dateien werden gelöscht.	Si vous fermez la fenêtre, l’extraction s’arrêtera. Les fichiers déjà extraits seront supprimés.	如果关闭窗口，解压将中止，已解压的文件将被删除。
+Распаковка	Extracting	Extrayendo	Entpacken	Extraction	正在解压
+Объект будет удалён сразу. Это действие нельзя отменить.	The item will be deleted immediately. This action can’t be undone.	El elemento se eliminará de inmediato. Esta acción no se puede deshacer.	Das Objekt wird sofort gelöscht. Dieser Vorgang kann nicht widerrufen werden.	L’élément sera supprimé immédiatement. Cette action est irréversible.	该项目将被立即删除。此操作无法撤销。
+Объекты будут удалены сразу. Это действие нельзя отменить.	The items will be deleted immediately. This action can’t be undone.	Los elementos se eliminarán de inmediato. Esta acción no se puede deshacer.	Die Objekte werden sofort gelöscht. Dieser Vorgang kann nicht widerrufen werden.	Les éléments seront supprimés immédiatement. Cette action est irréversible.	这些项目将被立即删除。此操作无法撤销。
+Архив защищён паролем.	The archive is password-protected.	El archivo está protegido con contraseña.	Das Archiv ist passwortgeschützt.	L’archive est protégée par mot de passe.	归档受密码保护。
+Архив защищён паролем	The archive is password-protected	El archivo está protegido con contraseña	Das Archiv ist passwortgeschützt	L’archive est protégée par mot de passe	归档受密码保护
+Архив повреждён	The archive is damaged	El archivo está dañado	Das Archiv ist beschädigt	L’archive est endommagée	归档已损坏
+Архив пуст	The archive is empty	El archivo está vacío	Das Archiv ist leer	L’archive est vide	归档为空
+Нечего сжимать	Nothing to compress	Nada que comprimir	Nichts zu komprimieren	Rien à compresser	没有可压缩的项目
+Распаковка остановлена	Extraction stopped	Extracción detenida	Entpacken angehalten	Extraction interrompue	解压已停止
+Не удалось распаковать этот архив	Couldn’t extract this archive	No se pudo extraer este archivo	Dieses Archiv konnte nicht entpackt werden	Impossible d’extraire cette archive	无法解压此归档
+Для распаковки этого архива не хватает памяти	Not enough memory to extract this archive	No hay memoria suficiente para extraer este archivo	Zu wenig Speicher zum Entpacken dieses Archivs	Mémoire insuffisante pour extraire cette archive	内存不足，无法解压此归档
+Не хватает места на диске	Not enough disk space	No hay suficiente espacio en el disco	Nicht genug Speicherplatz	Espace disque insuffisant	磁盘空间不足
+Нет прав на запись в эту папку	No permission to write to this folder	No tienes permiso para escribir en esta carpeta	Keine Schreibberechtigung für diesen Ordner	Pas d’autorisation d’écriture dans ce dossier	没有写入此文件夹的权限
+Для дисков нужен пакет udisks2	Disks require the udisks2 package	Los discos requieren el paquete udisks2	Für Laufwerke wird das Paket udisks2 benötigt	Les disques nécessitent le paquet udisks2	磁盘功能需要 udisks2 软件包
+# ── System Settings: wallpaper, keyboard, notifications, sound ──
+Bluetooth и гарнитуры сразу после подключения	Bluetooth devices and headsets right after they connect	Dispositivos Bluetooth y auriculares justo después de conectarse	Bluetooth-Geräte und Headsets direkt nach dem Verbinden	Appareils Bluetooth et casques dès leur connexion	蓝牙设备和耳机连接后立即切换
+Автоповтор применяется сразу во всех программах. В кольце программы выбирают стрелками, Tab, колесом, первой буквой или движением мыши; Enter или щелчок — перейти, Esc — закрыть. Типографская раскладка Ильи Бирмана: с правым Alt набираются типографские символы, с Shift + правый Alt — дополнительные.	Key repeat applies immediately in all apps. In the app ring, choose with arrow keys, Tab, the scroll wheel, the first letter or the mouse; Enter or a click switches, Esc closes. The Ilya Birman typography layout: the right Alt types typographic characters, Shift + right Alt types extra ones.	La repetición de teclas se aplica al instante en todas las aplicaciones. En el anillo de aplicaciones se elige con las flechas, Tab, la rueda, la primera letra o el ratón; Intro o un clic cambia, Esc cierra. Distribución tipográfica de Ilya Birman: con Alt derecho se escriben caracteres tipográficos, con Mayús + Alt derecho, otros adicionales.	Die Tastenwiederholung gilt sofort in allen Programmen. Im Programmring wählst du mit Pfeiltasten, Tab, Mausrad, dem Anfangsbuchstaben oder der Maus; Enter oder Klick wechselt, Esc schließt. Typografisches Layout von Ilja Birman: Mit der rechten Alt-Taste tippst du typografische Zeichen, mit Umschalt + rechter Alt-Taste weitere.	La répétition des touches s’applique immédiatement dans toutes les applications. Dans l’anneau des applications, choisissez avec les flèches, Tab, la molette, la première lettre ou la souris ; Entrée ou un clic bascule, Échap ferme. Disposition typographique d’Ilya Birman : Alt droit saisit les caractères typographiques, Maj + Alt droit en ajoute d’autres.	按键重复会立即应用于所有应用程序。在应用程序环中可用方向键、Tab、滚轮、首字母或鼠标选择；按 Enter 或点按即可切换，按 Esc 关闭。伊利亚·比尔曼印刷排版布局：右 Alt 输入排版符号，Shift + 右 Alt 输入更多符号。
+Автосмена перебирает коллекцию Пёрышка по таймеру или при входе.	Auto-change cycles through the Feather collection on a timer or at login.	El cambio automático recorre la colección de Feather con un temporizador o al iniciar sesión.	Der automatische Wechsel durchläuft die Feather-Sammlung per Timer oder bei der Anmeldung.	Le changement automatique parcourt la collection Feather selon un minuteur ou à l’ouverture de session.	自动更换会按定时或在登录时轮换轻羽图库中的图片。
+Без файла	No File	Sin archivo	Keine Datei	Sans fichier	无文件
+Браузер открывает ссылки и HTML-файлы. Терминал запускается по Super+T и Super+Enter. Файловый менеджер открывает папки и «Показать в папке» из программ.	The browser opens links and HTML files. The terminal opens with Super+T and Super+Enter. The file manager opens folders and “Show in Folder” from apps.	El navegador abre enlaces y archivos HTML. El terminal se abre con Super+T y Super+Intro. El gestor de archivos abre carpetas y «Mostrar en la carpeta» desde las aplicaciones.	Der Browser öffnet Links und HTML-Dateien. Das Terminal startet mit Super+T und Super+Enter. Der Dateimanager öffnet Ordner und „Im Ordner zeigen“ aus Programmen.	Le navigateur ouvre les liens et fichiers HTML. Le terminal s’ouvre avec Super+T et Super+Entrée. Le gestionnaire de fichiers ouvre les dossiers et « Afficher dans le dossier » depuis les applications.	浏览器用于打开链接和 HTML 文件。按 Super+T 或 Super+Enter 打开终端。文件管理器用于打开文件夹以及应用程序中的“在文件夹中显示”。
+В случайном порядке	In Random Order	En orden aleatorio	In zufälliger Reihenfolge	Dans un ordre aléatoire	随机顺序
+Всё уходит в центр уведомлений, без баннеров	Everything goes to Notification Center, no banners	Todo va al Centro de notificaciones, sin avisos emergentes	Alles geht an die Mitteilungszentrale, keine Banner	Tout va dans le Centre de notifications, sans bannières	所有通知进入通知中心，不显示横幅
+Градиент, рисуется под экран	Gradient, drawn to fit the screen	Degradado, se dibuja según la pantalla	Verlauf, passend zum Bildschirm gezeichnet	Dégradé, dessiné à la taille de l’écran	渐变，按屏幕尺寸绘制
+Градиенты	Gradients	Degradados	Verläufe	Dégradés	渐变
+Иначе по порядку коллекции	Otherwise in collection order	Si no, en el orden de la colección	Sonst in der Reihenfolge der Sammlung	Sinon dans l’ordre de la collection	否则按图库顺序
+Коллекция Пёрышка	Feather Collection	Colección de Feather	Feather-Sammlung	Collection Feather	轻羽图库
+Короткое нажатие Cmd (Super) без других клавиш	A short press of Cmd (Super) with no other keys	Pulsación corta de Cmd (Super) sin otras teclas	Kurzes Drücken von Cmd (Super) ohne weitere Tasten	Appui bref sur Cmd (Super) sans autre touche	单独短按 Cmd（Super）键
+Меню: светлый текст	Menu: light text	Menú: texto claro	Menü: heller Text	Menu : texte clair	菜单：浅色文字
+Меню: тёмный текст	Menu: dark text	Menú: texto oscuro	Menü: dunkler Text	Menu : texte sombre	菜单：深色文字
+Менять обои	Change Wallpaper	Cambiar fondo	Hintergrund wechseln	Changer le fond d’écran	更换壁纸
+Нажмите Caps Lock, чтобы сменить язык; удерживайте, чтобы включить заглавные буквы. Сменить язык можно также в меню источников ввода в строке меню.	Press Caps Lock to switch language; hold it to turn on capital letters. You can also switch language from the input sources menu in the menu bar.	Pulsa Bloq Mayús para cambiar de idioma; mantenla pulsada para activar las mayúsculas. También puedes cambiar de idioma en el menú de fuentes de entrada de la barra de menús.	Drücke die Feststelltaste, um die Sprache zu wechseln; halte sie gedrückt, um Großbuchstaben zu aktivieren. Die Sprache lässt sich auch im Menü der Eingabequellen in der Menüleiste wechseln.	Appuyez sur Verr. maj pour changer de langue ; maintenez-la pour activer les majuscules. Vous pouvez aussi changer de langue depuis le menu des sources de saisie dans la barre des menus.	按 Caps Lock 切换语言；按住可开启大写。也可在菜单栏的输入源菜单中切换语言。
+Новая картинка из коллекции при каждом входе в систему.	A new picture from the collection at every login.	Una imagen nueva de la colección en cada inicio de sesión.	Bei jeder Anmeldung ein neues Bild aus der Sammlung.	Une nouvelle image de la collection à chaque ouverture de session.	每次登录时从图库中选取一张新图片。
+Обычная	Normal	Normal	Normal	Normale	正常
+Оригинальные значки трея вместо монохромных	Original tray icons instead of monochrome ones	Iconos originales de la bandeja en lugar de monocromos	Originale Tray-Symbole statt einfarbiger	Icônes d’origine de la zone de notification au lieu de monochromes	使用原始托盘图标而非单色图标
+Переключаться на наушники	Switch to Headphones	Cambiar a los auriculares	Auf Kopfhörer umschalten	Basculer sur le casque	切换到耳机
+Правый Alt: «ёлочки», — тире, ₽, ≠, ©, →	Right Alt: «guillemets», — dash, ₽, ≠, ©, →	Alt derecho: «comillas», — raya, ₽, ≠, ©, →	Rechte Alt-Taste: «Anführungszeichen», — Gedankenstrich, ₽, ≠, ©, →	Alt droit : « guillemets », — tiret, ₽, ≠, ©, →	右 Alt：«引号»、— 破折号、₽、≠、©、→
+Пробиваются через «Не беспокоить»	Break through Do Not Disturb	Atraviesan «No molestar»	Werden trotz „Nicht stören“ zugestellt	Passent outre « Ne pas déranger »	不受“勿扰模式”限制
+Процедурный	Procedural	Procedural	Prozedural	Procédural	程序生成
+Свои изображения PNG, JPEG и WebP до 32 МБ. Градиенты рисуются на лету под разрешение экрана и не занимают места на диске.	Your own PNG, JPEG and WebP images up to 32 MB. Gradients are drawn on the fly for the screen resolution and take no disk space.	Tus propias imágenes PNG, JPEG y WebP de hasta 32 MB. Los degradados se dibujan al vuelo según la resolución de la pantalla y no ocupan espacio en disco.	Eigene PNG-, JPEG- und WebP-Bilder bis 32 MB. Verläufe werden bei Bedarf passend zur Bildschirmauflösung gezeichnet und belegen keinen Speicherplatz.	Vos propres images PNG, JPEG et WebP jusqu’à 32 Mo. Les dégradés sont dessinés à la volée selon la résolution de l’écran et n’occupent pas d’espace disque.	可使用自己的 PNG、JPEG 和 WebP 图片，最大 32 MB。渐变会按屏幕分辨率即时绘制，不占用磁盘空间。
+Скорость анимаций	Animation Speed	Velocidad de las animaciones	Animationsgeschwindigkeit	Vitesse des animations	动画速度
+Следующая смена через {}. Отсчёт сохраняется между перезапусками; в ожидании ничего не работает.	Next change in {}. The countdown persists across restarts; nothing runs while waiting.	Próximo cambio en {}. La cuenta atrás se conserva entre reinicios; mientras espera no se ejecuta nada.	Nächster Wechsel in {}. Der Countdown bleibt über Neustarts erhalten; im Wartezustand läuft nichts.	Prochain changement dans {}. Le compte à rebours est conservé entre les redémarrages ; rien ne s’exécute pendant l’attente.	下次更换将在 {} 后进行。倒计时会在重启后保留；等待期间不会运行任何进程。
+Следующие	Next	Siguiente	Nächstes	Suivant	下一张
+Срочные уведомления	Urgent Notifications	Notificaciones urgentes	Dringende Mitteilungen	Notifications urgentes	紧急通知
+Типографская раскладка	Typographic Layout	Distribución tipográfica	Typografisches Layout	Disposition typographique	印刷排版布局
+Только для изображений	Pictures only	Solo para imágenes	Nur für Bilder	Uniquement pour les images	仅适用于图片
+Требуется повторное сопряжение	Needs to be paired again	Requiere volver a emparejar	Muss erneut gekoppelt werden	Nouvel appairage requis	需要重新配对
+Цветные значки в строке меню	Colored Icons in the Menu Bar	Iconos de color en la barra de menús	Farbige Symbole in der Menüleiste	Icônes en couleur dans la barre des menus	菜单栏彩色图标
+меньше минуты	less than a minute	menos de un minuto	weniger als eine Minute	moins d’une minute	不到一分钟
+Не исполняется	Not Running	No se está ejecutando	Läuft nicht	Inactif	未运行
+{} мин	{} min	{} min	{} Min.	{} min	{} 分钟
+{} ч {} мин	{0} h {1} min	{0} h {1} min	{0} Std. {1} Min.	{0} h {1} min	{0} 小时 {1} 分钟
+Основной цвет #{}	Dominant Color #{}	Color principal #{}	Hauptfarbe #{}	Couleur dominante #{}	主色 #{}
+# ── Composed messages (templates) ──
+Вырезано: {}	Cut: {}	Cortado: {}	Ausgeschnitten: {}	Coupé : {}	已剪切：{}
+Скопировано: {}	Copied: {}	Copiado: {}	Kopiert: {}	Copié : {}	已拷贝：{}
+Перемещено: {}	Moved: {}	Movido: {}	Bewegt: {}	Déplacé : {}	已移动：{}
+Удалено: {}	Deleted: {}	Eliminado: {}	Gelöscht: {}	Supprimé : {}	已删除：{}
+В Корзину: {}	Moved to Trash: {}	A la Papelera: {}	In den Papierkorb: {}	Dans la Corbeille : {}	已移到废纸篓：{}
+Возвращено: {}	Restored: {}	Restaurado: {}	Zurückgelegt: {}	Remis en place : {}	已恢复：{}
+Не удалось подключить «{}»: {}	Couldn’t mount “{}”: {}	No se pudo montar «{}»: {}	„{}“ konnte nicht eingebunden werden: {}	Impossible de monter « {} » : {}	无法装载“{}”：{}
+«{}» можно отключить	“{}” can now be ejected	«{}» ya se puede expulsar	„{}“ kann jetzt ausgeworfen werden	« {} » peut maintenant être éjecté	现在可以推出“{}”
+Не удалось извлечь «{}»: {}	Couldn’t eject “{}”: {}	No se pudo expulsar «{}»: {}	„{}“ konnte nicht ausgeworfen werden: {}	Impossible d’éjecter « {} » : {}	无法推出“{}”：{}
+Подключение «{}»…	Mounting “{}”…	Montando «{}»…	„{}“ wird eingebunden …	Montage de « {} »…	正在装载“{}”…
+Открывается «{}»	Opening “{}”	Abriendo «{}»	„{}“ wird geöffnet	Ouverture de « {} »	正在打开“{}”
+Не удалось сжать: {}	Couldn’t compress: {}	No se pudo comprimir: {}	Komprimieren nicht möglich: {}	Impossible de compresser : {}	无法压缩：{}
+Не удалось распаковать: {}	Couldn’t extract: {}	No se pudo extraer: {}	Entpacken nicht möglich: {}	Impossible d’extraire : {}	无法解压：{}
+Не удалось отменить: «{}» уже существует	Couldn’t undo: “{}” already exists	No se pudo deshacer: «{}» ya existe	Widerrufen nicht möglich: „{}“ existiert bereits	Annulation impossible : « {} » existe déjà	无法撤销：“{}”已存在
+Не удалось отменить переименование: {}	Couldn’t undo the rename: {}	No se pudo deshacer el cambio de nombre: {}	Umbenennen konnte nicht widerrufen werden: {}	Impossible d’annuler le renommage : {}	无法撤销重命名：{}
+Не удалось переименовать: {}	Couldn’t rename: {}	No se pudo cambiar el nombre: {}	Umbenennen nicht möglich: {}	Impossible de renommer : {}	无法重命名：{}
+Не удалось создать папку: {}	Couldn’t create the folder: {}	No se pudo crear la carpeta: {}	Ordner konnte nicht angelegt werden: {}	Impossible de créer le dossier : {}	无法新建文件夹：{}
+Не удалось запустить «{}»: {}	Couldn’t launch “{}”: {}	No se pudo abrir «{}»: {}	„{}“ konnte nicht gestartet werden: {}	Impossible de lancer « {} » : {}	无法启动“{}”：{}
+Папка «{}» не найдена	Folder “{}” not found	No se encuentra la carpeta «{}»	Ordner „{}“ nicht gefunden	Dossier « {} » introuvable	找不到文件夹“{}”
+«{}» уже существует	“{}” already exists	«{}» ya existe	„{}“ existiert bereits	« {} » existe déjà	“{}”已存在
+{}: не удалось для {}	{0}: failed for {1}	{0}: error en {1}	{0}: fehlgeschlagen für {1}	{0} : échec pour {1}	{0}：{1} 个失败
+{} остановлено	{} stopped	{} detenido	{} angehalten	{} interrompu	{}已停止
+{} «{}» в «{}»	{0} “{1}” to “{2}”	{0} «{1}» en «{2}»	{0} „{1}“ nach „{2}“	{0} « {1} » vers « {2} »	{0}“{1}”到“{2}”
+{} {} в «{}»	{0} {1} to “{2}”	{0} {1} en «{2}»	{0} {1} nach „{2}“	{0} {1} vers « {2} »	{0} {1} 到“{2}”
+{} из {}	{} of {}	{} de {}	{} von {}	{} sur {}	{}，共 {}
+{} из {} — осталось {}	{0} of {1} — {2} remaining	{0} de {1} — quedan {2}	{0} von {1} — noch {2}	{0} sur {1} — {2} restantes	{0}，共 {1} — 剩余 {2}
+около {} с	about {} sec	unos {} s	etwa {} Sek.	environ {} s	约 {} 秒
+около {} мин	about {} min	unos {} min	etwa {} Min.	environ {} min	约 {} 分钟
+более {}	more than {}	más de {}	mehr als {}	plus de {}	超过 {}
+Выбрано {} из {}	{} of {} selected	{} de {} seleccionados	{} von {} ausgewählt	{} sur {} sélectionnés	已选择 {}/{}
+Диск {}	Disk {}	Disco {}	Datenträger {}	Disque {}	磁盘 {}
+Удалить «{}» безвозвратно?	Delete “{}” permanently?	¿Eliminar «{}» permanentemente?	„{}“ endgültig löschen?	Supprimer « {} » définitivement ?	要永久删除“{}”吗？
+Удалить безвозвратно {}?	Delete {} permanently?	¿Eliminar {} permanentemente?	{} endgültig löschen?	Supprimer {} définitivement ?	要永久删除 {} 吗？
+{} будут удалены. Это действие нельзя отменить.	{} will be deleted. This action can’t be undone.	Se eliminarán {}. Esta acción no se puede deshacer.	{} werden gelöscht. Dieser Vorgang kann nicht widerrufen werden.	{} seront supprimés. Cette action est irréversible.	将删除 {}。此操作无法撤销。
+Введите пароль для «{}»	Enter the password for “{}”	Introduce la contraseña de «{}»	Passwort für „{}“ eingeben	Saisissez le mot de passe de « {} »	请输入“{}”的密码
+Открыть «{}»	Open “{}”	Abrir «{}»	„{}“ öffnen	Ouvrir « {} »	打开“{}”
+{}. Для RAR нужна программа unar (пакет unar)	{}. RAR needs the unar program (the unar package)	{}. RAR requiere el programa unar (paquete unar)	{}. Für RAR wird das Programm unar benötigt (Paket unar)	{}. RAR nécessite le programme unar (paquet unar)	{}。RAR 需要 unar 程序（unar 软件包）
+# ── Units, counts, dates ──
+КБ	KB	KB	KB	Ko	KB
+МБ	MB	MB	MB	Mo	MB
+ГБ	GB	GB	GB	Go	GB
+ТБ	TB	TB	TB	To	TB
+ГГц	GHz	GHz	GHz	GHz	GHz
+МГц	MHz	MHz	MHz	MHz	MHz
+свёрнуто	minimized	minimizada	minimiert	réduite	已最小化
+# ── Calendar ──
+Январь	January	Enero	Januar	Janvier	一月
+Февраль	February	Febrero	Februar	Février	二月
+Март	March	Marzo	März	Mars	三月
+Апрель	April	Abril	April	Avril	四月
+Май	May	Mayo	Mai	Mai	五月
+Июнь	June	Junio	Juni	Juin	六月
+Июль	July	Julio	Juli	Juillet	七月
+Август	August	Agosto	August	Août	八月
+Сентябрь	September	Septiembre	September	Septembre	九月
+Октябрь	October	Octubre	Oktober	Octobre	十月
+Ноябрь	November	Noviembre	November	Novembre	十一月
+Декабрь	December	Diciembre	Dezember	Décembre	十二月
+Пн	Mo	L	Mo	lu	一
+Вт	Tu	M	Di	ma	二
+Ср	We	X	Mi	me	三
+Чт	Th	J	Do	je	四
+Пт	Fr	V	Fr	ve	五
+Сб	Sa	S	Sa	sa	六
+Вс	Su	D	So	di	日
+# ── Shell ──
+Без звука ›	Muted ›	Silenciado ›	Stummgeschaltet ›	Muet ›	静音 ›
+Яркость этого дисплея недоступна	Brightness is unavailable for this display	El brillo de esta pantalla no está disponible	Die Helligkeit dieses Displays ist nicht verfügbar	La luminosité de cet écran n’est pas disponible	此显示器的亮度不可用
+Ларвис	Larvis	Larvis	Larvis	Larvis	Larvis
+Полноэкранный режим	Full Screen	Pantalla completa	Vollbildmodus	Plein écran	全屏幕
+Развернуть активное окно на весь экран (скрывает Dock и верхнюю панель) и вернуть обратно	Expand the active window to the full screen (hides the Dock and the menu bar) and back	Ampliar la ventana activa a pantalla completa (oculta el Dock y la barra de menús) y volver	Das aktive Fenster im Vollbild anzeigen (blendet Dock und Menüleiste aus) und wieder zurück	Passer la fenêtre active en plein écran (masque le Dock et la barre des menus) et revenir	将活跃窗口扩展到全屏幕（隐藏程序坞和菜单栏）并还原
+Пёрышко Неон	Feather Neon	Feather Neón	Feather Neon	Feather Néon	轻羽霓虹
+Экран Пёрышка	Feather Screen	Pantalla de Feather	Feather-Bildschirm	Écran Feather	轻羽屏幕
+Слишком много демонстраций экрана	Too many screen shares	Demasiadas pantallas compartidas	Zu viele Bildschirmfreigaben	Trop de partages d’écran	屏幕共享过多
+Не удалось закодировать снимок окна	Couldn’t encode the window screenshot	No se pudo codificar la captura de la ventana	Das Fensterfoto konnte nicht kodiert werden	Impossible d’encoder la capture de la fenêtre	无法编码窗口截图
+Окно слишком велико для распознавания	The window is too large for recognition	La ventana es demasiado grande para reconocerla	Das Fenster ist zu groß für die Erkennung	La fenêtre est trop grande pour la reconnaissance	窗口过大，无法识别
+Снимок не удалось сохранить в файл	Couldn’t save the screenshot to a file	No se pudo guardar la captura en un archivo	Das Bildschirmfoto konnte nicht gespeichert werden	Impossible d’enregistrer la capture dans un fichier	无法将截图存储为文件
+X11-программы недоступны	X11 apps are unavailable	Las aplicaciones X11 no están disponibles	X11-Programme sind nicht verfügbar	Les applications X11 sont indisponibles	X11 应用程序不可用
+Для Steam и Wine установите пакет xwayland-satellite и войдите заново.	For Steam and Wine, install the xwayland-satellite package and log in again.	Para Steam y Wine, instala el paquete xwayland-satellite y vuelve a iniciar sesión.	Für Steam und Wine installiere das Paket xwayland-satellite und melde dich erneut an.	Pour Steam et Wine, installez le paquet xwayland-satellite et reconnectez-vous.	如需使用 Steam 和 Wine，请安装 xwayland-satellite 软件包并重新登录。
+# ── Wallpaper ──
+Волны	Waves	Olas	Wellen	Vagues	波浪
+Вписать	Fit	Ajustar	Einpassen	Ajuster	适合
+Выберите обои	Choose a Wallpaper	Elige un fondo	Hintergrund wählen	Choisissez un fond d’écran	选取壁纸
+Выбрать обои	Choose Wallpaper	Elegir fondo	Hintergrund wählen	Choisir le fond d’écran	选取壁纸
+Графит	Graphite	Grafito	Graphit	Graphite	石墨
+День	Day	Día	Tag	Jour	白天
+Дюны	Dunes	Dunas	Dünen	Dunes	沙丘
+Заполнить	Fill	Rellenar	Füllen	Remplir	填充
+Изображения PNG, JPEG, WebP	PNG, JPEG, WebP images	Imágenes PNG, JPEG, WebP	PNG-, JPEG-, WebP-Bilder	Images PNG, JPEG, WebP	PNG、JPEG、WebP 图像
+Изумруд	Emerald	Esmeralda	Smaragd	Émeraude	祖母绿
+Не удалось загрузить изображение. Выберите PNG, JPEG или WebP до 32 МБ.	Couldn’t load the image. Choose a PNG, JPEG or WebP up to 32 MB.	No se pudo cargar la imagen. Elige un PNG, JPEG o WebP de hasta 32 MB.	Das Bild konnte nicht geladen werden. Wähle ein PNG, JPEG oder WebP bis 32 MB.	Impossible de charger l’image. Choisissez un PNG, JPEG ou WebP jusqu’à 32 Mo.	无法载入图像。请选取不超过 32 MB 的 PNG、JPEG 或 WebP 图片。
+Нет	None	Ninguno	Keine	Aucun	无
+При входе	At Login	Al iniciar sesión	Bei der Anmeldung	À l’ouverture de session	登录时
+Растянуть	Stretch	Estirar	Strecken	Étirer	拉伸
+Хребты	Ridges	Crestas	Gebirgskämme	Crêtes	山脊
+Час	Hour	Hora	Stunde	Heure	每小时
+# ── Network errors ──
+NetworkManager недоступен	NetworkManager is unavailable	NetworkManager no está disponible	NetworkManager ist nicht verfügbar	NetworkManager est indisponible	NetworkManager 不可用
+NetworkManager отклонил действие. Проверьте пароль и разрешения в настройках сети.	NetworkManager rejected the action. Check the password and permissions in Network settings.	NetworkManager rechazó la acción. Comprueba la contraseña y los permisos en los ajustes de Red.	NetworkManager hat die Aktion abgelehnt. Prüfe Passwort und Berechtigungen in den Netzwerkeinstellungen.	NetworkManager a refusé l’action. Vérifiez le mot de passe et les autorisations dans les réglages Réseau.	NetworkManager 拒绝了该操作。请在“网络”设置中检查密码和权限。
+Wi‑Fi-адаптер недоступен или заблокирован	The Wi‑Fi adapter is unavailable or blocked	El adaptador Wi‑Fi no está disponible o está bloqueado	Der WLAN-Adapter ist nicht verfügbar oder gesperrt	L’adaptateur Wi‑Fi est indisponible ou bloqué	Wi‑Fi 适配器不可用或已被阻止
+Адаптер отключён	The adapter is turned off	El adaptador está desactivado	Der Adapter ist ausgeschaltet	L’adaptateur est désactivé	适配器已关闭
+Для этой сети откройте расширенные настройки	Open advanced settings for this network	Abre los ajustes avanzados de esta red	Öffne die erweiterten Einstellungen für dieses Netzwerk	Ouvrez les réglages avancés pour ce réseau	请为此网络打开高级设置
+Кабель не подключён или состояние адаптера изменилось	The cable is unplugged or the adapter state changed	El cable está desconectado o el estado del adaptador cambió	Das Kabel ist nicht angeschlossen oder der Adapterstatus hat sich geändert	Le câble est débranché ou l’état de l’adaptateur a changé	网线未连接或适配器状态已更改
+Не удалось найти Wi‑Fi	Couldn’t find Wi‑Fi	No se encontró Wi‑Fi	WLAN wurde nicht gefunden	Wi‑Fi introuvable	找不到 Wi‑Fi
+Не удалось прочитать профиль	Couldn’t read the profile	No se pudo leer el perfil	Das Profil konnte nicht gelesen werden	Impossible de lire le profil	无法读取配置文件
+Некорректная длина пароля Wi‑Fi	Invalid Wi‑Fi password length	Longitud de contraseña Wi‑Fi no válida	Ungültige WLAN-Passwortlänge	Longueur du mot de passe Wi‑Fi non valide	Wi‑Fi 密码长度无效
+Нет Wi‑Fi	No Wi‑Fi	Sin Wi‑Fi	Kein WLAN	Pas de Wi‑Fi	无 Wi‑Fi
+Нужен пароль сети	The network password is required	Se necesita la contraseña de la red	Netzwerkpasswort erforderlich	Le mot de passe du réseau est requis	需要网络密码
+Подключение VPN уже закрыто	The VPN connection is already closed	La conexión VPN ya está cerrada	Die VPN-Verbindung ist bereits getrennt	La connexion VPN est déjà fermée	VPN 连接已关闭
+Подключение уже изменилось	The connection has already changed	La conexión ya ha cambiado	Die Verbindung hat sich bereits geändert	La connexion a déjà changé	连接已更改
+Профиль VPN удалён	The VPN profile was deleted	Se eliminó el perfil VPN	Das VPN-Profil wurde gelöscht	Le profil VPN a été supprimé	VPN 配置文件已删除
+Профиль удалён	The profile was deleted	Se eliminó el perfil	Das Profil wurde gelöscht	Le profil a été supprimé	配置文件已删除
+Профиль уже удалён	The profile was already deleted	El perfil ya se eliminó	Das Profil wurde bereits gelöscht	Le profil a déjà été supprimé	配置文件已被删除
+Сеть исчезла	The network disappeared	La red desapareció	Das Netzwerk ist verschwunden	Le réseau a disparu	网络已消失
+Состояние VPN уже изменилось	The VPN state has already changed	El estado de la VPN ya ha cambiado	Der VPN-Status hat sich bereits geändert	L’état du VPN a déjà changé	VPN 状态已更改
+Сохранённый профиль изменился	The saved profile changed	El perfil guardado cambió	Das gesicherte Profil hat sich geändert	Le profil enregistré a changé	已存储的配置文件已更改
+Сохранённый профиль уже удалён	The saved profile was already deleted	El perfil guardado ya se eliminó	Das gesicherte Profil wurde bereits gelöscht	Le profil enregistré a déjà été supprimé	已存储的配置文件已被删除
+Список сетей изменился. Выберите сеть снова.	The network list changed. Choose the network again.	La lista de redes cambió. Elige la red de nuevo.	Die Netzwerkliste hat sich geändert. Wähle das Netzwerk erneut.	La liste des réseaux a changé. Choisissez à nouveau le réseau.	网络列表已更改。请重新选取网络。
+Вместе с ним будет установлено пакетов:	Packages to be installed with it:	Paquetes que se instalarán con él:	Zusammen damit werden folgende Pakete installiert:	Paquets qui seront installés avec lui :	同时将安装的软件包：
+Пакет не подходит для этой системы, нет:	The package doesn’t fit this system, missing:	El paquete no es compatible con este sistema, falta:	Das Paket passt nicht zu diesem System, es fehlt:	Le paquet ne convient pas à ce système, il manque :	此软件包不适用于本系统，缺少：
+ рад	 rad	 rad	 rad	 rad	 弧度
+Заметки: не удалось сохранить: {}	Notes: couldn’t save: {}	Notas: no se pudo guardar: {}	Notizen: Sichern nicht möglich: {}	Notes : enregistrement impossible : {}	备忘录：无法存储：{}
+Терминал: не удалось запустить shell: {}	Terminal: couldn’t start the shell: {}	Terminal: no se pudo iniciar el shell: {}	Terminal: Die Shell konnte nicht gestartet werden: {}	Terminal : impossible de lancer le shell : {}	终端：无法启动 shell：{}

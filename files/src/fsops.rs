@@ -117,17 +117,23 @@ pub fn list(dir: &Path) -> std::io::Result<Vec<Entry>> {
 }
 
 pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["байт", "КБ", "МБ", "ГБ", "ТБ"];
+    use feather_ui::i18n::{decimal_comma, tr_static};
+    let units: [&str; 5] = ["байт", "КБ", "МБ", "ГБ", "ТБ"].map(tr_static);
     if bytes < 1000 {
-        return format!("{bytes} {}", UNITS[0]);
+        return format!("{bytes} {}", units[0]);
     }
     let mut value = bytes as f64;
     let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
+    while value >= 1000.0 && unit < units.len() - 1 {
         value /= 1000.0;
         unit += 1;
     }
-    if value < 10.0 { format!("{value:.1} {}", UNITS[unit]).replace('.', ",") } else { format!("{value:.0} {}", UNITS[unit]) }
+    if value < 10.0 {
+        let text = format!("{value:.1}");
+        format!("{} {}", if decimal_comma() { text.replace('.', ",") } else { text }, units[unit])
+    } else {
+        format!("{value:.0} {}", units[unit])
+    }
 }
 
 pub fn human_date(time: Option<SystemTime>) -> String {
@@ -992,6 +998,8 @@ mod tests {
     /// partition and a disk without a filesystem
     #[test]
     fn volumes_from_sysfs_udev_and_mountinfo() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         let root = std::env::temp_dir().join(format!("feather-volumes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (sys, udev) = (root.join("block"), root.join("udev"));
@@ -1094,6 +1102,8 @@ mod tests {
 
     #[test]
     fn kinds_sizes_and_trash_paths() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         assert_eq!(kind_of("Photo.JPG", false, false), (Kind::Image, "jpg".into()));
         assert_eq!(kind_of("run", false, true).0, Kind::Executable);
         assert_eq!(kind_of("dir.png", true, false).0, Kind::Folder);
@@ -1105,6 +1115,8 @@ mod tests {
 
     #[test]
     fn paste_copies_with_copy_suffix_and_moves() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         let root = std::env::temp_dir().join(format!("feather-files-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (a, b) = (root.join("a"), root.join("b"));

@@ -418,6 +418,9 @@ impl App {
 
 /// "3 объектов" after «Копирование» (genitive plural like Finder's "3 items")
 fn objects_genitive(n: usize) -> String {
+    if feather_ui::scale::lang() != feather_ui::i18n::Lang::Ru {
+        return feather_ui::i18n::items_count(n);
+    }
     match (n % 10, n % 100) {
         (1, r) if r != 11 => format!("{n} объекта"),
         _ => format!("{n} объектов"),

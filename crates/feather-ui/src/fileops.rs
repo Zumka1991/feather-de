@@ -679,6 +679,8 @@ mod paste_tests {
 
     #[test]
     fn taken_names_replace_skip_or_keep_both() {
+        // The test strings are Russian; the interface default is English
+        crate::scale::set_lang(crate::i18n::Lang::Ru);
         let root = root("conflict");
         let (a, b) = (root.join("a"), root.join("b"));
         let sources = [a.join("x.txt"), a.join("sub")];

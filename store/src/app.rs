@@ -2046,6 +2046,8 @@ mod tests {
 
     #[test]
     fn install_progress_failure_and_confirmed_removal() {
+        // The test strings are Russian; the interface default is English
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
         let mut app = sample();
         painted(&mut app);
         let effects = app.click(Hit::CardButton(0));

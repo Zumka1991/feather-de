@@ -8,9 +8,10 @@ use std::borrow::Cow;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum Lang {
+    /// The default: an unset language (0) is English.
     #[default]
-    Ru = 0,
-    En = 1,
+    En = 0,
+    Ru = 1,
     Es = 2,
     De = 3,
     Fr = 4,
@@ -18,9 +19,10 @@ pub enum Lang {
 }
 
 impl Lang {
+    /// Order of the language pickers: English first.
     pub const ALL: [Self; 6] = [
-        Self::Ru,
         Self::En,
+        Self::Ru,
         Self::Es,
         Self::De,
         Self::Fr,
@@ -29,13 +31,13 @@ impl Lang {
 
     pub const fn from_u8(v: u8) -> Self {
         match v {
-            0 => Self::Ru,
-            1 => Self::En,
+            0 => Self::En,
+            1 => Self::Ru,
             2 => Self::Es,
             3 => Self::De,
             4 => Self::Fr,
             5 => Self::Zh,
-            _ => Self::Ru,
+            _ => Self::En,
         }
     }
 
@@ -553,6 +555,62 @@ pub fn notes_count(n: usize) -> String {
     }
 }
 
+/// Russian plural form: 1 → `one`, 2–4 → `few`, 0 and 5–20 → `many` (with 11–14 and 21, 22…).
+fn ru_plural(n: usize, one: &'static str, few: &'static str, many: &'static str) -> &'static str {
+    match (n % 10, n % 100) {
+        (1, r) if r != 11 => one,
+        (2..=4, r) if !(12..=14).contains(&r) => few,
+        _ => many,
+    }
+}
+
+/// A count with its noun in the interface language; `zh` is the Chinese measure word.
+fn counted(n: usize, ru: [&'static str; 3], en: [&str; 2], es: [&str; 2], de: [&str; 2], fr: [&str; 2], zh: &str) -> String {
+    let pick = |w: [&str; 2], plural: bool| if plural { w[1].to_string() } else { w[0].to_string() };
+    match crate::scale::lang() {
+        Lang::Ru => format!("{n} {}", ru_plural(n, ru[0], ru[1], ru[2])),
+        Lang::En => format!("{n} {}", pick(en, n != 1)),
+        Lang::Es => format!("{n} {}", pick(es, n != 1)),
+        Lang::De => format!("{n} {}", pick(de, n != 1)),
+        // French treats 0 and 1 as singular.
+        Lang::Fr => format!("{n} {}", pick(fr, n > 1)),
+        Lang::Zh => format!("{n} {zh}"),
+    }
+}
+
+/// "1 объект", "3 объекта", "12 объектов", "3 items": files and folders.
+pub fn items_count(n: usize) -> String {
+    counted(n, ["объект", "объекта", "объектов"], ["item", "items"], ["elemento", "elementos"], ["Objekt", "Objekte"], ["élément", "éléments"], "个项目")
+}
+
+/// "1 окно", "3 окна", "5 окон", "3 windows": the windows of one application.
+pub fn windows_count(n: usize) -> String {
+    counted(n, ["окно", "окна", "окон"], ["window", "windows"], ["ventana", "ventanas"], ["Fenster", "Fenster"], ["fenêtre", "fenêtres"], "个窗口")
+}
+
+/// "6 ядер", "6 cores": processor cores.
+pub fn cores_count(n: usize) -> String {
+    let ru = match (n % 10, n % 100) {
+        (_, 11..=19) => "ядер",
+        (1, _) => "ядро",
+        (2..=4, _) => "ядра",
+        _ => "ядер",
+    };
+    match crate::scale::lang() {
+        Lang::Ru => format!("{n} {ru}"),
+        Lang::En => format!("{n} {}", if n == 1 { "core" } else { "cores" }),
+        Lang::Es => format!("{n} {}", if n == 1 { "núcleo" } else { "núcleos" }),
+        Lang::De => format!("{n} {}", if n == 1 { "Kern" } else { "Kerne" }),
+        Lang::Fr => format!("{n} {}", if n < 2 { "cœur" } else { "cœurs" }),
+        Lang::Zh => format!("{n} 核"),
+    }
+}
+
+/// Whether the interface language writes decimals with a comma ("1,5 МБ") rather than a point.
+pub fn decimal_comma() -> bool {
+    !matches!(crate::scale::lang(), Lang::En | Lang::Zh)
+}
+
 /// Translates a static Russian string literal into the active interface language.
 #[inline]
 pub fn tr_static(ru: &'static str) -> &'static str {
@@ -576,6 +634,13 @@ fn tr_in(text: &str, l: Lang) -> Cow<'_, str> {
     }
     if let Some(exact) = lookup_exact(text, l) {
         return Cow::Borrowed(exact);
+    }
+    // A checked menu item ("✓ Имя") is the translated label behind the check mark.
+    if let Some(rest) = text.strip_prefix("✓ ") {
+        return match tr_in(rest, l) {
+            Cow::Borrowed(t) if std::ptr::eq(t, rest) => Cow::Borrowed(text),
+            t => Cow::Owned(format!("✓ {t}")),
+        };
     }
     // Every source string is Russian: names of files, apps and networks skip the patterns.
     if !text.chars().any(|c| matches!(c, '\u{0400}'..='\u{04FF}')) {
@@ -1580,6 +1645,29 @@ mod tests {
             translate_dynamic("Скрыть «Firefox»", Lang::En).as_deref(),
             Some("Hide “Firefox”")
         );
+    }
+
+    #[test]
+    fn file_manager_menu_and_checked_items_translate() {
+        assert_eq!(tr_in("Вырезать", Lang::En), "Cut");
+        assert_eq!(tr_in("Открыть с помощью…", Lang::En), "Open With…");
+        assert_eq!(tr_in("Скрытые файлы", Lang::De), "Versteckte Dateien");
+        assert_eq!(tr_in("✓ Имя", Lang::En), "✓ Name");
+        assert_eq!(tr_in("✓ Значки", Lang::En), "✓ Icons");
+        assert_eq!(tr_in("✓ Имя", Lang::Ru), "✓ Имя");
+        assert_eq!(tr_in("✓ Unknown", Lang::En), "✓ Unknown");
+    }
+
+    #[test]
+    fn composed_file_manager_messages_translate() {
+        let en = |s| tr_in(s, Lang::En).into_owned();
+        assert_eq!(en("Вырезано: 3 items"), "Cut: 3 items");
+        assert_eq!(en("Не удалось распаковать: Архив повреждён"), "Couldn’t extract: The archive is damaged");
+        assert_eq!(en("Копирование «a» в «b»"), "Copying “a” to “b”");
+        assert_eq!(en("1.5 MB из 3.0 MB — осталось около 40 с"), "1.5 MB of 3.0 MB — about 40 sec remaining");
+        assert_eq!(en("более 2.0 MB"), "more than 2.0 MB");
+        assert_eq!(en("Январь 2026".strip_suffix(" 2026").unwrap()), "January");
+        assert_eq!(tr_in("Вырезано: 3 items", Lang::Ru), "Вырезано: 3 items");
     }
 
     #[test]
