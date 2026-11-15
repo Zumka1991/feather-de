@@ -681,7 +681,7 @@ fn opaque_bbox(p: &Pixmap) -> Option<(u32, u32, u32, u32)> {
 
 /// macOS Tahoe draws every app icon as a squircle tile. Icons that already are a tile
 /// (square-ish and almost fully filled) are scaled to the tile; any other shape goes onto a
-/// neutral tile at ~72%, exactly like Tahoe treats legacy icons.
+/// neutral tile at ~76%, like Tahoe treats legacy icons.
 fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
     let Some((x0, y0, x1, y1)) = opaque_bbox(&raw) else {
         return raw;
@@ -726,6 +726,15 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
             ),
             None,
         );
+        // Tahoe cuts every icon to the same continuous-corner shape: a square picture
+        // (a site shortcut, a legacy PNG) must not sit in the Dock with sharp corners
+        if let (Some(path), Some(mut mask)) = (squircle_path(0.0, 0.0, size), tiny_skia::Mask::new(px, px)) {
+            mask.fill_path(&path, tiny_skia::FillRule::Winding, true, Transform::identity());
+            out.apply_mask(&mask);
+        }
+        if dark {
+            dark_tile_rim(&mut out, size, 0.55);
+        }
         return out;
     }
 
@@ -736,8 +745,10 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
         };
         let (top, bottom) = if dark {
             (
-                tiny_skia::Color::from_rgba8(78, 78, 84, 255),
-                tiny_skia::Color::from_rgba8(56, 56, 62, 255),
+                // Darker than the Dock glass, like Tahoe's dark icons: the glyph's colours
+                // stand out and the tile does not melt into the shelf
+                tiny_skia::Color::from_rgba8(60, 61, 68, 255),
+                tiny_skia::Color::from_rgba8(24, 24, 29, 255),
             )
         } else {
             (
@@ -765,10 +776,10 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
             None,
         );
         if dark {
-            dark_tile_rim(&mut out, size);
+            dark_tile_rim(&mut out, size, 1.0);
         }
     }
-    let inner = size * 0.72;
+    let inner = size * 0.76;
     let scale = inner / bw.max(bh);
     let ox = (size - bw * scale) * 0.5 - x0 as f32 * scale;
     let oy = (size - bh * scale) * 0.5 - y0 as f32 * scale;
@@ -785,17 +796,19 @@ fn macify(raw: Pixmap, px: u32, dark: bool) -> Pixmap {
 
 /// A dark tile vanishes on the dark Dock glass: a thin light rim, brighter at the top like
 /// Tahoe's glass edge, outlines it
-fn dark_tile_rim(out: &mut Pixmap, size: f32) {
+fn dark_tile_rim(out: &mut Pixmap, size: f32, strength: f32) {
     let width = (size / 64.0).clamp(1.0, 2.5);
     let Some(rim) = squircle_path(width * 0.5, width * 0.5, size - width) else { return };
-    let mut paint = tiny_skia::Paint { anti_alias: true, ..Default::default() };
+    // Only over the icon's own pixels: a tile with rounder corners gets no stray arcs
+    let mut paint = tiny_skia::Paint { anti_alias: true, blend_mode: tiny_skia::BlendMode::SourceAtop, ..Default::default() };
+    let a = |alpha: f32| tiny_skia::Color::from_rgba8(255, 255, 255, (alpha * strength).round() as u8);
     if let Some(shader) = tiny_skia::LinearGradient::new(
         tiny_skia::Point::from_xy(0.0, 0.0),
         tiny_skia::Point::from_xy(0.0, size),
         vec![
-            tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(255, 255, 255, 92)),
-            tiny_skia::GradientStop::new(0.5, tiny_skia::Color::from_rgba8(255, 255, 255, 34)),
-            tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(255, 255, 255, 52)),
+            tiny_skia::GradientStop::new(0.0, a(104.0)),
+            tiny_skia::GradientStop::new(0.5, a(34.0)),
+            tiny_skia::GradientStop::new(1.0, a(52.0)),
         ],
         tiny_skia::SpreadMode::Pad,
         Transform::identity(),
@@ -845,6 +858,18 @@ mod tests {
         assert!(luma(&dark, 64, 1) > luma(&dark, 64, 8) + 60, "rim {} tile {}", luma(&dark, 64, 1), luma(&dark, 64, 8));
         let light = macify(raw, 128, false);
         assert!(luma(&light, 64, 1) >= luma(&light, 64, 8));
+    }
+
+    /// A fully square picture is cut to the squircle instead of keeping sharp corners
+    #[test]
+    fn square_icons_are_cut_to_the_squircle() {
+        let mut raw = Pixmap::new(64, 64).unwrap();
+        raw.fill(tiny_skia::Color::from_rgba8(10, 20, 60, 255));
+        let tile = macify(raw, 128, false);
+        assert_eq!(tile.pixel(0, 0).unwrap().alpha(), 0);
+        assert_eq!(tile.pixel(127, 127).unwrap().alpha(), 0);
+        assert_eq!(tile.pixel(64, 64).unwrap().alpha(), 255);
+        assert_eq!(tile.pixel(64, 1).unwrap().alpha(), 255);
     }
 
     #[test]

@@ -3837,7 +3837,7 @@ impl MacShell {
                     if crate::theme::high_contrast() {
                         if appearance() == Appearance::Dark { rgba(24, 24, 28, 190) } else { rgba(255, 255, 255, 196) }
                     } else if appearance() == Appearance::Dark {
-                        rgba(28, 30, 36, 134)
+                        rgba(26, 28, 36, 116)
                     } else {
                         rgba(255, 255, 255, 130)
                     }
@@ -3845,8 +3845,24 @@ impl MacShell {
                     p.dock_fill
                 };
                 fill_rounded_rect(&mut pm, b.x, b.y, b.w, b.h, radius, dock_tint);
-                stroke_rounded_rect(&mut pm, b.x + 0.75, b.y + 0.75, b.w - 1.5, b.h - 1.5, radius - 0.75, 1.0, p.glass_edge);
+                let dark_dock = appearance() == Appearance::Dark;
+                // The dark shelf needs a brighter specular edge than a dark panel to read as glass
+                let edge = if dark_dock && !crate::theme::high_contrast() { rgba(255, 255, 255, 72) } else { p.glass_edge };
+                stroke_rounded_rect(&mut pm, b.x + 0.75, b.y + 0.75, b.w - 1.5, b.h - 1.5, radius - 0.75, 1.0, edge);
                 stroke_rounded_rect(&mut pm, b.x - 0.25, b.y - 0.25, b.w + 0.5, b.h + 0.5, radius + 0.25, 0.5, p.glass_outline);
+
+                // Icons rest on the shelf: a soft contact shadow under each tile (two flat
+                // layers, no blur). The Trash is not a tile and gets none.
+                let (near, far) = if dark_dock { (58, 34) } else { (26, 14) };
+                for (slot, item) in slots.iter().zip(items.iter()) {
+                    if item.target == DockTarget::Trash {
+                        continue;
+                    }
+                    let r = map.rect(R::new(slot.x, slot.y, slot.size, slot.size));
+                    let (d, rad) = (slot.size / 50.0, slot.size * 0.225);
+                    fill_rounded_rect(&mut pm, r.x - 0.5 * d, r.y + 1.5 * d, r.w + d, r.h + 1.5 * d, rad + d, rgba(0, 0, 0, far));
+                    fill_rounded_rect(&mut pm, r.x + 1.5 * d, r.y + 2.0 * d, r.w - 3.0 * d, r.h - 0.5 * d, rad, rgba(0, 0, 0, near));
+                }
 
                 for &sx in &sep_x {
                     let (x0, y0) = map.point(sx, bar.y + sep_pad);
