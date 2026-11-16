@@ -1,6 +1,6 @@
 # Feather DE User Guide
 
-**[🇷🇺 Читать на русском](USER_GUIDE.md)** · **[← Back to README](../README.en.md)** · **[Changelog](../CHANGELOG.md)**
+**[🇷🇺 Читать на русском](USER_GUIDE.md)** · **[← Back to README](../README.md)** · **[Changelog](../CHANGELOG.md)**
 
 Welcome to **Feather DE (Пёрышко)** — an ultra-lightweight, responsive Linux desktop environment inspired by macOS Tahoe, powered by its own Wayland compositor, real-time GPU **Liquid Glass**, three independent per-desktop layout modes (floating windows, automatic BSP tiling, and a scrollable horizontal ribbon), and eight native Rust applications.
 

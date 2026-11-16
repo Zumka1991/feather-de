@@ -98,11 +98,48 @@ install -m644 "$SCRIPT_DIR/get.sh" install.sh
 touch .nojekyll
 cat > index.html <<'EOF'
 <!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feather DE — install</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;color:#1d1d1f}
+pre{background:#f5f5f7;padding:12px 14px;border-radius:10px;overflow-x:auto}h2{margin-top:32px}</style></head>
+<body><p><a href="ru.html">🇷🇺 Русский</a></p><h1>Feather DE (Пёрышко)</h1>
+<p>A macOS-inspired Wayland desktop for Ubuntu 24.04 and newer (amd64) and Arch Linux (x86_64).</p>
+<h2>One command</h2>
+<p>One command for Ubuntu and Arch Linux. It also works on a system without a desktop
+(Ubuntu Server, a bare Arch): it installs Feather, the set of apps, the login screen and everything else needed.
+Run it as a regular user; the script asks for the sudo password itself.</p>
+<pre>curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash</pre>
+<h2>As a .deb file</h2>
+<p><a href="https://github.com/Zumka1991/feather-de/releases/latest/download/feather-de_amd64.deb">Download feather-de_amd64.deb</a>
+and open it with a double click (or <code>sudo apt install ./feather-de_amd64.deb</code>).
+The package adds this repository by itself, like Chrome does.</p>
+<h2>Add the repository manually</h2>
+<pre>sudo install -d -m 755 /etc/apt/keyrings
+curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo tee /etc/apt/keyrings/feather-de.asc &gt;/dev/null
+echo 'deb [signed-by=/etc/apt/keyrings/feather-de.asc] https://zumka1991.github.io/feather-de stable main' | sudo tee /etc/apt/sources.list.d/feather-de.list
+sudo apt-get update &amp;&amp; sudo apt-get install feather-de</pre>
+<p>Key fingerprint: <code>D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4</code>.
+Updates arrive with the rest of the system: <code>sudo apt upgrade</code>.</p>
+<h2>Arch Linux</h2>
+<p>Our own pacman repository (x86_64), signed with the same key. The command above installs Feather
+as one more session next to your current desktop and tells you where to pick it on the login screen;
+Feather only, without the set of apps: <code>… | bash -s -- --minimal</code>. Manual repository setup:</p>
+<pre>curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo pacman-key --add -
+sudo pacman-key --lsign-key D5E6C2628719EF1D60685758C7F944C1485C5FC4
+printf '\n[feather-de]\nSigLevel = Required\nServer = https://zumka1991.github.io/feather-de/arch/$arch\n' | sudo tee -a /etc/pacman.conf
+sudo pacman -Syu feather-de</pre>
+<p>From then on, updates are <code>sudo pacman -Syu</code>. To start: log out and pick
+“Пёрышко (direct DRM/KMS output)” on the login screen.</p>
+<p>Source code: <a href="https://github.com/Zumka1991/feather-de">github.com/Zumka1991/feather-de</a>.</p>
+</body></html>
+EOF
+cat > ru.html <<'EOF'
+<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Пёрышко — установка</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 16px;color:#1d1d1f}
 pre{background:#f5f5f7;padding:12px 14px;border-radius:10px;overflow-x:auto}h2{margin-top:32px}</style></head>
-<body><h1>Пёрышко (Feather DE)</h1>
+<body><p><a href="./">🇬🇧 English</a></p><h1>Пёрышко (Feather DE)</h1>
 <p>Рабочий стол Wayland в стиле macOS для Ubuntu 24.04 и новее (amd64) и Arch Linux (x86_64).</p>
 <h2>Одной командой</h2>
 <p>Одна команда для Ubuntu и Arch Linux. Подходит и для системы без рабочего стола (Ubuntu Server,

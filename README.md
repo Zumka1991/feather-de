@@ -1,418 +1,407 @@
-# Пёрышко · Feather DE
+# Feather DE · Пёрышко
 
-**Лёгкое окружение рабочего стола для Linux: собственный Wayland-композитор, живое стекло `Liquid Glass`, три режима раскладки столов (плавающие окна, авто-плитка и бесконечная скролл-лента) и восемь приложений на Rust.**
+**A lightweight Linux desktop with its own Wayland compositor, real-time GPU `Liquid Glass`, three workspace layout modes (floating windows, automatic BSP tiling, and a scrollable horizontal ribbon), and eight native applications in Rust.**
 
-[🇬🇧 English](README.en.md) · **[📖 Руководство пользователя (RU)](docs/USER_GUIDE.md)** · **[📖 User Guide (EN)](docs/USER_GUIDE.en.md)** · [Возможности](#возможности-оболочки) · [Установка](#сборка-и-установка) · [Горячие клавиши](#горячие-клавиши) · [Roadmap](docs/ROADMAP.md)
+[🇷🇺 Русский](README.ru.md) · **[📖 User Guide (EN)](docs/USER_GUIDE.en.md)** · **[📖 Руководство (RU)](docs/USER_GUIDE.md)** · [Shell features](#shell-features) · [Build and install](#build-and-install) · [Keyboard shortcuts](#keyboard-shortcuts) · [Roadmap](docs/ROADMAP.md)
 
-![Рабочий стол Пёрышка с собственным Терминалом](docs/images/desktop.png)
+![The Feather desktop running its native Terminal](docs/images/desktop.png)
 
-> ### 📖 Полное иллюстрированное руководство пользователя
-> Подробный учебник по всем возможностям Пёрышка с живыми скриншотами, разбором верхней шторки Пункта управления и Центра уведомлений, шторки-Подложки (`Super+S`), Полки перетаскивания (`Drop Shelf`), авто-плитки, бесконечной ленты со скроллингом и всех горячих клавиш:
-> - 🇷🇺 **[Открыть Руководство пользователя на русском (`docs/USER_GUIDE.md`)](docs/USER_GUIDE.md)**
+> ### 📖 Illustrated User Guide
+> Complete step-by-step manual covering every feature of Feather DE with live screenshots — including the Control Center & Notification drawers, Scratchpad (`Super+S`), Glass Drop Shelf (`Super+D`), Auto-Tiling, Scrollable Ribbon (`Tape`), Ghost PiP, Per-App Audio Mixer, native apps, and all keyboard shortcuts:
 > - 🇬🇧 **[Open the Illustrated User Guide in English (`docs/USER_GUIDE.en.md`)](docs/USER_GUIDE.en.md)**
+> - 🇷🇺 **[Открыть Руководство пользователя на русском (`docs/USER_GUIDE.md`)](docs/USER_GUIDE.md)**
 >
-> Быстрый переход по главам: [Верхняя панель и Menu HUD](docs/USER_GUIDE.md#2-верхняя-панель-глобальное-меню-и-поиск-menu-hud-super--) · [Окна и Призрачный PiP](docs/USER_GUIDE.md#4-окна-прилипание-к-краям-и-призрачный-pip-super--p) · [Авто-плитка и Бесконечная лента](docs/USER_GUIDE.md#5-рабочие-столы-авто-плитка-tile-и-бесконечная-лента-со-скроллингом-tape) · [Подложка и Полка перетаскивания](docs/USER_GUIDE.md#6-шторка-подложка-super--s-и-полка-перетаскивания-super--d) · [Шторка Пункта управления и Аудио-микшер](docs/USER_GUIDE.md#7-верхняя-шторка-пункт-управления-пооконный-аудио-микшер-и-уведомления) · [Шпаргалка клавиш](docs/USER_GUIDE.md#12-управление-из-терминала-featherctl-и-полная-шпаргалка-горячих-клавиш)
+> Quick jump: [Menu Bar & Menu HUD](docs/USER_GUIDE.en.md#2-top-menu-bar-global-menus--menu-hud-super--) · [Windows & Ghost PiP](docs/USER_GUIDE.en.md#4-windows-edge-snapping--ghost-pip-super--p) · [Auto-Tiling & Scrollable Ribbon](docs/USER_GUIDE.en.md#5-workspaces-auto-tiling-tile--scrollable-ribbon-tape) · [Scratchpad & Drop Shelf](docs/USER_GUIDE.en.md#6-scratchpad-drawer-super--s--drop-shelf-super--d) · [Control Center & Per-App Audio Mixer](docs/USER_GUIDE.en.md#7-top-drawers-control-center-per-app-audio-mixer--notifications) · [Shortcut Cheat Sheet](docs/USER_GUIDE.en.md#12-cli-automation-featherctl--complete-keyboard-shortcut-reference)
 
-Пёрышко объединяет верхнюю строку меню, Dock, поиск, запуск приложений, обзор окон,
-рабочие столы с тремя режимами раскладки, шторки управления и уведомлений и системные настройки.
-Визуальный язык вдохновлён macOS Tahoe: светлые и тёмные поверхности, живое оптическое стекло
-**Liquid Glass**, скругления, мягкие тени и пружинные анимации.
-Под интерфейсом — собственный композитор на **Rust / Smithay 0.7**, событийная модель
-и аппаратная сборка сцены через OpenGL/EGL.
+Feather brings together a global menu bar, Dock, application search and launcher,
+window overview, workspaces with three layout modes, quick control/notification drawers,
+and System Settings. Its visual language is inspired by macOS Tahoe: light and dark surfaces,
+real-time GPU **Liquid Glass**, rounded corners, soft shadows, and spring animations.
+The desktop runs on its own **Rust / Smithay 0.7** compositor with event-driven processing
+and an OpenGL/EGL rendering pipeline.
 
-Главная цель — быстрый отклик при минимальном потреблении ресурсов (`0 %` CPU в простое, `≤ 1 мс`
-работы композитора на кадр, `≤ 60 МБ` приватной памяти). Перерисовка запускается строго
-по изменениям; подготовка тяжёлых ресурсов и работа системных служб вынесены из цикла
-ввода и отрисовки. Рядом с композитором развиваются собственные Файлы, Терминал, Заметки,
-Просмотр, Текстовый редактор, Калькулятор, Мониторинг системы и Магазин программ.
+The project prioritizes responsiveness and low resource use (`0%` idle CPU, `≤ 1 ms` compositor
+work per frame, `≤ 60 MB` steady `RssAnon`). Rendering follows changes to the scene; expensive
+asset preparation and system-service operations run outside the input and rendering loop.
+Files, Terminal, Notes, Preview, Text Editor, Calculator, Activity Monitor, and App Store
+are developed alongside the compositor.
 
-**Ранняя тестовая стадия.** Готовые пакеты с обновлениями — для Ubuntu (APT) и Arch Linux
-(pacman), см. [Сборка и установка](#сборка-и-установка). Полная проверка на разных видеокартах, ноутбуках и физических мониторах продолжается.
-Пёрышко сейчас распространяется как окружение рабочего стола; установочного образа
-отдельной операционной системы в этом репозитории пока нет.
+**Early testing stage.** Ready packages with updates exist for Ubuntu (APT) and Arch Linux
+(pacman). Validation across GPUs, laptops, and physical displays is ongoing. Feather
+currently ships as a desktop environment; this repository does not yet provide an
+installation image for a separate operating system.
 
-## Что входит в проект
+## Project components
 
-| Компонент | Назначение |
+| Component | Purpose |
 |---|---|
-| `feather-de` | Wayland-композитор, управление окнами, оболочка, настройки и интеграция с Linux |
-| `feather-files` | Файловый менеджер и диалоги открытия/сохранения файлов |
-| `feather-terminal` | Терминал с собственным ядром DEC/ANSI/VT, вкладками и поиском |
-| `feather-notes` | Текстовые заметки с поиском и автосохранением |
-| `feather-preview` | Просмотр изображений, SVG и многостраничных PDF |
-| `feather-textedit` | Текстовый редактор с вкладками, подсветкой и поиском/заменой |
-| `feather-calc` | Обычный, инженерный и программистский калькулятор |
-| `feather-monitor` | Мониторинг системы (`Ctrl+Alt+Del`): процессы, «Снять задачу», графики ЦП, памяти, диска и сети |
-| `feather-store` | Магазин: единый каталог системных пакетов (PackageKit) и **Flathub (Flatpak)** с подключением в один клик и обновлением |
-| `featherctl` / `feather-api` | Утилита командной строки и D-Bus API (`org.feather.Shell1`) для управления окнами, столами, звуком и снимками |
-| `feather-ui` | Общая библиотека рисования, текста, масштаба, локализации и элементов интерфейса |
+| `feather-de` | Wayland compositor, window management, desktop shell, settings, and Linux integration |
+| `feather-files` | File manager and file opening/saving dialogs |
+| `feather-terminal` | Terminal with a custom DEC/ANSI/VT engine, tabs, and search |
+| `feather-notes` | Plain-text notes with search and autosave |
+| `feather-preview` | Raster image, SVG, and multipage PDF viewer |
+| `feather-textedit` | Tabbed text editor with syntax highlighting and find/replace |
+| `feather-calc` | Basic, scientific, and programmer calculator |
+| `feather-monitor` | Activity Monitor (`Ctrl+Alt+Del`): processes, End Task, CPU, memory, disk and network graphs |
+| `feather-store` | App Store: unified system AppStream (`PackageKit`) and **Flathub (`Flatpak`)** catalog with one-click setup and updates |
+| `featherctl` / `feather-api` | CLI tool and D-Bus API (`org.feather.Shell1`) for controlling windows, workspaces, audio, and screenshots |
+| `feather-ui` | Shared drawing, text, scaling, localization, and UI primitives |
 
-Все компоненты находятся в одном Cargo workspace. Приложения — самостоятельные
-Wayland-клиенты на `smithay-client-toolkit` и `tiny-skia`; интерфейс оболочки встроен
-в композитор. Системные службы подключаются по мере доступности.
+The components share a Cargo workspace. Applications are separate Wayland clients
+built with `smithay-client-toolkit` and `tiny-skia`; the desktop shell is integrated
+into the compositor. System integrations become available when their services exist.
 
-| Авто-плитка (`Tile`, BSP) | Бесконечная лента со скроллингом (`Tape`) |
+| Auto-Tiling (`Tile`, BSP) | Scrollable Ribbon (`Tape`, Niri-style) |
 |---|---|
-| ![Авто-плитка](docs/images/guide/ru/05-tile.png) | ![Бесконечная лента](docs/images/guide/ru/06-tape.png) |
-| **Шторка Пункта управления и `Liquid Glass`** | **Пооконный аудио-микшер** |
-| ![Пункт управления](docs/images/guide/ru/11-control-center.png) | ![Пооконный аудио-микшер](docs/images/guide/ru/12-sound-mixer.png) |
-| **Полка перетаскивания (`Drop Shelf`, `Super+D`)** | **Поиск по командам меню (`Menu HUD`, `Super+/`)** |
-| ![Полка перетаскивания](docs/images/guide/ru/10-drop-shelf.png) | ![Menu HUD](docs/images/guide/ru/02-menu-hud.png) |
+| ![Auto-Tiling](docs/images/guide/en/05-tile.png) | ![Scrollable Ribbon](docs/images/guide/en/06-tape.png) |
+| **Control Center Drawer & `Liquid Glass`** | **Per-App Audio Mixer** |
+| ![Control Center](docs/images/guide/en/11-control-center.png) | ![Per-App Audio Mixer](docs/images/guide/en/12-sound-mixer.png) |
+| **Glass Drop Shelf (`Super+D`)** | **Menu HUD Command Search (`Super+/`)** |
+| ![Drop Shelf](docs/images/guide/en/10-drop-shelf.png) | ![Menu HUD](docs/images/guide/en/02-menu-hud.png) |
 
-## Возможности оболочки
+## Shell features
 
-### Рабочий стол и живое оптическое стекло `Liquid Glass`
+### Desktop and real-time GPU `Liquid Glass`
 
-- Светлая и тёмная темы, цвет акцента и выделения, размер текста интерфейса и синхронизация темы GTK 3/4.
-- Скругления клиентских окон на GPU, тени и кнопки управления в виде «светофора».
-- **Живое оптическое стекло (`Liquid Glass`) на GPU**: панели, шторка Пункта управления, Центр уведомлений, Dock, меню, Spotlight, HUD-карточки и Полка перетаскивания в реальном времени размывают и преломляют живую картинку окон и обоев под собой (Dual-Kawase + SDF-фаска с дисперсией и каустикой) без перерасчёта на неподвижных кадрах (`0 %` CPU в простое).
-- Пружинные анимации появления окон и панелей, сворачивания в Dock и восстановления.
-- Отключение анимаций, уменьшение прозрачности, повышенный контраст и крупный текст.
-- Значки файлов, папок и `.desktop`-ярлыков на рабочем столе, выделение рамкой,
-  перетаскивание, контекстное меню и обмен файлами с файловым менеджером.
-- Галерея оригинальных обоев «Рассвет», «Сияние», «Горное озеро» и выбор своих
-  изображений PNG/JPEG/WebP со сменой по расписанию. Подготовка обоев выполняется вне основного цикла.
-- Дробный масштаб интерфейса и поддержка HiDPI.
+- Light and dark appearances, accent and selection colors, adjustable UI text size, and GTK 3/4 styling sync.
+- GPU-rounded client windows, shadows, and traffic-light window controls.
+- **Real-time GPU `Liquid Glass`**: panels, Control Center, Notification Center, the Dock, menus, Spotlight, HUD cards, and the Drop Shelf refract and blur live windows and wallpaper beneath them (Dual-Kawase + SDF bevel with dispersion and caustics) while skipping work on static frames (`0%` idle CPU).
+- Spring animations for windows and panels, minimizing into the Dock, and restoration.
+- Animation controls, reduced transparency, increased contrast, and large text.
+- Desktop files, folders, and `.desktop` launchers, rubber-band selection,
+  drag-and-drop, context menus, and integration with the file manager.
+- Original Dawn, Aurora, and Mountain Lake wallpapers, plus custom PNG/JPEG/WebP
+  images with scheduled rotation. Wallpaper preparation happens outside the main event loop.
+- Fractional UI scaling and HiDPI support.
 
-### Верхняя панель, глобальные меню и поиск `Menu HUD`
+### Menu bar, global menus, and `Menu HUD`
 
-- Меню активного приложения, меню окон и справки, часы, переключатель режимов стола и переключение источников ввода.
-- **Поиск по командам меню — `Menu HUD` (`Super+/`)**: мгновенно разворачивает дерево глобального меню активного окна и меню Пёрышка в поисковую палитру с хлебными крошками (`Файл ▸ Экспорт ▸ …`), галочками, бейджами клавиш и автоисправлением опечаток раскладки (`QWERTY ↔ ЙЦУКЕН`).
-- Кофеин: чашка рядом с часами одним кликом запрещает сон и гашение экрана. Батарея с процентами на ноутбуках.
-- Глобальное меню Qt/KDE через KDE Wayland AppMenu и DBusMenu.
-- Глобальное меню GTK через `gtk_shell1`, `org.gtk.Menus` и `org.gtk.Actions`.
-- Вложенные меню, галочки, радиопункты, недоступные действия и управление клавиатурой.
-- Собственные меню оболочки для приложений, которые не экспортируют своё меню.
-- Системный трей StatusNotifierItem: обычные и контекстные действия, меню, прокрутка,
-  индикатор внимания и список переполнения при нехватке места.
+- Active application, Window, and Help menus, workspace mode pill, clock, and input-source switching.
+- **Instant Menu Command Search — `Menu HUD` (`Super+/`)**: flattens the active window's global menu tree and Feather's shell menus into a fast searchable command palette with breadcrumbs (`File ▸ Export ▸ …`), checkmarks, shortcut badges, and automatic cross-layout typo matching (`QWERTY ↔ ЙЦУКЕН`).
+- Caffeine: a cup next to the clock prevents sleep and screen blanking in one click. Battery with percentage on laptops.
+- Qt/KDE global menus through KDE Wayland AppMenu and DBusMenu.
+- GTK global menus through `gtk_shell1`, `org.gtk.Menus`, and `org.gtk.Actions`.
+- Nested menus, checkboxes, radio items, disabled actions, and keyboard navigation.
+- Shell-provided fallback menus for applications that do not export their own.
+- StatusNotifierItem tray icons, primary and secondary actions, context menus,
+  scrolling, attention indicators, and an overflow list.
 
-Глобальное меню зависит от возможностей самого приложения. Наличие Qt, GTK или
-Electron само по себе не гарантирует экспорт меню. Запрос клиентских декораций CSD
-уважажается: композитор не навязывает дополнительную рамку поверх рамки приложения.
+Global menus depend on the application's export support. An application using Qt,
+GTK, or Electron is not automatically guaranteed to provide a menu. Client-side
+window decoration requests are respected, avoiding an extra compositor title bar
+on top of an application's own decorations.
 
-### Dock, Launchpad, Spotlight и Кольцо программ (`Cmd`)
+### Dock, Launchpad, Spotlight, and the App Ring (`Cmd`)
 
-- Закреплённые и запущенные приложения, индикаторы работы и группировка окон.
-- Увеличение при наведении, отскок при запуске, изменение размера значков,
-  автоскрытие и положение снизу, слева или справа.
-- Перестановка и закрепление перетаскиванием, контекстное меню и блокировка
-  перетаскивания. Положение и закрепления сохраняются между запусками.
-- Повторный клик по активному приложению сворачивает его окно; клик по свёрнутому
-  восстанавливает, по фоновому — поднимает окно.
-- Корзина с состояниями «пусто/полно», перетаскиванием файлов и подтверждением очистки.
-- **Кольцо программ по короткому нажатию `Super` (`Cmd`)**: радиальный переключатель вокруг курсора с выбором движением мыши, стрелками, `Tab` или первой буквой; двойное нажатие «Cmd, Cmd» мгновенно возвращает к прошлому окну.
-- Сетка приложений Launchpad (`Super+A`): поиск, страницы, прокрутка и перенос приложения в Dock.
-- Поиск Spotlight (`Super+Space`): программы, открытые окна, разделы настроек, заметки, файлы домашней папки и
-  мгновенное вычисление выражений, без индекса и фоновой работы.
-- История буфера обмена в памяти (`Super+Shift+V`) и панель эмодзи (`Super+.`). Подробнее: [Spotlight](docs/SPOTLIGHT.md).
-- Поиск установленных программ по `.desktop`, сопоставление окон по `app_id`,
-  `StartupWMClass` и известным идентификаторам, загрузка значков из системных тем.
+- Pinned and running applications, running indicators, and grouped windows.
+- Hover magnification, launch bounce, adjustable icon size, auto-hide, and bottom,
+  left, or right placement.
+- Dragging to reorder and pin, context menus, and a persistent drag lock.
+- Clicking the active application minimizes its window; clicking a minimized one
+  restores it, while a background application is brought forward.
+- Trash with empty/full states, file drops, and confirmation before emptying.
+- **Radial App Ring (short tap of `Super` / `Cmd`)**: opens a quick ring around the pointer selectable by flicking the mouse, arrows, `Tab`, or first letter; double-tapping “Cmd, Cmd” bounces straight back to the previous window.
+- Launchpad application grid (`Super+A`) with search, pages, scrolling, and dragging into the Dock.
+- Spotlight search (`Super+Space`): programs, open windows, settings sections, notes, files in the home folder, and
+  live math expressions, with no index and no background work.
+- In-memory clipboard history (`Super+Shift+V`) and an emoji panel (`Super+.`).
+- `.desktop` discovery, window matching through `app_id`, `StartupWMClass`, and known
+  identifiers, with icons loaded from system themes.
 
-### Окна, три режима рабочих столов (`Free` / `Tile` / `Tape`), шторка-Подложка и Полка перетаскивания
+### Windows, three workspace modes (`Free` / `Tile` / `Tape`), Scratchpad, and Drop Shelf
 
-- **Три независимых режима раскладки для каждого рабочего стола (`Ctrl+Alt+M`)**, сохраняемые между сеансами:
-  1. **Свободные окна (`Free`)** — классические плавающие окна macOS Tahoe с прилипанием к половинам и четвертям экрана у краёв, в меню зелёной кнопки и по `Ctrl+Super+стрелкам`.
-  2. **Авто-плитка (`Tile`)** — по-столовая BSP-сетка в духе Hyprland / COSMIC: окна сами делят рабочую область с живым перетаскиванием разделителей, обменом окон и поворотом оси разбиения (`Super+стрелки`, `Super+Shift+стрелки`, `Ctrl+Super+стрелки`, `Super+0`, `Super+F`).
-  3. **Бесконечная лента со скроллингом (`Tape`)** — горизонтальная лента полноразмерных колонок в духе Niri / PaperWM: плавный скроллинг с аналитической GPU-пружиной по **`Super+колёсику мыши`** или **`Super+трекпаду`**, выглядывающие края соседних окон (`28 px`), пресеты ширины колонки по **`Super+R`** (`50 % → 67 % → 100 % → 33 %`), навигация `Super+←/→` и `Super+Home/End`.
-- **До 16 рабочих столов (`Super+1…9` и `Ctrl+Alt+←/→`)**: прямое переключение по номеру `Cmd+1…9` с созданием столов на лету и автоудалением пустых хвостовых столов, мгновенный перенос активного окна на нужный стол по `Cmd+Shift+1…9` и **центральная стеклянная HUD-табличка** с номером и режимом стола при каждом переключении.
-- **Шторка-Подложка (`Super+S` / `Super+Shift+S`)**: выдвижной слой быстрых окон поверх всех столов — одно окно открывается во весь экран, а два и более складываются в живую тайловую сетку.
-- **Полка перетаскивания (`Drop Shelf`, `Super+D` или встряхивание курсора во время drag-and-drop)**: стеклянная полка для временного сбора файлов, папок, картинок из браузера, ссылок и текста при переносе между окнами и рабочими столами.
-- **«Картинка в картинке» и Призрачный PiP (`Super+P` / `Super+Alt+P`)**: закрепление любого окна в углу экрана поверх всех столов и режим «Сквозь курсор», пропускающий все клики и прокрутку сквозь полупрозрачное окно (удержание `Super` возвращает захват для переноса).
-- Память окон: программа открывается на прежнем месте, при входе возвращается прошлый сеанс.
-- `Alt+Tab` / `Super+Tab` в порядке последнего использования и переключение окон одной программы через `` Alt+` `` / `` Super+` ``.
-- **Mission Control (`Ctrl+Alt+↑`)**: обзор окон, полоса столов с миниатюрами и переключателями режима раскладки, создание/удаление столов и перенос окон мышью.
-- **Встроенные снимки (`Print` / `Shift+Print` / `Alt+Print`) и Запись видео с экрана (`Super+Alt+5` / `Ctrl+Shift+Print`)** в MP4/WebM со звуком.
-- Настраиваемые активные углы и жесты трекпада 3–4 пальцами (столы, Mission Control и Launchpad).
+- **Three independent per-workspace layout modes (`Ctrl+Alt+M`)**, persisted across sessions:
+  1. **Free Windows (`Free`)** — classic macOS Tahoe floating windows with half/quarter snapping at screen edges, in the green button's menu, and via `Ctrl+Super+arrows`.
+  2. **Auto-Tiling (`Tile`)** — per-desktop BSP grid (Hyprland / COSMIC style): windows automatically divide the work area with live divider dragging, swapping, split-axis rotation, and single-tile zoom (`Super+arrows`, `Super+Shift+arrows`, `Ctrl+Super+arrows`, `Super+0`, `Super+F`).
+  3. **Scrollable Ribbon (`Tape`)** — infinite horizontal strip of full-height columns (Niri / PaperWM style): smooth analytic GPU-spring scrolling via **`Super+Mouse Wheel`** or **`Super+trackpad scroll`**, `28 px` peeking neighbor columns, width preset cycling on **`Super+R`** (`50% → 67% → 100% → 33%`), and `Super+←/→` / `Super+Home/End` navigation.
+- **Up to 16 workspaces (`Super+1…9` and `Ctrl+Alt+←/→`)**: direct jump by number `Cmd+1…9` (creating desktops on the fly and auto-pruning empty trailing ones), instant window carry on `Cmd+Shift+1…9`, and a **centered Liquid Glass HUD card** showing the desktop number and layout mode on every switch.
+- **Scratchpad Drawer (`Super+S` / `Super+Shift+S`)**: pull-down overlay layer above all workspaces — one window fills the screen, while multiple windows form a live tiled grid.
+- **Glass Drop Shelf (`Super+D` or shake pointer while dragging)**: floating Liquid Glass shelf for stashing files, folders, browser images, URLs, and text snippets across windows and workspaces.
+- **Picture-in-Picture & Ghost Mode (`Super+P` / `Super+Alt+P`)**: pins any window to a screen corner above all workspaces, with an optional *Click-Through* Ghost mode that passes clicks and scroll events straight through to the window underneath (hold `Super` to drag/resize).
+- Window memory: programs reopen where they were, and the previous session returns at login.
+- `Alt+Tab` / `Super+Tab` MRU switcher and `` Alt+` `` / `` Super+` `` same-app window cycling.
+- **Mission Control (`Ctrl+Alt+↑`)**: window overview, workspace strip with live thumbnails and per-desktop mode pills, workspace creation/removal, and drag-to-move.
+- **Built-in Screenshots (`Print` / `Shift+Print` / `Alt+Print`) and Screen Recorder (`Super+Alt+5` / `Ctrl+Shift+Print`)** in MP4/WebM with audio.
+- Configurable hot corners and 3/4-finger libinput trackpad gestures.
 
-Подробнее: [Руководство пользователя](docs/USER_GUIDE.md), [окна и столы](docs/WINDOWS.md),
-[переключатель](docs/SWITCHER.md), [сочетания клавиш](docs/KEYBOARD.md).
+See the **[Illustrated User Guide](docs/USER_GUIDE.en.md)** for complete walkthroughs.
 
-### Верхние шторки: Пункт управления, Пооконный аудио-микшер и Уведомления
+### Top drawers: Control Center, Per-App Audio Mixer, and Notifications
 
-- **Шторка Пункта управления (`Super+N`)**: быстрые переключатели Wi-Fi (с выбором сетей и VPN), Bluetooth, «Не беспокоить», Ночного режима, ползунки яркости и звука.
-- **Пооконный аудио-микшер** (в панели динамика строки меню, Пункте управления и «Системных настройках → Звук»): индивидуальный ползунок громкости, `Mute` и выбор устройства вывода (`↦` колонки / наушники / HDMI) отдельно для каждой звучащей программы.
-- **Боковая шторка Центра уведомлений** (клик по часам): сервер `org.freedesktop.Notifications` с баннерами, группировкой по программам, кнопками действий, историей сеанса и расписанием «Не беспокоить».
-- Общий проигрыватель системных звуков: уведомления, предупреждения/BEL, снимок экрана и отклик громкости.
+- **Control Center Drawer (`Super+N`)**: quick tiles for Wi-Fi (with network & VPN picker), Bluetooth, Do Not Disturb, Night Shift, display brightness, and master audio.
+- **Per-App Audio Mixer** (in the menu-bar speaker popup, Control Center, and *System Settings → Sound*): independent volume slider, Mute, and output device routing (`↦` speakers / headphones / HDMI) for each playing application.
+- **Notification Center Drawer** (click the clock): `org.freedesktop.Notifications` server with banners, app grouping, action buttons, session history, and scheduled Do Not Disturb.
+- Shared sound worker for notifications, alerts/BEL, screenshots, and volume feedback.
 
-Обычный вложенный запуск не захватывает сервер уведомлений основной сессии.
-Подробности: [уведомления](docs/NOTIFICATIONS.md), [звуки](docs/SYSTEM_SOUNDS.md).
+An ordinary nested instance does not claim the host session's notification service.
+See [notifications](docs/NOTIFICATIONS.md) and [system sounds](docs/SYSTEM_SOUNDS.md).
 
-## Системные настройки
+## System Settings
 
-В одном окне объединены **15 разделов**. Настройки сохраняются в
-`$XDG_CONFIG_HOME/feather-de/settings.conf`, обычно `~/.config/feather-de/settings.conf`.
+A single window contains **15 settings sections**. Preferences are stored in
+`$XDG_CONFIG_HOME/feather-de/settings.conf`, normally
+`~/.config/feather-de/settings.conf`.
 
-| Раздел | Что можно настроить |
+| Section | Controls |
 |---|---|
-| Оформление | Светлая/тёмная тема, акцент, выделение, размер текста и анимации |
-| Универсальный доступ | Крупный текст, контраст, прозрачность и залипание клавиш |
-| Язык и регион | Русский, английский, испанский, немецкий, французский и упрощённый китайский; региональные форматы |
-| Сеть | Wi-Fi, сохранённые подключения, Ethernet, VPN и WireGuard через NetworkManager |
-| Bluetooth | Питание адаптера, поиск, сопряжение/подключение, отключение и удаление устройств через BlueZ |
-| Клавиатура | Раскладки, переключение языка, Caps Lock, задержка/скорость повтора и свои сочетания действий |
-| Мышь и трекпад | Скорость, прокрутка, нажатия, параметры курсора; доступность зависит от режима запуска |
-| Дисплеи | Масштаб, разрешение/частота основного экрана, расположение/основной монитор и ночной режим |
-| Рабочий стол и Dock | Обои, размер/положение/автоскрытие Dock, увеличение значков и активные углы |
-| Приложения | Браузер и терминал по умолчанию, выбор программ для автозапуска |
-| Конфиденциальность | Сохранённые политики доступа портала к захвату экрана; текущие ограничения описаны ниже |
-| Дата и время | Часовой пояс, NTP, формат времени и ручная установка через systemd-timedated |
-| Блокировка и питание | Блокировка, гашение экрана и сон по простою |
-| Уведомления | Настройки приложений, баннеры, звуки и расписание «Не беспокоить» |
-| Звук | Выходы, микрофоны, уровни, mute и системные сигналы |
+| Appearance | Light/dark mode, accent, selection, text size, and animations |
+| Accessibility | Large text, contrast, transparency, and sticky keys |
+| Language & Region | Russian, English, Spanish, German, French, Simplified Chinese, and regional formats |
+| Network | Wi-Fi, saved connections, Ethernet, VPN, and WireGuard through NetworkManager |
+| Bluetooth | Adapter power, discovery, pairing/connection, disconnection, and device removal through BlueZ |
+| Keyboard | Layouts, language switching, Caps Lock, repeat delay/rate, and custom action bindings |
+| Mouse & Trackpad | Speed, scrolling, clicking, and cursor settings; availability depends on the backend |
+| Displays | Scale, primary output mode/refresh rate, display arrangement/primary display, and night color |
+| Desktop & Dock | Wallpaper, Dock size/position/auto-hide, magnification, and hot corners |
+| Applications | Default browser and terminal, plus login startup applications |
+| Privacy | Stored portal capture policies; current limitations are described below |
+| Date & Time | Time zone, NTP, time format, and manual changes through systemd-timedated |
+| Lock Screen & Power | Idle locking, display power-off, and suspend |
+| Notifications | Application policies, banners, sounds, and Do Not Disturb schedules |
+| Sound | Outputs, microphones, levels, mute, and system alerts |
 
-Окно «Об этом компьютере» показывает процессор, память, видеокарту и диски,
-а также параметры текущего сеанса. Приложение «Мониторинг системы» (`Ctrl+Alt+Del`)
-показывает процессы, нагрузку ЦП, память, диск и сеть и позволяет завершать зависшие задачи.
-Для снимков экрана можно выбрать папку и формат сохранения.
+About This Computer shows CPU, memory, GPU, storage, and current session information.
+Activity Monitor (`Ctrl+Alt+Del`) shows processes, CPU/memory/disk/network graphs, and lets
+you end unresponsive tasks. Screenshot output folder and format are configurable.
 
-### Сеть, Bluetooth и звук
+### Network, Bluetooth, and audio
 
-**Сеть:** включение Wi-Fi, поиск точек, подключение к открытым и сохранённым сетям,
-ввод пароля WPA2/WPA3, автоподключение и удаление сохранённых профилей. Ethernet
-показывает состояние линии и скорость, позволяет подключать/отключать адаптер.
-Профили VPN/WireGuard включаются через NetworkManager. Для сложных сценариев,
-включая 802.1X, предусмотрен переход во внешний редактор подключений.
+**Network:** Wi-Fi power and scans, open and saved networks, WPA2/WPA3 password
+entry, autoconnect, and forgetting profiles. Ethernet shows link state and speed,
+with connection/disconnection actions. Existing VPN/WireGuard profiles can be
+activated through NetworkManager. Advanced cases, including 802.1X, can be opened
+in an external connection editor.
 
-**Bluetooth:** поиск устройств, подключение и отключение, сопряжение, доверие и
-«Забыть», состояние и заряд батареи при поддержке аксессуаром. Доступен переход
-в расширенный диспетчер Bluetooth; сценарии с PIN/подтверждением на конкретных
-устройствах требуют аппаратной проверки.
+**Bluetooth:** discovery, pairing, trust, connection/disconnection, forgetting,
+and device state or battery level where provided by the accessory. An external
+Bluetooth manager is available for advanced operations. PIN/confirmation flows
+and individual accessories still require hardware validation.
 
-**Звук:** управление через PulseAudio-совместимый интерфейс (`pactl`), в том числе
-PipeWire Pulse. Выбор выхода и микрофона по умолчанию, громкость, усиление записи,
-mute и перевод соответствующих потоков при смене устройства. Уровень микрофона —
-настройка усиления; постоянного прослушивания и записи интерфейс не ведёт.
-Медиаклавиши меняют громкость, включают mute и показывают индикатор.
+**Audio:** control through a PulseAudio-compatible interface (`pactl`), including
+PipeWire Pulse. Select default output/input devices, adjust volume and recording
+gain, mute, and move the corresponding streams when switching devices. The
+microphone level adjusts gain; the settings UI does not continuously record audio.
+Media keys change volume or mute and display feedback.
 
-Пункт управления даёт быстрый доступ к основным регуляторам. Отсутствующие службы
-показываются как недоступные. Операции D-Bus, запуск команд и ожидания происходят
-на фоновых потоках. Подробнее: [сеть](docs/NETWORK.md), [Bluetooth](docs/BLUETOOTH.md),
-[микрофон и звук](docs/MICROPHONE.md), [Пункт управления](docs/CONTROL_CENTER.md).
+Control Center provides quick access to the main controls. Unavailable services
+are shown as unavailable. D-Bus calls, process execution, and waits run on workers.
+See [network](docs/NETWORK.md), [Bluetooth](docs/BLUETOOTH.md),
+[microphone/audio](docs/MICROPHONE.md), and [Control Center](docs/CONTROL_CENTER.md).
 
-## Собственные приложения
+## Native applications
 
-### Файлы — `feather-files`
+### Files — `feather-files`
 
-Файловый менеджер с боковой панелью избранного, пользовательскими папками,
-подключёнными томами и Корзиной. Есть виды значками и списком, история переходов,
-ввод пути, поиск-фильтр, скрытые файлы и выбор нескольких объектов.
+A file manager with favorites, standard user directories, mounted volumes, and
+Trash in the sidebar. It offers icon/list views, navigation history, path entry,
+filtering, hidden files, and multiple selection.
 
-- Открытие через системные ассоциации, создание папок, переименование и свойства.
-- Копирование/вырезание/вставка файлов, Wayland drag-and-drop и взаимодействие со столом.
-- Перемещение в Корзину, восстановление и очистка с подтверждением.
-- Быстрый просмотр по Пробелу: изображения, текст и сведения о других файлах;
-  стрелки переключают соседние объекты.
-- Режим системного диалога: открыть, сохранить, выбрать папку, несколько файлов,
-  MIME/glob-фильтры и подтверждение замены.
-- Светлая/тёмная тема и дробный масштаб. Изменения открытой папки отслеживаются через inotify.
+- Open files through system associations, create folders, rename, and inspect properties.
+- Copy/cut/paste files, Wayland drag-and-drop, and exchange files with the desktop.
+- Move to Trash, restore, and empty with confirmation.
+- Space opens Quick Look for images, text, or file information; arrow keys switch
+  between neighboring files.
+- File chooser mode supports open/save/folder selection, multiple files,
+  MIME/glob filters, and overwrite confirmation.
+- Light/dark appearance, fractional scale, and inotify updates for the open folder.
 
-Полноценная сетка миниатюр и прогресс длительного копирования ещё требуют развития.
-[Подробности](docs/FILES.md) · [Быстрый просмотр](docs/QUICK_LOOK.md) · [Корзина](docs/TRASH.md).
+A complete thumbnail grid and progress UI for long copy operations remain areas
+for improvement. [Details](docs/FILES.md) · [Quick Look](docs/QUICK_LOOK.md) · [Trash](docs/TRASH.md).
 
-### Терминал — `feather-terminal`
+### Terminal — `feather-terminal`
 
-Терминал с собственным ядром эмуляции DEC/ANSI/VT, PTY и вкладками.
-Поддерживает 16/256 цветов и TrueColor, альтернативный экран, приложения TUI,
-bracketed paste, mouse reporting и synchronized output.
+A terminal with a custom DEC/ANSI/VT engine, PTY handling, and tabs. It supports
+16/256 colors and TrueColor, the alternate screen, TUI applications, bracketed
+paste, mouse reporting, and synchronized output.
 
-- История до 10 000 строк, поиск по экрану и истории с переходом по совпадениям.
-- Выделение мышью, слов и строк, копирование/вставка в Wayland clipboard.
-- Shift+выделение для копирования, когда TUI захватывает мышь.
-- OSC52 для записи текста в буфер, вставка перетащенных файлов как путей в кавычках.
-- Unicode, широкие и комбинируемые символы, процедурное рисование рамок TUI.
-- Новые окна/вкладки, настройка размера шрифта, светлая и тёмная палитры.
-- Построчная перерисовка изменённых участков вместо полного кадра на каждый символ.
+- Up to 10,000 scrollback lines, with screen/history search and match navigation.
+- Mouse, word, and line selection, plus native Wayland clipboard integration.
+- Shift-selection to copy when a TUI application owns mouse input.
+- OSC52 clipboard writes and dropped files inserted as quoted paths.
+- Unicode, wide and combining characters, and procedural TUI box drawing.
+- New windows/tabs, font-size controls, and light/dark palettes.
+- Changed-row rendering rather than repainting the entire window for each character.
 
-Переразбивка истории при изменении ширины и ряд расширенных функций терминалов
-пока не реализованы. [Подробности и сочетания](docs/TERMINAL.md).
+Scrollback reflow on width changes and several advanced terminal features are not
+implemented yet. [Details and shortcuts](docs/TERMINAL.md).
 
-### Заметки — `feather-notes`
+### Notes — `feather-notes`
 
-Простые текстовые заметки с боковым списком, поиском, датой изменения и
-автосохранением после паузы в наборе. Первая строка используется как заголовок.
+Plain-text notes with a sidebar, search, modification dates, and autosave after a
+pause in typing. The first line becomes the title.
 
-Есть выделение, перенос строк, буфер обмена, отмена/повтор и удаление в Корзину.
-Заметки хранятся обычными файлами в `$XDG_DATA_HOME/feather-notes/`
-(обычно `~/.local/share/feather-notes/`). Папки, вложения и форматированный текст
-в текущую версию не входят. [Подробности](docs/NOTES.md).
+Selection, wrapping, clipboard operations, undo/redo, and deletion to Trash are
+supported. Notes are ordinary text files under `$XDG_DATA_HOME/feather-notes/`,
+normally `~/.local/share/feather-notes/`. Folders, attachments, and rich text are
+outside the current scope. [Details](docs/NOTES.md).
 
-### Просмотр — `feather-preview`
+### Preview — `feather-preview`
 
-Просмотр PNG, JPEG, WebP, SVG и многостраничных PDF: боковые миниатюры страниц,
-переключение страниц, подгонка под окно, масштаб 100 %, ручной зум, перемещение
-изображения, поворот и сведения о документе. Поддерживается открытие перетаскиванием.
+A PNG, JPEG, WebP, SVG, and multipage PDF viewer with page thumbnails, page
+navigation, fit-to-window and actual-size modes, manual zoom, panning, rotation,
+document information, and drag-and-drop opening.
 
-Для полного рендеринга PDF используется `pdftoppm` из Poppler, если он установлен.
-Есть ограниченный встроенный PDF-рендерер на Rust с поддержкой части текстовых и
-векторных операций. Текущие лимиты загрузчика: 48 МиБ для изображений,
-64 МиБ и до 64 страниц для PDF. Это просмотрщик; редактирования PDF здесь нет.
+Full PDF rendering uses Poppler's `pdftoppm` when installed. A limited built-in
+Rust PDF renderer supports a subset of text and vector operations. Current loader
+limits are 48 MiB for images, and 64 MiB / up to 64 pages for PDFs. PDF editing
+is not provided.
 
-### Текстовый редактор — `feather-textedit`
+### Text Editor — `feather-textedit`
 
-Редактор текста и исходного кода с вкладками, открытием и сохранением файлов,
-индикацией изменений, номерами строк, переносом строк и масштабом шрифта.
-Есть выделение, буфер обмена, отмена/повтор, поиск и замена.
+A tabbed text and source editor with open/save, modification indicators, line
+numbers, wrapping, font zoom, selection, clipboard support, undo/redo, and
+find/replace.
 
-Подсветка выбирается по типу файла: Markdown, Rust, TOML/INI, JSON/YAML,
-скрипты shell/Python, C-подобные языки и HTML/XML. Это лёгкая подсветка;
-LSP, отладчик и функции полноценной IDE не реализованы.
+Lightweight highlighting is selected by file type: Markdown, Rust, TOML/INI,
+JSON/YAML, shell/Python scripts, C-like languages, and HTML/XML. LSP integration,
+debugging, and full IDE functionality are not implemented.
 
-### Калькулятор — `feather-calc`
+### Calculator — `feather-calc`
 
-- Обычный режим: арифметика, проценты, смена знака и память.
-- Инженерный: скобки, степени, корни, логарифмы, тригонометрические и гиперболические
-  функции, константы, радианы/градусы.
-- Программистский: двоичная, восьмеричная, десятичная и шестнадцатеричная системы,
-  побитовые операции и разрядность 8/16/32/64 бита.
-- История вычислений, работа с клавиатуры и буфер обмена.
+- Basic mode: arithmetic, percentages, sign changes, and memory.
+- Scientific mode: parentheses, powers, roots, logarithms, trigonometric and
+  hyperbolic functions, constants, and radians/degrees.
+- Programmer mode: binary, octal, decimal, hexadecimal, bitwise operations,
+  and 8/16/32/64-bit word sizes.
+- Calculation history, keyboard input, and clipboard support.
 
-### Мониторинг системы — `feather-monitor`
+### Activity Monitor — `feather-monitor`
 
-- Открывается по Ctrl+Alt+Del, как диспетчер задач Windows; повторное нажатие поднимает уже
-  открытое окно.
-- «Процессы»: ЦП, память и PID, сортировка по столбцам, поиск, процессы всех пользователей.
-- «Снять задачу» (Delete) просит процесс завершиться и через 3 секунды завершает его
-  принудительно; с Shift — сразу. Для системных процессов сначала спрашивает.
-- «Производительность»: графики ЦП, памяти, диска и сети за 60 секунд.
+- Opens with `Ctrl+Alt+Del` (pressing again brings the existing window forward).
+- *Processes*: per-process CPU, memory, and PID, sortable columns, search, and **End Task** (`Delete` sends graceful close then force-kills after 3 s; `Shift+Delete` terminates immediately).
+- *Performance*: live 60-second CPU, memory, disk, and network graphs.
 
-## Сессия, безопасность и интеграция с Linux
+### App Store — `feather-store`
 
-### Запуск и блокировка
+- Browses and searches the Linux AppStream software catalog by category, with one-click install and removal via `PackageKit`.
 
-Композитор работает в двух основных режимах: **вложенное окно** в существующем
-графическом сеансе и **прямой DRM/KMS** с libinput и управлением seat через libseat/logind.
-Для установленной системы предусмотрена Wayland-сессия на экране входа.
+## Sessions and Linux integration
 
-Встроенная блокировка использует PAM, поддерживает `ext-session-lock-v1`,
-автоматическую блокировку, гашение экрана и сон по простою через logind.
-Внешний клиент блокировки может предоставлять свои поверхности. Видимые приложения
-могут откладывать засыпание через idle-inhibit. Во вложенном режиме монитор хоста
-не гасится и компьютер не отправляется в сон.
+### Startup and locking
 
-Есть заставка `--boot-splash` и экран начальной блокировки `--login` / `--greeter`.
-Проверка пароля относится к уже запущенной учётной записи. Эти флаги и пример greetd
-не являются универсальным менеджером выбора пользователей и открытия новых сеансов.
-Конфигурацию greetd нужно адаптировать под свою систему; установщик не заменяет
-существующий экран входа автоматически.
+Two primary backends are available: a **nested window** inside an existing graphical
+session, and **direct DRM/KMS** with libinput and libseat/logind seat management.
+System installation provides a Wayland session entry for a display manager.
 
-Мастер первого запуска помогает выбрать язык/регион, оформление и раскладки,
-затем показывает краткую памятку. Доступен повторный запуск мастера из меню оболочки.
-Собственный Polkit-агент показывает запросы административного подтверждения в её стиле.
+Built-in locking uses PAM, supports `ext-session-lock-v1`, and integrates idle
+locking, display power-off, and suspend through logind. An external lock client
+can supply its own surfaces. Visible applications may inhibit idle actions.
+Nested mode does not power off the host monitor or suspend the computer.
 
-Подробнее: [блокировка и питание](docs/LOCK_POWER.md), [Polkit](docs/POLKIT.md).
+There is a `--boot-splash` animation and an initial lock screen enabled by
+`--login` / `--greeter`. Authentication applies to the account already running the
+compositor. These flags and the greetd example do not provide a general-purpose
+user selector and new-session manager. Adapt greetd configuration to your system;
+the installer does not automatically replace your existing display manager.
 
-### Мониторы и графика
+The first-run wizard covers language/region, appearance, keyboard layouts, and a
+shortcut summary. It can be reopened from the shell menu. A native Polkit agent
+presents administrative authorization requests in the desktop's own style.
 
-- Несколько выходов одной видеокарты, горячее подключение и выбор основного монитора.
-- Размещение экранов, перенос окон с отключённого выхода и отдельный damage для каждого выхода.
-- Выбор режима основного монитора, общий масштаб интерфейса.
-- Ночной режим через гамма-таблицы DRM: ручной выбор и расписание.
-- Яркость ноутбука через logind/backlight, внешнего монитора — через DDC/CI и `ddcutil`.
-- VRR при поддержке выхода, direct scanout подходящих поверхностей и explicit sync
-  `wp_linux_drm_syncobj_v1` при поддержке DRM-устройством.
+See [locking and power](docs/LOCK_POWER.md) and [Polkit](docs/POLKIT.md).
 
-Физические hotplug/KMS/VT и разные частоты требуют проверки на оборудовании.
-Отдельный масштаб каждого монитора, поворот, зеркалирование и несколько GPU
-пока не поддерживаются. [Мониторы](docs/MONITORS.md) · [Яркость и ночной режим](docs/DISPLAY_COLOR.md).
+### Displays and graphics
 
-### Приложения и протоколы
+- Multiple outputs on one GPU, hotplug handling, and primary display selection.
+- Display arrangement, recovery of windows from disconnected outputs, and
+  separate damage tracking for each output.
+- Primary output resolution/refresh selection and a shared UI scale.
+- Manual/scheduled night color through DRM gamma tables.
+- Laptop brightness through logind/backlight; external brightness through DDC/CI
+  and `ddcutil`.
+- VRR on supported outputs, direct scanout for eligible surfaces, and
+  `wp_linux_drm_syncobj_v1` explicit sync when supported by the DRM device.
 
-Работают базовые Wayland-протоколы поверхностей, ввода и окон: `xdg-shell`,
-`xdg-decoration`, `xdg-activation`, SHM, linux-dmabuf с feedback, selection/clipboard,
-primary selection, viewporter, fractional scale, cursor shape и xdg-output.
-Также реализованы session-lock, idle-notify, idle-inhibit и system-bell. Для чужих панелей и методов
-ввода есть layer-shell, foreign-toplevel, text-input, input-method и virtual-keyboard:
-[протоколы и их ограничения](docs/PROTOCOLS.md).
-X11-приложения запускаются через **xwayland-satellite** по требованию.
+Physical hotplug/KMS/VT and mixed-refresh behavior still need hardware validation.
+Per-output scale, rotation, mirroring, and multi-GPU operation are not currently
+supported. [Displays](docs/MONITORS.md) · [Brightness/night color](docs/DISPLAY_COLOR.md).
 
-GTK-тема сессии помогает согласовать оформление GTK 3/4 и части приложений с CSD.
-Поддержка глобального меню и тем зависит от приложения. Совместимость не означает
-полную реализацию всех расширений Wayland. waybar, rofi, fcitx5 и ibus пока не проверялись
-на настоящих программах, `security-context` для песочниц не реализован.
+### Applications and protocols
 
-**Порталы:** `FileChooser` использует настоящие диалоги «Файлов» и поддерживает
-OpenFile/SaveFile/SaveFiles. `ScreenCast` отдаёт настоящий поток PipeWire с монитором
-(под курсором) для OBS, браузеров и звонков: кадры снимаются только при изменении экрана,
-не чаще 60 в секунду, курсор по выбору программы; под блокировкой в поток идёт экран
-блокировки. Захвата отдельного окна и окна выбора монитора пока нет. `Screenshot` и
-`Access` экспериментальны: Screenshot возвращает тестовое изображение 1×1, политика
-«спрашивать» ещё не показывает полноценный диалог разрешения.
-**Встроенные снимки по Print / Shift+Print / Alt+Print работают отдельно:**
-весь экран, область или окно, сохранение в файл и буфер обмена, PNG/JPEG/WebP.
+Implemented Wayland support includes `xdg-shell`, `xdg-decoration`,
+`xdg-activation`, SHM, linux-dmabuf with feedback, selection/clipboard, primary
+selection, viewporter, fractional scale, cursor shape, and xdg-output. Session
+lock, idle notifications, idle inhibit, and system bell are also implemented.
+X11 applications are supported through on-demand **xwayland-satellite**.
 
-[Глобальное меню](docs/APPMENU.md) · [XWayland](docs/XWAYLAND.md) · [GTK-тема](docs/GTK_THEME.md).
+Session GTK styling helps align GTK 3/4 and some client-decorated applications.
+Menu and theme integration depend on the application. Protocol coverage is still
+growing. Layer-shell, foreign-toplevel, text-input, input-method and virtual-keyboard exist for third-party
+panels and input methods, but waybar, rofi, fcitx5 and ibus are still untested, and `security-context` for
+sandboxes is not implemented: [protocols (in Russian)](docs/PROTOCOLS.md).
 
-## Производительность
+**Portals:** `FileChooser` uses real Files dialogs for OpenFile/SaveFile/SaveFiles.
+`ScreenCast` provides a real PipeWire stream of the monitor under the pointer for OBS,
+browsers, and calls: frames are captured only when the screen changes, at most 60 per
+second, with the cursor as the application asks; while locked, the stream shows the lock
+screen. Single-window capture and a monitor picker are not implemented yet. `Screenshot`
+and `Access` are experimental: Screenshot returns a 1×1 placeholder, and the “ask” policy
+does not yet show a complete permission prompt.
+**Built-in Print / Shift+Print / Alt+Print capture works separately:** screen,
+region, or window, with clipboard/file output and PNG/JPEG/WebP formats.
 
-Бюджеты определяют направление разработки и проверяются измерениями:
+[Global menus](docs/APPMENU.md) · [XWayland](docs/XWAYLAND.md) · [GTK styling](docs/GTK_THEME.md).
 
-| Метрика композитора | Цель |
+## Performance
+
+The project uses explicit, measured development budgets:
+
+| Compositor metric | Target |
 |---|---|
-| Простой | 0 тиков CPU за 5 секунд |
-| Работа над кадром: сцена + GL | ≤ 1 мс |
-| Перерисовка CPU-интерфейса | ≤ 4 мс |
-| Установившаяся приватная память `RssAnon` | ≤ 60 МБ |
-| Холодный старт до первого кадра | ≤ 300 мс |
-| Анимации клиентов | Частота экрана |
+| Idle CPU | 0 CPU ticks over 5 seconds |
+| Scene + GL work per frame | ≤ 1 ms |
+| CPU UI repaint | ≤ 4 ms |
+| Steady private memory, `RssAnon` | ≤ 60 MB |
+| Cold start to first frame | ≤ 300 ms |
+| Client animation rate | Display refresh rate |
 
-В проверке тестового архива 26 октября 2026 года, вложенное окно 2880×1800 ×2,
-получены **0 тиков CPU/5 с**, **34,03 МиБ RssAnon** в простое и **48,50 МиБ** с
-открытым Launchpad. Ввод хоста был отключён; память снимка экрана в эти значения
-не включена. Это отдельный сценарий на конкретном оборудовании, а не гарантия для
-всех машин. Общий RSS включает также отображённые библиотеки и драйверы и отличается
-от приватной памяти; память отдельных приложений в бюджет композитора не входит.
+Testing the packaged nested demo on October 26, 2026 at 2880×1800, scale ×2,
+produced **0 CPU ticks / 5 seconds**, **34.03 MiB RssAnon** while idle, and
+**48.50 MiB** with Launchpad open. Host input was disabled; screenshot memory was
+excluded from those steady-state readings. These describe one scenario on
+specific hardware, rather than a guarantee for every machine. Total RSS includes
+mapped libraries and drivers and differs from private memory. Separate client
+applications are outside the compositor's memory budget.
 
-На нагрузочном сценарии со всеми панелями настройки malloc снизили память с 50 до 30 МиБ при
-прежнем времени кадра.
+Screenshot peaks and first-frame costs are evaluated separately. Final validation
+of every budget in a real DRM session remains open. See the [specification](docs/SPEC.md),
+[memory report](docs/MEMORY_CHECKS.md), [raster report](docs/RASTER_CHECKS.md),
+[UI report](docs/UI_CHECKS.md), and [changelog](CHANGELOG.md).
 
-Пики при снимках и первых кадрах рассматриваются отдельно. Финальная приёмка всех
-бюджетов в реальной DRM-сессии остаётся открытой ([чек-лист](docs/DRM_CHECKLIST.md)). Методика и история измерений:
-[SPEC](docs/SPEC.md), [память](docs/MEMORY_CHECKS.md), [растеризация](docs/RASTER_CHECKS.md),
-[UI](docs/UI_CHECKS.md), [CHANGELOG](CHANGELOG.md).
-
-## Сборка и установка
+## Build and install
 
 ### Arch Linux
 
-Пёрышко ставится **ещё одним сеансом** рядом с вашим рабочим столом (KDE, GNOME, Hyprland и
-любым другим): нынешний рабочий стол, его настройки и экран входа не меняются, выбирать между
-ними можно при каждом входе.
+Feather installs as **one more session** next to your current desktop (KDE, GNOME, Hyprland,
+anything else): your desktop, its settings and your login screen stay as they are, and you
+pick between them at every login.
 
-**Одной командой** (x86_64, обычным пользователем — sudo скрипт спросит сам):
+**One command** (x86_64, run as a regular user — the script asks for sudo itself):
 
 ```bash
 curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
 ```
 
-Команда та же, что для Ubuntu: на системе с pacman она запускает установщик для Arch
-([packaging/get-arch.sh](packaging/get-arch.sh), прямой адрес — `…/feather-de/arch/install.sh`).
-Он подключает репозиторий `[feather-de]` и ключ подписи и ставит всё сразу:
+It is the same command as on Ubuntu: on a pacman system it runs the Arch installer
+([packaging/get-arch.sh](packaging/get-arch.sh), also at `…/feather-de/arch/install.sh`). It adds
+the `[feather-de]` repository and its signing key and installs everything at once: `feather-de`
+plus what Control Center needs (PipeWire, NetworkManager, BlueZ, emoji, xdg-desktop-portal,
+Poppler); a desktop set like `feather-desktop` on Ubuntu (Firefox, LibreOffice, video, music,
+printing, codecs, Flatpak for the Store — see `DESKTOP_SET` in the script); interface locales;
+and, where there is no login screen (bare Arch), greetd with Feather's own login screen. An
+existing SDDM/GDM is left alone. NetworkManager is enabled only if nothing else manages the
+network yet. Options via `| bash -s -- OPTION`: `--minimal` (Feather alone), `--tuigreet`,
+`--greetd`, `--no-greetd`.
 
-- пакет `feather-de` и то, что оживляет Центр управления: PipeWire (звук), NetworkManager
-  (Wi-Fi), BlueZ, эмодзи, xdg-desktop-portal, Poppler;
-- набор программ рабочего стола, как `feather-desktop` на Ubuntu: Firefox, LibreOffice, видео,
-  музыка, камера, торренты, печать и сканер, кодеки GStreamer, Flatpak для «Магазина», GVFS,
-  хранилище паролей, шрифты (список — `DESKTOP_SET` в скрипте; чего нет в репозиториях
-  производной Arch, пропускается с предупреждением);
-- локали языков интерфейса;
-- на системе без экрана входа (голый Arch) — greetd с экраном входа Пёрышка; где уже есть
-  SDDM, GDM и другие, экран входа не трогается.
-
-NetworkManager включается, только если сетью ещё ничто не управляет (systemd-networkd, iwd,
-dhcpcd и connman не трогаются). Параметры — через `| bash -s -- ПАРАМЕТР`: `--minimal` — только
-Пёрышко, без набора программ и экрана входа; `--tuigreet` — текстовый экран входа для
-нескольких пользователей; `--greetd` — экран входа Пёрышка вместо имеющегося; `--no-greetd` —
-экран входа не ставить.
-
-**Репозиторий вручную.** Пакеты подписаны тем же ключом, что и APT-репозиторий (отпечаток
-`D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4`):
+**Manual setup.** Packages are signed with the same key as the APT repository
+(`D5E6 C262 8719 EF1D 6068 5758 C7F9 44C1 485C 5FC4`):
 
 ```bash
 curl -fsSL https://zumka1991.github.io/feather-de/feather-de.asc | sudo pacman-key --add -
 sudo pacman-key --lsign-key D5E6C2628719EF1D60685758C7F944C1485C5FC4
 ```
 
-Добавьте в конец `/etc/pacman.conf`:
+Append to `/etc/pacman.conf`:
 
 ```ini
 [feather-de]
@@ -424,46 +413,28 @@ Server = https://zumka1991.github.io/feather-de/arch/$arch
 sudo pacman -Syu feather-de
 ```
 
-**Обновления** приходят вместе с системой: `sudo pacman -Syu`. Новая версия начинает работать
-после выхода из сеанса Пёрышка и нового входа. Репозиторий обновляет CI при каждом выпуске
-(`.github/workflows/release.yml`, задание `arch` собирает пакет в контейнере Arch); в нём
-лежит только текущая версия, предыдущая остаётся в кэше pacman
-(`sudo pacman -U /var/cache/pacman/pkg/feather-de-…`).
+**Updates** arrive with the system: `sudo pacman -Syu`; log out of Feather and back in to run
+the new version. CI rebuilds the repository on every release (job `arch` in
+`.github/workflows/release.yml`, built in an Arch container).
 
-#### Как запустить Пёрышко вторым рабочим столом
+#### Running Feather as a second desktop
 
-Пакет кладёт сеанс `/usr/share/wayland-sessions/feather-de-drm.desktop`, и любой экран входа
-показывает его рядом с вашим рабочим столом. Подсказку pacman печатает и сразу после установки.
+1. Log out of your current session (or reboot).
+2. On the login screen pick the session **“Пёрышко (прямой вывод DRM/KMS)”** — SDDM: session
+   list bottom-left; GDM: select your user, then the gear bottom-right; LightDM: the session
+   menu; ly: the session line, ←/→; tuigreet: F3.
+3. Log in as usual. To go back, choose “Выйти из Пёрышка…” in the top-left menu and pick your
+   previous session.
 
-1. Выйдите из текущего сеанса (меню выхода вашего рабочего стола) или перезагрузитесь.
-2. На экране входа выберите сеанс **«Пёрышко (прямой вывод DRM/KMS)»**:
+Without a display manager: log in on a free console (Ctrl+Alt+F3) and run `feather-session`.
+To try it inside your current desktop: `feather-de --windowed`. Never run it with sudo.
+Emergency exit: Ctrl+Alt+Backspace; log: `~/.local/state/feather-de/drm.log`. NVIDIA needs
+KMS (`nvidia-drm.modeset=1`, default since driver 560).
 
-   | Экран входа | Где выбрать сеанс |
-   |---|---|
-   | SDDM (KDE Plasma) | список «Сеанс» внизу слева |
-   | GDM (GNOME) | выберите пользователя → шестерёнка внизу справа |
-   | LightDM | значок или список сеансов в углу экрана |
-   | ly | строка сеанса над логином, стрелки ←/→ |
-   | greetd + tuigreet | F3 — выбор сеанса (`--sessions /usr/share/wayland-sessions`) |
+**Removal:** `sudo pacman -Rns feather-de`, then delete the `[feather-de]` section from
+`/etc/pacman.conf`.
 
-3. Введите пароль как обычно. Экран входа запоминает последний сеанс: чтобы вернуться в
-   прежний рабочий стол, выйдите из Пёрышка (меню  в левом верхнем углу → «Выйти из Пёрышка…») и выберите его снова.
-
-- **Без экрана входа** (Arch без DM, установка с `--minimal` или `--no-greetd`): на свободной консоли (Ctrl+Alt+F3) войдите своим
-  пользователем и наберите `feather-session`. Выход из Пёрышка вернёт в консоль.
-- **Попробовать, не выходя из сеанса:** `feather-de --windowed` откроет Пёрышко окном внутри
-  текущего рабочего стола (сочетания клавиш хоста могут перехватываться).
-- **Не через sudo:** композитор и `feather-session` запускаются от обычного пользователя;
-  доступ к видеокарте и вводу даёт systemd-logind, группы `video`/`input` не нужны.
-- **Аварийный выход** — Ctrl+Alt+Backspace, консоли — Ctrl+Alt+F1…F12. Если сеанс сразу
-  закрылся, причина в `~/.local/state/feather-de/drm.log`.
-- **NVIDIA:** нужен проприетарный драйвер с KMS (`nvidia-drm.modeset=1`; в драйверах 560+
-  включено по умолчанию) или nouveau.
-
-**Удаление:** `sudo pacman -Rns feather-de`, затем уберите секцию `[feather-de]` из
-`/etc/pacman.conf`. Настройки Пёрышка остаются в `~/.config/feather-de`.
-
-#### Сборка пакета из исходников
+**Building the package from source:**
 
 ```bash
 sudo pacman -S --needed base-devel git rust clang
@@ -472,33 +443,11 @@ cd feather-de/packaging
 makepkg -si
 ```
 
-[PKGBUILD](packaging/PKGBUILD) собирает текущее дерево исходников, версию берёт из
-`Cargo.toml`; зависимости ставит сам `makepkg -s`. Обновить такую установку:
-`git pull && makepkg -si` в том же каталоге.
-
 ### Ubuntu
 
-Готовым пакетом, одной командой (Ubuntu 24.04 и новее, amd64; и обычная Ubuntu, и Ubuntu
-Server без рабочего стола):
-
-```bash
-curl -fsSL https://zumka1991.github.io/feather-de/install.sh | bash
-```
-
-Скрипт ([packaging/get.sh](packaging/get.sh)) подключает репозиторий APT (см. ниже), ставит
-метапакет `feather-desktop` — Пёрышко и набор программ, как в Ubuntu Desktop
-([packaging/desktop-set.list](packaging/desktop-set.list): LibreOffice, видео, музыка, камера,
-магазин приложений со Snap, печать и сканер, диски, хранилище паролей, кодеки, драйверы) — и
-запускает `setup-desktop`: экран входа, локали и сеть, как описано ниже для сборки из
-исходников. Параметры: `| bash -s -- --minimal` (только Пёрышко), `--tuigreet`, `--greetd`,
-`--no-greetd`. Уже установленному Пёрышку набор добавляет `sudo apt install feather-desktop`.
-Удаление: `sudo apt purge feather-de feather-desktop`. Другой путь — скачать
-[feather-de_amd64.deb](https://github.com/Zumka1991/feather-de/releases/latest/download/feather-de_amd64.deb)
-и открыть: пакет сам подключит репозиторий (как Chrome), отключить — `Enabled: no` в
-`/etc/apt/sources.list.d/feather-de.sources`.
-
-Из исходников: скрипт ставит зависимости через apt и Rust через rustup, а потом собирает
-Пёрышко:
+The script installs dependencies with apt and Rust with rustup, then builds Feather from
+source (a ready package is in the APT repository, see below). It works on regular Ubuntu and on Ubuntu Server / a
+minimal install without a desktop:
 
 ```bash
 git clone https://github.com/Zumka1991/feather-de.git
@@ -506,33 +455,30 @@ cd feather-de
 ./packaging/install-ubuntu.sh
 ```
 
-Запускайте обычным пользователем, sudo скрипт запросит сам.
+Run it as a regular user; it asks for sudo itself.
 
-- **Без рабочего стола** (экрана входа нет): ставится greetd, который сразу открывает экран
-  входа самого Пёрышка (заставка, пароль; выход из сеанса возвращает на него), и включается
-  графическая загрузка. Сеть передаётся NetworkManager, чтобы Wi-Fi работал из Центра
-  управления; это вступает в силу после перезагрузки, прежний файл greetd сохраняется как
-  `config.toml.before-feather`. После `sudo reboot` остаётся ввести пароль. Для нескольких
-  пользователей есть текстовый экран входа: `--tuigreet`.
-- Шрифты (Inter, JetBrains Mono) и иконки своих программ Пёрышко носит с собой; скрипт
-  добавляет системные шрифты Noto для остальных программ, домашние папки («Документы»,
-  «Загрузки»…) и локали языков интерфейса. Программы из Snap и Flatpak видны в Launchpad.
-- **С GNOME/GDM**: GDM не трогается. Выйдите из сеанса и выберите «Пёрышко (прямой вывод
-  DRM/KMS)» под шестерёнкой; GNOME остаётся запасным сеансом.
+- **No desktop** (no login screen): installs greetd, which opens Feather's own login
+  screen right away (splash, password; logging out returns to it), and enables graphical
+  boot. Networking is handed to NetworkManager so Wi-Fi works from Control Center; this
+  takes effect after a reboot. A previous greetd config is kept as
+  `config.toml.before-feather`. After `sudo reboot`, enter your password. For several users
+  there is the tuigreet text login: `--tuigreet`.
+- Feather ships its own fonts (Inter, JetBrains Mono) and app icons; the script adds the
+  system Noto fonts for other apps, home folders (Documents, Downloads…) and the locales of
+  the interface languages. Snap and Flatpak apps show up in Launchpad.
+- **With GNOME/GDM**: GDM is left alone. Log out and pick “Пёрышко (прямой вывод DRM/KMS)”
+  under the gear; GNOME stays available as a fallback.
 
-Флаги: `--no-optional` пропускает звук, Wi-Fi, Bluetooth, порталы и X11, `--greetd` /
-`--no-greetd` принудительно ставят экран входа или отказываются от него. Повторный запуск
-обновляет уже установленное Пёрышко. xwayland-satellite
-(X11-программы), если его нет в репозиториях (Ubuntu 26.04), собирается из исходников
-(в пакет `.deb` он входит готовым). Экран входа, локали и сеть настраивает общий с пакетом
-[packaging/setup-desktop.sh](packaging/setup-desktop.sh).
-Удаление: `sudo ./packaging/uninstall.sh`.
+Flags: `--no-optional` skips sound, Wi-Fi, Bluetooth, portals and X11; `--greetd` /
+`--no-greetd` force or skip the login screen. Running it again updates an installed Feather. When xwayland-satellite (X11 apps) is
+missing from the repositories (Ubuntu 26.04), it is built from source.
+Uninstall with `sudo ./packaging/uninstall.sh`.
 
-### Репозиторий APT и выпуск версий
+### APT repository and releases
 
-Пакет `feather-de` публикуется в собственный APT-репозиторий на GitHub Pages
-(`https://zumka1991.github.io/feather-de`, подпись GPG), и установленное Пёрышко обновляется
-вместе с системой (`sudo apt upgrade`). Подключение вручную на Ubuntu 24.04 и новее:
+The `feather-de` package is published to its own APT repository on GitHub Pages
+(`https://zumka1991.github.io/feather-de`, GPG-signed), so an installed Feather updates with
+the system (`sudo apt upgrade`). On Ubuntu 24.04 or newer (after the first release):
 
 ```bash
 sudo install -d -m 755 /etc/apt/keyrings
@@ -541,244 +487,243 @@ echo 'deb [signed-by=/etc/apt/keyrings/feather-de.asc] https://zumka1991.github.
 sudo apt-get update && sudo apt-get install feather-de
 ```
 
-Выпуск новой версии: поднять `version` в `Cargo.toml`, закоммитить и отправить тег
-`v<версия>` — GitHub Actions (`.github/workflows/release.yml`) соберёт пакет, проверит, что
-тег совпадает с `Cargo.toml`, опубликует его в репозиторий (хранятся три последние версии),
-вместе с `install.sh` и страницей установки, и в GitHub Release. Пошагово (для агентов —
-скилл `/release`): [.claude/skills/release/SKILL.md](.claude/skills/release/SKILL.md).
+To release: bump `version` in `Cargo.toml`, commit and push the tag `v<version>`. GitHub
+Actions (`.github/workflows/release.yml`) builds the package, checks the tag against
+`Cargo.toml`, publishes it to the repository (the last three versions are kept) and to a
+GitHub Release:
 
 ```bash
-git tag -a v0.3.1 -m "Пёрышко 0.3.1" && git push origin master v0.3.1
+git tag v0.2.0 && git push origin v0.2.0
 ```
 
-Локально: `packaging/build-deb.sh` собирает `dist/feather-de_<версия>_amd64.deb` (вне тега —
-`+git<дата>.<коммит>`), `packaging/publish-apt.sh` раскладывает и подписывает репозиторий,
-`packaging/test-install-chroot.sh пакет.deb` проверяет пакет и `get.sh` в чистой Ubuntu
-(без root, через mmdebstrap).
+Locally, `packaging/build-deb.sh` builds `dist/feather-de_<version>_amd64.deb` (untagged:
+`+git<date>.<commit>`) and `packaging/publish-apt.sh` lays out and signs the repository.
 
-### Сборка из исходников
+### Source build
 
 ```bash
 cargo build --release --locked --workspace
-# Эквивалентная команда проекта:
+# Project shortcut:
 make build
 ```
 
-Потребуются заголовки и библиотеки графического стека, libinput, libudev,
-libxkbcommon, libseat, Wayland, PipeWire (`libpipewire-0.3-dev`), clang и `pkg-config`, а также fontconfig и шрифты во время
-запуска. Используйте Rust toolchain, совместимый с зависимостями из Cargo.lock.
-Для X11-программ (Steam, Wine, старые приложения) нужен `xwayland-satellite` и `xwayland`
-(`sudo apt install xwayland-satellite xwayland`; если пакета нет, его собирает
-`packaging/install-ubuntu.sh`). Без него Пёрышко после входа покажет уведомление.
+Install the development libraries/headers for the graphics stack, libinput,
+libudev, libxkbcommon, libseat, Wayland, PipeWire (`libpipewire-0.3-dev`), clang, and `pkg-config`, plus runtime fontconfig
+and fonts. Use a Rust toolchain compatible with the dependencies in Cargo.lock.
 
 ```bash
-# Установка уже собранных файлов в систему:
+# Install existing release binaries system-wide:
 sudo ./packaging/install.sh --no-build
 
-# Локальная установка в ~/.local без системной сессии и PAM:
+# Install in ~/.local, without a system session entry or PAM configuration:
 ./packaging/install.sh --user --no-build
 
-# Подготовка архива в dist/:
+# Build an archive in dist/:
 make release
 ```
 
-Установщик поддерживает `PREFIX`, `DESTDIR`, `SYSCONFDIR` и другой каталог бинарников.
-Удаление пакета Arch: `sudo pacman -Rns feather-de`; для файловой установки
-используйте соответствующий `packaging/uninstall.sh` (`--user` для локальной).
+The installer supports `PREFIX`, `DESTDIR`, `SYSCONFDIR`, and an alternate binary
+directory. Remove a pacman package with `sudo pacman -R feather-de`. For manual
+installation, use the matching `packaging/uninstall.sh`, adding `--user` for a
+user-local installation.
 
-### Тестовый архив без установки
+### Demo archive without installation
 
-Если у вас есть собранный `feather-de-0.1.0-arch-linux-x86_64.tar.gz`, распакуйте его
-и из полученного каталога выполните:
+If you have built or received `feather-de-0.1.0-arch-linux-x86_64.tar.gz`, extract
+it and run these commands inside the extracted directory:
 
 ```bash
 ./run-demo.sh --check
 ./run-demo.sh
 ```
 
-Демо работает внутри существующего Wayland/X11-сеанса, использует отдельные
-каталоги настроек/данных и D-Bus. Обычные файлы пользователя остаются доступны:
-это не песочница. Системные библиотеки в архив не включены. Подробная
-[памятка тестировщику](packaging/README-TEST.md) описывает зависимости и проверку SHA-256.
-Бинарные архивы находятся в локальном `dist/` после сборки и не хранятся в Git.
+The demo uses the existing Wayland/X11 session with separate settings/data
+directories and a private D-Bus session. Your ordinary files remain accessible;
+this is not a sandbox. System libraries are not bundled. The
+[tester guide](packaging/README-TEST.md), currently in Russian, covers dependencies
+and SHA-256 verification. Binary archives are generated in local `dist/` and are
+not stored in Git.
 
-### Дополнительные компоненты
+### Optional integrations
 
-| Возможность | Зависимость |
+| Feature | Dependency |
 |---|---|
-| Сеть | NetworkManager; `nm-connection-editor` / `nmtui` для расширенных настроек |
-| Bluetooth | BlueZ; `blueman-manager` как дополнительный диспетчер |
-| Звук | PulseAudio-совместимый сервер, например PipeWire + pipewire-pulse, и `pactl` из libpulse |
-| Звуковые сигналы | `pw-play`, `paplay` или `canberra-gtk-play` |
-| X11-приложения | xwayland-satellite |
-| Полный просмотр PDF | Poppler (`pdftoppm`) |
-| Внешняя яркость | ddcutil и доступ к I²C |
-| Портальные диалоги | xdg-desktop-portal |
+| Network | NetworkManager; `nm-connection-editor` / `nmtui` for advanced cases |
+| Bluetooth | BlueZ; optionally `blueman-manager` |
+| Audio | A PulseAudio-compatible server, such as PipeWire + pipewire-pulse, and libpulse's `pactl` |
+| Sound playback | `pw-play`, `paplay`, or `canberra-gtk-play` |
+| X11 applications | xwayland-satellite |
+| Full PDF rendering | Poppler (`pdftoppm`) |
+| External display brightness | ddcutil and I²C permissions |
+| Portal file dialogs | xdg-desktop-portal |
 
-## Запуск
+## Running Feather
 
-**В окне**, после сборки:
+**Nested window**, after building:
 
 ```bash
 target/release/feather-de --windowed
 
-# С собственным терминалом:
+# With the native terminal:
 target/release/feather-de --windowed --autostart 'target/release/feather-terminal'
 ```
 
-**Полная сессия**, после системной установки: выберите «Пёрышко (прямой вывод DRM/KMS)»
-на экране входа. Или войдите в свободную TTY и запустите `feather-session` от обычного
-пользователя. Не запускайте композитор через sudo.
+**Full session**, after system installation: choose the Feather direct DRM/KMS
+session in your display manager, or log in on a free TTY and run `feather-session`
+as your regular user. Do not run the compositor through sudo.
 
-Из исходного дерева для ручной DRM-проверки служит `session/start-feather-drm.sh`.
-Переключение консолей — Ctrl+Alt+F1…F12, аварийный выход — Ctrl+Alt+Backspace.
-Лог установленной DRM-сессии: `~/.local/state/feather-de/drm.log`.
+From a source checkout, `session/start-feather-drm.sh` supports manual DRM testing.
+Ctrl+Alt+F1…F12 switches virtual consoles; Ctrl+Alt+Backspace is the emergency exit.
+The installed DRM session logs to `~/.local/state/feather-de/drm.log`.
 
-Вложенный режим ограничен возможностями хоста: его сочетания могут перехватывать
-клавиши, а экземпляры Firefox/Telegram и других однопроцессных программ могут открыть
-окно в уже работающей внешней сессии. Это учитывается при тестировании.
+In nested mode, the host can intercept keyboard shortcuts. Single-instance
+applications such as Firefox or Telegram may forward a launch to their existing
+instance in the outer session; account for this during testing.
 
-## Горячие клавиши
+## Keyboard shortcuts
 
-`Super` (`Cmd`) — обычно клавиша Windows / Command. Все буквенные и цифровые сочетания работают независимо от раскладки клавиатуры; большинство действий переназначается в «Системных настройках → Клавиатура». Полный справочник с примерами — в **[Руководстве пользователя](docs/USER_GUIDE.md#12-управление-из-терминала-featherctl-и-полная-шпаргалка-горячих-клавиш)**.
+`Super` (`Cmd`) usually means the Windows / Command key. Letter and digit shortcuts work regardless of active keyboard layout; most shell actions can be reassigned in *System Settings → Keyboard*. See the **[Illustrated User Guide](docs/USER_GUIDE.en.md#12-cli-automation-featherctl--complete-keyboard-shortcut-reference)** for the complete cheat sheet.
 
-| Сочетание | Действие |
+| Shortcut | Action |
 |---|---|
-| `Super` *(короткое нажатие)* | Радиальное Кольцо программ (`Super, Super` — назад к прошлому окну) |
-| `Super+Space` | Поиск Spotlight (программы, окна, файлы, настройки, вычисления) |
-| `Super+/` | **Menu HUD** — мгновенный поиск по командам меню активного окна |
-| `Super+Shift+/` / `Super+F1` | **Горячие клавиши Пёрышка** — интерактивное окно-памятка со всеми клавишами и поиском |
-| `Super+A` | Сетка приложений Launchpad |
-| `Super+Enter` / `Super+T` | Терминал |
-| `Super+E` | Файлы |
-| `Super+N` | Верхняя шторка Пункта управления |
-| `Super+D` *(или встряхивание курсора при drag)* | Стеклянная Полка перетаскивания (`Drop Shelf`) |
-| `Alt+Tab` / `Super+Tab` | Переключение приложений |
-| <kbd>Alt+&#96;</kbd> / <kbd>Super+&#96;</kbd> | Окна активной программы |
-| `Super+W` / `Super+Q` | Закрыть окно / завершить программу |
-| `Super+M` / `Super+F` | Свернуть / развернуть окно (или развернуть плитку/колонку) |
-| `Ctrl+Super+стрелки` | Окно на половину или четверть экрана (в `Tile`/`Tape` — размер плитки/колонки) |
-| `Super+P` / `Super+Alt+P` | «Картинка в картинке» (PiP) / Призрачный режим «Сквозь курсор» |
-| `Super+S` / `Super+Shift+S` | Шторка-Подложка / окно на Подложку и обратно |
-| `Super+Shift+V` | История буфера обмена |
-| `Super+.` | Панель эмодзи |
-| `Super+H` / `Super+Alt+H` | Скрыть программу / остальные программы |
-| **`Super+1…9`** / **`Super+Shift+1…9`** | Прямой переход на стол `1…9` / перенести активное окно на стол `1…9` |
-| `Ctrl+Alt+← / →` | Предыдущий / следующий стол |
-| `Ctrl+Alt+Shift+← / →` | Перенести окно на соседний стол |
-| `Ctrl+Alt+↑ / ↓` | Обзор окон и столов Mission Control / закрыть обзор |
-| **`Ctrl+Alt+M`** | Переключить режим стола: **Свободные окна → Авто-плитка → Бесконечная лента** |
-| **`Super+колёсико / трекпад`** *(в `Tape`)* | Плавный горизонтальный скроллинг Бесконечной ленты |
-| **`Super+R`** *(в `Tape`)* | Ширина колонки ленты по кругу: `50 % → 67 % → 100 % → 33 %` |
-| `Ctrl+Alt+Del` | Мониторинг системы (диспетчер задач) |
-| `Super+L` | Блокировка экрана |
-| `Print` / `Shift+Print` / `Alt+Print` | Снимок экрана / области / окна |
-| **`Super+Alt+5`** (`⌥⌘5`) / `Ctrl+Shift+Print` | Панель записи видео с экрана (MP4/WebM со звуком) |
+| `Super` *(short tap)* | Radial App Ring (`Super, Super` bounces back to previous window) |
+| `Super+Space` | Spotlight search (apps, windows, files, settings, live math) |
+| `Super+/` | **Menu HUD** — instant search across active window menu commands |
+| `Super+Shift+/` / `Super+F1` | **Feather Keyboard Shortcuts** — built-in interactive cheat sheet window with live search |
+| `Super+A` | Launchpad application grid |
+| `Super+Enter` / `Super+T` | Terminal |
+| `Super+E` | Files |
+| `Super+N` | Control Center top drawer |
+| `Super+D` *(or shake pointer while dragging)* | Glass Drop Shelf |
+| `Alt+Tab` / `Super+Tab` | Application switcher |
+| <kbd>Alt+&#96;</kbd> / <kbd>Super+&#96;</kbd> | Cycle windows of the active application |
+| `Super+W` / `Super+Q` | Close window / quit application |
+| `Super+M` / `Super+F` | Minimize / maximize (or zoom tile/column) |
+| `Ctrl+Super+arrows` | Snap window to a half or quarter (in `Tile`/`Tape` — resize split/column) |
+| `Super+P` / `Super+Alt+P` | Picture-in-Picture (PiP) / Ghost *Click-Through* mode |
+| `Super+S` / `Super+Shift+S` | Scratchpad drawer / move window there and back |
+| `Super+Shift+V` | Clipboard history |
+| `Super+.` | Emoji panel |
+| `Super+H` / `Super+Alt+H` | Hide application / hide other applications |
+| **`Super+1…9`** / **`Super+Shift+1…9`** | Jump directly to Desktop `1…9` / carry active window to Desktop `1…9` |
+| `Ctrl+Alt+← / →` | Previous / next workspace |
+| `Ctrl+Alt+Shift+← / →` | Move window to the adjacent workspace |
+| `Ctrl+Alt+↑ / ↓` | Mission Control window overview / close overview |
+| **`Ctrl+Alt+M`** | Cycle workspace layout mode: **Free Windows → Auto-Tiling → Scrollable Ribbon** |
+| **`Super+Mouse Wheel / Trackpad`** *(in `Tape`)* | Smooth horizontal scrolling of the Scrollable Ribbon |
+| **`Super+R`** *(in `Tape`)* | Cycle ribbon column width preset: `50% → 67% → 100% → 33%` |
+| `Ctrl+Alt+Del` | Activity Monitor |
+| `Super+L` | Lock Screen |
+| `Print` / `Shift+Print` / `Alt+Print` | Capture screen / region / window |
+| **`Super+Alt+5`** (`⌥⌘5`) / `Ctrl+Shift+Print` | Screen Recorder HUD (MP4/WebM with audio) |
 
-### Управление тайлингом (`Tile`), Бесконечной лентой (`Tape`) и Подложкой (`Super+S`)
+### Managing Auto-Tiling (`Tile`), Scrollable Ribbon (`Tape`), and Scratchpad (`Super+S`)
 
-| Действие | Клавиши / скроллинг / мышь |
+| Action | Keys / Scrolling / Mouse |
 |---|---|
-| Перевести фокус на соседнюю плитку или колонку | `Super+← / → / ↑ / ↓` (в ленте `Super+Home / End` — к краям) |
-| Поменять местами (или повернуть ось разбиения «лево/право ↔ верх/низ» в `Tile` и на Подложке) | `Super+Shift+← / → / ↑ / ↓` или перетаскивание за заголовок / `Super+ЛКМ` |
-| Скроллинг Бесконечной ленты (`Tape`) | `Super+колёсико мыши`, `Super+трекпад` или клик по выглядывающему краю соседней колонки |
-| Пресет ширины колонки в `Tape` (`50 % → 67 % → 100 % → 33 %`) | `Super+R` |
-| Плавно растянуть / сжать плитку или колонку | `Ctrl+Super+← / → / ↑ / ↓`, `Alt+Super+← / → / ↑ / ↓`, перетаскивание перегородки ЛКМ или `Super+ПКМ` |
-| Выровнять все пропорции обратно `50 / 50` | `Super+0` (`Ctrl+Super+0`) или двойной щелчок по перегородке |
-| Временно развернуть активную плитку/колонку на весь стол и вернуть сетку | `Super+F` или зелёная кнопка окна |
-| Спрятать Подложку | `Super+S` или щелчок по матовому фону у края экрана |
+| Focus an adjacent tile or ribbon column | `Super+← / → / ↑ / ↓` (`Super+Home / End` jumps to ribbon ends) |
+| Swap windows (or rotate split axis horizontal ↔ vertical at outer edge in `Tile` & Scratchpad) | `Super+Shift+← / → / ↑ / ↓` or drag titlebar / `Super+LMB` |
+| Scroll the Ribbon (`Tape`) horizontally | `Super+Mouse Wheel`, `Super+trackpad scroll`, or click a peeking neighbor column edge |
+| Cycle column width preset in `Tape` (`50% → 67% → 100% → 33%`) | `Super+R` |
+| Smoothly resize tile split or column width | `Ctrl+Super+← / → / ↑ / ↓`, `Alt+Super+← / → / ↑ / ↓`, drag inner border with LMB, or `Super+RMB` |
+| Reset splits / column widths back to `50 / 50` | `Super+0` (`Ctrl+Super+0`) or double-click an inner divider |
+| Temporarily zoom active tile/column to fill the workspace and restore | `Super+F` or the green window button |
+| Dismiss the Scratchpad | `Super+S` or click the frosted margin around the tiles |
 
-В «Файлах»: Пробел — быстрый просмотр, Ctrl+L — путь, Ctrl+H — скрытые,
-F2 — переименование, Ctrl+Shift+N — новая папка. В Терминале: Ctrl+Shift+C/V —
-буфер обмена, Ctrl+Shift+T — вкладка, Ctrl+Shift+F — поиск. В Заметках:
-Ctrl+N — новая заметка, Ctrl+F — поиск, Ctrl+Z — отмена.
+In Files: Space for Quick Look, Ctrl+L for path entry, Ctrl+H for hidden files,
+F2 to rename, and Ctrl+Shift+N for a new folder. In Terminal: Ctrl+Shift+C/V for
+clipboard, Ctrl+Shift+T for a tab, and Ctrl+Shift+F for search. In Notes: Ctrl+N
+for a new note, Ctrl+F for search, and Ctrl+Z to undo.
 
-## Устройство проекта
+## Architecture and repository layout
 
 ```text
-src/                 Композитор, оболочка, настройки и системные workers
-crates/feather-ui/    Общие текст, рисование, темы, ввод, масштаб и локализация
-files/               Файлы
-terminal/            Терминал и собственное ядро VT
-notes/               Заметки
-preview/             Просмотр изображений и PDF
-textedit/            Текстовый редактор
-calc/                Калькулятор
-protocols/           Дополнительные описания протоколов
-assets/              Обои и GTK CSS
-session/             Сессионные обёртки, PAM и пример greetd
-packaging/           Установка, архив, PKGBUILD и desktop/portal-файлы
-bench/               Функциональные сценарии и измерения
-docs/                Спецификация, отчёты и дорожная карта
+src/                 Compositor, shell, settings, and system workers
+crates/feather-ui/    Shared text, drawing, theme, input, scaling, and localization
+files/               Files application
+terminal/            Terminal and its VT engine
+notes/               Notes application
+preview/             Image and PDF viewer
+textedit/            Text editor
+calc/                Calculator
+protocols/           Additional protocol descriptions
+assets/              Wallpapers and GTK CSS
+session/             Session wrappers, PAM, and greetd example
+packaging/           Install scripts, archive, PKGBUILD, desktop and portal files
+bench/               Functional scenarios and measurement tools
+docs/                Specification, reports, and roadmap
 ```
 
-Главный `calloop` обслуживает Wayland, ввод, готовые кадры и сообщения workers.
-Операции D-Bus, диска, поиска/декодирования значков, обоев и растеризации панелей
-выполняются вне критического пути. Очереди ограничены; устаревшие результаты
-отбрасываются. GPU/Wayland-объекты остаются на основном потоке.
+The main `calloop` handles Wayland, input, completed frames, and worker messages.
+D-Bus, file I/O, icon discovery/decoding, wallpapers, and panel rasterization stay
+outside the critical path. Queues are bounded and stale results are discarded.
+GPU and Wayland objects remain on the main thread.
 
-Анимации используют преобразования готовых буферов. Damage tracking ограничивает
-отрисовку изменившимися областями. Шрифтовые таблицы отображаются через mmap;
-растеризуются только нужные глифы, кэши ограничены. Подробная архитектура и
-правила разработки — в [SPEC](docs/SPEC.md) и [AGENTS.md](AGENTS.md).
+Animations transform existing buffers. Damage tracking limits drawing to changed
+regions. Font tables are mmap-backed, glyphs are rasterized on demand, and caches
+have explicit limits. See [SPEC](docs/SPEC.md) and [AGENTS.md](AGENTS.md) for the
+architecture and development rules.
 
-## Проверка и участие
+## Testing and contributing
 
 ```bash
-# Сборка:
+# Build:
 cargo build --release --locked --workspace
 
-# Тесты на отдельной пользовательской D-Bus шине:
+# Run tests on a private session bus:
 dbus-run-session -- cargo test --release --locked --workspace -- --include-ignored
 
-# Профилирование своего тестового экземпляра:
+# Profile your own nested instance:
 FEATHER_PROFILE=1 target/release/feather-de --windowed
 ```
 
-В `bench/` есть отдельные сценарии проверки окон, клавиатуры, блокировки, мониторов,
-звука, сети, Bluetooth и портала. Они используют собственные экземпляры и временные
-конфигурации; аппаратную DRM-сессию проверяет пользователь. Не останавливайте
-работающий композитор по имени процесса: в нём могут находиться ваши окна.
+`bench/` contains scenarios for windows, keyboard input, locking, monitors, audio,
+network, Bluetooth, and portals. They use owned instances and temporary
+configurations; physical DRM testing is performed by the user. Never terminate
+all compositor processes by name: your live desktop windows may belong to one.
 
-Для сообщения об ошибке приложите шаги воспроизведения, режим запуска, дистрибутив,
-GPU/драйвер, масштаб, версию/коммит и соответствующий лог. Скриншоты должны показывать
-только данные, которые вы готовы опубликовать. Полезны проверки реального железа,
-исправления совместимости, переводы и измерения с описанными условиями.
+For a bug report, include reproduction steps, backend, distribution, GPU/driver,
+scale, version/commit, and relevant logs. Only include screenshots containing data
+you intend to publish. Hardware testing, compatibility fixes, translations, and
+measurements with reproducible conditions are particularly useful.
 
-## Состояние проекта и ограничения
+## Project status and limitations
 
-Базовая оболочка, приложения и значительная часть интеграции реализованы.
-Отметка в Roadmap описывает проверенный этап; она не гарантирует работу любого
-оборудования или приложения. Основные открытые направления:
+The core shell, applications, and substantial system integration are implemented.
+Roadmap checkmarks describe completed, tested stages rather than universal support
+for every device or application. Current open areas include:
 
-- Физические мониторы, KMS/hotplug, VT, несколько частот, VRR и синхронизация на разных GPU.
-- Настоящие PAM, suspend/resume, Fn-клавиши, Bluetooth-аксессуары и слышимый звук.
-- Финальная приёмка времени кадра, старта и памяти в полной DRM-сессии.
-- Настоящий захват экрана через портал/PipeWire и диалог разрешений.
-- Проверка протоколов и методов ввода на настоящих waybar, rofi, fcitx5 и ibus.
-- Доработка отдельных функций своих приложений и упаковка для других дистрибутивов.
+- Physical displays, KMS/hotplug, VT, mixed refresh rates, VRR, and synchronization
+  across different GPU drivers.
+- Real PAM authentication, suspend/resume, Fn keys, Bluetooth accessories, and
+  audible sound behavior.
+- Final frame-time, startup, and memory acceptance testing in a full DRM session.
+- Real portal/PipeWire capture and interactive permission dialogs.
+- Further Wayland protocol coverage, IME, and application compatibility.
+- Additional native application features and packaging for other distributions.
 
-Актуальные задачи: [ROADMAP](docs/ROADMAP.md). История: [CHANGELOG](CHANGELOG.md).
-Подробные отчёты в `docs/` датированы; более ранние ограничения могут быть уточнены
-поздними изменениями. Для текущего состояния сверяйтесь с кодом и последними записями.
+See [ROADMAP](docs/ROADMAP.md) and [CHANGELOG](CHANGELOG.md). Detailed reports in
+`docs/` are dated; later changes may supersede earlier limitations. Consult the
+current code and recent changelog entries when assessing the present state.
+Most detailed development documents are currently in Russian; this English README
+covers the same main feature and setup information as the Russian version.
 
-## Поддержать проект
+## Support the project
 
-Пёрышко бесплатное и открытое. Если оно вам нравится, проект можно поддержать:
+Feather DE is free and open source. If you enjoy it, you can support its development:
 
-- [Подписка на Boosty](https://boosty.to/featheros) — ежемесячная поддержка и новости разработки;
-- [Разовый донат через CloudTips](https://pay.cloudtips.ru/p/235b60f7) — любая сумма картой любого банка.
+- [Boosty subscription](https://boosty.to/featheros) — monthly support and development news;
+- [One-time donation via CloudTips](https://pay.cloudtips.ru/p/235b60f7) — any amount, by bank card.
 
-## Лицензия
+## License
 
-Пёрышко — свободная программа: её можно использовать, изучать, изменять и распространять
-на условиях [GNU General Public License версии 3](LICENSE) или (по вашему выбору) любой
-более поздней версии (`GPL-3.0-or-later`). Изменённые версии, которые вы распространяете,
-тоже должны оставаться открытыми под той же лицензией. Программа поставляется без каких-либо
-гарантий.
+Feather DE is free software: you can use, study, modify and redistribute it under the terms
+of the [GNU General Public License version 3](LICENSE) or (at your option) any later version
+(`GPL-3.0-or-later`). Modified versions you distribute must stay open under the same license.
+It comes with no warranty of any kind.
 
-Лицензия распространяется на код всех компонентов из этого репозитория и на собственные
-ресурсы проекта (обои, значки). Свои лицензии сохраняют шрифты в `assets/fonts`
-(OFL-1.1 или Apache-2.0, см. файлы `*.copyright`), xwayland-satellite в пакете (MPL-2.0)
-и библиотеки-зависимости (MIT, Apache-2.0, BSD, Zlib и другие разрешительные лицензии,
-совместимые с GPL-3.0).
+The license covers the code of every component in this repository and the project's own
+assets (wallpapers, icons). The fonts in `assets/fonts` keep their own licenses (OFL-1.1 or
+Apache-2.0, see the `*.copyright` files), as do xwayland-satellite in the package (MPL-2.0)
+and the library dependencies (MIT, Apache-2.0, BSD, Zlib and other permissive licenses
+compatible with GPL-3.0).
