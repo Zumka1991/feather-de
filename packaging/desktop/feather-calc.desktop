@@ -1,12 +1,12 @@
 [Desktop Entry]
-Name=Калькулятор
-Name[en]=Calculator
+Name=Calculator
+Name[ru]=Калькулятор
 Name[es]=Calculadora
 Name[de]=Rechner
 Name[fr]=Calculette
 Name[zh_CN]=计算器
-Comment=Обычный, инженерный и программистский калькулятор Пёрышка
-Comment[en]=Basic, scientific, and programmer calculator for Feather DE
+Comment=Basic, scientific, and programmer calculator for Feather DE
+Comment[ru]=Обычный, инженерный и программистский калькулятор Пёрышка
 Exec=feather-calc
 Icon=accessories-calculator
 Terminal=false

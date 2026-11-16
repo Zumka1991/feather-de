@@ -2,6 +2,10 @@
 # Удаление установленных файлов Пёрышка (Feather DE)
 set -euo pipefail
 
+# Messages: Russian under a Russian locale, English otherwise
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in ru*) _L=ru ;; *) _L=en ;; esac
+t() { if [[ $_L == ru ]]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
 PREFIX="${PREFIX:-/usr}"
 SYSCONFDIR="${SYSCONFDIR:-/etc}"
 DESTDIR="${DESTDIR:-}"
@@ -40,11 +44,11 @@ if (( ! USER_MODE )); then
     if [[ -f "$GREETD_CONF" ]] && grep -q feather-session "$GREETD_CONF"; then
         if [[ -f "$GREETD_CONF.before-feather" ]]; then
             mv -f "$GREETD_CONF.before-feather" "$GREETD_CONF"
-            echo "==> Восстановлен прежний $GREETD_CONF."
+            echo "$(t "==> Восстановлен прежний $GREETD_CONF." "==> The previous $GREETD_CONF was restored.")"
         else
-            echo "[!] $GREETD_CONF запускает feather-session; укажите в нём другую команду." >&2
+            echo "$(t "[!] $GREETD_CONF запускает feather-session; укажите в нём другую команду." "[!] $GREETD_CONF runs feather-session; set another command in it.")" >&2
         fi
     fi
 fi
 
-echo "==> Пёрышко (Feather DE) удалено из ${DESTDIR}${PREFIX}."
+echo "$(t "==> Пёрышко (Feather DE) удалено из ${DESTDIR}${PREFIX}." "==> Feather DE was removed from ${DESTDIR}${PREFIX}.")"

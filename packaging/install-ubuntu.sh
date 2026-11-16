@@ -21,6 +21,10 @@
 # Удаление: sudo ./packaging/uninstall.sh
 set -euo pipefail
 
+# Messages: Russian under a Russian locale, English otherwise
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in ru*) _L=ru ;; *) _L=en ;; esac
+t() { if [[ $_L == ru ]]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
 ROOT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 OPTIONAL=1
 GREETD=auto
@@ -37,7 +41,7 @@ for arg in "$@"; do
             exit 0
             ;;
         *)
-            echo "Неизвестный параметр: $arg (см. --help)" >&2
+            echo "$(t "Неизвестный параметр: $arg (см. --help)" "Unknown option: $arg (see --help)")" >&2
             exit 1
             ;;
     esac
@@ -49,22 +53,22 @@ die() { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 
 # --- Проверки -------------------------------------------------------------------------------
 
-[[ "$EUID" -ne 0 ]] || die "Запускайте обычным пользователем: Rust ставится в ваш профиль, sudo скрипт попросит сам."
+[[ "$EUID" -ne 0 ]] || die "$(t "Запускайте обычным пользователем: Rust ставится в ваш профиль, sudo скрипт попросит сам." "Run it as a regular user: Rust is installed into your profile, and the script asks for sudo itself.")"
 [[ -f "$ROOT_DIR/Cargo.toml" && -x "$ROOT_DIR/packaging/install.sh" ]] \
-    || die "Не найден репозиторий Пёрышка в $ROOT_DIR."
-command -v apt-get >/dev/null || die "Нужен apt (Ubuntu или Debian)."
+    || die "$(t "Не найден репозиторий Пёрышка в $ROOT_DIR." "The Feather repository was not found in $ROOT_DIR.")"
+command -v apt-get >/dev/null || die "$(t "Нужен apt (Ubuntu или Debian)." "apt is required (Ubuntu or Debian).")"
 
 # shellcheck source=/dev/null
 . /etc/os-release
 if [[ "${ID:-}" != ubuntu && " ${ID_LIKE:-} " != *" ubuntu "* ]]; then
-    warn "Система: ${PRETTY_NAME:-неизвестно}. Скрипт рассчитан на Ubuntu; продолжаю на свой страх."
+    warn "$(t "Система: ${PRETTY_NAME:-неизвестно}. Скрипт рассчитан на Ubuntu; продолжаю на свой страх." "System: ${PRETTY_NAME:-unknown}. The script is meant for Ubuntu; continuing at your own risk.")"
 else
-    echo "Система: ${PRETTY_NAME:-Ubuntu}"
+    echo "$(t "Система: ${PRETTY_NAME:-Ubuntu}" "System: ${PRETTY_NAME:-Ubuntu}")"
 fi
 
 case "$(uname -m)" in
     x86_64|aarch64) ;;
-    *) warn "Архитектура $(uname -m) не проверялась." ;;
+    *) warn "$(t "Архитектура $(uname -m) не проверялась." "Architecture $(uname -m) has not been tested.")" ;;
 esac
 
 # --- Пакеты ---------------------------------------------------------------------------------
@@ -113,26 +117,26 @@ available() {
         if apt-cache show "$pkg" >/dev/null 2>&1; then
             printf '%s\n' "$pkg"
         else
-            warn "Пакета $pkg нет в репозиториях, пропускаю."
+            warn "$(t "Пакета $pkg нет в репозиториях, пропускаю." "Package $pkg is not in the repositories, skipping.")"
         fi
     done
 }
 
-step "Обновление списков пакетов"
+step "$(t "Обновление списков пакетов" "Updating package lists")"
 sudo apt-get update
 # Сторонний .deb с устаревшей зависимостью (например policykit-1, которого нет в 26.04) ломает
 # любой apt install. Сами ничего не удаляем: `apt --fix-broken install` снёс бы ту программу.
 if ! sudo apt-get check >/dev/null 2>&1; then
     sudo apt-get check || true
-    die "apt сообщает о неудовлетворённых зависимостях уже установленных пакетов (см. выше). Почините их и запустите скрипт снова; осторожно: «apt --fix-broken install» может удалить программу с устаревшей зависимостью."
+    die "$(t "apt сообщает о неудовлетворённых зависимостях уже установленных пакетов (см. выше). Почините их и запустите скрипт снова; осторожно: «apt --fix-broken install» может удалить программу с устаревшей зависимостью." "apt reports unmet dependencies of already installed packages (see above). Fix them and run the script again; be careful: “apt --fix-broken install” may remove a program with an outdated dependency.")"
 fi
 
-step "Установка зависимостей сборки и запуска"
+step "$(t "Установка зависимостей сборки и запуска" "Installing build and runtime dependencies")"
 mapfile -t REQUIRED < <(available "${BUILD_PKGS[@]}" "${RUNTIME_PKGS[@]}")
 sudo apt-get install -y --no-install-recommends "${REQUIRED[@]}"
 
 if (( OPTIONAL )); then
-    step "Установка дополнительных пакетов (звук, сеть, порталы, X11)"
+    step "$(t "Установка дополнительных пакетов (звук, сеть, порталы, X11)" "Installing extra packages (sound, network, portals, X11)")"
     mapfile -t EXTRA < <(available "${OPTIONAL_PKGS[@]}")
     if (( ${#EXTRA[@]} )); then
         sudo apt-get install -y "${EXTRA[@]}"
@@ -148,7 +152,7 @@ if command -v rustup >/dev/null; then
     rustup default stable >/dev/null
 else
     if command -v cargo >/dev/null; then
-        warn "Найден cargo не из rustup ($(command -v cargo)); ставлю rustup, он будет первым в PATH."
+        warn "$(t "Найден cargo не из rustup ($(command -v cargo)); ставлю rustup, он будет первым в PATH." "Found a cargo that is not from rustup ($(command -v cargo)); installing rustup, it will come first in PATH.")"
     fi
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --profile minimal --default-toolchain stable
@@ -162,7 +166,7 @@ echo "$(rustc --version), $(cargo --version)"
 # shellcheck source=versions.sh
 . "$ROOT_DIR/packaging/versions.sh"
 if (( OPTIONAL )) && ! command -v xwayland-satellite >/dev/null; then
-    step "Сборка xwayland-satellite $XWLS_TAG (для X11-программ)"
+    step "$(t "Сборка xwayland-satellite $XWLS_TAG (для X11-программ)" "Building xwayland-satellite $XWLS_TAG (for X11 programs)")"
     mapfile -t XWLS_DEPS < <(available xwayland libxcb1-dev libxcb-cursor-dev libclang-dev clang)
     sudo apt-get install -y --no-install-recommends "${XWLS_DEPS[@]}"
     XWLS_ROOT="${CARGO_TARGET_DIR:-$ROOT_DIR/target}/xwayland-satellite"
@@ -170,17 +174,17 @@ if (( OPTIONAL )) && ! command -v xwayland-satellite >/dev/null; then
         --tag "$XWLS_TAG" --root "$XWLS_ROOT" xwayland-satellite; then
         sudo install -Dm755 "$XWLS_ROOT/bin/xwayland-satellite" /usr/local/bin/xwayland-satellite
     else
-        warn "xwayland-satellite не собрался: Пёрышко будет работать, но без X11-программ."
+        warn "$(t "xwayland-satellite не собрался: Пёрышко будет работать, но без X11-программ." "xwayland-satellite failed to build: Feather will work, but without X11 programs.")"
     fi
 fi
 
 # --- Сборка и установка ---------------------------------------------------------------------
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
-step "Сборка Пёрышка (release, это займёт несколько минут)"
+step "$(t "Сборка Пёрышка (release, это займёт несколько минут)" "Building Feather (release, this takes a few minutes)")"
 (cd "$ROOT_DIR" && cargo build --release --locked --workspace --target-dir "$TARGET_DIR")
 
-step "Установка в /usr"
+step "$(t "Установка в /usr" "Installing into /usr")"
 sudo env PREFIX=/usr SYSCONFDIR=/etc \
     "$ROOT_DIR/packaging/install.sh" --no-build --target-dir "$TARGET_DIR/release"
 
@@ -202,4 +206,4 @@ SETUP_ARGS=(--user "$USER")
 [[ "$GREETD" == no ]] && SETUP_ARGS+=(--no-greetd)
 (( TUIGREET )) && SETUP_ARGS+=(--tuigreet)
 sudo "$ROOT_DIR/packaging/setup-desktop.sh" "${SETUP_ARGS[@]}"
-echo "  Удаление:                    sudo $ROOT_DIR/packaging/uninstall.sh"
+echo "$(t "  Удаление:                    sudo $ROOT_DIR/packaging/uninstall.sh" "  Uninstall:                   sudo $ROOT_DIR/packaging/uninstall.sh")"

@@ -1,12 +1,12 @@
 [Desktop Entry]
-Name=Заметки
-Name[en]=Notes
+Name=Notes
+Name[ru]=Заметки
 Name[es]=Notas
 Name[de]=Notizen
 Name[fr]=Notes
 Name[zh_CN]=备忘录
-Comment=Быстрые заметки Пёрышка с мгновенным автосохранением
-Comment[en]=Feather DE notes app with instant autosave
+Comment=Feather DE notes app with instant autosave
+Comment[ru]=Быстрые заметки Пёрышка с мгновенным автосохранением
 Exec=feather-notes
 Icon=accessories-text-editor
 Terminal=false

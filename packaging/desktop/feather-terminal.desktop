@@ -1,12 +1,12 @@
 [Desktop Entry]
-Name=Терминал
-Name[en]=Terminal
+Name=Terminal
+Name[ru]=Терминал
 Name[es]=Terminal
 Name[de]=Terminal
 Name[fr]=Terminal
 Name[zh_CN]=终端
-Comment=Быстрый эмулятор терминала Пёрышка
-Comment[en]=Fast Feather DE terminal emulator
+Comment=Fast Feather DE terminal emulator
+Comment[ru]=Быстрый эмулятор терминала Пёрышка
 Exec=feather-terminal
 Icon=utilities-terminal
 Terminal=false

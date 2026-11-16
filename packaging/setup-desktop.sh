@@ -13,17 +13,21 @@
 # управления). Если стоит GNOME/GDM, он не трогается: Пёрышко появляется в его списке сеансов.
 set -euo pipefail
 
+# Messages: Russian under a Russian locale, English otherwise
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in ru*) _L=ru ;; *) _L=en ;; esac
+t() { if [[ $_L == ru ]]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
 LOGIN_USER=""
 GREETD=auto
 TUIGREET=0
 while (( $# )); do
     case "$1" in
-        --user) LOGIN_USER="${2:?Укажите пользователя}"; shift 2 ;;
+        --user) LOGIN_USER="${2:?$(t 'Укажите пользователя' 'Specify a user')}"; shift 2 ;;
         --greetd) GREETD=yes; shift ;;
         --no-greetd) GREETD=no; shift ;;
         --tuigreet) TUIGREET=1; shift ;;
         -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "Неизвестный параметр: $1 (см. --help)" >&2; exit 1 ;;
+        *) echo "$(t "Неизвестный параметр: $1 (см. --help)" "Unknown option: $1 (see --help)")" >&2; exit 1 ;;
     esac
 done
 
@@ -31,8 +35,8 @@ step() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*" >&2; }
 die() { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 
-[[ "$EUID" -eq 0 ]] || die "setup-desktop запускается от root (через sudo)."
-[[ -n "$LOGIN_USER" ]] && id -u "$LOGIN_USER" >/dev/null 2>&1 || die "Укажите существующего пользователя: --user ИМЯ."
+[[ "$EUID" -eq 0 ]] || die "$(t "setup-desktop запускается от root (через sudo)." "setup-desktop must be run as root (through sudo).")"
+[[ -n "$LOGIN_USER" ]] && id -u "$LOGIN_USER" >/dev/null 2>&1 || die "$(t "Укажите существующего пользователя: --user ИМЯ." "Specify an existing user: --user NAME.")"
 export DEBIAN_FRONTEND=noninteractive
 
 available() {
@@ -41,7 +45,7 @@ available() {
         if apt-cache show "$pkg" >/dev/null 2>&1; then
             printf '%s\n' "$pkg"
         else
-            warn "Пакета $pkg нет в репозиториях, пропускаю."
+            warn "$(t "Пакета $pkg нет в репозиториях, пропускаю." "Package $pkg is not in the repositories, skipping.")"
         fi
     done
 }
@@ -58,14 +62,14 @@ if [[ "$GREETD" == auto ]]; then
     if (( HAS_DM )); then GREETD=no; else GREETD=yes; fi
 fi
 if (( HAS_DM )); then
-    echo "Экран входа: $(basename "$(readlink -f /etc/systemd/system/display-manager.service)" .service)"
+    echo "$(t 'Экран входа' 'Login screen'): $(basename "$(readlink -f /etc/systemd/system/display-manager.service)" .service)"
 else
-    echo "Экран входа не найден (система без рабочего стола)."
+    echo "$(t "Экран входа не найден (система без рабочего стола)." "No login screen found (a system without a desktop).")"
 fi
 
 # Ubuntu вырезает переводы из пакетов в языковые пакеты: без них «Документы» и «Загрузки»
 # называются Documents/Downloads даже в русском сеансе (как и меню GTK-программ).
-step "Языковые пакеты и локали интерфейса"
+step "$(t "Языковые пакеты и локали интерфейса" "Language packs and interface locales")"
 mapfile -t LANGPACKS < <(available language-pack-ru-base language-pack-de-base \
     language-pack-es-base language-pack-fr-base language-pack-zh-hans-base)
 if (( ${#LANGPACKS[@]} )); then
@@ -86,11 +90,11 @@ done
 fc-cache -f >/dev/null 2>&1 || true
 
 if [[ "$GREETD" == yes ]]; then
-    step "Экран входа greetd"
+    step "$(t "Экран входа greetd" "The greetd login screen")"
     GREETER_PKGS=(greetd)
     (( TUIGREET )) && GREETER_PKGS+=(tuigreet)
     mapfile -t GREETER < <(available "${GREETER_PKGS[@]}")
-    (( ${#GREETER[@]} == ${#GREETER_PKGS[@]} )) || die "В репозиториях нет ${GREETER_PKGS[*]}; запустите с --no-greetd."
+    (( ${#GREETER[@]} == ${#GREETER_PKGS[@]} )) || die "$(t "В репозиториях нет ${GREETER_PKGS[*]}; запустите с --no-greetd." "${GREETER_PKGS[*]} is not in the repositories; run with --no-greetd.")"
     # Не даём пакету запустить greetd прямо сейчас: он переключил бы консоль посреди установки,
     # а конфигурация Пёрышка ещё не записана. Запустится после перезагрузки.
     # Чужой policy-rc.d (бывает в контейнерах) сохраняем и возвращаем.
@@ -109,7 +113,7 @@ if [[ "$GREETD" == yes ]]; then
 
     GREETER_USER=_greetd
     id -u "$GREETER_USER" >/dev/null 2>&1 || GREETER_USER=greeter
-    id -u "$GREETER_USER" >/dev/null 2>&1 || die "Не найден пользователь экрана входа (_greetd/greeter)."
+    id -u "$GREETER_USER" >/dev/null 2>&1 || die "$(t "Не найден пользователь экрана входа (_greetd/greeter)." "The login screen user (_greetd/greeter) was not found.")"
     if [[ -f /etc/greetd/config.toml ]] && ! grep -q feather-session /etc/greetd/config.toml; then
         cp /etc/greetd/config.toml /etc/greetd/config.toml.before-feather
     fi
@@ -143,7 +147,7 @@ fi
 NETPLAN_NM=/etc/netplan/99-feather-network-manager.yaml
 if [[ "$GREETD" == yes ]] && (( ! HAS_DM )) && command -v NetworkManager >/dev/null \
     && command -v netplan >/dev/null && ! grep -rqs 'renderer: *NetworkManager' /etc/netplan; then
-    step "Передача сети NetworkManager (после перезагрузки)"
+    step "$(t "Передача сети NetworkManager (после перезагрузки)" "Handing the network over to NetworkManager (after a reboot)")"
     printf 'network:\n  version: 2\n  renderer: NetworkManager\n' > "$NETPLAN_NM"
     chmod 600 "$NETPLAN_NM"
     if netplan get >/dev/null; then
@@ -151,7 +155,7 @@ if [[ "$GREETD" == yes ]] && (( ! HAS_DM )) && command -v NetworkManager >/dev/n
         # networkd больше ничего не ведёт: его ожидание сети задерживало бы загрузку на 2 минуты.
         systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
     else
-        warn "netplan не принял настройку; сеть оставлена как была."
+        warn "$(t "netplan не принял настройку; сеть оставлена как была." "netplan did not accept the setting; the network is left as it was.")"
         rm -f "$NETPLAN_NM"
     fi
 fi
@@ -159,9 +163,9 @@ fi
 if [[ -d /sys/module/nvidia ]]; then
     modeset="$(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null || echo N)"
     if [[ "$modeset" != Y ]]; then
-        warn "Проприетарный драйвер NVIDIA без modeset: Пёрышко не получит экран."
-        warn "Включите: echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf"
-        warn "затем sudo update-initramfs -u и перезагрузка."
+        warn "$(t "Проприетарный драйвер NVIDIA без modeset: Пёрышко не получит экран." "Proprietary NVIDIA driver without modeset: Feather will not get a display.")"
+        warn "$(t "Включите: echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf" "Enable it: echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf")"
+        warn "$(t "затем sudo update-initramfs -u и перезагрузка." "then run sudo update-initramfs -u and reboot.")"
     fi
 fi
 
@@ -180,27 +184,26 @@ EOF
     fi
 fi
 
-step "Готово"
+step "$(t "Готово" "Done")"
 if [[ "$GREETD" == yes ]]; then
-    cat <<EOF
-Перезагрузитесь: sudo reboot
+    printf '%s\n' "$(t 'Перезагрузитесь: sudo reboot
 После загрузки появится экран входа Пёрышка; введите пароль. Выход из сеанса
-(меню Пёрышка → «Выйти из Пёрышка…») возвращает на этот экран.
-EOF
-    (( TUIGREET )) || echo "Экран входа открывается для $LOGIN_USER; для нескольких пользователей: --tuigreet."
-    (( HAS_DM )) && warn "greetd поставлен рядом с прежним экраном входа; включён будет только один (systemctl status display-manager)."
+(меню Пёрышка → «Выйти из Пёрышка…») возвращает на этот экран.' 'Reboot: sudo reboot
+After the boot the Feather login screen appears; enter your password. Logging out
+(Feather menu → “Log Out…”) brings you back to this screen.')"
+    (( TUIGREET )) || echo "$(t "Экран входа открывается для $LOGIN_USER; для нескольких пользователей: --tuigreet." "The login screen opens for $LOGIN_USER; for several users use --tuigreet.")"
+    (( HAS_DM )) && warn "$(t "greetd поставлен рядом с прежним экраном входа; включён будет только один (systemctl status display-manager)." "greetd was installed next to the previous login screen; only one will be enabled (systemctl status display-manager).")"
 elif (( HAS_DM )); then
-    cat <<EOF
-Выйдите из сеанса. На экране входа выберите пользователя, нажмите шестерёнку
+    printf '%s\n' "$(t 'Выйдите из сеанса. На экране входа выберите пользователя, нажмите шестерёнку
 в правом нижнем углу и выберите «Пёрышко (прямой вывод DRM/KMS)».
-Прежний рабочий стол остался на экране входа как запасной сеанс.
-EOF
+Прежний рабочий стол остался на экране входа как запасной сеанс.' 'Log out. On the login screen pick your user, click the gear at the bottom
+right and choose “Feather (direct DRM/KMS output)”.
+Your previous desktop stays on the login screen as a fallback session.')"
 else
-    echo "Экран входа не ставился. Войдите в текстовую консоль и выполните: feather-session"
+    echo "$(t "Экран входа не ставился. Войдите в текстовую консоль и выполните: feather-session" "No login screen was installed. Log in to a text console and run: feather-session")"
 fi
-cat <<EOF
-
-  Аварийный выход из Пёрышка:  Ctrl+Alt+Backspace
+printf '\n%s\n' "$(t '  Аварийный выход из Пёрышка:  Ctrl+Alt+Backspace
   Консоль:                     Ctrl+Alt+F3
-  Лог сеанса:                  ~/.local/state/feather-de/drm.log
-EOF
+  Лог сеанса:                  ~/.local/state/feather-de/drm.log' '  Emergency exit from Feather: Ctrl+Alt+Backspace
+  Console:                     Ctrl+Alt+F3
+  Session log:                 ~/.local/state/feather-de/drm.log')"

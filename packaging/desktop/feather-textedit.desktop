@@ -1,12 +1,12 @@
 [Desktop Entry]
-Name=Текстовый редактор
-Name[en]=TextEdit
+Name=TextEdit
+Name[ru]=Текстовый редактор
 Name[es]=Editor de Texto
 Name[de]=TextEdit
 Name[fr]=TextEdit
 Name[zh_CN]=文本编辑
-Comment=Редактор текстовых документов и исходного кода с подсветкой синтаксиса
-Comment[en]=Text and source code editor with syntax highlighting
+Comment=Text and source code editor with syntax highlighting
+Comment[ru]=Редактор текстовых документов и исходного кода с подсветкой синтаксиса
 Exec=feather-textedit %F
 Icon=accessories-text-editor
 Terminal=false

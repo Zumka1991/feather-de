@@ -1,6 +1,8 @@
 [Desktop Entry]
-Name=Пёрышко (прямой вывод DRM/KMS)
-Comment=Пёрышко напрямую на видеокарте (DRM/KMS), без промежуточного композитора
+Name=Feather (direct DRM/KMS output)
+Name[ru]=Пёрышко (прямой вывод DRM/KMS)
+Comment=Feather directly on the graphics card (DRM/KMS), without an intermediate compositor
+Comment[ru]=Пёрышко напрямую на видеокарте (DRM/KMS), без промежуточного композитора
 Exec=feather-session
 Icon=feather-de
 Type=Application

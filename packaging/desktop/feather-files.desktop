@@ -1,12 +1,12 @@
 [Desktop Entry]
-Name=Файлы
-Name[en]=Files
+Name=Files
+Name[ru]=Файлы
 Name[es]=Archivos
 Name[de]=Dateien
 Name[fr]=Fichiers
 Name[zh_CN]=文件
-Comment=Файловый менеджер Пёрышка в стиле Finder
-Comment[en]=Feather DE file manager in Finder style
+Comment=Feather DE file manager in Finder style
+Comment[ru]=Файловый менеджер Пёрышка в стиле Finder
 Exec=feather-files --open %F
 Icon=system-file-manager
 Terminal=false

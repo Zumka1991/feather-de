@@ -1,12 +1,12 @@
 [Desktop Entry]
-Name=Магазин
-Name[en]=Store
+Name=Store
+Name[ru]=Магазин
 Name[es]=Tienda
 Name[de]=Store
 Name[fr]=Boutique
 Name[zh_CN]=应用商店
-Comment=Каталог программ: поиск, установка и удаление
-Comment[en]=Catalog of apps: search, install and remove
+Comment=Catalog of apps: search, install and remove
+Comment[ru]=Каталог программ: поиск, установка и удаление
 Comment[es]=Catálogo de aplicaciones: buscar, instalar y quitar
 Comment[de]=Programmkatalog: suchen, installieren und entfernen
 Comment[fr]=Catalogue d’applications : rechercher, installer et supprimer

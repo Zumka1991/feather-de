@@ -1,7 +1,13 @@
-# Подсказка после установки: как запустить Пёрышко вторым рабочим столом
+# Hint after installation: how to start Feather as a second desktop
+
+# Russian under a Russian locale, English otherwise
+_feather_ru() {
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in ru*) return 0 ;; *) return 1 ;; esac
+}
 
 _feather_hint() {
-    cat <<'EOF'
+    if _feather_ru; then
+        cat <<'EOF'
 
 ==> Пёрышко установлено. Ваш нынешний рабочий стол не тронут: Пёрышко — ещё один сеанс.
     Запуск:
@@ -18,6 +24,25 @@ _feather_hint() {
     Обновления приходят с системой: sudo pacman -Syu
 
 EOF
+    else
+        cat <<'EOF'
+
+==> Feather is installed. Your current desktop is untouched: Feather is one more session.
+    To start it:
+      1. Log out (or reboot).
+      2. On the login screen choose the session “Feather (direct DRM/KMS output)”:
+           SDDM (KDE)  — the session list at the bottom left;
+           GDM (GNOME) — the gear at the bottom right after picking your user;
+           LightDM, ly — the session switcher on the login screen.
+      3. Log in as usual. To go back: the menu at the top left → “Log Out…”
+         and pick your previous session on the login screen.
+    Without a login screen: on a free console (Ctrl+Alt+F3) log in and type feather-session.
+    Try it in a window without logging out: feather-de --windowed
+    Emergency exit: Ctrl+Alt+Backspace. Log: ~/.local/state/feather-de/drm.log
+    Updates arrive with the system: sudo pacman -Syu
+
+EOF
+    fi
 }
 
 post_install() {
@@ -25,5 +50,9 @@ post_install() {
 }
 
 post_upgrade() {
-    echo "==> Пёрышко обновлено. Чтобы получить новую версию, выйдите из сеанса Пёрышка и войдите снова."
+    if _feather_ru; then
+        echo "==> Пёрышко обновлено. Чтобы получить новую версию, выйдите из сеанса Пёрышка и войдите снова."
+    else
+        echo "==> Feather was updated. To get the new version, log out of the Feather session and log in again."
+    fi
 }

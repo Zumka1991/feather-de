@@ -420,7 +420,7 @@ the new version. CI rebuilds the repository on every release (job `arch` in
 #### Running Feather as a second desktop
 
 1. Log out of your current session (or reboot).
-2. On the login screen pick the session **“Пёрышко (прямой вывод DRM/KMS)”** — SDDM: session
+2. On the login screen pick the session **“Feather (direct DRM/KMS output)”** — SDDM: session
    list bottom-left; GDM: select your user, then the gear bottom-right; LightDM: the session
    menu; ly: the session line, ←/→; tuigreet: F3.
 3. Log in as usual. To go back, choose “Выйти из Пёрышка…” in the top-left menu and pick your
@@ -466,7 +466,7 @@ Run it as a regular user; it asks for sudo itself.
 - Feather ships its own fonts (Inter, JetBrains Mono) and app icons; the script adds the
   system Noto fonts for other apps, home folders (Documents, Downloads…) and the locales of
   the interface languages. Snap and Flatpak apps show up in Launchpad.
-- **With GNOME/GDM**: GDM is left alone. Log out and pick “Пёрышко (прямой вывод DRM/KMS)”
+- **With GNOME/GDM**: GDM is left alone. Log out and pick “Feather (direct DRM/KMS output)”
   under the gear; GNOME stays available as a fallback.
 
 Flags: `--no-optional` skips sound, Wi-Fi, Bluetooth, portals and X11; `--greetd` /

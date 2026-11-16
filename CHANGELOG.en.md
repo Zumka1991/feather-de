@@ -9,6 +9,16 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.25.1 — 2026-11-16
+
+- **Installation in English.** The one-line installer, the Arch installer, `setup-desktop` and the
+  post-install hints print English; under a Russian locale (`LANG=ru_*`) they stay Russian.
+- **Package descriptions** (`apt show feather-de`, pacman) and application names in menus are
+  English by default (Russian under a Russian locale). The login-screen session is called
+  "Feather (direct DRM/KMS output)".
+- **`featherctl`** help and messages are in English (the commands are unchanged).
+- No new package dependencies.
+
 ## 0.25.0 — 2026-11-16
 
 - **English is now the default interface language** and comes first in the language lists

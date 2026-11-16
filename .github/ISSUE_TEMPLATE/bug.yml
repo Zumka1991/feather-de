@@ -1,84 +1,84 @@
-name: Сообщить об ошибке · Bug report
-description: Что-то работает не так, как должно. Something does not work as it should.
+name: Bug report · Сообщить об ошибке
+description: Something does not work as it should. Что-то работает не так, как должно.
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Спасибо, что помогаете сделать Пёрышко лучше! Вопросы и идеи удобнее обсуждать на
-        [форуме](https://github.com/Zumka1991/feather-de/discussions), а здесь — только ошибки.
+        Thanks for helping make Feather better! Questions and ideas are easier to discuss on the
+        [forum](https://github.com/Zumka1991/feather-de/discussions); please use this form only for bugs.
 
-        Thanks for helping! You may write in English. Questions and ideas belong on the forum.
+        Спасибо, что помогаете! Можно писать по-русски. Вопросы и идеи — на форуме, здесь только ошибки.
   - type: textarea
     id: what
     attributes:
-      label: Что случилось · What happened
-      description: Что вы ожидали и что произошло на самом деле.
+      label: What happened · Что случилось
+      description: What you expected and what actually happened.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: Как повторить · Steps to reproduce
+      label: Steps to reproduce · Как повторить
       placeholder: |
-        1. Открыть …
-        2. Нажать …
-        3. Видно, что …
+        1. Open …
+        2. Click …
+        3. See that …
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: Версия Пёрышка · Feather version
-      description: Меню 🪶 → «Об этом компьютере», или `featherctl status`.
-      placeholder: 0.20.2
+      label: Feather version · Версия Пёрышка
+      description: "Menu 🪶 → About This Computer, or run `featherctl version`."
+      placeholder: 0.25.0
     validations:
       required: true
   - type: dropdown
     id: install
     attributes:
-      label: Как установлено · Install method
+      label: Install method · Как установлено
       options:
-        - Образ Пёрышко OS (ISO)
-        - Ubuntu, скрипт или APT
+        - Feather OS image (ISO)
+        - Ubuntu, install script or APT
         - Arch Linux, pacman
-        - Сборка из исходников
-        - Другое
+        - Built from source
+        - Other
     validations:
       required: true
   - type: input
     id: distro
     attributes:
-      label: Дистрибутив · Distribution
+      label: Distribution · Дистрибутив
       placeholder: Ubuntu 26.04
   - type: input
     id: gpu
     attributes:
-      label: Видеокарта и драйвер · GPU and driver
+      label: GPU and driver · Видеокарта и драйвер
       placeholder: AMD Radeon RX 570, Mesa 26.0
     validations:
       required: true
   - type: input
     id: display
     attributes:
-      label: Мониторы и масштаб · Displays and scaling
-      placeholder: один 4K-монитор, 60 Гц, масштаб 200 %
+      label: Displays and scaling · Мониторы и масштаб
+      placeholder: one 4K monitor, 60 Hz, 200 % scale
   - type: dropdown
     id: mode
     attributes:
-      label: Режим запуска · Session type
+      label: Session type · Режим запуска
       options:
-        - Обычный сеанс (DRM/KMS)
-        - Вложенное окно (--windowed)
-        - Не знаю
+        - Regular session (DRM/KMS)
+        - Nested window (--windowed)
+        - I don't know
   - type: textarea
     id: log
     attributes:
-      label: Лог · Log
-      description: Если есть. Проверьте, что в нём нет личных данных.
+      label: Log · Лог
+      description: If you have one (~/.local/state/feather-de/drm.log). Make sure it holds no personal data.
       render: text
   - type: textarea
     id: extra
     attributes:
-      label: Снимки экрана и прочее · Screenshots and anything else
-      description: На снимках оставляйте только то, что готовы опубликовать.
+      label: Screenshots and anything else · Снимки экрана и прочее
+      description: Only include on screenshots what you are happy to publish.

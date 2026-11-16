@@ -17,6 +17,10 @@
 # одним сеансом. Дальше обновления — «sudo pacman -Syu».
 set -euo pipefail
 
+# Messages: Russian under a Russian locale, English otherwise
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in ru*) _L=ru ;; *) _L=en ;; esac
+t() { if [[ $_L == ru ]]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
 REPO_URL=https://zumka1991.github.io/feather-de
 KEY_FINGERPRINT=D5E6C2628719EF1D60685758C7F944C1485C5FC4
 PACMAN_CONF=/etc/pacman.conf
@@ -72,7 +76,7 @@ available() {
         if pacman -Si "$pkg" >/dev/null 2>&1; then
             printf '%s\n' "$pkg"
         else
-            warn "Пакета $pkg нет в репозиториях, пропускаю."
+            warn "$(t "Пакета $pkg нет в репозиториях, пропускаю." "Package $pkg is not in the repositories, skipping.")"
         fi
     done
 }
@@ -93,7 +97,7 @@ setup_locales() {
     if (( need )); then
         sudo locale-gen
     else
-        echo "Уже сгенерированы."
+        echo "$(t "Уже сгенерированы." "Already generated.")"
     fi
 }
 
@@ -102,13 +106,13 @@ setup_greetd() {
     local login_user="$1" tuigreet="$2" greeter_pkgs=(greetd) found
     (( tuigreet )) && greeter_pkgs+=(greetd-tuigreet)
     mapfile -t found < <(available "${greeter_pkgs[@]}")
-    (( ${#found[@]} == ${#greeter_pkgs[@]} )) || die "В репозиториях нет ${greeter_pkgs[*]}; запустите с --no-greetd."
+    (( ${#found[@]} == ${#greeter_pkgs[@]} )) || die "$(t "В репозиториях нет ${greeter_pkgs[*]}; запустите с --no-greetd." "${greeter_pkgs[*]} is not in the repositories; run with --no-greetd.")"
     sudo pacman -S --needed --noconfirm "${found[@]}" </dev/null
 
     local greeter_cmd greeter_user=greeter
     if (( tuigreet )); then
         # tuigreet: имя и пароль; F2 — другая команда, F3 — другой сеанс из wayland-sessions
-        id -u "$greeter_user" >/dev/null 2>&1 || die "Не найден пользователь экрана входа (greeter)."
+        id -u "$greeter_user" >/dev/null 2>&1 || die "$(t "Не найден пользователь экрана входа (greeter)." "The login screen user (greeter) was not found.")"
         greeter_cmd="tuigreet --time --remember --asterisks --greeting 'Пёрышко' --cmd feather-session"
     else
         # Экран входа самого Пёрышка: greetd сразу запускает его от имени этого пользователя,
@@ -146,17 +150,17 @@ main() {
             --greetd) greetd=yes ;;
             --no-greetd) greetd=no ;;
             --tuigreet) tuigreet=1 ;;
-            *) die "Неизвестный параметр: $arg (есть --minimal, --tuigreet, --greetd, --no-greetd)" ;;
+            *) die "$(t "Неизвестный параметр: $arg (есть --minimal, --tuigreet, --greetd, --no-greetd)" "Unknown option: $arg (available: --minimal, --tuigreet, --greetd, --no-greetd)")" ;;
         esac
     done
-    [[ "$EUID" -ne 0 ]] || die "Запускайте обычным пользователем: экран входа настраивается на вас, sudo скрипт попросит сам."
-    command -v pacman >/dev/null || die "Нужен pacman (Arch Linux или производная)."
+    [[ "$EUID" -ne 0 ]] || die "$(t "Запускайте обычным пользователем: экран входа настраивается на вас, sudo скрипт попросит сам." "Run it as a regular user: the login screen is set up for you, and the script asks for sudo itself.")"
+    command -v pacman >/dev/null || die "$(t "Нужен pacman (Arch Linux или производная)." "pacman is required (Arch Linux or a derivative).")"
     [[ "$(uname -m)" == x86_64 ]] \
-        || die "Пакет есть только для x86_64; на $(uname -m) соберите из исходников (makepkg, см. README)."
+        || die "$(t "Пакет есть только для x86_64; на $(uname -m) соберите из исходников (makepkg, см. README)." "The package is only built for x86_64; on $(uname -m) build from source (makepkg, see the README).")"
     # shellcheck source=/dev/null
     . /etc/os-release
-    echo "Система: ${PRETTY_NAME:-Arch Linux}"
-    sudo -v || die "Нужны права sudo."
+    echo "$(t "Система: ${PRETTY_NAME:-Arch Linux}" "System: ${PRETTY_NAME:-Arch Linux}")"
+    sudo -v || die "$(t "Нужны права sudo." "sudo rights are required.")"
     local login_user
     login_user="$(id -un)"
 
@@ -175,32 +179,32 @@ main() {
         if (( has_dm )) || (( minimal && ! tuigreet )); then greetd=no; else greetd=yes; fi
     fi
 
-    step "Ключ подписи репозитория"
+    step "$(t "Ключ подписи репозитория" "Repository signing key")"
     # Своим ключом pacman заверяет чужие (--lsign-key); без него (свежий контейнер) — создать
     sudo pacman-key --list-secret-keys 2>/dev/null | grep -q '^sec' || sudo pacman-key --init
     if sudo pacman-key --list-keys "$KEY_FINGERPRINT" >/dev/null 2>&1; then
-        echo "Уже добавлен."
+        echo "$(t "Уже добавлен." "Already added.")"
     else
         command -v curl >/dev/null || sudo pacman -S --needed --noconfirm curl </dev/null
         curl -fsSL "$REPO_URL/feather-de.asc" | sudo pacman-key --add -
     fi
     sudo pacman-key --lsign-key "$KEY_FINGERPRINT" >/dev/null
 
-    step "Репозиторий [feather-de]"
+    step "$(t "Репозиторий [feather-de]" "Repository [feather-de]")"
     if grep -q '^\[feather-de\]' "$PACMAN_CONF"; then
-        echo "Уже подключён в $PACMAN_CONF."
+        echo "$(t "Уже подключён в $PACMAN_CONF." "Already enabled in $PACMAN_CONF.")"
     else
         printf '\n[feather-de]\nSigLevel = Required\nServer = %s/arch/$arch\n' "$REPO_URL" \
             | sudo tee -a "$PACMAN_CONF" >/dev/null
-        echo "Добавлен в конец $PACMAN_CONF."
+        echo "$(t "Добавлен в конец $PACMAN_CONF." "Added to the end of $PACMAN_CONF.")"
     fi
 
-    step "Установка Пёрышка"
+    step "$(t "Установка Пёрышка" "Installing Feather")"
     # Arch не поддерживает частичные обновления: -Syu, а не -Sy
     sudo pacman -Syu --needed --noconfirm feather-de </dev/null
 
     if (( ! minimal )); then
-        step "Набор программ рабочего стола"
+        step "$(t "Набор программ рабочего стола" "Desktop app set")"
         local set_pkgs
         mapfile -t set_pkgs < <(available "${EXTRAS[@]}" "${DESKTOP_SET[@]}")
         sudo pacman -S --needed --noconfirm "${set_pkgs[@]}" </dev/null
@@ -217,12 +221,12 @@ main() {
             systemctl is-enabled --quiet "$unit" 2>/dev/null || sudo systemctl enable --now "$unit" 2>/dev/null || true
         done
 
-        step "Локали интерфейса"
+        step "$(t "Локали интерфейса" "Interface locales")"
         setup_locales
     fi
 
     if [[ "$greetd" == yes ]]; then
-        step "Экран входа greetd"
+        step "$(t "Экран входа greetd" "The greetd login screen")"
         setup_greetd "$login_user" "$tuigreet"
     fi
 
@@ -230,39 +234,39 @@ main() {
         local modeset
         modeset="$(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null || echo N)"
         if [[ "$modeset" != Y ]]; then
-            warn "Проприетарный драйвер NVIDIA без modeset: Пёрышко не получит экран."
-            warn "Включите: echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf"
-            warn "затем sudo mkinitcpio -P и перезагрузка."
+            warn "$(t "Проприетарный драйвер NVIDIA без modeset: Пёрышко не получит экран." "Proprietary NVIDIA driver without modeset: Feather will not get a display.")"
+            warn "$(t "Включите: echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf" "Enable it: echo 'options nvidia-drm modeset=1' | sudo tee /etc/modprobe.d/nvidia-drm.conf")"
+            warn "$(t "затем sudo mkinitcpio -P и перезагрузка." "then run sudo mkinitcpio -P and reboot.")"
         fi
     fi
 
-    step "Готово"
+    step "$(t "Готово" "Done")"
     if [[ "$greetd" == yes ]]; then
-        echo "Перезагрузитесь: sudo reboot"
-        echo "После загрузки появится экран входа Пёрышка; введите пароль. Выход из сеанса"
-        echo "(меню Пёрышка → «Выйти из Пёрышка…») возвращает на этот экран."
-        (( tuigreet )) || echo "Экран входа открывается для $login_user; для нескольких пользователей: --tuigreet."
-        (( has_dm )) && warn "greetd включён вместо прежнего экрана входа ($dm); вернуть: sudo systemctl enable --force $dm"
+        echo "$(t "Перезагрузитесь: sudo reboot" "Reboot: sudo reboot")"
+        echo "$(t "После загрузки появится экран входа Пёрышка; введите пароль. Выход из сеанса" "After the boot the Feather login screen appears; enter your password. Logging out")"
+        echo "$(t "(меню Пёрышка → «Выйти из Пёрышка…») возвращает на этот экран." "(Feather menu → “Log Out…”) brings you back to this screen.")"
+        (( tuigreet )) || echo "$(t "Экран входа открывается для $login_user; для нескольких пользователей: --tuigreet." "The login screen opens for $login_user; for several users use --tuigreet.")"
+        (( has_dm )) && warn "$(t "greetd включён вместо прежнего экрана входа ($dm); вернуть: sudo systemctl enable --force $dm" "greetd is enabled instead of the previous login screen ($dm); to go back: sudo systemctl enable --force $dm")"
     elif (( has_dm )); then
-        echo "Ваш рабочий стол остаётся как был: Пёрышко — ещё один сеанс на экране входа."
+        echo "$(t "Ваш рабочий стол остаётся как был: Пёрышко — ещё один сеанс на экране входа." "Your desktop stays as it was: Feather is one more session on the login screen.")"
         case "$dm" in
-            sddm) echo "Экран входа SDDM: выйдите из сеанса, внизу слева выберите сеанс" ;;
-            gdm) echo "Экран входа GDM: выйдите из сеанса, выберите пользователя, нажмите шестерёнку внизу справа и выберите" ;;
-            lightdm) echo "Экран входа LightDM: выйдите из сеанса и в списке сеансов выберите" ;;
-            ly|ly@*) echo "Экран входа ly: выйдите из сеанса, стрелками влево/вправо в строке сеанса выберите" ;;
-            greetd) echo "Экран входа greetd: выберите сеанс (в tuigreet — клавиша F3)" ;;
-            *) echo "Экран входа $dm: выйдите из сеанса и в списке сеансов выберите" ;;
+            sddm) echo "$(t "Экран входа SDDM: выйдите из сеанса, внизу слева выберите сеанс" "SDDM login screen: log out and pick the session at the bottom left:")" ;;
+            gdm) echo "$(t "Экран входа GDM: выйдите из сеанса, выберите пользователя, нажмите шестерёнку внизу справа и выберите" "GDM login screen: log out, pick your user, click the gear at the bottom right and choose")" ;;
+            lightdm) echo "$(t "Экран входа LightDM: выйдите из сеанса и в списке сеансов выберите" "LightDM login screen: log out and in the session list choose")" ;;
+            ly|ly@*) echo "$(t "Экран входа ly: выйдите из сеанса, стрелками влево/вправо в строке сеанса выберите" "ly login screen: log out and use the left/right arrows on the session line to choose")" ;;
+            greetd) echo "$(t "Экран входа greetd: выберите сеанс (в tuigreet — клавиша F3)" "greetd login screen: choose the session (in tuigreet, key F3)")" ;;
+            *) echo "$(t "Экран входа $dm: выйдите из сеанса и в списке сеансов выберите" "$dm login screen: log out and in the session list choose")" ;;
         esac
-        printf '    \033[1m«Пёрышко (прямой вывод DRM/KMS)»\033[0m и войдите как обычно.\n'
+        printf '    \033[1m%s\033[0m %s\n' "$(t '«Пёрышко (прямой вывод DRM/KMS)»' '“Feather (direct DRM/KMS output)”')" "$(t 'и войдите как обычно.' 'and log in as usual.')"
     else
-        echo "Экран входа не ставился. На консоли (Ctrl+Alt+F3) войдите и наберите:  feather-session"
+        echo "$(t "Экран входа не ставился. На консоли (Ctrl+Alt+F3) войдите и наберите:  feather-session" "No login screen was installed. On a console (Ctrl+Alt+F3) log in and type:  feather-session")"
     fi
     echo
-    echo "  Попробовать в окне, не выходя из сеанса:  feather-de --windowed"
-    echo "  Аварийный выход из Пёрышка:  Ctrl+Alt+Backspace"
-    echo "  Лог сеанса:                  ~/.local/state/feather-de/drm.log"
-    echo "  Обновления:                  sudo pacman -Syu"
-    echo "  Удаление:                    sudo pacman -Rns feather-de"
+    echo "$(t "  Попробовать в окне, не выходя из сеанса:  feather-de --windowed" "  Try it in a window without logging out:  feather-de --windowed")"
+    echo "$(t "  Аварийный выход из Пёрышка:  Ctrl+Alt+Backspace" "  Emergency exit from Feather: Ctrl+Alt+Backspace")"
+    echo "$(t "  Лог сеанса:                  ~/.local/state/feather-de/drm.log" "  Session log:                 ~/.local/state/feather-de/drm.log")"
+    echo "$(t "  Обновления:                  sudo pacman -Syu" "  Updates:                     sudo pacman -Syu")"
+    echo "$(t "  Удаление:                    sudo pacman -Rns feather-de" "  Uninstall:                   sudo pacman -Rns feather-de")"
 }
 
 main "$@"

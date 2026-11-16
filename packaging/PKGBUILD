@@ -4,7 +4,7 @@ pkgname=feather-de
 pkgver="$(sed -n 's/^version = "\(.*\)"$/\1/p' "${startdir:-$PWD}/../Cargo.toml" 2>/dev/null | head -n 1)"
 pkgver="${pkgver:-0.0.0}"
 pkgrel=1
-pkgdesc="Пёрышко (Feather DE) — сверхбыстрое окружение рабочего стола Wayland в стиле macOS Tahoe на Rust"
+pkgdesc="Feather DE (Пёрышко) — an ultra-fast macOS Tahoe-style Wayland desktop environment written in Rust"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Zumka1991/feather-de"
 # Лицензия проекта ещё не выбрана автором; не объявляем MIT без LICENSE.

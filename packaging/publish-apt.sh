@@ -129,7 +129,7 @@ sudo pacman-key --lsign-key D5E6C2628719EF1D60685758C7F944C1485C5FC4
 printf '\n[feather-de]\nSigLevel = Required\nServer = https://zumka1991.github.io/feather-de/arch/$arch\n' | sudo tee -a /etc/pacman.conf
 sudo pacman -Syu feather-de</pre>
 <p>From then on, updates are <code>sudo pacman -Syu</code>. To start: log out and pick
-“Пёрышко (direct DRM/KMS output)” on the login screen.</p>
+“Feather (direct DRM/KMS output)” on the login screen.</p>
 <p>Source code: <a href="https://github.com/Zumka1991/feather-de">github.com/Zumka1991/feather-de</a>.</p>
 </body></html>
 EOF

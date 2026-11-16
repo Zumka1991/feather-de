@@ -142,12 +142,13 @@ Recommends: $RECOMMENDS
 Section: x11
 Priority: optional
 Homepage: https://github.com/Zumka1991/feather-de
-Description: Пёрышко (Feather DE) — рабочий стол Wayland в стиле macOS
- Быстрое и лёгкое окружение рабочего стола на Rust: композитор Wayland с
- Доком, Launchpad, Центром управления и строкой меню, а также свои Файлы,
- Терминал, Заметки, Просмотр, TextEdit, Калькулятор, Магазин программ и
- установщик пакетов.
- Запускается сеансом «Пёрышко» из экрана входа или командой feather-session.
+Description: Feather DE (Пёрышко) — a macOS-style Wayland desktop
+ A fast, lightweight desktop environment written in Rust: a Wayland
+ compositor with a Dock, Launchpad, Control Center and menu bar, plus its
+ own Files, Terminal, Notes, Preview, TextEdit, Calculator, App Store and
+ package installer.
+ Start it from the login screen (the Feather session) or with the
+ feather-session command.
 EOF
 echo "/etc/pam.d/feather-lock" > "$PKG/DEBIAN/conffiles"
 cat > "$PKG/DEBIAN/postinst" <<'EOF'
@@ -214,10 +215,10 @@ Recommends: $DESKTOP_SET
 Section: metapackages
 Priority: optional
 Homepage: https://github.com/Zumka1991/feather-de
-Description: Пёрышко с набором программ, как в Ubuntu Desktop
- Метапакет: рабочий стол Пёрышко, офис LibreOffice, видео, музыка, камера,
- магазин приложений с Snap, печать и сканер, диски, хранилище паролей,
- кодеки и драйверы. Любую программу из набора можно удалить отдельно.
+Description: Feather DE with the app set of Ubuntu Desktop
+ Metapackage: the Feather desktop, LibreOffice, video, music, camera, an
+ app store with Snap, printing and scanning, disks, a password keyring,
+ codecs and drivers. Any program of the set can be removed separately.
 CTRL
 chmod -R u+rwX,go+rX,go-w "$META"
 META_DEB="$OUT_DIR/feather-desktop_${VERSION}_all.deb"

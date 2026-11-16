@@ -5,6 +5,10 @@
 #   - локальную установку в профиль пользователя (./packaging/install.sh --user)
 set -euo pipefail
 
+# Messages: Russian under a Russian locale, English otherwise
+case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in ru*) _L=ru ;; *) _L=en ;; esac
+t() { if [[ $_L == ru ]]; then printf '%s' "$1"; else printf '%s' "$2"; fi; }
+
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUNDLE=0
@@ -47,21 +51,21 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "Неизвестный параметр: $1" >&2
+            echo "$(t "Неизвестный параметр: $1" "Unknown option: $1")" >&2
             exit 1
             ;;
     esac
 done
 
 if [[ "$NO_BUILD" -eq 0 ]]; then
-    echo "==> Сборка Пёрышка (release, все программы рабочего окружения)…"
+    echo "$(t "==> Сборка Пёрышка (release, все программы рабочего окружения)…" "==> Building Feather (release, all desktop programs)…")"
     (cd "$ROOT_DIR" && cargo build --release --locked --workspace)
 fi
 
 # Validate all sources before writing anything to the destination.
 BINS=(feather-de feather-files feather-terminal feather-notes feather-preview feather-textedit feather-calc feather-monitor feather-installer feather-store featherctl)
 for bin in "${BINS[@]}"; do
-    [[ -x "$TARGET_DIR/$bin" ]] || { echo "Нет бинарника: $TARGET_DIR/$bin" >&2; exit 1; }
+    [[ -x "$TARGET_DIR/$bin" ]] || { echo "$(t "Нет бинарника: $TARGET_DIR/$bin" "Binary not found: $TARGET_DIR/$bin")" >&2; exit 1; }
 done
 
 BIN_DEST="${DESTDIR}${PREFIX}/bin"
@@ -75,7 +79,7 @@ POLKIT_DEST="${DESTDIR}${PREFIX}/share/polkit-1/actions"
 
 install -d "$BIN_DEST" "$APP_DEST" "$PORTAL_DEST" "$PORTAL_CONF_DEST" "$DOC_DEST" "$FONT_DEST"
 
-echo "==> Установка бинарных файлов в $BIN_DEST…"
+echo "$(t "==> Установка бинарных файлов в $BIN_DEST…" "==> Installing binaries into $BIN_DEST…")"
 for bin in "${BINS[@]}"; do
     install -Dm755 "$TARGET_DIR/$bin" "$BIN_DEST/$bin"
 done
@@ -130,14 +134,14 @@ chmod 755 "$BIN_DEST/feather-session"
 
 # Свои шрифты (Inter, JetBrains Mono, символы): программы читают их отсюда напрямую,
 # интерфейс не зависит от шрифтов системы
-echo "==> Установка шрифтов Пёрышка в $FONT_DEST…"
+echo "$(t "==> Установка шрифтов Пёрышка в $FONT_DEST…" "==> Installing Feather fonts into $FONT_DEST…")"
 FONT_SOURCE="$ROOT_DIR/assets/fonts"
 (( BUNDLE )) && FONT_SOURCE="$ROOT_DIR/usr/share/feather-de/fonts"
 for font in "$FONT_SOURCE"/*; do
     install -Dm644 "$font" "$FONT_DEST/$(basename "$font")"
 done
 
-echo "==> Установка ярлыков приложений (.desktop) и конфигурации портала…"
+echo "$(t "==> Установка ярлыков приложений (.desktop) и конфигурации портала…" "==> Installing application launchers (.desktop) and the portal configuration…")"
 DESKTOP_SOURCE="$ROOT_DIR/packaging/desktop"
 PORTAL_SOURCE="$ROOT_DIR/packaging/portal"
 DOC_SOURCE="$ROOT_DIR"
@@ -153,7 +157,7 @@ done
 install -Dm644 "$DESKTOP_SOURCE/featherde-mimeapps.list" "$APP_DEST/featherde-mimeapps.list"
 
 # Установщик пакетов: root-помощник для pkexec и действие polkit с понятным текстом запроса
-echo "==> Установка помощника установщика пакетов…"
+echo "$(t "==> Установка помощника установщика пакетов…" "==> Installing the package installer helper…")"
 if (( BUNDLE )); then
     install -Dm755 "$ROOT_DIR/usr/libexec/feather-de/install-deb" "$LIBEXEC_DEST/install-deb"
     POLICY_SOURCE="$ROOT_DIR/usr/share/polkit-1/actions/org.featherde.install-deb.policy"
@@ -173,7 +177,7 @@ if [[ -z "$DESTDIR" ]]; then
     if command -v update-desktop-database >/dev/null; then
         update-desktop-database -q "$APP_DEST" || true
     else
-        echo "[!] Нет update-desktop-database (пакет desktop-file-utils): браузер не найдёт, чем открыть .deb" >&2
+        echo "$(t "[!] Нет update-desktop-database (пакет desktop-file-utils): браузер не найдёт, чем открыть .deb" "[!] update-desktop-database is missing (package desktop-file-utils): the browser will not find what opens a .deb")" >&2
     fi
 fi
 if (( BUNDLE )); then
@@ -222,4 +226,4 @@ if [[ "$USER_MODE" -eq 0 ]]; then
     fi
 fi
 
-echo "==> Установка Пёрышка завершена успешно."
+echo "$(t "==> Установка Пёрышка завершена успешно." "==> Feather was installed successfully.")"

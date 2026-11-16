@@ -1,49 +1,49 @@
-//! featherctl — управление Пёрышком из терминала, скриптов и горячих клавиш через
-//! `org.feather.Shell1`. `featherctl help` — список команд.
+//! featherctl — control Feather from a terminal, scripts and hotkeys through
+//! `org.feather.Shell1`. `featherctl help` lists the commands.
 use feather_api::{connect, Error, Shell1ProxyBlocking};
 
-const HELP: &str = "featherctl — управление рабочим столом Пёрышка (org.feather.Shell1)
+const HELP: &str = "featherctl — control the Feather desktop (org.feather.Shell1)
 
-Использование: featherctl [--json] КОМАНДА
+Usage: featherctl [--json] COMMAND
 
-Окна (ID — число из `window list` или `active`):
-  window list                        список окон
-  window focus|close|minimize ID     показать / закрыть (опасно) / свернуть
+Windows (ID is a number from `window list`, or `active`):
+  window list                        list windows
+  window focus|close|minimize ID     raise / close (dangerous) / minimise
   window maximize|fullscreen ID [on|off|toggle]
-  window pip [ID] [status|on|off|ghost|toggle]  «Картинка в картинке» / «Сквозь курсор»
-  window move ID СТОЛ                перенести на рабочий стол (с 1)
-Рабочие столы:
-  space [list]                       список столов
-  space N                            перейти на стол N
-  space-mode [free|tile|tape|next] [N] режим раскладки стола (N с 1; без N — текущий)
+  window pip [ID] [status|on|off|ghost|toggle]  Picture in Picture / click-through
+  window move ID SPACE               move to a workspace (from 1)
+Workspaces:
+  space [list]                       list workspaces
+  space N                            go to workspace N
+  space-mode [free|tile|tape|next] [N] workspace layout mode (N from 1; without N — the current one)
   mission [on|off]                   Mission Control
   launchpad [on|off]                 Launchpad
-  menu-hud [open|close|toggle]       HUD-поиск по командам меню (Super + /)
-  shelf [status|on|off|toggle|clear|add ПУТЬ...] полка перетаскивания
-  larvis [status|on|off|toggle]      стол Ларвиса вместо твоих столов
-Приложения:
-  app list                           приложения из .desktop
-  app launch ID                      новый экземпляр
-  app open ID                        показать открытое или запустить
-Звук и экран:
+  menu-hud [open|close|toggle]       menu command search HUD (Super + /)
+  shelf [status|on|off|toggle|clear|add PATH...] drop shelf
+  larvis [status|on|off|toggle]      the Larvis desktop instead of your workspaces
+Applications:
+  app list                           applications from .desktop
+  app launch ID                      start a new instance
+  app open ID                        show the open one or start it
+Sound and screen:
   volume [N|+N|-N|mute|unmute|toggle]
   mic [mute|unmute|toggle]
-  audio streams                      активные звуковые потоки программ
-  audio app-volume INDEX 0..100      громкость потока программы
+  audio streams                      active sound streams of programs
+  audio app-volume INDEX 0..100      volume of a program's stream
   audio app-mute INDEX [on|off|toggle]
-  audio app-output INDEX УСТРОЙСТВО  направить поток программы на устройство вывода
+  audio app-output INDEX DEVICE      send a program's stream to an output device
   brightness [N|+N|-N]
-  night|dark|dnd [on|off|toggle]     ночной режим / тёмная тема / «Не беспокоить»
-  display                            яркость и режимы
-Медиа: media [status|play-pause|next|previous]
-Система:
-  screenshot [screen|window]         снимок, печатает путь к файлу
-  lock                               заблокировать экран
-  suspend                            сон (опасно)
-  version                            версии API и Пёрышка
-  watch                              печатать события окон
+  night|dark|dnd [on|off|toggle]     night mode / dark theme / Do Not Disturb
+  display                            brightness and modes
+Media: media [status|play-pause|next|previous]
+System:
+  screenshot [screen|window]         take a screenshot, prints the file path
+  lock                               lock the screen
+  suspend                            sleep (dangerous)
+  version                            API and Feather versions
+  watch                              print window events
 
-Другое имя сервиса: FEATHER_API_NAME=org.feather.Shell1.Test featherctl …";
+Another service name: FEATHER_API_NAME=org.feather.Shell1.Test featherctl …";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Switch {
@@ -139,9 +139,9 @@ fn bad(msg: impl Into<String>) -> String {
 
 fn window_id(arg: Option<&str>) -> Result<u64, String> {
     match arg {
-        None => Err(bad("Нужен ID окна (число из `window list` или active)")),
+        None => Err(bad("A window ID is required (a number from `window list`, or active)")),
         Some("active" | "focused") => Ok(0),
-        Some(s) => s.parse().map_err(|_| bad(format!("Неверный ID окна: {s}"))),
+        Some(s) => s.parse().map_err(|_| bad(format!("Invalid window ID: {s}"))),
     }
 }
 
@@ -152,7 +152,7 @@ fn pip_action(arg: Option<&str>) -> Result<PipAction, String> {
         Some("on" | "1" | "true" | "вкл") => Ok(PipAction::On),
         Some("off" | "0" | "false" | "выкл") => Ok(PipAction::Off),
         Some("ghost" | "click-through") => Ok(PipAction::GhostToggle),
-        Some(s) => Err(bad(format!("Ожидалось status, on, off, ghost или toggle, а не {s}"))),
+        Some(s) => Err(bad(format!("Expected status, on, off, ghost or toggle, not {s}"))),
     }
 }
 
@@ -162,12 +162,12 @@ fn switch(arg: Option<&str>, default: Switch) -> Result<Switch, String> {
         Some("on" | "1" | "true" | "вкл") => Ok(Switch::On),
         Some("off" | "0" | "false" | "выкл") => Ok(Switch::Off),
         Some("toggle") => Ok(Switch::Toggle),
-        Some(s) => Err(bad(format!("Ожидалось on, off или toggle, а не {s}"))),
+        Some(s) => Err(bad(format!("Expected on, off or toggle, not {s}"))),
     }
 }
 
 fn number(arg: &str, what: &str) -> Result<u32, String> {
-    arg.parse().map_err(|_| bad(format!("Неверное значение {what}: {arg}")))
+    arg.parse().map_err(|_| bad(format!("Invalid {what}: {arg}")))
 }
 
 fn level(arg: Option<&str>) -> Result<Level, String> {
@@ -179,7 +179,7 @@ fn level(arg: Option<&str>) -> Result<Level, String> {
     } else {
         s.trim_end_matches('%').parse::<u32>().map(Level::Set)
     };
-    parsed.map_err(|_| bad(format!("Неверный уровень: {s} (N, +N или -N)")))
+    parsed.map_err(|_| bad(format!("Invalid level: {s} (N, +N or -N)")))
 }
 
 fn mute(arg: Option<&str>) -> Result<Switch, String> {
@@ -187,7 +187,7 @@ fn mute(arg: Option<&str>) -> Result<Switch, String> {
         Some("mute") => Ok(Switch::On),
         Some("unmute") => Ok(Switch::Off),
         Some("toggle") | None => Ok(Switch::Toggle),
-        Some(s) => Err(bad(format!("Ожидалось mute, unmute или toggle, а не {s}"))),
+        Some(s) => Err(bad(format!("Expected mute, unmute or toggle, not {s}"))),
     }
 }
 
@@ -197,35 +197,35 @@ fn parse_space_mode(rest: &[&str]) -> Result<Command, String> {
         [one] => {
             if let Ok(n) = one.parse::<u32>() {
                 if n == 0 {
-                    return Err(bad("Рабочие столы нумеруются с 1"));
+                    return Err(bad("Workspaces are numbered from 1"));
                 }
                 return Ok(Command::GetSpaceMode(n));
             }
             let m = one.to_ascii_lowercase();
             if !matches!(m.as_str(), "free" | "tile" | "tape" | "next") {
-                return Err(bad(format!("Режим стола: free, tile, tape или next, а не {one}")));
+                return Err(bad(format!("Workspace mode: free, tile, tape or next, not {one}")));
             }
             Ok(Command::SetSpaceMode(0, m))
         }
         [mode, n] => {
             let m = mode.to_ascii_lowercase();
             if !matches!(m.as_str(), "free" | "tile" | "tape" | "next") {
-                return Err(bad(format!("Режим стола: free, tile, tape или next, а не {mode}")));
+                return Err(bad(format!("Workspace mode: free, tile, tape or next, not {mode}")));
             }
-            let space = number(n, "стола")?;
+            let space = number(n, "workspace")?;
             if space == 0 {
-                return Err(bad("Рабочие столы нумеруются с 1"));
+                return Err(bad("Workspaces are numbered from 1"));
             }
             Ok(Command::SetSpaceMode(space, m))
         }
-        _ => Err(bad(format!("Лишний аргумент: {}", rest[2]))),
+        _ => Err(bad(format!("Unexpected argument: {}", rest[2]))),
     }
 }
 
-/// Разбор аргументов без `--json`
+/// Parses the arguments without `--json`
 fn parse(args: &[&str]) -> Result<Command, String> {
     let arg = |i: usize| args.get(i).copied();
-    let no_more = |n: usize, c: Command| if args.len() > n { Err(bad(format!("Лишний аргумент: {}", args[n]))) } else { Ok(c) };
+    let no_more = |n: usize, c: Command| if args.len() > n { Err(bad(format!("Unexpected argument: {}", args[n]))) } else { Ok(c) };
     let Some(&head) = args.first() else { return Ok(Command::Help) };
     match head {
         "help" | "-h" | "--help" => Ok(Command::Help),
@@ -251,17 +251,17 @@ fn parse(args: &[&str]) -> Result<Command, String> {
                     }
                 },
                 Some("move") => {
-                    let space = arg(3).ok_or_else(|| bad("Нужен номер стола"))?;
-                    no_more(4, Command::MoveWindow(id()?, number(space, "стола")?))
+                    let space = arg(3).ok_or_else(|| bad("A workspace number is required"))?;
+                    no_more(4, Command::MoveWindow(id()?, number(space, "workspace")?))
                 }
-                Some(s) => Err(bad(format!("Неизвестная команда окна: {s}"))),
+                Some(s) => Err(bad(format!("Unknown window command: {s}"))),
             }
         }
         "spaces" => no_more(1, Command::Spaces),
         "space" => match arg(1) {
             None | Some("list") => no_more(2, Command::Spaces),
             Some("mode") => parse_space_mode(&args[2..]),
-            Some(n) => no_more(2, Command::SwitchSpace(number(n, "стола")?)),
+            Some(n) => no_more(2, Command::SwitchSpace(number(n, "workspace")?)),
         },
         "space-mode" => parse_space_mode(&args[1..]),
         "mission" => no_more(2, Command::Mission(switch(arg(1), Switch::On)? != Switch::Off)),
@@ -278,7 +278,7 @@ fn parse(args: &[&str]) -> Result<Command, String> {
             Some("close") => no_more(2, Command::ShelfShow(Switch::Off)),
             Some("add") => {
                 if args.len() < 3 {
-                    return Err(bad("Укажите хотя бы один путь: featherctl shelf add ПУТЬ..."));
+                    return Err(bad("Give at least one path: featherctl shelf add PATH..."));
                 }
                 let cwd = std::env::current_dir().unwrap_or_default();
                 let paths = args[2..]
@@ -298,8 +298,8 @@ fn parse(args: &[&str]) -> Result<Command, String> {
             (None | Some("list"), _) => no_more(2, Command::Apps),
             (Some("launch"), Some(id)) => no_more(3, Command::Launch(id.into())),
             (Some("open"), Some(id)) => no_more(3, Command::Activate(id.into())),
-            (Some("launch" | "open"), None) => Err(bad("Нужен ID приложения из `app list`")),
-            (Some(s), _) => Err(bad(format!("Неизвестная команда приложения: {s}"))),
+            (Some("launch" | "open"), None) => Err(bad("An application ID from `app list` is required")),
+            (Some(s), _) => Err(bad(format!("Unknown application command: {s}"))),
         },
         "volume" => match arg(1) {
             Some(s @ ("mute" | "unmute" | "toggle")) => no_more(2, Command::Mute(mute(Some(s))?)),
@@ -309,21 +309,21 @@ fn parse(args: &[&str]) -> Result<Command, String> {
         "audio" => match arg(1) {
             None | Some("streams" | "list") => no_more(2, Command::AudioStreams),
             Some("app-volume") => {
-                let idx_raw = arg(2).ok_or_else(|| bad("Нужен индекс потока из `audio streams`"))?;
-                let vol_raw = arg(3).ok_or_else(|| bad("Нужна громкость 0..100"))?;
-                let idx = number(idx_raw, "потока")?;
+                let idx_raw = arg(2).ok_or_else(|| bad("A stream index from `audio streams` is required"))?;
+                let vol_raw = arg(3).ok_or_else(|| bad("A volume 0..100 is required"))?;
+                let idx = number(idx_raw, "stream")?;
                 let vol = vol_raw
                     .trim_end_matches('%')
                     .parse::<u32>()
-                    .map_err(|_| bad(format!("Неверная громкость: {vol_raw}")))?;
+                    .map_err(|_| bad(format!("Invalid volume: {vol_raw}")))?;
                 if vol > 100 {
-                    return Err(bad("Громкость потока — от 0 до 100"));
+                    return Err(bad("A stream volume is from 0 to 100"));
                 }
                 no_more(4, Command::StreamVolume(idx, vol))
             }
             Some("app-mute") => {
-                let idx_raw = arg(2).ok_or_else(|| bad("Нужен индекс потока из `audio streams`"))?;
-                let idx = number(idx_raw, "потока")?;
+                let idx_raw = arg(2).ok_or_else(|| bad("A stream index from `audio streams` is required"))?;
+                let idx = number(idx_raw, "stream")?;
                 let sw = match arg(3) {
                     Some(m @ ("mute" | "unmute")) => mute(Some(m))?,
                     other => switch(other, Switch::Toggle)?,
@@ -331,18 +331,18 @@ fn parse(args: &[&str]) -> Result<Command, String> {
                 no_more(4, Command::StreamMute(idx, sw))
             }
             Some("app-output") => {
-                let idx_raw = arg(2).ok_or_else(|| bad("Нужен индекс потока из `audio streams`"))?;
-                let idx = number(idx_raw, "потока")?;
+                let idx_raw = arg(2).ok_or_else(|| bad("A stream index from `audio streams` is required"))?;
+                let idx = number(idx_raw, "stream")?;
                 if args.len() < 4 {
-                    return Err(bad("Нужно устройство вывода (имя или описание)"));
+                    return Err(bad("An output device (name or description) is required"));
                 }
                 let sink = args[3..].join(" ");
                 if sink.trim().is_empty() {
-                    return Err(bad("Нужно устройство вывода (имя или описание)"));
+                    return Err(bad("An output device (name or description) is required"));
                 }
                 Ok(Command::StreamOutput(idx, sink))
             }
-            Some(s) => Err(bad(format!("Неизвестная команда звука: {s}"))),
+            Some(s) => Err(bad(format!("Unknown sound command: {s}"))),
         },
         "brightness" => no_more(2, Command::Brightness(level(arg(1))?)),
         "night" | "dark" | "dnd" => {
@@ -355,12 +355,12 @@ fn parse(args: &[&str]) -> Result<Command, String> {
             Some("play-pause" | "play" | "pause") => no_more(2, Command::PlayPause),
             Some("next") => no_more(2, Command::Next),
             Some("previous" | "prev") => no_more(2, Command::Previous),
-            Some(s) => Err(bad(format!("Неизвестная команда медиа: {s}"))),
+            Some(s) => Err(bad(format!("Unknown media command: {s}"))),
         },
         "screenshot" => match arg(1) {
             None => no_more(1, Command::Screenshot("screen".into())),
             Some(t @ ("screen" | "window")) => no_more(2, Command::Screenshot(t.into())),
-            Some(s) => Err(bad(format!("Снимок: screen или window, а не {s}"))),
+            Some(s) => Err(bad(format!("Screenshot: screen or window, not {s}"))),
         },
         "larvis" => match arg(1) {
             None | Some("status") => no_more(2, Command::LarvisStatus),
@@ -368,12 +368,12 @@ fn parse(args: &[&str]) -> Result<Command, String> {
         },
         "lock" => no_more(1, Command::Lock),
         "suspend" => no_more(1, Command::Suspend),
-        s => Err(bad(format!("Неизвестная команда: {s}. featherctl help — список команд"))),
+        s => Err(bad(format!("Unknown command: {s}. `featherctl help` lists the commands"))),
     }
 }
 
 fn on_off(b: bool) -> &'static str {
-    if b { "вкл" } else { "выкл" }
+    if b { "on" } else { "off" }
 }
 
 fn print_json<T: serde::Serialize>(value: &T) {
@@ -385,7 +385,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
         Command::Help => println!("{HELP}"),
         Command::Version => {
             let (v, c) = (proxy.version()?, proxy.compositor_version()?);
-            if json { print_json(&serde_json::json!({"api": v, "compositor": c})) } else { println!("API {v}, Пёрышко {c}") }
+            if json { print_json(&serde_json::json!({"api": v, "compositor": c})) } else { println!("API {v}, Feather {c}") }
         }
         Command::Watch => {
             // One stream keeps the signals in the order they were sent
@@ -426,12 +426,12 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
             } else {
                 for w in list {
                     let mut flags = Vec::new();
-                    if w.focused { flags.push("фокус") }
-                    if w.minimized { flags.push("свёрнуто") }
-                    if w.maximized { flags.push("развёрнуто") }
-                    if w.fullscreen { flags.push("полный экран") }
+                    if w.focused { flags.push("focused") }
+                    if w.minimized { flags.push("minimised") }
+                    if w.maximized { flags.push("maximised") }
+                    if w.fullscreen { flags.push("fullscreen") }
                     let app = if w.app_name.is_empty() { &w.app_id } else { &w.app_name };
-                    println!("{:>4}  стол {}  {:<20} {}{}", w.id, w.space, app, w.title, if flags.is_empty() { String::new() } else { format!("  [{}]", flags.join(", ")) });
+                    println!("{:>4}  space {}  {:<20} {}{}", w.id, w.space, app, w.title, if flags.is_empty() { String::new() } else { format!("  [{}]", flags.join(", ")) });
                 }
             }
         }
@@ -443,7 +443,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
             let current = || -> Result<bool, Error> {
                 let list = proxy.list_windows()?;
                 let w = list.iter().find(|w| if id == 0 { w.focused } else { w.id == id });
-                let w = w.ok_or_else(|| Error::NotFound(format!("Нет окна {id}")))?;
+                let w = w.ok_or_else(|| Error::NotFound(format!("No window {id}")))?;
                 Ok(if full { w.fullscreen } else { w.maximized })
             };
             let on = if s == Switch::Toggle { !current()? } else { s.resolve(false) };
@@ -456,7 +456,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
                 if json {
                     print_json(&serde_json::json!({"pip": pip, "ghost": ghost}));
                 } else {
-                    println!("pip: {}, сквозь курсор: {}", on_off(pip), on_off(ghost));
+                    println!("pip: {}, click-through: {}", on_off(pip), on_off(ghost));
                 }
             }
             PipAction::On => proxy.set_window_pip(id, true, false)?,
@@ -476,7 +476,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
                 print_json(&list);
             } else {
                 for s in list {
-                    println!("{}{}  окон: {}", s.number, if s.current { " *" } else { "  " }, s.windows);
+                    println!("{}{}  windows: {}", s.number, if s.current { " *" } else { "  " }, s.windows);
                 }
             }
         }
@@ -506,8 +506,8 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
                 print_json(&s);
             } else {
                 println!(
-                    "полка: {}, элементов: {}",
-                    if s.open { "открыта" } else { "скрыта" },
+                    "shelf: {}, items: {}",
+                    if s.open { "open" } else { "hidden" },
                     s.items.len()
                 );
                 for item in s.items {
@@ -542,7 +542,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
                 print_json(&list);
             } else {
                 for a in list {
-                    println!("{:<40} {}{}", a.id, a.name, if a.running { "  [открыто]" } else { "" });
+                    println!("{:<40} {}{}", a.id, a.name, if a.running { "  [open]" } else { "" });
                 }
             }
         }
@@ -554,28 +554,28 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
                 Command::Volume(_) => {
                     let a = proxy.get_audio()?;
                     let mut text = if a.available {
-                        format!("{} %{}  ({})", a.volume, if a.muted { ", без звука" } else { "" }, a.output)
+                        format!("{} %{}  ({})", a.volume, if a.muted { ", muted" } else { "" }, a.output)
                     } else {
-                        "Нет устройства вывода звука".into()
+                        "No sound output device".into()
                     };
                     if a.mic_available {
-                        text += &format!("\nмикрофон: {} %{}  ({})", a.mic_volume, if a.mic_muted { ", выключен" } else { "" }, a.input);
+                        text += &format!("\nmicrophone: {} %{}  ({})", a.mic_volume, if a.mic_muted { ", off" } else { "" }, a.input);
                     } else {
-                        text += "\nмикрофона нет";
+                        text += "\nno microphone";
                     }
                     show(serde_json::to_value(&a).unwrap_or_default(), text);
                 }
                 Command::Display => {
                     let d = proxy.get_display()?;
-                    let b = if d.brightness < 0 { "недоступна".to_string() } else { format!("{} %", d.brightness) };
+                    let b = if d.brightness < 0 { "unavailable".to_string() } else { format!("{} %", d.brightness) };
                     show(
                         serde_json::to_value(&d).unwrap_or_default(),
-                        format!("яркость: {b}\nночной режим: {}\nтёмная тема: {}\nне беспокоить: {}", on_off(d.night_shift), on_off(d.dark_mode), on_off(d.do_not_disturb)),
+                        format!("brightness: {b}\nnight mode: {}\ndark theme: {}\ndo not disturb: {}", on_off(d.night_shift), on_off(d.dark_mode), on_off(d.do_not_disturb)),
                     );
                 }
                 _ => {
                     let m = proxy.get_media()?;
-                    let text = if m.available { format!("{} — {} — {} ({})", m.player, m.artist, m.title, if m.playing { "играет" } else { "пауза" }) } else { "Плеер не найден".into() };
+                    let text = if m.available { format!("{} — {} — {} ({})", m.player, m.artist, m.title, if m.playing { "playing" } else { "paused" }) } else { "No player found".into() };
                     show(serde_json::to_value(&m).unwrap_or_default(), text);
                 }
             }
@@ -595,7 +595,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
             if json {
                 print_json(&streams);
             } else if streams.is_empty() {
-                println!("Нет активных звуковых потоков");
+                println!("No active sound streams");
             } else {
                 for st in streams {
                     let out = if st.sink_label.is_empty() { &st.sink } else { &st.sink_label };
@@ -604,7 +604,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
                         "{:>4}  {:>3} %{}  [{out}]  {}{}",
                         st.index,
                         st.volume,
-                        if st.muted { " [без звука]" } else { "" },
+                        if st.muted { " [muted]" } else { "" },
                         st.name,
                         sub
                     );
@@ -618,7 +618,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
                 let cur = streams
                     .iter()
                     .find(|st| st.index == index)
-                    .ok_or_else(|| Error::NotFound(format!("Нет звукового потока #{index}")))?;
+                    .ok_or_else(|| Error::NotFound(format!("No sound stream #{index}")))?;
                 !cur.muted
             } else {
                 s.resolve(false)
@@ -628,7 +628,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
         Command::StreamOutput(index, sink) => proxy.move_stream_output(index, &sink)?,
         Command::Brightness(Level::Show) => {
             let b = proxy.get_display()?.brightness;
-            if b < 0 { return Err(Error::Unavailable("Яркость этого экрана не управляется".into())) }
+            if b < 0 { return Err(Error::Unavailable("The brightness of this screen cannot be controlled".into())) }
             println!("{b}");
         }
         Command::Brightness(Level::Set(v)) => println!("{}", proxy.set_brightness(v)?),
@@ -654,7 +654,7 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
             if json {
                 print_json(&serde_json::json!({"running": running, "shown": shown}))
             } else {
-                println!("{}", if !running { "не запущен" } else if shown { "показан" } else { "скрыт" });
+                println!("{}", if !running { "not running" } else if shown { "shown" } else { "hidden" });
             }
         }
         Command::Larvis(s) => {
@@ -667,16 +667,16 @@ fn run(proxy: &Shell1ProxyBlocking, command: Command, json: bool) -> Result<(), 
     Ok(())
 }
 
-/// Сообщение ошибки без имени D-Bus, если сервер его дал
+/// The error message without the D-Bus name, if the server gave one
 fn message(e: &Error) -> String {
     use zbus::DBusError;
     match e {
         Error::ZBus(zbus::Error::MethodError(name, Some(text), _)) => format!("{text} ({name})"),
         Error::ZBus(zbus::Error::FDO(f)) if matches!(**f, zbus::fdo::Error::ServiceUnknown(_)) => {
-            format!("Пёрышко не отвечает: на шине нет {}", feather_api::bus_name())
+            format!("Feather is not responding: {} is not on the bus", feather_api::bus_name())
         }
         Error::ZBus(e) => e.to_string(),
-        other => other.description().unwrap_or("ошибка").to_string(),
+        other => other.description().unwrap_or("error").to_string(),
     }
 }
 
