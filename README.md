@@ -2,7 +2,7 @@
 
 **A lightweight Linux desktop with its own Wayland compositor, real-time GPU `Liquid Glass`, three workspace layout modes (floating windows, automatic BSP tiling, and a scrollable horizontal ribbon), and eight native applications in Rust.**
 
-[🇷🇺 Русский](README.ru.md) · **[📖 User Guide (EN)](docs/USER_GUIDE.en.md)** · **[📖 Руководство (RU)](docs/USER_GUIDE.md)** · [Shell features](#shell-features) · [Build and install](#build-and-install) · [Keyboard shortcuts](#keyboard-shortcuts) · [Roadmap](docs/ROADMAP.md)
+[🇷🇺 Русский](README.ru.md) · **[📖 User Guide (EN)](docs/USER_GUIDE.en.md)** · **[📖 Руководство (RU)](docs/USER_GUIDE.md)** · [Shell features](#shell-features) · [Build and install](#build-and-install) · [Keyboard shortcuts](#keyboard-shortcuts) · [Roadmap](docs/ROADMAP.en.md)
 
 ![The Feather desktop running its native Terminal](docs/images/desktop.png)
 
@@ -364,9 +364,9 @@ mapped libraries and drivers and differs from private memory. Separate client
 applications are outside the compositor's memory budget.
 
 Screenshot peaks and first-frame costs are evaluated separately. Final validation
-of every budget in a real DRM session remains open. See the [specification](docs/SPEC.md),
+of every budget in a real DRM session remains open. See the [specification](docs/SPEC.en.md),
 [memory report](docs/MEMORY_CHECKS.md), [raster report](docs/RASTER_CHECKS.md),
-[UI report](docs/UI_CHECKS.md), and [changelog](CHANGELOG.md).
+[UI report](docs/UI_CHECKS.md), and [changelog](CHANGELOG.en.md).
 
 ## Build and install
 
@@ -661,7 +661,7 @@ GPU and Wayland objects remain on the main thread.
 
 Animations transform existing buffers. Damage tracking limits drawing to changed
 regions. Font tables are mmap-backed, glyphs are rasterized on demand, and caches
-have explicit limits. See [SPEC](docs/SPEC.md) and [AGENTS.md](AGENTS.md) for the
+have explicit limits. See [SPEC](docs/SPEC.en.md) and [AGENTS.md](AGENTS.md) for the
 architecture and development rules.
 
 ## Testing and contributing
@@ -702,7 +702,7 @@ for every device or application. Current open areas include:
 - Further Wayland protocol coverage, IME, and application compatibility.
 - Additional native application features and packaging for other distributions.
 
-See [ROADMAP](docs/ROADMAP.md) and [CHANGELOG](CHANGELOG.md). Detailed reports in
+See [ROADMAP](docs/ROADMAP.en.md) and [CHANGELOG](CHANGELOG.en.md). Detailed reports in
 `docs/` are dated; later changes may supersede earlier limitations. Consult the
 current code and recent changelog entries when assessing the present state.
 Most detailed development documents are currently in Russian; this English README
