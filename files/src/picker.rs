@@ -46,6 +46,7 @@ impl App {
             } else {
                 30.0
             } + p.config.choices.len() as f32 * 30.0
+            + 30.0
         })
     }
     pub(super) fn picker_matches(&self, e: &Entry) -> bool {
@@ -194,6 +195,27 @@ impl App {
             }
         }
     }
+    pub(super) fn picker_next_sort(&mut self) {
+        const ORDER: [(fsops::SortBy, bool); 8] = [
+            (fsops::SortBy::Name, false),
+            (fsops::SortBy::Name, true),
+            (fsops::SortBy::Modified, true),
+            (fsops::SortBy::Modified, false),
+            (fsops::SortBy::Size, true),
+            (fsops::SortBy::Size, false),
+            (fsops::SortBy::Kind, false),
+            (fsops::SortBy::Kind, true),
+        ];
+        let current = (self.sort.by, self.sort.descending);
+        let next = ORDER
+            .iter()
+            .position(|&s| s == current)
+            .map_or(ORDER[0], |i| ORDER[(i + 1) % ORDER.len()]);
+        self.apply_sort(fsops::Sort {
+            by: next.0,
+            descending: next.1,
+        });
+    }
     pub(super) fn picker_hit(&self, x: f32, y: f32) -> Option<Hit> {
         let p = self.picker.as_ref()?;
         let top = self.h - self.picker_height();
@@ -233,6 +255,9 @@ impl App {
                 return Some(Hit::PickerChoice(i));
             }
             row += 30.0;
+        }
+        if y >= row && y < row + 24.0 {
+            return Some(Hit::PickerSort);
         }
         Some(Hit::Nothing)
     }
@@ -322,7 +347,7 @@ impl App {
         );
         let mut row = top + 8.0;
         if p.config.mode == Mode::Save {
-            theme::fill_rrect(pm, x, row, w, 28.0, 6.0, rgba(245, 245, 248, 255));
+            theme::fill_rrect(pm, x, row, w, 28.0, 6.0, colors::control());
             theme::stroke_rrect(
                 pm,
                 x,
@@ -356,7 +381,7 @@ impl App {
                 .get(p.filter)
                 .map(|f| f.name.as_str())
                 .unwrap_or("Все файлы");
-            theme::fill_rrect(pm, x, row, w, 24.0, 6.0, rgba(240, 240, 245, 255));
+            theme::fill_rrect(pm, x, row, w, 24.0, 6.0, colors::control());
             self.fonts.draw_text_clipped(
                 pm,
                 &format!("Тип файлов: {label}  ▾"),
@@ -380,7 +405,7 @@ impl App {
                 } else {
                     "Выкл."
                 });
-            theme::fill_rrect(pm, x, row, w, 24.0, 6.0, rgba(240, 240, 245, 255));
+            theme::fill_rrect(pm, x, row, w, 24.0, 6.0, colors::control());
             self.fonts.draw_text_clipped(
                 pm,
                 &format!("{}: {value}  ▾", c.label),
@@ -393,6 +418,18 @@ impl App {
             );
             row += 30.0;
         }
+        let arrow = if self.sort.descending { "↓" } else { "↑" };
+        theme::fill_rrect(pm, x, row, w, 24.0, 6.0, colors::control());
+        self.fonts.draw_text_clipped(
+            pm,
+            &format!("Сортировка: {} {arrow}  ▾", self.sort.by.menu_label()),
+            x + 10.0,
+            row + 6.0,
+            w - 20.0,
+            11.0,
+            colors::text(),
+            false,
+        );
         let hint = if p.pending.is_some() {
             "Проверка файла…".into()
         } else if p.overwrite.is_some() {
@@ -433,7 +470,7 @@ impl App {
                 if accent {
                     colors::accent()
                 } else {
-                    rgba(235, 235, 241, 255)
+                    colors::control()
                 },
             );
             self.fonts.draw_text_centered(

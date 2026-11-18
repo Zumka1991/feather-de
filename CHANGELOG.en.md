@@ -9,6 +9,14 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.25.2 — 2026-11-18
+
+- **File picker in the dark theme:** the Cancel button, file-name field, type filter and
+  choices no longer appear white-on-white; their background follows the theme.
+- **Sorting in the dialog:** a "Sort" row in the bottom panel cycles name, date, size and
+  kind plus direction; folders stay on top.
+- No new package dependencies.
+
 ## 0.25.1 — 2026-11-16
 
 - **Installation in English.** The one-line installer, the Arch installer, `setup-desktop` and the

@@ -145,7 +145,7 @@ enum Hit {
     ConflictSkip,
     ConflictAll,
     Nothing,
-    PickerAccept,PickerCancel,PickerName,PickerFilter,PickerChoice(usize),
+    PickerAccept,PickerCancel,PickerName,PickerFilter,PickerChoice(usize),PickerSort,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -587,11 +587,16 @@ impl App {
     /// A new order (menu or a column title): `toggle` turns the current one around. The
     /// selection and the item under the cursor stay
     fn set_sort(&mut self, by: fsops::SortBy, toggle: bool) {
-        self.sort = if self.sort.by == by {
+        let sort = if self.sort.by == by {
             fsops::Sort { by, descending: self.sort.descending ^ toggle }
         } else {
             fsops::Sort { by, descending: by.descending_first() }
         };
+        self.apply_sort(sort);
+    }
+
+    fn apply_sort(&mut self, sort: fsops::Sort) {
+        self.sort = sort;
         let cursor = self.cursor.map(|c| self.entry(c).path.clone());
         fsops::sort_entries_by(&mut self.entries, self.sort);
         self.refilter();
@@ -1731,6 +1736,7 @@ impl App {
             Hit::PickerName=>{if let Some(p)=self.picker.as_mut(){p.name_focus=true;}},
             Hit::PickerFilter=>{self.picker_next_filter();},
             Hit::PickerChoice(i)=>self.picker_next_choice(i),
+            Hit::PickerSort=>self.picker_next_sort(),
             Hit::Close => effects.push(Effect::Close),
             Hit::Minimize => effects.push(Effect::Minimize),
             Hit::Zoom => effects.push(Effect::ToggleMaximize),
@@ -3455,6 +3461,16 @@ mod tests {
         assert!(app.save_checked(root.join("stale"),Ok(None)).is_empty());
         assert!(matches!(app.save_checked(root.join("  spaces.txt  "),Ok(None)).as_slice(),[Effect::Picked(_)]));
         app.set_picker(Config::default());
+        let sort_y = app.h - app.picker_height() + 20.0;
+        assert_eq!(app.picker_hit(500.0, sort_y), Some(Hit::PickerSort));
+        app.picker_next_sort();
+        assert_eq!((app.sort.by, app.sort.descending), (fsops::SortBy::Name, true));
+        app.picker_next_sort();
+        assert_eq!((app.sort.by, app.sort.descending), (fsops::SortBy::Modified, true));
+        app.picker_next_sort();
+        assert_eq!((app.sort.by, app.sort.descending), (fsops::SortBy::Modified, false));
+        app.picker_next_sort();
+        assert_eq!((app.sort.by, app.sort.descending), (fsops::SortBy::Size, true));
         assert!(matches!(app.picker_key(smithay_client_toolkit::seat::keyboard::Keysym::Escape,None,None,Mods::default()).unwrap().as_slice(),[Effect::Close]));
         assert_eq!(std::fs::read_to_string(root.join("file2.txt")).unwrap(),"file2.txt");
         std::fs::remove_dir_all(root).unwrap();
@@ -3588,6 +3604,14 @@ mod tests {
                     image.save_png(format!("/tmp/feather-inputs/files-dark-{view:?}-{scale}.png")).unwrap();
                     app.rename = None;
                 }
+                let mut app = app_in(&root);
+                app.resize(1000.0, 640.0);
+                app.set_picker(feather_ui::picker::Config::default());
+                let mut image = tiny_skia::Pixmap::new((1000.0 * scale) as u32, (640.0 * scale) as u32).unwrap();
+                app.paint(&mut image.as_mut());
+                let cancel = image.pixel((765.0 * scale) as u32, (610.0 * scale) as u32).unwrap();
+                assert!(cancel.red() < 100 && cancel.green() < 100 && cancel.blue() < 100, "white Cancel button in dark mode");
+                image.save_png(format!("/tmp/feather-inputs/files-picker-dark-{scale}.png")).unwrap();
             });
         }
         std::fs::remove_dir_all(root).unwrap();
