@@ -109,11 +109,24 @@ pub struct DrmBackend {
     pub connector_name: String,
     pub modes: Vec<smithay::reexports::drm::control::Mode>,
 }
-fn pick_gpu(seat: &str) -> Option<PathBuf> {
+fn pick_gpu(seat: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(path) = std::env::var_os("FEATHER_DRM_DEVICE") {
+        let path = PathBuf::from(path);
+        let card = path.canonicalize()
+            .map_err(|e| format!("FEATHER_DRM_DEVICE={}: {e}", path.display()))?;
+        if !all_gpus(seat)?.contains(&card) {
+            return Err(format!(
+                "FEATHER_DRM_DEVICE={}: expected a DRM card on seat {seat}",
+                path.display()
+            ).into());
+        }
+        return Ok(card);
+    }
     primary_gpu(seat)
         .ok()
         .flatten()
         .or_else(|| all_gpus(seat).ok().and_then(|g| g.into_iter().next()))
+        .ok_or_else(|| "видеокарта не найдена".into())
 }
 impl DrmBackend {
     pub fn sync_primary(&mut self, name: &str) {
@@ -178,6 +191,7 @@ impl DrmBackend {
         if device == self.device || self.extra.iter().any(|g| g.device == device) {
             return Ok(());
         }
+        tracing::info!("DRM: probing secondary card {}", path.display());
         let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
         let gbm = GbmDevice::new(fd.clone())?;
         let linear: Vec<_> = self
@@ -327,6 +341,11 @@ fn scan(
             let create = |mode: smithay::reexports::drm::control::Mode,
                           manager: &mut GbmDrmOutputManager,
                           renderer: &mut GlesRenderer| {
+                let mode_info = mode_info(mode);
+                tracing::info!(
+                    "DRM: initializing {name} on card {device:#x}, {}x{} @ {} mHz",
+                    mode_info.width, mode_info.height, mode_info.refresh,
+                );
                 manager.initialize_output::<_, OutputElement>(
                     crtc,
                     mode,
@@ -406,7 +425,12 @@ pub fn init(
 ) -> Result<DrmBackend, Box<dyn std::error::Error>> {
     let (mut session, notifier) = LibSeatSession::new().map_err(|e| format!("libseat: {e}"))?;
     let seat = session.seat();
-    let path = pick_gpu(&seat).ok_or("видеокарта не найдена")?;
+    let path = pick_gpu(&seat)?;
+    let single_gpu = single_gpu();
+    tracing::info!(
+        "DRM: initializing EGL on {} (seat {seat}, single GPU: {single_gpu})",
+        path.display(),
+    );
     let fd = session
         .open(
             &path,
@@ -468,7 +492,7 @@ pub fn init(
     handle.insert_source(UdevBackend::new(&seat)?, move |event, _, state| {
         let crate::backend::Backend::Drm(d) = &mut state.backend else { return };
         match event {
-            UdevEvent::Added { device_id, path } if !single_gpu() => d.gpu_events.push((device_id as u64, Some(path))),
+            UdevEvent::Added { device_id, path } if !single_gpu => d.gpu_events.push((device_id as u64, Some(path))),
             UdevEvent::Removed { device_id } => d.gpu_events.push((device_id as u64, None)),
             _ => {}
         }
@@ -495,7 +519,7 @@ pub fn init(
         connector_name: String::new(),
         modes: Vec::new(),
     };
-    if !single_gpu() {
+    if !single_gpu {
         for other in all_gpus(&seat).unwrap_or_default().into_iter().filter(|p| *p != path) {
             if let Err(e) = backend.open_secondary(&other) {
                 tracing::warn!("DRM: видеокарта {} не подключена: {e}", other.display());

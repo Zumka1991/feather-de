@@ -41,9 +41,13 @@ while true; do
     fi
     echo "=== $(date) ===" >> "$LOG_DIR/drm.log"
     RUST_LOG="${RUST_LOG:-feather_de=info,warn}" "$BIN" --drm --standalone "$@" >> "$LOG_DIR/drm.log" 2>&1
+    status=$?
+    if (( status != 0 )); then
+        echo "Feather DRM session exited with status $status" >> "$LOG_DIR/drm.log"
+    fi
     # reload-binary.sh asks for a restart with the freshly built binary
     if [[ -f /tmp/feather-restart ]]; then
         continue
     fi
-    break
+    exit "$status"
 done

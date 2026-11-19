@@ -123,6 +123,7 @@
   - [ ] Физические KMS/hotplug/VT и бюджеты на нескольких мониторах (второго монитора для проверки нет)
   - [x] Мониторы на второй видеокарте (гибридная графика, док-станции) — [MONITORS.md](MONITORS.md#несколько-видеокарт--2026-11-15)
     - [ ] Проверка на железе с двумя видеокартами; копирование кадра для драйверов без обмена буферами
+    - [x] Ручной выбор DRM-карты и журнал этапов запуска для диагностики [#3](https://github.com/Zumka1991/feather-de/issues/3)
 - [x] VRR (`vrr_supported` / `use_vrr` / `FEATHER_VRR`), explicit sync (`wp_linux_drm_syncobj_v1`), direct scanout (`ALLOW_PRIMARY_PLANE_SCANOUT_ANY`)
 - [x] Ночной режим (тёплые цвета по расписанию, гамма DRM) — [DISPLAY_COLOR.md](DISPLAY_COLOR.md)
 - [x] Яркость: logind/backlight и DDC/CI внешних мониторов — [DISPLAY_COLOR.md](DISPLAY_COLOR.md#яркость-srcbrightnessrs)
