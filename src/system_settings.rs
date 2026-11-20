@@ -1438,10 +1438,10 @@ impl Panel {
                                     "Подключено"
                                 } else if busy {
                                     "Подключение…"
-                                } else if d.paired {
+                                } else if d.has_bond() {
                                     "Сопряжено"
                                 } else {
-                                    // Trusted, but the bond is gone: Connect pairs it again.
+                                    // Trusted or ephemerally paired without a saved bond: Connect pairs it again.
                                     "Требуется повторное сопряжение"
                                 };
                                 let mut detail = format!("{} · {state}", d.kind_label());
@@ -5162,6 +5162,7 @@ mod tests {
                     connected: true,
                     rssi: None,
                     battery: Some(85),
+                    ..Default::default()
                 },
                 crate::controls::bluetooth::BtDevice {
                     path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".into(),
@@ -5174,6 +5175,7 @@ mod tests {
                     connected: false,
                     rssi: None,
                     battery: Some(64),
+                    ..Default::default()
                 },
                 crate::controls::bluetooth::BtDevice {
                     path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03".into(),
@@ -5186,6 +5188,7 @@ mod tests {
                     connected: false,
                     rssi: Some(-52),
                     battery: None,
+                    ..Default::default()
                 },
             ],
             error: None,

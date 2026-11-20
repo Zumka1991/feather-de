@@ -138,6 +138,7 @@ see the [verification order](LOCK_POWER.md#проверки). The overall accept
 - [x] Network: saved Wi-Fi, Ethernet, VPN (NetworkManager) — [NETWORK.md](NETWORK.md)
 - [x] Bluetooth (BlueZ): turning on, scanning, connecting — [BLUETOOTH.md](BLUETOOTH.md)
 - [x] Bluetooth: "Forget" for any remembered device (including one with a lost pairing) and cancelling a hung connection — [BLUETOOTH.md](BLUETOOTH.md)
+- [x] Bluetooth: persistent bonding (`Bonded = true`) across reboots (built-in `org.bluez.Agent1`, `Pairable = true`, and `Connectable = true`) — [BLUETOOTH.md](BLUETOOTH.md)
 - [x] Keyboard: key repeat (delay, rate), Caps Lock
 - [x] Keyboard: Caps Lock as a way in "Switch Language" (from forum feedback)
 - [x] Keyboard: Ilya Birman's typographic layout on the right Alt (`misc:typo`) — from the first feedback

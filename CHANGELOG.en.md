@@ -9,6 +9,15 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.1 — 2026-11-21
+
+- **Bluetooth headphones & accessories stay paired across reboots:** Feather now registers a
+  built-in `org.bluez.Agent1` pairing agent (`/org/feather/BluetoothAgent`) and keeps powered
+  adapters in `Pairable = true` (`Bondable`) and `Connectable = true` modes so BlueZ stores
+  persistent link keys (`Bonded = true`) on disk instead of an ephemeral session-only pair, and
+  trusted headphones reconnect automatically when taken out of their case.
+- No new package dependencies.
+
 ## 0.26.0 — 2026-11-20
 
 - **Create folders in the file/directory picker:** a new "New Folder" button on the bottom-left

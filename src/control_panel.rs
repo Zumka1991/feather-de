@@ -712,8 +712,10 @@ impl Panel {
                         "Подключено"
                     } else if self.bluetooth.connecting.as_deref() == Some(d.path.as_str()) {
                         "Подключение… · нажмите, чтобы отменить"
-                    } else if d.paired {
+                    } else if d.has_bond() {
                         "Сопряжено"
+                    } else if d.remembered() {
+                        "Требуется повторное сопряжение"
                     } else {
                         d.kind_label()
                     };

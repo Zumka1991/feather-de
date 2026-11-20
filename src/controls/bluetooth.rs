@@ -1,12 +1,17 @@
 use super::*;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+use zbus::message::Header;
 
 const BLUEZ: &str = "org.bluez";
 const ROOT: &str = "/";
+const BLUEZ_PATH: &str = "/org/bluez";
 const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
+const AGENT_MANAGER: &str = "org.bluez.AgentManager1";
 const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
 const BATTERY: &str = "org.bluez.Battery1";
+const AGENT_PATH: &str = "/org/feather/BluetoothAgent";
+const AGENT_CAPABILITY: &str = "DisplayYesNo";
 
 type Props = HashMap<String, OwnedValue>;
 type Interfaces = HashMap<String, Props>;
@@ -20,6 +25,9 @@ pub struct BtDevice {
     pub name: String,
     pub icon: String,
     pub paired: bool,
+    /// `Paired == true` while BlueZ explicitly reports `Bonded == false` (ephemeral session key
+    /// in RAM with no persistent LinkKey/LTK stored on disk; would be lost across reboots).
+    pub unbonded: bool,
     pub trusted: bool,
     pub connected: bool,
     pub battery: Option<u8>,
@@ -30,6 +38,11 @@ impl BtDevice {
     /// BlueZ keeps a record of it: paired, trusted (also when the bond was lost) or connected.
     pub fn remembered(&self) -> bool {
         self.paired || self.trusted || self.connected
+    }
+
+    /// Persistent cryptographic bond exists on disk (or `Bonded` is omitted by an older daemon).
+    pub fn has_bond(&self) -> bool {
+        self.paired && !self.unbonded
     }
 
     pub fn kind_label(&self) -> &'static str {
@@ -92,6 +105,230 @@ fn boolean(p: &Props, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn opt_bool(p: &Props, key: &str) -> Option<bool> {
+    p.get(key).and_then(|v| bool::try_from(v).ok())
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AdapterMeta {
+    path: String,
+    powered: bool,
+    connectable: Option<bool>,
+    pairable: Option<bool>,
+}
+
+#[derive(zbus::DBusError, Debug)]
+#[zbus(prefix = "org.bluez.Error")]
+enum BtAgentError {
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    Rejected(String),
+}
+
+#[derive(Default)]
+struct AgentPolicy {
+    bluez_owner: Option<String>,
+    active_target: Option<String>,
+    remembered: HashSet<String>,
+}
+
+struct PairingGuard {
+    policy: Arc<Mutex<AgentPolicy>>,
+}
+
+impl PairingGuard {
+    fn new(policy: &Arc<Mutex<AgentPolicy>>, device_path: &str) -> Self {
+        if let Ok(mut p) = policy.lock() {
+            p.active_target = Some(device_path.to_string());
+        }
+        Self {
+            policy: policy.clone(),
+        }
+    }
+}
+
+impl Drop for PairingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut p) = self.policy.lock() {
+            p.active_target = None;
+        }
+    }
+}
+
+struct BtAgent(Arc<Mutex<AgentPolicy>>);
+
+impl BtAgent {
+    async fn authorize(
+        &self,
+        device: &OwnedObjectPath,
+        header: &Header<'_>,
+        conn: &zbus::Connection,
+    ) -> Result<(), BtAgentError> {
+        let Some(sender) = header.sender().map(|s| s.as_str().to_string()) else {
+            return Err(BtAgentError::Rejected("missing sender".into()));
+        };
+        let cached_matches = self
+            .0
+            .lock()
+            .ok()
+            .and_then(|p| p.bluez_owner.clone())
+            .is_some_and(|owner| owner == sender);
+        if !cached_matches {
+            let owner = zbus::fdo::DBusProxy::new(conn)
+                .await?
+                .get_name_owner(BLUEZ.try_into().map_err(zbus::Error::from)?)
+                .await
+                .map_err(|_| BtAgentError::Rejected("org.bluez has no owner".into()))?;
+            if owner.as_str() != sender {
+                return Err(BtAgentError::Rejected("only org.bluez may call Agent1".into()));
+            }
+            if let Ok(mut p) = self.0.lock() {
+                p.bluez_owner = Some(owner.to_string());
+            }
+        }
+        let dev = device.as_str();
+        let allowed = self
+            .0
+            .lock()
+            .map(|p| p.active_target.as_deref() == Some(dev) || p.remembered.contains(dev))
+            .unwrap_or(false);
+        if allowed {
+            Ok(())
+        } else {
+            Err(BtAgentError::Rejected("unsolicited pairing rejected".into()))
+        }
+    }
+}
+
+#[zbus::interface(name = "org.bluez.Agent1")]
+impl BtAgent {
+    fn release(&self) {}
+
+    async fn request_pin_code(
+        &self,
+        device: OwnedObjectPath,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> Result<String, BtAgentError> {
+        self.authorize(&device, &header, conn).await?;
+        Ok("0000".into())
+    }
+
+    async fn display_pin_code(
+        &self,
+        device: OwnedObjectPath,
+        pincode: String,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> Result<(), BtAgentError> {
+        let _ = pincode;
+        self.authorize(&device, &header, conn).await
+    }
+
+    async fn request_passkey(
+        &self,
+        device: OwnedObjectPath,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> Result<u32, BtAgentError> {
+        self.authorize(&device, &header, conn).await?;
+        Ok(0)
+    }
+
+    async fn display_passkey(
+        &self,
+        device: OwnedObjectPath,
+        passkey: u32,
+        entered: u16,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> Result<(), BtAgentError> {
+        let _ = (passkey, entered);
+        self.authorize(&device, &header, conn).await
+    }
+
+    async fn request_confirmation(
+        &self,
+        device: OwnedObjectPath,
+        passkey: u32,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> Result<(), BtAgentError> {
+        let _ = passkey;
+        self.authorize(&device, &header, conn).await
+    }
+
+    async fn request_authorization(
+        &self,
+        device: OwnedObjectPath,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> Result<(), BtAgentError> {
+        self.authorize(&device, &header, conn).await
+    }
+
+    async fn authorize_service(
+        &self,
+        device: OwnedObjectPath,
+        uuid: String,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> Result<(), BtAgentError> {
+        let _ = uuid;
+        self.authorize(&device, &header, conn).await
+    }
+
+    fn cancel(&self) {}
+}
+
+async fn register_default_agent(conn: &zbus::Connection, policy: &Arc<Mutex<AgentPolicy>>) {
+    if let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await {
+        if let Ok(name) = BLUEZ.try_into() {
+            let owner = dbus.get_name_owner(name).await.ok().map(|o| o.to_string());
+            if let Ok(mut p) = policy.lock() {
+                p.bluez_owner = owner;
+            }
+        }
+    }
+    let Ok(agent_path) = OwnedObjectPath::try_from(AGENT_PATH) else {
+        return;
+    };
+    let Ok(mgr) = proxy(conn, BLUEZ_PATH, AGENT_MANAGER).await else {
+        return;
+    };
+    let _ = mgr
+        .call::<_, _, ()>("RegisterAgent", &(agent_path.clone(), AGENT_CAPABILITY))
+        .await;
+    let _ = mgr
+        .call::<_, _, ()>("RequestDefaultAgent", &(agent_path,))
+        .await;
+}
+
+/// Ensures the powered adapter accepts incoming reconnections from trusted accessories
+/// (`Connectable = true`) and saves persistent link keys during pairing (`Pairable = true`,
+/// which maps to `MGMT_OP_SET_BONDABLE` in the Linux kernel).
+async fn ensure_adapter_ready(conn: &zbus::Connection, meta: &AdapterMeta) -> bool {
+    if !meta.powered || meta.path.is_empty() {
+        return false;
+    }
+    let need_connectable = meta.connectable == Some(false);
+    let need_pairable = meta.pairable == Some(false);
+    if !need_connectable && !need_pairable {
+        return false;
+    }
+    let Ok(pxy) = proxy(conn, &meta.path, ADAPTER).await else {
+        return false;
+    };
+    let mut changed = false;
+    if need_connectable && pxy.set_property("Connectable", true).await.is_ok() {
+        changed = true;
+    }
+    if need_pairable && pxy.set_property("Pairable", true).await.is_ok() {
+        changed = true;
+    }
+    changed
+}
+
 fn text<'a>(p: &'a Props, key: &str) -> Option<&'a str> {
     p.get(key).and_then(|v| <&str>::try_from(v).ok())
 }
@@ -133,13 +370,13 @@ fn is_mac_placeholder(name: &str, address: &str) -> bool {
         })
 }
 
-fn parse_objects(objects: &ManagedObjects) -> Bluetooth {
+fn parse_managed(objects: &ManagedObjects) -> (Bluetooth, AdapterMeta) {
     let mut adapters: Vec<(&str, &Props)> = objects
         .iter()
         .filter_map(|(p, ifaces)| Some((p.as_str(), ifaces.get(ADAPTER)?)))
         .collect();
     if adapters.is_empty() {
-        return Bluetooth::default();
+        return (Bluetooth::default(), AdapterMeta::default());
     }
     adapters.sort_by(|(pa, a), (pb, b)| {
         boolean(b, "Powered")
@@ -154,6 +391,12 @@ fn parse_objects(objects: &ManagedObjects) -> Bluetooth {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("Bluetooth")
         .to_string();
+    let meta = AdapterMeta {
+        path: adapter_path.to_string(),
+        powered,
+        connectable: opt_bool(adapter_props, "Connectable"),
+        pairable: opt_bool(adapter_props, "Pairable"),
+    };
 
     let mut devices = Vec::new();
     for (obj_path, ifaces) in objects {
@@ -168,6 +411,7 @@ fn parse_objects(objects: &ManagedObjects) -> Bluetooth {
         let raw_name = text(dev, "Name").unwrap_or("").trim();
         let alias = text(dev, "Alias").unwrap_or("").trim();
         let paired = boolean(dev, "Paired");
+        let unbonded = paired && opt_bool(dev, "Bonded") == Some(false);
         let trusted = boolean(dev, "Trusted");
         let connected = powered && boolean(dev, "Connected");
         let icon = text(dev, "Icon").unwrap_or("").trim().to_string();
@@ -201,6 +445,7 @@ fn parse_objects(objects: &ManagedObjects) -> Bluetooth {
             name,
             icon,
             paired,
+            unbonded,
             trusted,
             connected,
             battery,
@@ -211,6 +456,7 @@ fn parse_objects(objects: &ManagedObjects) -> Bluetooth {
     devices.sort_by(|a, b| {
         b.connected
             .cmp(&a.connected)
+            .then(b.has_bond().cmp(&a.has_bond()))
             .then(b.paired.cmp(&a.paired))
             .then(b.rssi.unwrap_or(i16::MIN).cmp(&a.rssi.unwrap_or(i16::MIN)))
             .then(a.name.cmp(&b.name))
@@ -234,22 +480,46 @@ fn parse_objects(objects: &ManagedObjects) -> Bluetooth {
         None
     };
 
-    Bluetooth {
-        available: true,
-        powered,
-        discovering,
-        adapter_name,
-        connected,
-        connecting: None,
-        devices,
-        error: None,
-    }
+    (
+        Bluetooth {
+            available: true,
+            powered,
+            discovering,
+            adapter_name,
+            connected,
+            connecting: None,
+            devices,
+            error: None,
+        },
+        meta,
+    )
 }
 
-pub(super) async fn snapshot(conn: &zbus::Connection) -> zbus::Result<Bluetooth> {
+#[cfg(test)]
+fn parse_objects(objects: &ManagedObjects) -> Bluetooth {
+    parse_managed(objects).0
+}
+
+async fn snapshot_with_meta(conn: &zbus::Connection) -> zbus::Result<(Bluetooth, AdapterMeta)> {
     let om = proxy(conn, ROOT, OBJECT_MANAGER).await?;
     let objects: ManagedObjects = om.call("GetManagedObjects", &()).await?;
-    Ok(parse_objects(&objects))
+    Ok(parse_managed(&objects))
+}
+
+#[cfg(test)]
+pub(super) async fn snapshot(conn: &zbus::Connection) -> zbus::Result<Bluetooth> {
+    Ok(snapshot_with_meta(conn).await?.0)
+}
+
+fn sync_policy_remembered(policy: &Arc<Mutex<AgentPolicy>>, state: &Bluetooth) {
+    if let Ok(mut p) = policy.lock() {
+        p.remembered.clear();
+        for d in &state.devices {
+            if d.remembered() {
+                p.remembered.insert(d.path.clone());
+            }
+        }
+    }
 }
 
 async fn primary_adapter_path(conn: &zbus::Connection, current: &Bluetooth) -> Result<String, String> {
@@ -292,10 +562,12 @@ async fn stop_discovery_if_needed(
     }
 }
 
-async fn action(
+async fn action_with_context(
     conn: &zbus::Connection,
     command: Control,
     current: &Bluetooth,
+    meta: &AdapterMeta,
+    policy: &Arc<Mutex<AgentPolicy>>,
     started_discovery: &mut bool,
 ) -> Result<(), String> {
     let result: zbus::Result<()> = match command {
@@ -307,12 +579,23 @@ async fn action(
                 stop_discovery_if_needed(conn, current, started_discovery).await;
             }
             let adapter = primary_adapter_path(conn, current).await?;
-            proxy(conn, &adapter, ADAPTER)
+            let pxy = proxy(conn, &adapter, ADAPTER)
                 .await
-                .map_err(|_| "Bluetooth-адаптер недоступен")?
-                .set_property("Powered", enabled)
-                .await
-                .map_err(Into::into)
+                .map_err(|_| "Bluetooth-адаптер недоступен")?;
+            match pxy.set_property("Powered", enabled).await {
+                Ok(()) => {
+                    if enabled {
+                        if meta.connectable.is_some() {
+                            let _ = pxy.set_property("Connectable", true).await;
+                        }
+                        if meta.pairable.is_some() {
+                            let _ = pxy.set_property("Pairable", true).await;
+                        }
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e.into()),
+            }
         }
         Control::ScanBluetooth => {
             if !current.available || !current.powered {
@@ -343,6 +626,24 @@ async fn action(
             else {
                 return Err("Список устройств Bluetooth изменился. Выберите устройство снова.".into());
             };
+            let _pairing_guard = PairingGuard::new(policy, &device_path);
+            let adapter_path = if !dev.adapter.is_empty() {
+                dev.adapter.as_str()
+            } else {
+                meta.path.as_str()
+            };
+            if !adapter_path.is_empty() && (meta.connectable.is_some() || meta.pairable.is_some()) {
+                if let Ok(adapter_pxy) = proxy(conn, adapter_path, ADAPTER).await {
+                    if meta.connectable == Some(false) || (!dev.has_bond() && meta.connectable.is_some()) {
+                        let _ = adapter_pxy.set_property("Connectable", true).await;
+                    }
+                    if !dev.has_bond() && meta.pairable.is_some() {
+                        // Forces MGMT_OP_SET_BONDABLE = 1 before Pair() even if PairableTimeout
+                        // previously flipped Pairable back to false in the background.
+                        let _ = adapter_pxy.set_property("Pairable", true).await;
+                    }
+                }
+            }
             let pxy = proxy(conn, &device_path, DEVICE)
                 .await
                 .map_err(|_| "Устройство недоступно")?;
@@ -354,8 +655,30 @@ async fn action(
                     }
                 }
                 let _ = pxy.set_property("Trusted", true).await;
+                pxy.call("Connect", &()).await
+            } else if dev.unbonded {
+                if !dev.trusted {
+                    let _ = pxy.set_property("Trusted", true).await;
+                }
+                match pxy.call::<_, _, ()>("Connect", &()).await {
+                    Ok(()) => Ok(()),
+                    Err(_) => {
+                        if let Err(err) = pxy.call::<_, _, ()>("Pair", &()).await {
+                            let msg = err.to_string();
+                            if !msg.contains("AlreadyExists") {
+                                return Err("Не удалось выполнить сопряжение с устройством Bluetooth.".into());
+                            }
+                        }
+                        let _ = pxy.set_property("Trusted", true).await;
+                        pxy.call("Connect", &()).await
+                    }
+                }
+            } else {
+                if !dev.trusted {
+                    let _ = pxy.set_property("Trusted", true).await;
+                }
+                pxy.call("Connect", &()).await
             }
-            pxy.call("Connect", &()).await
         }
         Control::DisconnectBluetooth(device_path) => {
             let Some(dev) = current.devices.iter().find(|d| d.path == device_path) else {
@@ -392,9 +715,38 @@ async fn action(
         }
         _ => Ok(()),
     };
-    result.map_err(|_| {
-        "BlueZ отклонил действие. Проверьте, что устройство включено и находится рядом.".into()
+    result.map_err(|err| {
+        let msg = err.to_string();
+        if msg.contains("AuthenticationFailed")
+            || msg.contains("AuthenticationRejected")
+            || msg.contains("KeyMissing")
+            || msg.contains("Key Missing")
+        {
+            "Ключ сопряжения отклонён устройством. Нажмите «Забыть», переведите аксессуар в режим сопряжения и подключите заново.".into()
+        } else {
+            "BlueZ отклонил действие. Проверьте, что устройство включено и находится рядом.".into()
+        }
     })
+}
+
+#[cfg(test)]
+async fn action(
+    conn: &zbus::Connection,
+    command: Control,
+    current: &Bluetooth,
+    started_discovery: &mut bool,
+) -> Result<(), String> {
+    let policy = Arc::new(Mutex::new(AgentPolicy::default()));
+    sync_policy_remembered(&policy, current);
+    action_with_context(
+        conn,
+        command,
+        current,
+        &AdapterMeta::default(),
+        &policy,
+        started_discovery,
+    )
+    .await
 }
 
 /// Best effort: abort a pending `Pair` and a pending `Connect` (BlueZ cancels it on `Disconnect`).
@@ -416,10 +768,12 @@ fn cancels_connect(command: &Control, device_path: &str) -> bool {
 /// `Pair` + `Connect` wait for the accessory. Meanwhile the worker keeps reading commands: a
 /// Disconnect («Отменить»), Forget or power-off of this device aborts the attempt, and any other
 /// command waits in `pending` until the attempt finishes.
-async fn connect_cancellable(
+async fn connect_cancellable_with_context(
     conn: &zbus::Connection,
     device_path: String,
     current: &Bluetooth,
+    meta: &AdapterMeta,
+    policy: &Arc<Mutex<AgentPolicy>>,
     started_discovery: &mut bool,
     commands: &async_channel::Receiver<Control>,
     pending: &mut VecDeque<Control>,
@@ -431,7 +785,9 @@ async fn connect_cancellable(
     let outcome = future::race(
         async {
             let command = Control::ConnectBluetooth(device_path.clone());
-            Outcome::Done(action(conn, command, current, started_discovery).await)
+            Outcome::Done(
+                action_with_context(conn, command, current, meta, policy, started_discovery).await,
+            )
         },
         async {
             loop {
@@ -452,10 +808,34 @@ async fn connect_cancellable(
             if matches!(command, Control::DisconnectBluetooth(_)) {
                 Ok(())
             } else {
-                action(conn, command, current, started_discovery).await
+                action_with_context(conn, command, current, meta, policy, started_discovery).await
             }
         }
     }
+}
+
+#[cfg(test)]
+async fn connect_cancellable(
+    conn: &zbus::Connection,
+    device_path: String,
+    current: &Bluetooth,
+    started_discovery: &mut bool,
+    commands: &async_channel::Receiver<Control>,
+    pending: &mut VecDeque<Control>,
+) -> Result<(), String> {
+    let policy = Arc::new(Mutex::new(AgentPolicy::default()));
+    sync_policy_remembered(&policy, current);
+    connect_cancellable_with_context(
+        conn,
+        device_path,
+        current,
+        &AdapterMeta::default(),
+        &policy,
+        started_discovery,
+        commands,
+        pending,
+    )
+    .await
 }
 
 fn relevant(message: &zbus::Message, detailed: bool) -> bool {
@@ -478,6 +858,7 @@ fn relevant(message: &zbus::Message, detailed: bool) -> bool {
                 &[
                     "Connected",
                     "Paired",
+                    "Bonded",
                     "Trusted",
                     "Alias",
                     "Name",
@@ -485,7 +866,7 @@ fn relevant(message: &zbus::Message, detailed: bool) -> bool {
                     "RSSI",
                 ]
             } else if iface == DEVICE {
-                &["Connected", "Paired", "Alias", "Name"]
+                &["Connected", "Paired", "Bonded", "Alias", "Name"]
             } else if iface == BATTERY && detailed {
                 &["Percentage"]
             } else {
@@ -539,10 +920,13 @@ async fn connected(
     updates: &channel::SyncSender<Update>,
     detailed: &mut bool,
 ) -> zbus::Result<()> {
+    let policy = Arc::new(Mutex::new(AgentPolicy::default()));
     let conn = zbus::connection::Builder::system()?
-        .method_timeout(Duration::from_secs(5))
+        .method_timeout(Duration::from_secs(25))
+        .serve_at(AGENT_PATH, BtAgent(policy.clone()))?
         .build()
         .await?;
+    register_default_agent(&conn, &policy).await;
     let rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .sender(BLUEZ)?
@@ -557,6 +941,8 @@ async fn connected(
         .build();
     let mut owners = zbus::MessageStream::for_match_rule(owner_rule, &conn, Some(4)).await?;
     let mut state = Bluetooth::default();
+    let mut meta = AdapterMeta::default();
+    let mut configured_adapter: Option<String> = None;
     let mut started_discovery = false;
     let mut command = None;
     let mut pending = VecDeque::new();
@@ -574,9 +960,9 @@ async fn connected(
                 acted = !matches!(c, Control::Refresh | Control::RefreshBluetooth);
                 let result = if let Control::ConnectBluetooth(path) = c {
                     let (s, p) = (&mut started_discovery, &mut pending);
-                    connect_cancellable(&conn, path, &state, s, commands, p).await
+                    connect_cancellable_with_context(&conn, path, &state, &meta, &policy, s, commands, p).await
                 } else {
-                    action(&conn, c, &state, &mut started_discovery).await
+                    action_with_context(&conn, c, &state, &meta, &policy, &mut started_discovery).await
                 };
                 if let Err(e) = result {
                     if updates.send(Update::Error("Bluetooth", e)).is_err() {
@@ -586,7 +972,21 @@ async fn connected(
             }
         }
         // If BlueZ is not running on the system, treat it as "no adapter" unless detailed view asked.
-        let next = snapshot(&conn).await.unwrap_or_default();
+        let (mut next, mut next_meta) = snapshot_with_meta(&conn).await.unwrap_or_default();
+        sync_policy_remembered(&policy, &next);
+        if !next_meta.powered || next_meta.path.is_empty() {
+            configured_adapter = None;
+        } else if configured_adapter.as_deref() != Some(next_meta.path.as_str()) {
+            configured_adapter = Some(next_meta.path.clone());
+            if ensure_adapter_ready(&conn, &next_meta).await {
+                if let Ok((refreshed, refreshed_meta)) = snapshot_with_meta(&conn).await {
+                    next = refreshed;
+                    next_meta = refreshed_meta;
+                    sync_policy_remembered(&policy, &next);
+                }
+            }
+        }
+        meta = next_meta;
         if !next.discovering {
             started_discovery = false;
         }
@@ -622,7 +1022,11 @@ async fn connected(
                     stop_discovery_if_needed(&conn, &state, &mut started_discovery).await;
                     return Ok(());
                 }
-                Event::Owner(Some(Ok(_))) => break,
+                Event::Owner(Some(Ok(_))) => {
+                    configured_adapter = None;
+                    register_default_agent(&conn, &policy).await;
+                    break;
+                }
                 Event::Owner(_) => {
                     return Err(zbus::Error::Failure("Bus signal stream closed".into()))
                 }
@@ -1134,6 +1538,291 @@ mod tests {
             assert!(matches!(pending.pop_front(), Some(Control::RefreshBluetooth)));
             assert!(pending.is_empty());
             assert!(snapshot(&conn).await.unwrap().devices.is_empty());
+        });
+    }
+
+    #[test]
+    fn private_bus_registers_agent_enables_bondable_and_persists_bond() {
+        use std::sync::{Arc, Mutex};
+        const DEV: &str = "/org/bluez/hci0/dev_AC_47_1B_7C_85_D2";
+        const STRANGER: &str = "/org/bluez/hci0/dev_FF_EE_DD_CC_BB_AA";
+
+        #[derive(Default)]
+        struct State {
+            connectable: bool,
+            pairable: bool,
+            agent_sender: Option<String>,
+            agent_path: Option<String>,
+            agent_cap: Option<String>,
+            default_agent: Option<String>,
+            paired: bool,
+            bonded: bool,
+            trusted: bool,
+            connected: bool,
+            confirmed: u32,
+            authorized_services: Vec<String>,
+        }
+
+        struct MockRoot(Arc<Mutex<State>>);
+        #[zbus::interface(name = "org.freedesktop.DBus.ObjectManager")]
+        impl MockRoot {
+            fn get_managed_objects(&self) -> ManagedObjects {
+                let s = self.0.lock().unwrap();
+                let adapter = OwnedObjectPath::try_from("/org/bluez/hci0").unwrap();
+                let mut out = ManagedObjects::new();
+                out.insert(
+                    adapter.clone(),
+                    HashMap::from([(
+                        ADAPTER.to_string(),
+                        HashMap::from([
+                            ("Powered".into(), OwnedValue::from(true)),
+                            ("Discovering".into(), OwnedValue::from(false)),
+                            ("Connectable".into(), OwnedValue::from(s.connectable)),
+                            ("Pairable".into(), OwnedValue::from(s.pairable)),
+                            ("Alias".into(), Value::from("napsy").try_into().unwrap()),
+                        ]),
+                    )]),
+                );
+                out.insert(
+                    OwnedObjectPath::try_from(DEV).unwrap(),
+                    HashMap::from([(
+                        DEVICE.to_string(),
+                        HashMap::from([
+                            ("Adapter".into(), Value::from(adapter).try_into().unwrap()),
+                            ("Address".into(), Value::from("AC:47:1B:7C:85:D2").try_into().unwrap()),
+                            ("Name".into(), Value::from("HUAWEI FreeBuds SE 2").try_into().unwrap()),
+                            ("Alias".into(), Value::from("HUAWEI FreeBuds SE 2").try_into().unwrap()),
+                            ("Icon".into(), Value::from("audio-headset").try_into().unwrap()),
+                            ("Paired".into(), OwnedValue::from(s.paired)),
+                            ("Bonded".into(), OwnedValue::from(s.bonded)),
+                            ("Trusted".into(), OwnedValue::from(s.trusted)),
+                            ("Connected".into(), OwnedValue::from(s.connected)),
+                        ]),
+                    )]),
+                );
+                out
+            }
+        }
+
+        struct MockAgentManager(Arc<Mutex<State>>);
+        #[zbus::interface(name = "org.bluez.AgentManager1")]
+        impl MockAgentManager {
+            fn register_agent(
+                &self,
+                agent: OwnedObjectPath,
+                capability: String,
+                #[zbus(header)] header: Header<'_>,
+            ) {
+                let mut s = self.0.lock().unwrap();
+                s.agent_sender = header.sender().map(|u| u.as_str().to_string());
+                s.agent_path = Some(agent.to_string());
+                s.agent_cap = Some(capability);
+            }
+            fn request_default_agent(&self, agent: OwnedObjectPath) {
+                self.0.lock().unwrap().default_agent = Some(agent.to_string());
+            }
+            fn unregister_agent(&self, _agent: OwnedObjectPath) {}
+        }
+
+        struct MockAdapter(Arc<Mutex<State>>);
+        #[zbus::interface(name = "org.bluez.Adapter1")]
+        impl MockAdapter {
+            #[zbus(property)]
+            fn connectable(&self) -> bool {
+                self.0.lock().unwrap().connectable
+            }
+            #[zbus(property)]
+            fn set_connectable(&mut self, v: bool) {
+                self.0.lock().unwrap().connectable = v;
+            }
+            #[zbus(property)]
+            fn pairable(&self) -> bool {
+                self.0.lock().unwrap().pairable
+            }
+            #[zbus(property)]
+            fn set_pairable(&mut self, v: bool) {
+                self.0.lock().unwrap().pairable = v;
+            }
+        }
+
+        struct MockDevice(Arc<Mutex<State>>);
+        #[zbus::interface(name = "org.bluez.Device1")]
+        impl MockDevice {
+            async fn pair(&self, #[zbus(connection)] conn: &zbus::Connection) -> zbus::fdo::Result<()> {
+                let (pairable, sender, path) = {
+                    let s = self.0.lock().unwrap();
+                    (
+                        s.pairable,
+                        s.agent_sender.clone(),
+                        s.default_agent.clone(),
+                    )
+                };
+                let mut confirmed_ok = false;
+                if let (Some(dest), Some(agent_path)) = (sender, path) {
+                    let dev = OwnedObjectPath::try_from(DEV).unwrap();
+                    confirmed_ok = conn
+                        .call_method(
+                            Some(dest.as_str()),
+                            agent_path.as_str(),
+                            Some("org.bluez.Agent1"),
+                            "RequestConfirmation",
+                            &(dev, 482910u32),
+                        )
+                        .await
+                        .is_ok();
+                }
+                let mut s = self.0.lock().unwrap();
+                s.paired = true;
+                // Mirrors Linux kernel HCI_BONDABLE + BlueZ agent behavior:
+                // persistent bond is saved only when Pairable (Bondable) is true and Agent1 confirms.
+                s.bonded = pairable && confirmed_ok;
+                if confirmed_ok {
+                    s.confirmed += 1;
+                }
+                Ok(())
+            }
+            async fn connect(&self, #[zbus(connection)] conn: &zbus::Connection) -> zbus::fdo::Result<()> {
+                let (sender, path) = {
+                    let s = self.0.lock().unwrap();
+                    (s.agent_sender.clone(), s.default_agent.clone())
+                };
+                let (Some(dest), Some(agent_path)) = (sender, path) else {
+                    return Err(zbus::fdo::Error::Failed("No agent".into()));
+                };
+                let dev = OwnedObjectPath::try_from(DEV).unwrap();
+                let uuid = "0000110b-0000-1000-8000-00805f9b34fb".to_string();
+                conn.call_method(
+                    Some(dest.as_str()),
+                    agent_path.as_str(),
+                    Some("org.bluez.Agent1"),
+                    "AuthorizeService",
+                    &(dev, uuid.clone()),
+                )
+                .await
+                .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+                let mut s = self.0.lock().unwrap();
+                s.authorized_services.push(uuid);
+                s.connected = true;
+                Ok(())
+            }
+            #[zbus(property)]
+            fn trusted(&self) -> bool {
+                self.0.lock().unwrap().trusted
+            }
+            #[zbus(property)]
+            fn set_trusted(&mut self, v: bool) {
+                self.0.lock().unwrap().trusted = v;
+            }
+        }
+
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() {
+            return;
+        }
+        let _bus = BUS.lock().unwrap_or_else(|e| e.into_inner());
+        let state = Arc::new(Mutex::new(State::default()));
+        future::block_on(async {
+            let server = zbus::connection::Builder::session()
+                .unwrap()
+                .name(BLUEZ)
+                .unwrap()
+                .serve_at("/", MockRoot(state.clone()))
+                .unwrap()
+                .serve_at(BLUEZ_PATH, MockAgentManager(state.clone()))
+                .unwrap()
+                .serve_at("/org/bluez/hci0", MockAdapter(state.clone()))
+                .unwrap()
+                .serve_at(DEV, MockDevice(state.clone()))
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+
+            let policy = Arc::new(Mutex::new(AgentPolicy::default()));
+            let conn = zbus::connection::Builder::session()
+                .unwrap()
+                .method_timeout(Duration::from_secs(5))
+                .serve_at(AGENT_PATH, BtAgent(policy.clone()))
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
+
+            register_default_agent(&conn, &policy).await;
+            {
+                let s = state.lock().unwrap();
+                assert_eq!(s.agent_path.as_deref(), Some(AGENT_PATH));
+                assert_eq!(s.agent_cap.as_deref(), Some(AGENT_CAPABILITY));
+                assert_eq!(s.default_agent.as_deref(), Some(AGENT_PATH));
+            }
+
+            // Initial startup brings a non-connectable / non-pairable adapter ready.
+            let (_, meta0) = snapshot_with_meta(&conn).await.unwrap();
+            assert_eq!(meta0.connectable, Some(false));
+            assert_eq!(meta0.pairable, Some(false));
+            assert!(ensure_adapter_ready(&conn, &meta0).await);
+            assert!(state.lock().unwrap().connectable);
+            assert!(state.lock().unwrap().pairable);
+
+            // Unsolicited incoming pairing from an unknown device is rejected by BtAgent.
+            let client_dest = state.lock().unwrap().agent_sender.clone().unwrap();
+            let stranger_res = server
+                .call_method(
+                    Some(client_dest.as_str()),
+                    AGENT_PATH,
+                    Some("org.bluez.Agent1"),
+                    "RequestConfirmation",
+                    &(OwnedObjectPath::try_from(STRANGER).unwrap(), 123456u32),
+                )
+                .await;
+            assert!(stranger_res.is_err(), "unsolicited stranger pairing must be rejected");
+
+            // Simulate PairableTimeout dropping Pairable back to false right before user clicks Connect:
+            // action_with_context re-enables Pairable before Pair(), answers RequestConfirmation &
+            // AuthorizeService without deadlocking, and achieves Bonded == true.
+            state.lock().unwrap().pairable = false;
+            let (snap1, meta1) = snapshot_with_meta(&conn).await.unwrap();
+            sync_policy_remembered(&policy, &snap1);
+            let mut started_discovery = false;
+            action_with_context(
+                &conn,
+                Control::ConnectBluetooth(DEV.into()),
+                &snap1,
+                &meta1,
+                &policy,
+                &mut started_discovery,
+            )
+            .await
+            .unwrap();
+
+            assert!(policy.lock().unwrap().active_target.is_none());
+            {
+                let s = state.lock().unwrap();
+                assert!(s.pairable && s.connectable);
+                assert!(s.paired && s.bonded && s.trusted && s.connected);
+                assert_eq!(s.confirmed, 1);
+                assert_eq!(s.authorized_services.len(), 1);
+            }
+
+            let (snap2, _) = snapshot_with_meta(&conn).await.unwrap();
+            sync_policy_remembered(&policy, &snap2);
+            let dev = &snap2.devices[0];
+            assert!(dev.paired && !dev.unbonded && dev.has_bond() && dev.trusted && dev.connected);
+
+            // Subsequent background auto-reconnect of this remembered headset is authorized,
+            // while an unknown stranger is still rejected.
+            let reconnect_auth = server
+                .call_method(
+                    Some(client_dest.as_str()),
+                    AGENT_PATH,
+                    Some("org.bluez.Agent1"),
+                    "AuthorizeService",
+                    &(
+                        OwnedObjectPath::try_from(DEV).unwrap(),
+                        "0000111e-0000-1000-8000-00805f9b34fb".to_string(),
+                    ),
+                )
+                .await;
+            assert!(reconnect_auth.is_ok());
         });
     }
 }

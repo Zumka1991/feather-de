@@ -138,6 +138,7 @@
 - [x] Сеть: сохранённые Wi-Fi, Ethernet, VPN (NetworkManager) — [NETWORK.md](NETWORK.md)
 - [x] Bluetooth (BlueZ): включение, поиск, подключение — [BLUETOOTH.md](BLUETOOTH.md)
 - [x] Bluetooth: «Забыть» для любого запомненного устройства (в т. ч. с потерянным сопряжением) и отмена зависшего подключения — [BLUETOOTH.md](BLUETOOTH.md)
+- [x] Bluetooth: сохранение постоянного сопряжения (`Bonded = true`) между перезагрузками (штатный агент `org.bluez.Agent1`, `Pairable = true` и `Connectable = true`) — [BLUETOOTH.md](BLUETOOTH.md)
 - [x] Клавиатура: автоповтор (задержка, скорость), Caps Lock
 - [x] Клавиатура: Caps Lock как способ в «Переключение языка» (по отзыву с форума)
 - [x] Клавиатура: типографская раскладка Бирмана на правом Alt (`misc:typo`) — по первому отзыву

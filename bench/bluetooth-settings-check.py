@@ -35,6 +35,9 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
     state = {
         'powered': True,
         'discovering': False,
+        'connectable': False,
+        'pairable': False,
+        'default_agent': None,
         'pods_fail_once': False,
         'devices': {
             '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01': {
@@ -43,6 +46,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
                 'Alias': 'AirPods Pro',
                 'Icon': 'audio-headphones',
                 'Paired': True,
+                'Bonded': True,
                 'Trusted': True,
                 'Connected': True,
                 'Battery': 88,
@@ -53,6 +57,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
                 'Alias': 'Keychron K2',
                 'Icon': 'input-keyboard',
                 'Paired': True,
+                'Bonded': True,
                 'Trusted': True,
                 'Connected': False,
                 'Battery': 64,
@@ -63,6 +68,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
                 'Alias': 'MX Master 3S',
                 'Icon': 'input-mouse',
                 'Paired': False,
+                'Bonded': False,
                 'Trusted': False,
                 'Connected': False,
                 'Battery': None,
@@ -73,6 +79,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
                 'Alias': 'AA-BB-CC-00-11-22',
                 'Icon': '',
                 'Paired': False,
+                'Bonded': False,
                 'Trusted': False,
                 'Connected': False,
                 'Battery': None,
@@ -104,6 +111,21 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
       </interface>
     </node>"""
 
+    AGENT_MGR_XML = """
+    <node>
+      <interface name="org.bluez.AgentManager1">
+        <method name="RegisterAgent">
+          <arg type="o" direction="in"/><arg type="s" direction="in"/>
+        </method>
+        <method name="RequestDefaultAgent">
+          <arg type="o" direction="in"/>
+        </method>
+        <method name="UnregisterAgent">
+          <arg type="o" direction="in"/>
+        </method>
+      </interface>
+    </node>"""
+
     ADAPTER_XML = """
     <node>
       <interface name="org.bluez.Adapter1">
@@ -112,6 +134,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
         <method name="RemoveDevice"><arg type="o" direction="in"/></method>
         <property name="Powered" type="b" access="readwrite"/>
         <property name="Discovering" type="b" access="read"/>
+        <property name="Connectable" type="b" access="readwrite"/>
+        <property name="Pairable" type="b" access="readwrite"/>
       </interface>
     </node>"""
 
@@ -126,6 +150,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
         <property name="Alias" type="s" access="read"/>
         <property name="Icon" type="s" access="read"/>
         <property name="Paired" type="b" access="read"/>
+        <property name="Bonded" type="b" access="read"/>
         <property name="Trusted" type="b" access="readwrite"/>
         <property name="Connected" type="b" access="read"/>
       </interface>
@@ -141,6 +166,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
         return {
             'Powered': GLib.Variant('b', state['powered']),
             'Discovering': GLib.Variant('b', state['discovering']),
+            'Connectable': GLib.Variant('b', state['connectable']),
+            'Pairable': GLib.Variant('b', state['pairable']),
         }
 
     def device_props(d):
@@ -150,6 +177,7 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
             'Alias': GLib.Variant('s', d['Alias']),
             'Icon': GLib.Variant('s', d['Icon']),
             'Paired': GLib.Variant('b', d['Paired']),
+            'Bonded': GLib.Variant('b', d['Bonded']),
             'Trusted': GLib.Variant('b', d['Trusted']),
             'Connected': GLib.Variant('b', d['Connected']),
         }
@@ -188,6 +216,16 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
             record({'op': 'set_powered', 'powered': state['powered']})
             emit_props(c, path, iface, adapter_props())
             return True
+        if path == '/org/bluez/hci0' and iface == 'org.bluez.Adapter1' and prop == 'Connectable':
+            state['connectable'] = bool(value.unpack())
+            record({'op': 'set_connectable', 'connectable': state['connectable']})
+            emit_props(c, path, iface, {'Connectable': GLib.Variant('b', state['connectable'])})
+            return True
+        if path == '/org/bluez/hci0' and iface == 'org.bluez.Adapter1' and prop == 'Pairable':
+            state['pairable'] = bool(value.unpack())
+            record({'op': 'set_pairable', 'pairable': state['pairable']})
+            emit_props(c, path, iface, {'Pairable': GLib.Variant('b', state['pairable'])})
+            return True
         if path in state['devices'] and iface == 'org.bluez.Device1' and prop == 'Trusted':
             state['devices'][path]['Trusted'] = bool(value.unpack())
             record({'op': 'set_trusted', 'path': path, 'trusted': state['devices'][path]['Trusted']})
@@ -200,6 +238,23 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
         if path == '/' and iface == 'org.freedesktop.DBus.ObjectManager' and method == 'GetManagedObjects':
             invocation.return_value(GLib.Variant('(a{oa{sa{sv}}})', (managed_objects(),)))
             return
+        if path == '/org/bluez' and iface == 'org.bluez.AgentManager1':
+            if method == 'RegisterAgent':
+                agent_path, cap = args
+                record({'op': 'register_agent', 'path': agent_path, 'capability': cap})
+                state['agent_sender'] = sender
+                state['agent_path'] = agent_path
+                invocation.return_value(None)
+                return
+            if method == 'RequestDefaultAgent':
+                (agent_path,) = args
+                record({'op': 'request_default_agent', 'path': agent_path})
+                state['default_agent'] = agent_path
+                invocation.return_value(None)
+                return
+            if method == 'UnregisterAgent':
+                invocation.return_value(None)
+                return
         if path == '/org/bluez/hci0' and iface == 'org.bluez.Adapter1':
             if method == 'StartDiscovery':
                 state['discovering'] = True
@@ -232,8 +287,10 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
             d = state['devices'][path]
             if method == 'Pair':
                 d['Paired'] = True
-                record({'op': 'pair', 'path': path})
-                emit_props(c, path, iface, {'Paired': GLib.Variant('b', True)})
+                # Real BlueZ persists a bond only when Pairable (Bondable) is true and default agent is present.
+                d['Bonded'] = bool(state['pairable'] and state['default_agent'])
+                record({'op': 'pair', 'path': path, 'bonded': d['Bonded']})
+                emit_props(c, path, iface, {'Paired': GLib.Variant('b', True), 'Bonded': GLib.Variant('b', d['Bonded'])})
                 invocation.return_value(None)
                 return
             if method == 'Connect':
@@ -262,6 +319,8 @@ if len(sys.argv) > 1 and sys.argv[1] == '--mock-bluez':
 
     for iface_info in Gio.DBusNodeInfo.new_for_xml(ROOT_XML).interfaces:
         conn.register_object('/', iface_info, on_method, on_get_prop, on_set_prop)
+    for iface_info in Gio.DBusNodeInfo.new_for_xml(AGENT_MGR_XML).interfaces:
+        conn.register_object('/org/bluez', iface_info, on_method, on_get_prop, on_set_prop)
     for iface_info in Gio.DBusNodeInfo.new_for_xml(ADAPTER_XML).interfaces:
         conn.register_object('/org/bluez/hci0', iface_info, on_method, on_get_prop, on_set_prop)
 
@@ -288,7 +347,7 @@ p.add_argument('--host', required=True)
 p.add_argument('--scale', default='2')
 p.add_argument('--output', type=Path)
 p.add_argument('--screenshot', action='store_true')
-p.add_argument('--duration', type=float, default=12.5)
+p.add_argument('--duration', type=float, default=13.5)
 p.add_argument('--protocol-summary', action='store_true')
 a = p.parse_args()
 if a.duration < 11.5:
@@ -402,8 +461,12 @@ with (root / 'compositor.log').open('w') as log:
         text = (root / 'compositor.log').read_text()
         assert '[feather-bluetooth-check] stop discovery + complete: ok' in text, text[-7000:]
         calls = [json.loads(l) for l in calls_file.read_text().splitlines()]
+        assert {'op': 'register_agent', 'path': '/org/feather/BluetoothAgent', 'capability': 'DisplayYesNo'} in calls, calls
+        assert {'op': 'request_default_agent', 'path': '/org/feather/BluetoothAgent'} in calls, calls
+        assert {'op': 'set_connectable', 'connectable': True} in calls, calls
+        assert {'op': 'set_pairable', 'pairable': True} in calls, calls
         assert {'op': 'start_discovery'} in calls, calls
-        assert {'op': 'pair', 'path': '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03'} in calls, calls
+        assert {'op': 'pair', 'path': '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03', 'bonded': True} in calls, calls
         assert {'op': 'set_trusted', 'path': '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03', 'trusted': True} in calls, calls
         assert {'op': 'connect', 'path': '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03'} in calls, calls
         assert {'op': 'disconnect', 'path': '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01'} in calls, calls

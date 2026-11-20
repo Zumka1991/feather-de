@@ -775,7 +775,7 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
         })?;
         at(state, 2900, |s| {
             let mouse = s.shell.cc.bluetooth.devices.iter().find(|d| d.path == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03").unwrap();
-            assert!(mouse.paired && mouse.trusted && mouse.connected);
+            assert!(mouse.paired && mouse.has_bond() && mouse.trusted && mouse.connected);
             eprintln!("[feather-bluetooth-check] pair + trust + connect discovered device: ok");
             s.system_settings.scroll = 0.0;
             click(s, |a| matches!(a, A::Bluetooth(C::DisconnectBluetooth(p)) if p == "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01"));
