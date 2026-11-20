@@ -1,9 +1,10 @@
 //! Pure state & tiny-skia rendering for «Просмотр» (`feather-preview`) in macOS Tahoe style.
 
+use crate::canvas::RenderScratch;
 use crate::doc::{self, Document};
 use crate::theme::{
     colors, fill_circle, fill_rect, fill_rrect, fill_rrect_gradient, line, polyline, rgba,
-    rounded_rect_path, stroke_circle, stroke_rrect, ui_scale,
+    stroke_circle, stroke_rrect, ui_scale,
 };
 use feather_ui::text::FontSystem;
 use std::path::PathBuf;
@@ -106,7 +107,9 @@ pub struct App {
     hover: Option<Hit>,
     traffic_hover: bool,
     pan_drag: Option<(f32, f32, f32, f32)>,
+    zoom_wheel_accum: f32,
     last_click: Option<(std::time::Instant, Hit)>,
+    scratch: RenderScratch,
 }
 
 impl App {
@@ -133,7 +136,9 @@ impl App {
             hover: None,
             traffic_hover: false,
             pan_drag: None,
+            zoom_wheel_accum: 0.0,
             last_click: None,
+            scratch: RenderScratch::default(),
         }
     }
 
@@ -150,6 +155,7 @@ impl App {
 
     pub fn set_document(&mut self, result: Result<Document, String>) {
         self.loading = false;
+        self.scratch.clear_pan_cache();
         match result {
             Ok(doc) => {
                 self.sidebar_open = doc.pages.len() > 1;
@@ -271,7 +277,24 @@ impl App {
         self.sidebar_scroll = self.sidebar_scroll.clamp(0.0, max_scroll);
     }
 
-    fn step_zoom(&mut self, dir: i32) {
+    fn zoom_toward(&mut self, next: f32, anchor_x: f32, anchor_y: f32) {
+        let next = next.clamp(0.25, 4.0);
+        let cur = self.effective_zoom().max(0.01);
+        if (next - cur).abs() < 1e-4 && matches!(self.zoom, ZoomMode::Manual(_)) {
+            return;
+        }
+        let c = self.canvas_rect();
+        let cx = c.x + c.w * 0.5;
+        let cy = c.y + c.h * 0.5;
+        let ratio = next / cur;
+        self.pan_x = (anchor_x - cx) - (anchor_x - cx - self.pan_x) * ratio;
+        self.pan_y = (anchor_y - cy) - (anchor_y - cy - self.pan_y) * ratio;
+        self.zoom = ZoomMode::Manual(next);
+        self.clamp_pan();
+        self.dirty = true;
+    }
+
+    fn step_zoom_at(&mut self, dir: i32, anchor_x: f32, anchor_y: f32) {
         if self.doc.is_none() {
             return;
         }
@@ -290,21 +313,36 @@ impl App {
                 .find(|&z| z < cur - 0.03)
                 .unwrap_or(0.25)
         };
-        self.zoom = ZoomMode::Manual(next);
-        self.clamp_pan();
-        self.dirty = true;
+        self.zoom_toward(next, anchor_x, anchor_y);
     }
 
-    fn toggle_fit_or_100(&mut self) {
+    fn step_zoom(&mut self, dir: i32) {
+        let c = self.canvas_rect();
+        self.step_zoom_at(dir, c.x + c.w * 0.5, c.y + c.h * 0.5);
+    }
+
+    fn toggle_fit_or_100_at(&mut self, anchor: Option<(f32, f32)>) {
         if self.doc.is_none() {
             return;
         }
-        self.zoom = match self.zoom {
-            ZoomMode::Fit => ZoomMode::Manual(1.0),
-            ZoomMode::Manual(_) => ZoomMode::Fit,
-        };
-        self.clamp_pan();
-        self.dirty = true;
+        match self.zoom {
+            ZoomMode::Fit => {
+                let fit = self.fit_scale();
+                let target = if fit >= 0.98 { 2.0 } else { 1.0 };
+                let c = self.canvas_rect();
+                let (ax, ay) = anchor.unwrap_or((c.x + c.w * 0.5, c.y + c.h * 0.5));
+                self.zoom_toward(target, ax, ay);
+            }
+            ZoomMode::Manual(_) => {
+                self.zoom = ZoomMode::Fit;
+                self.clamp_pan();
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn toggle_fit_or_100(&mut self) {
+        self.toggle_fit_or_100_at(None);
     }
 
     fn select_page(&mut self, idx: usize) {
@@ -330,6 +368,7 @@ impl App {
     fn rotate(&mut self, clockwise: bool) {
         let Some(doc) = &mut self.doc else { return };
         doc.rotate_page(self.page_idx, clockwise);
+        self.scratch.clear_pan_cache();
         self.clamp_pan();
         self.dirty = true;
     }
@@ -489,28 +528,33 @@ impl App {
 
     pub fn motion(&mut self, x: f32, y: f32) {
         if let Some((sx, sy, ox, oy)) = self.pan_drag {
+            let prev = (self.pan_x, self.pan_y);
             self.pan_x = ox + (x - sx);
             self.pan_y = oy + (y - sy);
             self.clamp_pan();
-            self.dirty = true;
+            if (self.pan_x - prev.0).abs() > 0.05 || (self.pan_y - prev.1).abs() > 0.05 {
+                self.dirty = true;
+            }
             return;
         }
         let th = !self.no_buttons && (8.0..=68.0).contains(&x) && (12.0..=36.0).contains(&y);
         let h = self.hit_test(x, y);
-        if th != self.traffic_hover || h != self.hover {
-            self.traffic_hover = th;
-            self.hover = h;
+        let visual = |hit: Option<Hit>| !matches!(hit, None | Some(Hit::Canvas | Hit::ToolbarBg));
+        if th != self.traffic_hover || (h != self.hover && (visual(h) || visual(self.hover))) {
             self.dirty = true;
         }
+        self.traffic_hover = th;
+        self.hover = h;
     }
 
     pub fn leave(&mut self) {
-        if self.hover.is_some() || self.traffic_hover || self.pan_drag.is_some() {
-            self.hover = None;
-            self.traffic_hover = false;
-            self.pan_drag = None;
+        let visual = |hit: Option<Hit>| !matches!(hit, None | Some(Hit::Canvas | Hit::ToolbarBg));
+        if visual(self.hover) || self.traffic_hover {
             self.dirty = true;
         }
+        self.hover = None;
+        self.traffic_hover = false;
+        self.pan_drag = None;
     }
 
     pub fn press(&mut self, button: u32, x: f32, y: f32, _mods: Mods) -> Vec<Effect> {
@@ -596,11 +640,10 @@ impl App {
             }
             Hit::Canvas => {
                 if double_click && self.doc.is_some() {
-                    self.toggle_fit_or_100();
+                    self.toggle_fit_or_100_at(Some((x, y)));
                     Vec::new()
                 } else if self.doc.is_some() && matches!(self.zoom, ZoomMode::Manual(_)) {
                     self.pan_drag = Some((x, y, self.pan_x, self.pan_y));
-                    self.dirty = true;
                     Vec::new()
                 } else if self.doc.is_none() {
                     vec![Effect::Move]
@@ -612,33 +655,48 @@ impl App {
     }
 
     pub fn release(&mut self, button: u32) {
-        if button == BTN_LEFT && self.pan_drag.take().is_some() {
-            self.dirty = true;
+        if button == BTN_LEFT {
+            self.pan_drag = None;
         }
     }
 
-    pub fn scroll(&mut self, dy: f32, x: f32, mods: Mods) {
+    pub fn scroll(&mut self, dx: f32, dy: f32, x: f32, y: f32, mods: Mods) {
         if self.doc.is_none() {
             return;
         }
         if mods.ctrl {
-            if dy < 0.0 {
-                self.step_zoom(1);
-            } else if dy > 0.0 {
-                self.step_zoom(-1);
+            self.zoom_wheel_accum += dy;
+            if self.zoom_wheel_accum <= -24.0 {
+                self.zoom_wheel_accum = 0.0;
+                self.step_zoom_at(1, x, y);
+            } else if self.zoom_wheel_accum >= 24.0 {
+                self.zoom_wheel_accum = 0.0;
+                self.step_zoom_at(-1, x, y);
             }
             return;
         }
+        self.zoom_wheel_accum = 0.0;
         if self.sidebar_visible() && x < SIDEBAR_W {
+            let prev = self.sidebar_scroll;
             self.sidebar_scroll += dy;
             self.clamp_sidebar_scroll();
-            self.dirty = true;
+            if (self.sidebar_scroll - prev).abs() > 0.05 {
+                self.dirty = true;
+            }
             return;
         }
         if matches!(self.zoom, ZoomMode::Manual(_)) {
-            self.pan_y -= dy;
+            let prev = (self.pan_x, self.pan_y);
+            if mods.shift && dx == 0.0 {
+                self.pan_x -= dy;
+            } else {
+                self.pan_x -= dx;
+                self.pan_y -= dy;
+            }
             self.clamp_pan();
-            self.dirty = true;
+            if (self.pan_x - prev.0).abs() > 0.05 || (self.pan_y - prev.1).abs() > 0.05 {
+                self.dirty = true;
+            }
         } else if let Some(doc) = &self.doc {
             if doc.pages.len() > 1 {
                 if dy > 20.0 && self.page_idx + 1 < doc.pages.len() {
@@ -718,6 +776,22 @@ impl App {
                 }
                 return Vec::new();
             }
+            XK_LEFT | XK_RIGHT | XK_UP | XK_DOWN if matches!(self.zoom, ZoomMode::Manual(_)) => {
+                let step = if mods.shift { 160.0 } else { 56.0 };
+                let prev = (self.pan_x, self.pan_y);
+                match raw {
+                    XK_LEFT => self.pan_x += step,
+                    XK_RIGHT => self.pan_x -= step,
+                    XK_UP => self.pan_y += step,
+                    XK_DOWN => self.pan_y -= step,
+                    _ => {}
+                }
+                self.clamp_pan();
+                if (self.pan_x - prev.0).abs() > 0.05 || (self.pan_y - prev.1).abs() > 0.05 {
+                    self.dirty = true;
+                }
+                return Vec::new();
+            }
             XK_LEFT | XK_UP | XK_PAGE_UP | XK_BACKSPACE => {
                 if self.page_idx > 0 {
                     self.select_page(self.page_idx - 1);
@@ -780,12 +854,8 @@ impl App {
 
     pub fn paint(&mut self, pm: &mut PixmapMut) {
         self.dirty = false;
-        pm.fill(Color::TRANSPARENT);
         let radius = if self.maximized { 0.0 } else { CORNER_R };
         let dark = feather_ui::scale::appearance() == feather_ui::scale::Appearance::Dark;
-
-        // Window background
-        fill_rrect(pm, 0.0, 0.0, self.w, self.h, radius, colors::window());
 
         // Main canvas area (slightly recessed stage behind document)
         let canvas_bg = if dark {
@@ -794,11 +864,11 @@ impl App {
             rgba(232, 232, 237, 255)
         };
         let c = self.canvas_rect();
-        fill_rect(pm, c.x, c.y, c.w, c.h, canvas_bg);
 
         if self.doc.is_some() {
-            self.paint_document(pm, c);
+            self.paint_document(pm, c, canvas_bg);
         } else {
+            fill_rect(pm, c.x, c.y, c.w, c.h, canvas_bg);
             self.paint_empty_state(pm, c);
         }
 
@@ -816,14 +886,14 @@ impl App {
             stroke_rrect(pm, 3.0, 3.0, self.w - 6.0, self.h - 6.0, (radius - 2.0).max(4.0), 2.5, colors::accent());
         }
 
-        // Window outer border & rounded corner mask
+        // Window outer border & cached 4-corner rounded AA mask
         if !self.maximized {
-            stroke_rrect(pm, 0.5, 0.5, self.w - 1.0, self.h - 1.0, radius, 1.0, colors::sidebar_edge());
-            mask_rounded_corners(pm, self.w, self.h, radius);
+            self.scratch.paint_window_frame(pm, radius, colors::sidebar_edge());
         }
     }
 
     fn paint_toolbar(&mut self, pm: &mut PixmapMut) {
+        fill_rect(pm, 0.0, 0.0, self.w, TOOLBAR_H, colors::window());
         fill_rect(pm, 0.0, 0.0, self.w, TOOLBAR_H, colors::glass());
         line(pm, 0.0, TOOLBAR_H - 0.5, self.w, TOOLBAR_H - 0.5, 1.0, colors::separator());
 
@@ -1003,6 +1073,7 @@ impl App {
     }
 
     fn paint_sidebar(&mut self, pm: &mut PixmapMut) {
+        fill_rect(pm, 0.0, TOOLBAR_H, SIDEBAR_W, self.h - TOOLBAR_H, colors::window());
         fill_rect(pm, 0.0, TOOLBAR_H, SIDEBAR_W, self.h - TOOLBAR_H, colors::sidebar());
         line(pm, SIDEBAR_W - 0.5, TOOLBAR_H, SIDEBAR_W - 0.5, self.h, 1.0, colors::sidebar_edge());
 
@@ -1076,41 +1147,27 @@ impl App {
         }
     }
 
-    fn paint_document(&mut self, pm: &mut PixmapMut, c: RectBox) {
+    fn paint_document(&mut self, pm: &mut PixmapMut, c: RectBox, canvas_bg: Color) {
+        let z = self.effective_zoom();
+        let manual = matches!(self.zoom, ZoomMode::Manual(_));
         let Some(doc) = &self.doc else { return };
         let Some(page) = doc.pages.get(self.page_idx) else { return };
-
-        let z = self.effective_zoom();
-        let dw = page.pixmap.width() as f32 * z;
-        let dh = page.pixmap.height() as f32 * z;
-        let dx = (c.x + (c.w - dw) * 0.5 + self.pan_x).round();
-        let dy = (c.y + (c.h - dh) * 0.5 + self.pan_y).round();
-
-        // Soft paper/frame shadow
-        fill_rrect(pm, dx - 2.0, dy + 4.0, dw + 4.0, dh + 6.0, 4.0, rgba(0, 0, 0, 52));
-        fill_rrect(pm, dx - 1.0, dy + 1.5, dw + 2.0, dh + 2.0, 3.0, rgba(0, 0, 0, 30));
-
-        if doc.format.is_pdf() || !page.has_alpha {
-            fill_rect(pm, dx, dy, dw, dh, rgba(255, 255, 255, 255));
-        } else {
-            paint_checkerboard(pm, dx, dy, dw, dh, c);
-        }
-
-        let s = ui_scale();
-        let paint = PixmapPaint {
-            quality: if z < 2.0 { FilterQuality::Bilinear } else { FilterQuality::Nearest },
-            ..Default::default()
-        };
-        pm.draw_pixmap(
-            0,
-            0,
-            page.pixmap.as_ref(),
-            &paint,
-            Transform::from_translate(dx * s, dy * s).pre_scale(z * s, z * s),
-            None,
+        self.scratch.paint_canvas_and_document(
+            pm,
+            c.x,
+            c.y,
+            c.w,
+            c.h,
+            canvas_bg,
+            &page.pixmap,
+            doc.format.is_pdf(),
+            page.has_alpha,
+            z,
+            self.pan_x,
+            self.pan_y,
+            manual,
+            colors::separator(),
         );
-
-        stroke_rrect(pm, dx, dy, dw, dh, 1.5, 1.0, colors::separator());
     }
 
     fn paint_empty_state(&mut self, pm: &mut PixmapMut, c: RectBox) {
@@ -1270,61 +1327,10 @@ fn draw_rotate_icon(pm: &mut PixmapMut, cx: f32, cy: f32, clockwise: bool, color
     }
 }
 
-fn paint_checkerboard(pm: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, clip: RectBox) {
-    let x0 = x.max(clip.x);
-    let y0 = y.max(clip.y);
-    let x1 = (x + w).min(clip.x + clip.w);
-    let y1 = (y + h).min(clip.y + clip.h);
-    if x1 <= x0 || y1 <= y0 {
-        return;
-    }
-    fill_rect(pm, x0, y0, x1 - x0, y1 - y0, rgba(250, 250, 252, 255));
-    let cell = 12.0;
-    let dark = rgba(224, 224, 230, 255);
-    let cols = ((x1 - x0) / cell).ceil() as i32;
-    let rows = ((y1 - y0) / cell).ceil() as i32;
-    for r in 0..rows.min(180) {
-        for c in 0..cols.min(240) {
-            if (r + c) % 2 == 1 {
-                let cx = x0 + c as f32 * cell;
-                let cy = y0 + r as f32 * cell;
-                let cw = (x1 - cx).min(cell);
-                let ch = (y1 - cy).min(cell);
-                fill_rect(pm, cx, cy, cw, ch, dark);
-            }
-        }
-    }
-}
-
-fn mask_rounded_corners(pm: &mut PixmapMut, w: f32, h: f32, r: f32) {
-    let Some(path) = rounded_rect_path(0.0, 0.0, w, h, r) else { return };
-    let (pw, ph) = (pm.width(), pm.height());
-    let Some(mut mask) = tiny_skia::Mask::new(pw, ph) else { return };
-    let s = ui_scale();
-    mask.fill_path(&path, tiny_skia::FillRule::Winding, true, Transform::from_scale(s, s));
-    let m = mask.data();
-    let d = pm.data_mut();
-    let band = ((r * s).ceil() as u32 + 2).min(ph / 2);
-    for y in (0..band).chain(ph.saturating_sub(band)..ph) {
-        for x in 0..pw {
-            let i = (y * pw + x) as usize;
-            let a = m[i] as u32;
-            if a < 255 {
-                let p = i * 4;
-                d[p] = (d[p] as u32 * a / 255) as u8;
-                d[p + 1] = (d[p + 1] as u32 * a / 255) as u8;
-                d[p + 2] = (d[p + 2] as u32 * a / 255) as u8;
-                d[p + 3] = (d[p + 3] as u32 * a / 255) as u8;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::set_ui_scale;
-    use feather_ui::scale::{set_appearance, Appearance};
+    use feather_ui::scale::Appearance;
 
     #[test]
     fn preview_ui_renders_empty_and_multipage_pdf_and_handles_controls() {
@@ -1333,13 +1339,13 @@ mod tests {
 
         // 1. Render empty state in Light & Dark themes
         for (appearance, scale) in [(Appearance::Light, 1.0f32), (Appearance::Dark, 1.25), (Appearance::Light, 2.0)] {
-            set_appearance(appearance);
-            set_ui_scale(scale);
-            let pw = (app.w * scale).round() as u32;
-            let ph = (app.h * scale).round() as u32;
-            let mut pm = tiny_skia::Pixmap::new(pw, ph).unwrap();
-            app.paint(&mut pm.as_mut());
-            assert!(pm.data().iter().any(|&b| b != 0));
+            feather_ui::scale::with_render_settings(scale, appearance, || {
+                let pw = (app.w * scale).round() as u32;
+                let ph = (app.h * scale).round() as u32;
+                let mut pm = tiny_skia::Pixmap::new(pw, ph).unwrap();
+                app.paint(&mut pm.as_mut());
+                assert!(pm.data().iter().any(|&b| b != 0));
+            });
         }
 
         // 2. Load a multi-page PDF document
@@ -1385,9 +1391,10 @@ mod tests {
         app.press(BTN_LEFT, ib.x + 14.0, ib.y + 14.0, Mods::default());
         assert!(app.info_open);
 
-        set_ui_scale(1.0);
-        let mut pm = tiny_skia::Pixmap::new(app.w as u32, app.h as u32).unwrap();
-        app.paint(&mut pm.as_mut());
+        feather_ui::scale::with_render_settings(1.0, Appearance::Light, || {
+            let mut pm = tiny_skia::Pixmap::new(app.w as u32, app.h as u32).unwrap();
+            app.paint(&mut pm.as_mut());
+        });
 
         // 7. Click Open button -> emits Effect::OpenDialog
         let ob = app.open_btn_box();
@@ -1395,5 +1402,180 @@ mod tests {
         assert_eq!(effects, vec![Effect::OpenDialog]);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[ignore = "manual benchmark"]
+    fn benchmark_pan_zoomed_image() {
+        feather_ui::scale::with_render_settings(2.0, Appearance::Dark, || {
+            let font = FontSystem::new();
+            let mut app = App::new(font);
+            app.resize(1440.0, 900.0);
+
+            for has_alpha in [false, true] {
+                let mut pix = tiny_skia::Pixmap::new(2560, 1440).unwrap();
+                for (i, p) in pix.data_mut().chunks_exact_mut(4).enumerate() {
+                    p[0] = (i & 255) as u8;
+                    p[1] = ((i >> 4) & 255) as u8;
+                    p[2] = 180;
+                    p[3] = if has_alpha && i == 0 { 200 } else { 255 };
+                }
+                let thumb = doc::make_thumbnail(&pix, 112, 148);
+                app.set_document(Ok(Document {
+                    path: PathBuf::from("/tmp/bench.png"),
+                    title: "bench.png".into(),
+                    format: doc::DocFormat::Png,
+                    file_size: 4_200_000,
+                    pages: vec![doc::RenderedPage {
+                        pixmap: pix,
+                        thumb,
+                        orig_w: 2560,
+                        orig_h: 1440,
+                        has_alpha,
+                    }],
+                }));
+
+                let pw = (app.w * 2.0) as u32;
+                let ph = (app.h * 2.0) as u32;
+                let mut canvas = vec![0u8; (pw * ph * 4) as usize];
+                let mut diff = feather_ui::draw::FrameDiff::default();
+
+                for z in [1.0f32, 1.5, 2.0, 3.0] {
+                    app.zoom = ZoomMode::Manual(z);
+                    app.pan_drag = Some((700.0, 450.0, 0.0, 0.0));
+                    {
+                        let mut pm = tiny_skia::PixmapMut::from_bytes(&mut canvas, pw, ph).unwrap();
+                        app.paint(&mut pm);
+                        diff.damage_rects(&canvas, pw as i32, ph as i32);
+                    }
+                    let t0 = std::time::Instant::now();
+                    let frames = 20;
+                    let mut paint_ns = 0u128;
+                    let mut diff_ns = 0u128;
+                    for step in 1..=frames {
+                        app.motion(700.0 + step as f32 * 4.0, 450.0 + step as f32 * 3.0);
+                        let tp = std::time::Instant::now();
+                        {
+                            let mut pm =
+                                tiny_skia::PixmapMut::from_bytes(&mut canvas, pw, ph).unwrap();
+                            app.paint(&mut pm);
+                        }
+                        paint_ns += tp.elapsed().as_nanos();
+                        let td = std::time::Instant::now();
+                        let _ = diff.damage_rects(&canvas, pw as i32, ph as i32);
+                        diff_ns += td.elapsed().as_nanos();
+                    }
+                    let paint_ms = paint_ns as f64 / 1e6 / frames as f64;
+                    let diff_ms = diff_ns as f64 / 1e6 / frames as f64;
+                    let total_ms = t0.elapsed().as_secs_f64() * 1e3 / frames as f64;
+                    eprintln!(
+                        "[bench] alpha={has_alpha:<5} zoom={z:.1}x | paint={paint_ms:.2} ms | diff={diff_ms:.2} ms | total={total_ms:.2} ms/frame"
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn zoom_to_cursor_pan_idle_hover_and_visual_renders() {
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
+        let font = FontSystem::new();
+        let mut app = App::new(font);
+        app.resize(940.0, 660.0);
+
+        let mut pix = tiny_skia::Pixmap::new(800, 500).unwrap();
+        for y in 0..500u32 {
+            for x in 0..800u32 {
+                let idx = ((y * 800 + x) * 4) as usize;
+                let dist = (x as f32 - 200.0).hypot(y as f32 - 180.0);
+                if dist < 70.0 {
+                    pix.data_mut()[idx..idx + 4].copy_from_slice(&[30, 90, 140, 140]);
+                } else {
+                    let r = (40 + (x * 180 / 800)) as u8;
+                    let g = (70 + (y * 150 / 500)) as u8;
+                    pix.data_mut()[idx..idx + 4].copy_from_slice(&[r, g, 210, 255]);
+                }
+            }
+        }
+        let thumb = doc::make_thumbnail(&pix, 112, 148);
+        app.set_document(Ok(Document {
+            path: PathBuf::from("/tmp/sample.png"),
+            title: "Горное озеро.png".into(),
+            format: doc::DocFormat::Png,
+            file_size: 1_240_000,
+            pages: vec![doc::RenderedPage {
+                pixmap: pix,
+                thumb,
+                orig_w: 800,
+                orig_h: 500,
+                has_alpha: true,
+            }],
+        }));
+
+        std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
+        feather_ui::scale::with_render_settings(2.0, Appearance::Dark, || {
+            let mut pm = tiny_skia::Pixmap::new(1880, 1320).unwrap();
+            app.paint(&mut pm.as_mut());
+            assert!(!app.dirty);
+            app.motion(400.0, 300.0);
+            app.motion(520.0, 360.0);
+            assert!(!app.dirty, "plain canvas hover must not trigger repaints");
+            pm.save_png("/tmp/feather-inputs/preview-fit-dark.png").unwrap();
+
+            // Ctrl+Wheel zooms toward off-center cursor (x=260, y=180)
+            app.scroll(0.0, -48.0, 260.0, 180.0, Mods { ctrl: true, shift: false });
+            assert!(matches!(app.zoom, ZoomMode::Manual(z) if z > 1.0));
+            assert!(app.pan_x > 0.0 && app.pan_y > 0.0);
+            app.paint(&mut pm.as_mut());
+            pm.save_png("/tmp/feather-inputs/preview-zoom-dark.png").unwrap();
+
+            // 2D touchpad scroll pans both axes smoothly
+            let before = (app.pan_x, app.pan_y);
+            app.scroll(24.0, 18.0, 500.0, 350.0, Mods::default());
+            assert!((app.pan_x - (before.0 - 24.0)).abs() < 1.0);
+            assert!((app.pan_y - (before.1 - 18.0)).abs() < 1.0);
+
+            // Press & release on canvas without moving does not force redundant repaints
+            app.paint(&mut pm.as_mut());
+            assert!(!app.dirty);
+            app.press(BTN_LEFT, 450.0, 320.0, Mods::default());
+            assert!(!app.dirty);
+            app.release(BTN_LEFT);
+            assert!(!app.dirty);
+        });
+
+        feather_ui::scale::with_render_settings(2.0, Appearance::Light, || {
+            let mut pm = tiny_skia::Pixmap::new(1880, 1320).unwrap();
+            app.zoom = ZoomMode::Manual(3.0);
+            app.pan_x = 120.0;
+            app.pan_y = 80.0;
+            app.paint(&mut pm.as_mut());
+            pm.save_png("/tmp/feather-inputs/preview-zoom3x-light.png").unwrap();
+
+            // Verify incremental PanCache matches a cold scratch render bit-for-bit in all 4 diagonal pan directions
+            for z in [1.5f32, 3.0] {
+                app.zoom = ZoomMode::Manual(z);
+                app.pan_x = 0.0;
+                app.pan_y = 0.0;
+                app.scratch.clear_pan_cache();
+                app.paint(&mut pm.as_mut());
+                for (dx, dy) in [(7.0f32, 5.0f32), (-9.0, -6.0), (11.0, -4.0), (-8.0, 10.0)] {
+                    app.pan_x += dx;
+                    app.pan_y += dy;
+                    app.clamp_pan();
+                    let mut inc_pm = tiny_skia::Pixmap::new(1880, 1320).unwrap();
+                    app.paint(&mut inc_pm.as_mut());
+
+                    let mut fresh_pm = tiny_skia::Pixmap::new(1880, 1320).unwrap();
+                    app.scratch.clear_pan_cache();
+                    app.paint(&mut fresh_pm.as_mut());
+                    assert_eq!(
+                        inc_pm.data(),
+                        fresh_pm.data(),
+                        "incremental pan differed from full render at zoom={z} shift=({dx},{dy})"
+                    );
+                }
+            }
+        });
     }
 }

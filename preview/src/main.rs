@@ -3,6 +3,7 @@
 //! invocations run on background worker threads so the Wayland event loop never blocks.
 
 mod app;
+mod canvas;
 mod doc;
 mod theme;
 
@@ -417,9 +418,11 @@ impl Preview {
         self.window.set_window_geometry(0, 0, w as u32, h as u32);
         if buffer.attach_to(surface).is_err() {
             self.diff.reset();
+            self.app.dirty = true;
             return false;
         }
         self.window.commit();
+        let _ = self.conn.flush();
         self.frame_pending = true;
         true
     }
@@ -640,13 +643,22 @@ impl PointerHandler for Preview {
                     self.app.release(button);
                     Vec::new()
                 }
-                PointerEventKind::Axis { vertical, .. } => {
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    let dx = if horizontal.discrete != 0 {
+                        horizontal.discrete as f32 * 48.0
+                    } else {
+                        horizontal.absolute as f32
+                    };
                     let dy = if vertical.discrete != 0 {
                         vertical.discrete as f32 * 48.0
                     } else {
                         vertical.absolute as f32
                     };
-                    self.app.scroll(dy, x, self.mods);
+                    self.app.scroll(dx, dy, x, y, self.mods);
                     Vec::new()
                 }
             };
