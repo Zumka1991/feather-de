@@ -9,6 +9,20 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.0 — 2026-11-20
+
+- **Create folders in the file/directory picker:** a new "New Folder" button on the bottom-left
+  of the dialog (also available via `Ctrl+Shift+N` and the right-click menu on empty space)
+  opens a macOS Tahoe-style modal sheet, validates the name, and automatically navigates inside
+  the newly created folder — handy when creating new projects in IDEs or saving files.
+- **Smooth, stutter-free Preview (~20× faster zoomed panning):** panning zoomed images now uses
+  a clipped 14-bit integer/SSE2 sampler, an incremental viewport shift buffer, and a cached
+  window-corner AA mask (`114–129 ms` → `3–6 ms` per frame at 2880×1800 ×2), plus cursor-anchored
+  zoom (`Ctrl + wheel`, double-click), 2D touchpad scrolling, and arrow-key panning.
+- **DRM GPU selection & startup diagnostics:** `FEATHER_DRM_DEVICE` selects a specific DRM card
+  (including `/dev/dri/by-path` symlinks), and startup stages are logged before driver calls.
+- No new package dependencies.
+
 ## 0.25.2 — 2026-11-18
 
 - **File picker in the dark theme:** the Cancel button, file-name field, type filter and
