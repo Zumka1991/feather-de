@@ -1134,3 +1134,8 @@ Wi‑Fi-адаптер недоступен или заблокирован	The 
  рад	 rad	 rad	 rad	 rad	 弧度
 Заметки: не удалось сохранить: {}	Notes: couldn’t save: {}	Notas: no se pudo guardar: {}	Notizen: Sichern nicht möglich: {}	Notes : enregistrement impossible : {}	备忘录：无法存储：{}
 Терминал: не удалось запустить shell: {}	Terminal: couldn’t start the shell: {}	Terminal: no se pudo iniciar el shell: {}	Terminal: Die Shell konnte nicht gestartet werden: {}	Terminal : impossible de lancer le shell : {}	终端：无法启动 shell：{}
+Создать	Create	Crear	Erstellen	Créer	创建
+Имя папки	Folder name	Nombre de la carpeta	Ordnername	Nom du dossier	文件夹名称
+Имя новой папки в «{}»	Name of the new folder in “{}”	Nombre de la nueva carpeta en «{}»	Name des neuen Ordners in „{}“	Nom du nouveau dossier dans « {} »	在“{}”中新建文件夹的名称
+Введите имя папки без символа /	Enter a folder name without “/”	Introduce un nombre de carpeta sin «/»	Ordnername ohne „/“ eingeben	Saisissez un nom de dossier sans « / »	请输入不含“/”的文件夹名称
+Создана папка «{}»	Created folder “{}”	Carpeta «{}» creada	Ordner „{}“ erstellt	Dossier « {} » créé	已创建文件夹“{}”

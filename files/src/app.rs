@@ -15,7 +15,7 @@ use crate::icons::{draw_glyph, Glyph, Icon, IconCache};
 use crate::text::FontSystem;
 use crate::theme::{self, colors, rgba};
 #[path="picker.rs"] mod picker;
-use picker::PickerState;
+use picker::{NewFolderDialog, PickerState};
 #[path = "jobs.rs"]
 mod jobs;
 use feather_ui::fileops::Conflict;
@@ -44,6 +44,7 @@ enum TextField {
     Rename,
     Path,
     Search,
+    NewFolder,
 }
 
 pub const BTN_LEFT: u32 = 0x110;
@@ -145,7 +146,16 @@ enum Hit {
     ConflictSkip,
     ConflictAll,
     Nothing,
-    PickerAccept,PickerCancel,PickerName,PickerFilter,PickerChoice(usize),PickerSort,
+    PickerAccept,
+    PickerCancel,
+    PickerName,
+    PickerFilter,
+    PickerChoice(usize),
+    PickerSort,
+    PickerNewFolder,
+    NewFolderField,
+    NewFolderOk,
+    NewFolderCancel,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -300,6 +310,8 @@ pub struct App {
     open_with_db: Option<crate::openwith::Db>,
     /// Modal dialog for picking any app or entering a custom command
     open_with_dialog: Option<OpenWithDialog>,
+    /// Modal sheet for creating a folder inside the file picker
+    new_folder_dialog: Option<NewFolderDialog>,
     /// Where the last context menu was opened: «Открыть с помощью» shows its list there
     menu_at: (f32, f32),
     confirm: Option<Confirm>,
@@ -381,6 +393,7 @@ impl App {
             open_with_target: None,
             open_with_db: None,
             open_with_dialog: None,
+            new_folder_dialog: None,
             menu_at: (0.0, 0.0),
             confirm: None,
             password: Default::default(),
@@ -534,6 +547,7 @@ impl App {
         self.search_focus = false;
         self.rename = None;
         self.menu = None;
+        self.new_folder_dialog = None;
         self.error = None;
         self.reload()
     }
@@ -873,7 +887,9 @@ impl App {
 
     /// The text field that has the keyboard, in the order `key` serves them
     fn active_field(&mut self) -> Option<&mut feather_ui::input::TextInput> {
-        if let Some(dlg) = self.open_with_dialog.as_mut() {
+        if let Some(dlg) = self.new_folder_dialog.as_mut() {
+            Some(&mut dlg.input)
+        } else if let Some(dlg) = self.open_with_dialog.as_mut() {
             Some(&mut dlg.input)
         } else if matches!(self.confirm, Some(Confirm::Password(..))) {
             Some(&mut self.password)
@@ -890,7 +906,9 @@ impl App {
 
     /// The search text changed outside `key` (cut, paste): filter again
     fn field_edited(&mut self) {
-        if let Some(dlg) = self.open_with_dialog.as_mut() {
+        if let Some(dlg) = self.new_folder_dialog.as_mut() {
+            dlg.error = None;
+        } else if let Some(dlg) = self.open_with_dialog.as_mut() {
             dlg.scroll = 0.0;
         } else if self.confirm.is_none() && self.path_edit.is_none() && self.rename.is_none() && self.search_focus {
             self.scroll = 0.0;
@@ -1312,6 +1330,18 @@ impl App {
         if self.picker.is_none() && inside(self.title_rect()) {
             return Hit::Title;
         }
+        if self.new_folder_dialog.is_some() {
+            let (_, field, cancel, ok) = self.new_folder_rects();
+            return if inside(ok) {
+                Hit::NewFolderOk
+            } else if inside(cancel) {
+                Hit::NewFolderCancel
+            } else if inside(field) {
+                Hit::NewFolderField
+            } else {
+                Hit::Nothing
+            };
+        }
         if let Some(dlg) = &self.open_with_dialog {
             let (sheet, field, cancel, ok) = self.open_with_rects();
             if inside(ok) {
@@ -1467,7 +1497,7 @@ impl App {
             return Cursor::Resize(edges);
         }
         match self.hit(x, y) {
-            Hit::Search | Hit::PasswordField => Cursor::Text,
+            Hit::Search | Hit::PasswordField | Hit::NewFolderField | Hit::OpenWithField | Hit::PickerName => Cursor::Text,
             Hit::Title if self.path_edit.is_some() => Cursor::Text,
             Hit::Item(i) if self.rename.as_ref().is_some_and(|(p, _)| *p == self.entry(i).path) => Cursor::Text,
             _ => Cursor::Default,
@@ -1494,6 +1524,7 @@ impl App {
                 TextField::Rename => self.rename.as_mut().map(|(_, n)| n),
                 TextField::Path => self.path_edit.as_mut(),
                 TextField::Search => Some(&mut self.search),
+                TextField::NewFolder => self.new_folder_dialog.as_mut().map(|d| &mut d.input),
             };
             match input {
                 Some(input) => {
@@ -1544,7 +1575,7 @@ impl App {
             _ => None,
         };
         // Files and empty space have no hover look: moving over them repaints nothing
-        let visual = |h: &Hit| !matches!(h, Hit::Item(_) | Hit::Content | Hit::Toolbar | Hit::Nothing | Hit::Search);
+        let visual = |h: &Hit| !matches!(h, Hit::Item(_) | Hit::Content | Hit::Toolbar | Hit::Nothing | Hit::Search | Hit::NewFolderField | Hit::PickerName);
         if menu_hover != self.menu_hover || (hover != self.hover && (visual(&hover) || visual(&self.hover))) {
             self.dirty = true;
         }
@@ -1554,7 +1585,7 @@ impl App {
     }
 
     pub fn leave(&mut self) {
-        if !matches!(self.hover, Hit::Nothing | Hit::Item(_) | Hit::Content | Hit::Toolbar | Hit::Search) {
+        if !matches!(self.hover, Hit::Nothing | Hit::Item(_) | Hit::Content | Hit::Toolbar | Hit::Search | Hit::NewFolderField | Hit::PickerName) {
             self.hover = Hit::Nothing;
             self.dirty = true;
         }
@@ -1580,7 +1611,6 @@ impl App {
         // Any click (the second of a double-click too) cancels a pending rename
         self.rename_at = None;
         self.text_drag = None;
-        if self.picker.is_some()&&button==BTN_RIGHT{return Vec::new();}
         let selection_mods=if self.picker.as_ref().is_some_and(|p|!p.config.multiple){Mods{ctrl:false,shift:false,..mods}}else{mods};
         self.pointer = (x, y);
         self.dirty = true;
@@ -1678,11 +1708,38 @@ impl App {
             && self.last_click.as_ref().is_some_and(|(t, h)| *h == hit && now.duration_since(*t) < DOUBLE_CLICK);
         self.last_click = (button == BTN_LEFT).then(|| (now, hit.clone()));
         if button == BTN_RIGHT {
+            if self.new_folder_dialog.is_some() {
+                return effects;
+            }
+            if self.picker.is_some() {
+                if matches!(hit, Hit::Content) {
+                    self.open_picker_menu(x, y);
+                }
+                return effects;
+            }
             self.open_menu(hit, x, y);
             return effects;
         }
         if button != BTN_LEFT {
             return effects;
+        }
+        if self.new_folder_dialog.is_some() {
+            return match hit {
+                Hit::NewFolderOk => self.submit_new_folder_dialog(),
+                Hit::NewFolderCancel => {
+                    self.cancel_new_folder_dialog();
+                    Vec::new()
+                }
+                Hit::NewFolderField => {
+                    let (_, (fx, _, fw, _), _, _) = self.new_folder_rects();
+                    if let Some(dlg) = self.new_folder_dialog.as_mut() {
+                        dlg.input.click(&mut self.fonts, x - fx - 10.0, fw - 20.0, 13.0, false, mods.shift);
+                        self.text_drag = Some((TextField::NewFolder, fx + 10.0, fw - 20.0, 13.0));
+                    }
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
         }
         if self.open_with_dialog.is_some() {
             match hit {
@@ -1737,6 +1794,7 @@ impl App {
             Hit::PickerFilter=>{self.picker_next_filter();},
             Hit::PickerChoice(i)=>self.picker_next_choice(i),
             Hit::PickerSort=>self.picker_next_sort(),
+            Hit::PickerNewFolder=>self.open_new_folder_dialog(),
             Hit::Close => effects.push(Effect::Close),
             Hit::Minimize => effects.push(Effect::Minimize),
             Hit::Zoom => effects.push(Effect::ToggleMaximize),
@@ -1791,7 +1849,7 @@ impl App {
                     self.cursor = None;
                 }
             }
-            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::PasswordField | Hit::OpenWithField | Hit::OpenWithItem(_) | Hit::OpenWithOk | Hit::OpenWithCancel | Hit::Title | Hit::PropsClose | Hit::Nothing => {}
+            Hit::Menu(_) | Hit::ConfirmOk | Hit::ConfirmCancel | Hit::PasswordField | Hit::OpenWithField | Hit::OpenWithItem(_) | Hit::OpenWithOk | Hit::OpenWithCancel | Hit::NewFolderField | Hit::NewFolderOk | Hit::NewFolderCancel | Hit::Title | Hit::PropsClose | Hit::Nothing => {}
             Hit::JobCancel(_) | Hit::ConflictReplace | Hit::ConflictKeep | Hit::ConflictSkip | Hit::ConflictAll => {}
         }
         effects
@@ -1892,7 +1950,7 @@ impl App {
             }
             return;
         }
-        if self.menu.is_some() {
+        if self.new_folder_dialog.is_some() || self.menu.is_some() {
             return;
         }
         let before = self.scroll;
@@ -2114,7 +2172,14 @@ impl App {
                 self.props = Some(Props { path: path.clone(), ..Default::default() });
                 vec![Effect::Inspect(path)]
             }
-            MenuAction::NewFolder => self.new_folder(),
+            MenuAction::NewFolder => {
+                if self.picker.is_some() {
+                    self.open_new_folder_dialog();
+                    Vec::new()
+                } else {
+                    self.new_folder()
+                }
+            }
             MenuAction::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
                 self.refilter();
@@ -2201,6 +2266,31 @@ impl App {
         self.rename_at = None;
         if let Some(effects) = self.conflict_key(sym) {
             return effects;
+        }
+        if self.new_folder_dialog.is_some() {
+            match sym {
+                K::Return | K::KP_Enter => return self.submit_new_folder_dialog(),
+                K::Escape => self.cancel_new_folder_dialog(),
+                _ if mods.ctrl && !mods.alt && letter == Some('v') => return vec![Effect::PasteText],
+                _ if mods.ctrl && !mods.alt && matches!(letter, Some('c' | 'x')) => {
+                    if let Some(field) = self.active_field() {
+                        let Some(copied) = field.selected_text().map(str::to_owned) else { return Vec::new() };
+                        if letter == Some('x') {
+                            field.key(0xff08, None, false, false);
+                            self.field_edited();
+                        }
+                        return vec![Effect::CopyText(copied)];
+                    }
+                }
+                _ => {
+                    if let Some(dlg) = self.new_folder_dialog.as_mut() {
+                        if dlg.input.key(raw, text, mods.ctrl, mods.shift) == feather_ui::input::Edit::Changed {
+                            dlg.error = None;
+                        }
+                    }
+                }
+            }
+            return Vec::new();
         }
         if self.open_with_dialog.is_some() {
             match sym {
@@ -2462,13 +2552,14 @@ impl App {
         self.paint_toolbar(pm);
         self.paint_pathbar(pm);
         self.paint_sidebar(pm);
+        self.paint_picker(pm);
         self.paint_jobs(pm);
         self.paint_menu(pm);
         self.paint_confirm(pm);
         self.paint_open_with(pm);
+        self.paint_new_folder(pm);
         self.paint_conflict(pm);
         self.paint_props(pm);
-        self.paint_picker(pm);
         self.paint_preview(pm);
     }
 
@@ -3988,6 +4079,138 @@ mod tests {
             app.key(0x7a, 0, Some("z"), ctrl),
             vec![Effect::UndoMove(vec![(src, dst)])]
         );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn picker_new_folder_button_shortcut_menu_validation_and_navigation() {
+        use feather_ui::picker::{Config, Mode};
+        feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
+        let root = fixture("picker-new-folder");
+        let mut app = app_in(&root);
+        app.resize(1000.0, 640.0);
+        let mut cfg = Config {
+            title: "Выберите папку проекта".into(),
+            mode: Mode::Directory,
+            ..Default::default()
+        };
+        cfg.validate().unwrap();
+        app.set_picker(cfg);
+
+        // Button hit-test and click open the modal sheet without creating anything yet
+        let (nx, ny, nw, nh) = app.picker_new_folder_rect();
+        assert_eq!(app.hit(nx + nw * 0.5, ny + nh * 0.5), Hit::PickerNewFolder);
+        let effects = app.press(BTN_LEFT, nx + nw * 0.5, ny + nh * 0.5, Mods::default());
+        assert!(effects.is_empty());
+        assert!(app.new_folder_dialog.is_some());
+        assert_eq!(
+            app.new_folder_dialog.as_ref().unwrap().input.selected_text(),
+            Some("Новая папка")
+        );
+        assert!(!root.join("Новая папка").exists());
+
+        // Escape cancels only the sheet, never the whole picker dialog
+        let effects = app.key(0xff1b, 0, None, Mods::default());
+        assert!(effects.is_empty());
+        assert!(app.new_folder_dialog.is_none());
+        assert!(!root.join("Новая папка").exists());
+
+        // Ctrl+Shift+N opens the sheet; invalid slash and duplicate names show inline errors
+        let ctrl_shift = Mods { ctrl: true, shift: true, alt: false };
+        assert!(app.key(0x6e, 0, Some("n"), ctrl_shift).is_empty());
+        assert!(app.new_folder_dialog.is_some());
+        app.key(0, 0, Some("bad/name"), Mods::default());
+        assert!(app.key(0xff0d, 0, None, Mods::default()).is_empty());
+        assert!(app.new_folder_dialog.as_ref().unwrap().error.is_some());
+
+        // Duplicate existing directory ("beta") is rejected without closing
+        app.key(0x61, 0, Some("a"), CTRL);
+        app.key(0, 0, Some("beta"), Mods::default());
+        assert!(app.new_folder_dialog.as_ref().unwrap().error.is_none());
+        assert!(app.key(0xff0d, 0, None, Mods::default()).is_empty());
+        assert!(app.new_folder_dialog.as_ref().unwrap().error.is_some());
+
+        // Valid name creates the directory and navigates inside so Accept picks it immediately
+        app.key(0x61, 0, Some("a"), CTRL);
+        app.key(0, 0, Some("antigravity-app"), Mods::default());
+        let effects = app.key(0xff0d, 0, None, Mods::default());
+        let created = root.join("antigravity-app");
+        assert!(created.is_dir());
+        assert!(app.new_folder_dialog.is_none());
+        assert_eq!(app.dir(), created);
+        assert!(effects.iter().any(|e| matches!(e, Effect::List(p, _) if *p == created)));
+        app.listed(app.generation, Ok(fsops::list(&created).unwrap()));
+        assert!(matches!(
+            app.picker_accept().as_slice(),
+            [Effect::Picked(s)] if s.paths == vec![feather_ui::picker::path_bytes(&created)]
+        ));
+
+        // Right-click on empty content opens a compact picker menu; Escape closes only the menu
+        let effects = app.press(BTN_RIGHT, SIDEBAR_W + 400.0, TOOLBAR_H + 220.0, Mods::default());
+        assert!(effects.is_empty());
+        assert!(app.menu.is_some());
+        assert!(app.key(0xff1b, 0, None, Mods::default()).is_empty());
+        assert!(app.menu.is_none());
+
+        // Right-click menu -> "Новая папка" opens the sheet
+        app.press(BTN_RIGHT, SIDEBAR_W + 400.0, TOOLBAR_H + 220.0, Mods::default());
+        let (mx, my, _, _) = app.menu_rect(app.menu.as_ref().unwrap());
+        app.press(BTN_LEFT, mx + 24.0, my + 16.0, Mods::default());
+        assert!(app.new_folder_dialog.is_some());
+        app.cancel_new_folder_dialog();
+
+        // Save mode: Ctrl+Shift+N works even while the filename field is focused,
+        // keeps the typed filename, and returns focus to it after entering the new folder
+        let mut save_cfg = Config {
+            title: "Сохранить файл".into(),
+            mode: Mode::Save,
+            name: "report.pdf".into(),
+            ..Default::default()
+        };
+        save_cfg.validate().unwrap();
+        app.set_picker(save_cfg);
+        assert!(app.picker.as_ref().unwrap().name_focus);
+        app.key(0x6e, 0, Some("n"), ctrl_shift);
+        assert!(app.new_folder_dialog.is_some());
+        app.key(0, 0, Some("exports"), Mods::default());
+        let effects = app.key(0xff0d, 0, None, Mods::default());
+        let exports = created.join("exports");
+        assert!(exports.is_dir());
+        assert_eq!(app.dir(), exports);
+        assert!(app.picker.as_ref().unwrap().name_focus);
+        assert!(effects.iter().any(|e| matches!(e, Effect::List(p, _) if *p == exports)));
+        app.listed(app.generation, Ok(fsops::list(&exports).unwrap()));
+        assert!(matches!(
+            app.picker_accept().as_slice(),
+            [Effect::CheckSave(p)] if *p == exports.join("report.pdf")
+        ));
+
+        // Visual renders for light and dark themes (picker + New Folder sheet)
+        std::fs::create_dir_all("/tmp/feather-inputs").unwrap();
+        for (appearance, tag) in [
+            (feather_ui::scale::Appearance::Dark, "dark"),
+            (feather_ui::scale::Appearance::Light, "light"),
+        ] {
+            feather_ui::scale::with_render_settings(2.0, appearance, || {
+                feather_ui::scale::set_lang(feather_ui::i18n::Lang::Ru);
+                let mut vis = app_in(&root);
+                vis.resize(1000.0, 640.0);
+                let mut dcfg = Config {
+                    title: "Выберите папку проекта".into(),
+                    mode: Mode::Directory,
+                    ..Default::default()
+                };
+                dcfg.validate().unwrap();
+                vis.set_picker(dcfg);
+                let mut image = tiny_skia::Pixmap::new(2000, 1280).unwrap();
+                vis.paint(&mut image.as_mut());
+                image.save_png(format!("/tmp/feather-inputs/files-picker-dir-{tag}.png")).unwrap();
+                vis.open_new_folder_dialog();
+                vis.paint(&mut image.as_mut());
+                image.save_png(format!("/tmp/feather-inputs/files-picker-newfolder-{tag}.png")).unwrap();
+            });
+        }
 
         std::fs::remove_dir_all(&root).unwrap();
     }
