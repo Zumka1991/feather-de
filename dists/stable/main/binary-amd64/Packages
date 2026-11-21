@@ -1,0 +1,129 @@
+Package: feather-de
+Version: 0.26.0
+Architecture: amd64
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 71372
+Depends: libc6 (>= 2.39), libgbm1 (>= 21.3.0~rc1), libgcc-s1 (>= 4.2), libinput10 (>= 1.19.1), libpipewire-0.3-0t64 (>= 0.3.34), libseat1 (>= 0.5.0), libudev1 (>= 183), libxcb-cursor0 (>= 0.0.99), libxcb1 (>= 1.11.1), libxkbcommon0 (>= 0.5.0), dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools, unar
+Recommends: udisks2, packagekit, appstream, breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core
+Filename: pool/main/f/feather-de/feather-de_0.26.0_amd64.deb
+Size: 21862952
+MD5sum: f11a3693499a624f89cf3939576e1540
+SHA1: b23d901974963380b99d66ff45132af042ab59bf
+SHA256: 1b6d2f4884bc403822a6f982a888a2f4ab870f55b0e67e27e1557b5a03bfd407
+Section: x11
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Feather DE (Пёрышко) — a macOS-style Wayland desktop
+ A fast, lightweight desktop environment written in Rust: a Wayland
+ compositor with a Dock, Launchpad, Control Center and menu bar, plus its
+ own Files, Terminal, Notes, Preview, TextEdit, Calculator, App Store and
+ package installer.
+ Start it from the login screen (the Feather session) or with the
+ feather-session command.
+
+Package: feather-de
+Version: 0.26.1
+Architecture: amd64
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 71484
+Depends: libc6 (>= 2.39), libgbm1 (>= 21.3.0~rc1), libgcc-s1 (>= 4.2), libinput10 (>= 1.19.1), libpipewire-0.3-0t64 (>= 0.3.34), libseat1 (>= 0.5.0), libudev1 (>= 183), libxcb-cursor0 (>= 0.0.99), libxcb1 (>= 1.11.1), libxkbcommon0 (>= 0.5.0), dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools, unar
+Recommends: udisks2, packagekit, appstream, breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core
+Filename: pool/main/f/feather-de/feather-de_0.26.1_amd64.deb
+Size: 21886056
+MD5sum: 576680ac8f97be0094ff02eb0bb00df8
+SHA1: a12a00c5f410d96b4b25a5887fa51d1b650c9c5d
+SHA256: 448e072608848c46e1664ebaf65c137bf2b2bb047f103bbccdac8846bad1f963
+Section: x11
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Feather DE (Пёрышко) — a macOS-style Wayland desktop
+ A fast, lightweight desktop environment written in Rust: a Wayland
+ compositor with a Dock, Launchpad, Control Center and menu bar, plus its
+ own Files, Terminal, Notes, Preview, TextEdit, Calculator, App Store and
+ package installer.
+ Start it from the login screen (the Feather session) or with the
+ feather-session command.
+
+Package: feather-de
+Version: 0.26.2
+Architecture: amd64
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 71644
+Depends: libc6 (>= 2.39), libgbm1 (>= 21.3.0~rc1), libgcc-s1 (>= 4.2), libinput10 (>= 1.19.1), libpipewire-0.3-0t64 (>= 0.3.34), libseat1 (>= 0.5.0), libudev1 (>= 183), libxcb-cursor0 (>= 0.0.99), libxcb1 (>= 1.11.1), libxkbcommon0 (>= 0.5.0), dbus-user-session, fontconfig, pkexec, polkitd, xdg-user-dirs, xdg-utils, locales, desktop-file-utils, shared-mime-info, libarchive-tools, unar
+Recommends: udisks2, packagekit, appstream, breeze-cursor-theme, libfuse2t64 | libfuse2, xwayland, xdg-desktop-portal, xdg-desktop-portal-gtk, pipewire-pulse, wireplumber, pulseaudio-utils, network-manager, bluez, poppler-utils, ffmpeg, ddcutil, fonts-noto-core, fonts-noto-color-emoji, fonts-noto-cjk, fonts-dejavu-core
+Filename: pool/main/f/feather-de/feather-de_0.26.2_amd64.deb
+Size: 21944064
+MD5sum: 5e9b907f4ba0aa4f13d0374887cdb245
+SHA1: 7315ea86d9600b2ad088010430af692e7ed549a8
+SHA256: 0441617abdf838f6f75d195a4bf33f76cffa507418a14f91c4a4692cc6d256df
+Section: x11
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Feather DE (Пёрышко) — a macOS-style Wayland desktop
+ A fast, lightweight desktop environment written in Rust: a Wayland
+ compositor with a Dock, Launchpad, Control Center and menu bar, plus its
+ own Files, Terminal, Notes, Preview, TextEdit, Calculator, App Store and
+ package installer.
+ Start it from the login screen (the Feather session) or with the
+ feather-session command.
+
+Package: feather-desktop
+Version: 0.26.0
+Architecture: all
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 8
+Depends: feather-de (>= 0.26.0)
+Recommends: snapd, gnome-keyring, libpam-gnome-keyring, gvfs-backends, gvfs-fuse, udisks2, upower, power-profiles-daemon, fwupd, ubuntu-drivers-common, unattended-upgrades, avahi-daemon, libnss-mdns, cups, system-config-printer, simple-scan, gstreamer1.0-libav, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire, qt6-wayland, qtwayland5, yaru-theme-gtk, yaru-theme-icon, fonts-liberation, hunspell-ru, hunspell-en-us, zip, unzip, 7zip, exfatprogs, ntfs-3g, libfuse2t64 | libfuse2, gnome-software, gnome-software-plugin-snap, software-properties-gtk, showtime | totem, rhythmbox, gnome-snapshot, gnome-disk-utility, resources | gnome-system-monitor, baobab, gnome-characters, transmission-gtk, libreoffice-writer, libreoffice-calc, libreoffice-impress, libreoffice-gtk3, libreoffice-style-yaru, libreoffice-l10n-ru
+Filename: pool/main/f/feather-desktop/feather-desktop_0.26.0_all.deb
+Size: 2064
+MD5sum: c56f596159f2f8a5035f3a43e89324fa
+SHA1: c062b5b7332873ab9486b516e1cd280feb0d9157
+SHA256: 80321534825abd1ef780fc3a020e54593193072a3f02447f33d949c370d794a6
+Section: metapackages
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Feather DE with the app set of Ubuntu Desktop
+ Metapackage: the Feather desktop, LibreOffice, video, music, camera, an
+ app store with Snap, printing and scanning, disks, a password keyring,
+ codecs and drivers. Any program of the set can be removed separately.
+
+Package: feather-desktop
+Version: 0.26.1
+Architecture: all
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 8
+Depends: feather-de (>= 0.26.1)
+Recommends: snapd, gnome-keyring, libpam-gnome-keyring, gvfs-backends, gvfs-fuse, udisks2, upower, power-profiles-daemon, fwupd, ubuntu-drivers-common, unattended-upgrades, avahi-daemon, libnss-mdns, cups, system-config-printer, simple-scan, gstreamer1.0-libav, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire, qt6-wayland, qtwayland5, yaru-theme-gtk, yaru-theme-icon, fonts-liberation, hunspell-ru, hunspell-en-us, zip, unzip, 7zip, exfatprogs, ntfs-3g, libfuse2t64 | libfuse2, gnome-software, gnome-software-plugin-snap, software-properties-gtk, showtime | totem, rhythmbox, gnome-snapshot, gnome-disk-utility, resources | gnome-system-monitor, baobab, gnome-characters, transmission-gtk, libreoffice-writer, libreoffice-calc, libreoffice-impress, libreoffice-gtk3, libreoffice-style-yaru, libreoffice-l10n-ru
+Filename: pool/main/f/feather-desktop/feather-desktop_0.26.1_all.deb
+Size: 2064
+MD5sum: 1ad6622c27df2c779b0a8cf5404caa9b
+SHA1: e0442920135063d8fe80d1a1f8447d4320a55cd5
+SHA256: 068b9bbe3c0934a5c5c54076bd4f9059ac29a39f18b1b298bf44190ebab4a26b
+Section: metapackages
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Feather DE with the app set of Ubuntu Desktop
+ Metapackage: the Feather desktop, LibreOffice, video, music, camera, an
+ app store with Snap, printing and scanning, disks, a password keyring,
+ codecs and drivers. Any program of the set can be removed separately.
+
+Package: feather-desktop
+Version: 0.26.2
+Architecture: all
+Maintainer: Zumka1991 <244128845+Zumka1991@users.noreply.github.com>
+Installed-Size: 8
+Depends: feather-de (>= 0.26.2)
+Recommends: snapd, gnome-keyring, libpam-gnome-keyring, gvfs-backends, gvfs-fuse, udisks2, upower, power-profiles-daemon, fwupd, ubuntu-drivers-common, unattended-upgrades, avahi-daemon, libnss-mdns, cups, system-config-printer, simple-scan, gstreamer1.0-libav, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-pipewire, qt6-wayland, qtwayland5, yaru-theme-gtk, yaru-theme-icon, fonts-liberation, hunspell-ru, hunspell-en-us, zip, unzip, 7zip, exfatprogs, ntfs-3g, libfuse2t64 | libfuse2, gnome-software, gnome-software-plugin-snap, software-properties-gtk, showtime | totem, rhythmbox, gnome-snapshot, gnome-disk-utility, resources | gnome-system-monitor, baobab, gnome-characters, transmission-gtk, libreoffice-writer, libreoffice-calc, libreoffice-impress, libreoffice-gtk3, libreoffice-style-yaru, libreoffice-l10n-ru
+Filename: pool/main/f/feather-desktop/feather-desktop_0.26.2_all.deb
+Size: 2068
+MD5sum: 112c7b0da1526eb8a1f979101810d84a
+SHA1: 9a30087b51e192ae9b44a92468eaf7400a69224a
+SHA256: 914018a5d1aa819444e118b742b7b4f8ef802828aa15082289f190350040a80e
+Section: metapackages
+Priority: optional
+Homepage: https://github.com/Zumka1991/feather-de
+Description: Feather DE with the app set of Ubuntu Desktop
+ Metapackage: the Feather desktop, LibreOffice, video, music, camera, an
+ app store with Snap, printing and scanning, disks, a password keyring,
+ codecs and drivers. Any program of the set can be removed separately.
+
