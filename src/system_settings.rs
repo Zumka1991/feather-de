@@ -4844,28 +4844,8 @@ impl crate::FeatherCompositor {
                 .copied()
                 .find(|m| crate::drm_backend::mode_info(*m) == target)
             {
-                let Some(head)=d.heads.iter_mut().find(|h|h.name==d.connector_name)else{return};
-                let result = head.output
-                    .use_mode::<_, crate::render::OutputElement>(
-                        mode,
-                        &mut d.renderer,
-                        &smithay::backend::drm::output::DrmOutputRenderElements::default(),
-                    )
-                    .map_err(|e| format!("Не удалось применить режим: {e:?}"));
-                if result.is_ok() {
-                    d.size = (target.width, target.height);
-                    d.refresh = target.refresh;
-                    head.size=d.size;head.refresh=d.refresh;
-                    head.output.with_compositor(|c| {
-                        c.set_output_mode_source(smithay::output::OutputModeSource::Static {
-                            size: d.size.into(),
-                            scale: 1.0.into(),
-                            transform: smithay::utils::Transform::Normal,
-                        })
-                    });
-                    head.output.reset_buffers();head.pending=false;head.protected=false;
-                }
-                result
+                let name = d.connector_name.clone();
+                d.set_head_mode(&name, mode)
             } else {
                 Err("Режим больше недоступен".into())
             }

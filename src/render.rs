@@ -2050,30 +2050,76 @@ impl FeatherCompositor {
                 sp.extend(elements);
                 elements=sp;
             }
-            let mut flags = FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
-            if head.vrr_enabled {
-                flags |= FrameFlags::SKIP_CURSOR_ONLY_UPDATES;
-            }
-            match head.output.render_frame(&mut d.renderer,&elements,if self.lock.active||self.lock.splash.active {Color32F::new(0.0,0.0,0.0,1.0)}else{CLEAR_COLOR},flags){
-                Ok(r) if !r.is_empty=>{
-                    let scanned_out = matches!(r.primary_element, PrimaryPlaneElement::Element(_));
-                    // Answered with the flip's own timestamp in `on_drm_vblank`
-                    let feedback = take_presentation_feedback(&m.output,&self.windows,&drawn,&r.states);
-                    match head.output.queue_frame(Some(feedback)){
-                        Ok(())=>{
-                            head.pending=true;
-                            self.frame_heads.push(head.name.clone());
-                            head.queued_protected=self.lock.active;
-                            submitted=true;
-                            if scanned_out {
-                                direct_scanouts += 1;
-                            }
-                        },
-                        Err(e)=>tracing::warn!("DRM {} queue: {e:?}",head.name),
+            let clear_color = if self.lock.active || self.lock.splash.active {
+                Color32F::new(0.0, 0.0, 0.0, 1.0)
+            } else {
+                CLEAR_COLOR
+            };
+            let sec_gpu = (head.device != d.device)
+                .then(|| d.extra.iter_mut().find(|g| g.device == head.device && g.renderer.is_some()))
+                .flatten();
+            let rendered = if let Some(sec) = sec_gpu {
+                match crate::drm_backend::render_secondary_head(
+                    head,
+                    &mut d.renderer,
+                    &d.gbm,
+                    sec,
+                    &elements,
+                    clear_color,
+                ) {
+                    Ok(crate::drm_backend::SecondaryRenderResult::Rendered { states }) => {
+                        Some((states, false))
                     }
-                },
-                // Nothing changed here: its clients get their callbacks from the idle timer
-                Ok(_)=>self.idle_heads.push(head.name.clone()),Err(e)=>tracing::warn!("DRM {} render: {e:?}",head.name),
+                    Ok(crate::drm_backend::SecondaryRenderResult::Empty) => {
+                        self.idle_heads.push(head.name.clone());
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!("DRM {} render: {e}", head.name);
+                        None
+                    }
+                }
+            } else {
+                let mut flags = FrameFlags::DEFAULT | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
+                if head.vrr_enabled {
+                    flags |= FrameFlags::SKIP_CURSOR_ONLY_UPDATES;
+                }
+                match head.output.render_frame(&mut d.renderer, &elements, clear_color, flags) {
+                    Ok(r) if !r.is_empty => {
+                        if r.needs_sync() {
+                            if let PrimaryPlaneElement::Swapchain(e) = &r.primary_element {
+                                let _ = e.sync.wait();
+                            }
+                        }
+                        let scanned_out = matches!(r.primary_element, PrimaryPlaneElement::Element(_));
+                        Some((r.states, scanned_out))
+                    }
+                    // Nothing changed here: its clients get their callbacks from the idle timer
+                    Ok(_) => {
+                        self.idle_heads.push(head.name.clone());
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!("DRM {} render: {e:?}", head.name);
+                        None
+                    }
+                }
+            };
+            if let Some((states, scanned_out)) = rendered {
+                // Answered with the flip's own timestamp in `on_drm_vblank`
+                let feedback = take_presentation_feedback(&m.output, &self.windows, &drawn, &states);
+                match head.output.queue_frame(Some(feedback)) {
+                    Ok(()) => {
+                        head.pending = true;
+                        self.frame_heads.push(head.name.clone());
+                        head.queued_protected = self.lock.active;
+                        submitted = true;
+                        if scanned_out {
+                            direct_scanouts += 1;
+                        }
+                    }
+                    Err(e) => tracing::warn!("DRM {} queue: {e:?}", head.name),
+                }
             }
         }
         // A failed lock frame must never leave the previous desktop on any connector.

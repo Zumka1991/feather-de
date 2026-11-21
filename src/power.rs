@@ -295,7 +295,12 @@ impl FeatherCompositor {
         }
         self.power.blanked = false;
         if let crate::backend::Backend::Drm(d) = &mut self.backend {
-            for h in &mut d.heads{h.output.reset_buffers();h.pending=false;h.protected=false;}
+            for h in &mut d.heads {
+                h.output.reset_buffers();
+                h.reset_bridge();
+                h.pending = false;
+                h.protected = false;
+            }
         }
         self.frame_pending = false;
         self.needs_redraw = true;

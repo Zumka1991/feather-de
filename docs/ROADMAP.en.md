@@ -123,8 +123,10 @@ see the [verification order](LOCK_POWER.md#проверки). The overall accept
   - [x] Implementation for outputs of one GPU, arrangement/primary settings, moving windows, a shared scale
   - [x] Virtual outputs: a real window, Wayland events, disconnect/return, locking all screens
   - [ ] Physical KMS/hotplug/VT and budgets on several monitors (there is no second monitor to test with)
-  - [x] Monitors on a second graphics card (hybrid graphics, docking stations) — [MONITORS.md](MONITORS.md#несколько-видеокарт--2026-11-15)
-    - [ ] Testing on hardware with two graphics cards; copying a frame for drivers without buffer sharing
+  - [x] Monitors on a second graphics card (hybrid graphics, docking stations) — [MONITORS.md](MONITORS.md#несколько-видеокарт--2026-11-15--2026-11-21)
+    - [x] Per-GPU EGL/GLES renderer and native scanout swapchain for secondary cards, verified GPU DMA-BUF copy (`GL_TEXTURE_EXTERNAL_OES` + native fence sync), and damage-rect CPU copy fallback (`FEATHER_MULTIGPU_COPY=auto|dma|cpu`) — fix for [#3](https://github.com/Zumka1991/feather-de/issues/3)
+    - [ ] Testing on physical dual-GPU hardware (AMD + NVIDIA from [#3](https://github.com/Zumka1991/feather-de/issues/3))
+    - [x] Manual DRM card selection (`FEATHER_DRM_DEVICE`) and startup stage diagnostics for [#3](https://github.com/Zumka1991/feather-de/issues/3)
 - [x] VRR (`vrr_supported` / `use_vrr` / `FEATHER_VRR`), explicit sync (`wp_linux_drm_syncobj_v1`), direct scanout (`ALLOW_PRIMARY_PLANE_SCANOUT_ANY`)
 - [x] Night mode (warm colours on a schedule, DRM gamma) — [DISPLAY_COLOR.md](DISPLAY_COLOR.md)
 - [x] Brightness: logind/backlight and DDC/CI of external monitors — [DISPLAY_COLOR.md](DISPLAY_COLOR.md#яркость-srcbrightnessrs)

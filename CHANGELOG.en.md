@@ -9,6 +9,17 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.2 — 2026-11-21
+
+- **Multi-monitor across hybrid/dual GPUs (AMD + NVIDIA, [#3](https://github.com/Zumka1991/feather-de/issues/3)):**
+  each secondary GPU now runs its own EGL/GLES renderer and native scanout swapchain instead of
+  having the primary GPU render directly into foreign VRAM. Fixes both the `SIGABRT`
+  (`amdgpu: The CS has been rejected (-12)`) crash on AMD-primary + NVIDIA-secondary laptops and
+  the `NoSupportedRendererFormat` failure in the reverse order. Frames transfer via verified
+  GPU DMA-BUF sampling (`GL_TEXTURE_EXTERNAL_OES` + native fence sync) with automatic fallback to
+  damage-rect CPU copy (`FEATHER_MULTIGPU_COPY=auto|dma|cpu`).
+- No new package dependencies.
+
 ## 0.26.1 — 2026-11-21
 
 - **Bluetooth headphones & accessories stay paired across reboots:** Feather now registers a

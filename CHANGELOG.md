@@ -4,6 +4,32 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-21 — Выпуск 0.26.2 (Gemini/agy)
+
+- **Мониторы на разных видеокартах (гибридная графика AMD + NVIDIA, [#3](https://github.com/Zumka1991/feather-de/issues/3)):**
+  каждая вторая видеокарта теперь работает со своим EGL/GLES-рендерером и нативным swapchain
+  вместо рендера основной картой в чужой VRAM. Устранены `SIGABRT` (`amdgpu: The CS has been
+  rejected (-12)`) при AMD основной + NVIDIA второй и `NoSupportedRendererFormat` при обратном
+  порядке; кадр передаётся через проверенное GPU DMA-BUF копирование (`GL_TEXTURE_EXTERNAL_OES` +
+  native fence) с автоматическим откатом на CPU-копирование прямоугольников повреждений
+  (`FEATHER_MULTIGPU_COPY=auto|dma|cpu`).
+- Новых зависимостей пакета нет.
+
+## 2026-11-21 — Мониторы на второй видеокарте: свой EGL-рендерер, GPU DMA-BUF и CPU-копирование ([#3](https://github.com/Zumka1991/feather-de/issues/3)) (Gemini/agy)
+
+- **Устранены вылет `SIGABRT` (`amdgpu: The CS has been rejected (-12)`) и чёрный экран на гибридной графике AMD + NVIDIA** (`src/drm_backend.rs`, `src/render.rs`, `src/system_settings.rs`, `src/power.rs`, `Cargo.toml`):
+  - **Почему ломалось (по диагностическим логам [#3](https://github.com/Zumka1991/feather-de/issues/3)):**
+    1. В режиме AMD основная + NVIDIA вторая `open_secondary()` создавал буфер на NVIDIA и проверял только `amd_renderer.bind(&mut d)` без отправки командного потока (CS); при инициализации `HDMI-A-1` первый же `glClear` + `dri_create_fence_fd` отправлял чужой VRAM-буфер NVIDIA в `amdgpu_cs_ioctl`, ядро возвращало `-ENOMEM (-12)`, и Mesa завершала процесс через `abort()`.
+    2. В обратном режиме NVIDIA основная + AMD вторая `open_secondary()` брал `dmabuf_render_formats().filter(Linear)`, но NVIDIA выставляет `Modifier::Linear` с флагом `external_only = EGL_TRUE` (только чтение через `GL_TEXTURE_EXTERNAL_OES`, не рендер), из-за чего список форматов был пуст и `eDP-2` падал с `Frame(NoSupportedRendererFormat)`.
+  - **Что сделано:**
+    - Каждая вторая видеокарта с EGL/GLES теперь открывает **собственный `GlesRenderer` и собственный нативный `DrmOutputManager` / `GbmAllocator`** со своими форматами и модификаторами (`SCANOUT | RENDERING`), поэтому ни один выход больше не заставляет основную карту рисовать в чужой VRAM и не требует `Modifier::Linear` для сканирования на второй карте.
+    - Включены фичи Smithay `backend_gbm_has_create_with_modifiers2` и `backend_gbm_has_fd_for_plane` для корректного выделения буферов с явными модификаторами и флагами (`RENDERING` без лишнего `SCANOUT` для промежуточного буфера).
+    - Реализован `SecondaryBridge` с двумя режимами передачи (`FEATHER_MULTIGPU_COPY=auto|dma|cpu`):
+      1. **`DmaCopy` (без CPU-копирования):** основная карта рисует сцену (с `OutputDamageTracker`) в *свой* линейный `Dmabuf` и передаёт нативный fence (`EGL_ANDROID_native_fence_sync`); вторая карта импортирует его как текстуру (`GL_TEXTURE_2D` или `GL_TEXTURE_EXTERNAL_OES` на NVIDIA), синхронизируется на GPU (`eglWaitSync`) и блитует в свой swapchain. При открытии карты выполняется сквозная проба 64×64 (две цветные половины — проверка валидности `EGLImage`, порядка каналов и ориентации Y).
+      2. **`CpuCopy` (копирование прямоугольников повреждений):** включается автоматически, если нет общих явных модификаторов, при `nvidia-drm` основной → не-NVIDIA второй (защита от `amdgpu` CS `-12`), если проба DMA-BUF не прошла, при ошибке `DmaCopy` в рантайме (мгновенный откат на том же кадре) или по `FEATHER_MULTIGPU_COPY=cpu`. Копируются только объединённые прямоугольники повреждений (≤ 4 или общий bounding box) в постоянную текстуру второй карты.
+    - Смена режима дисплея (`DrmBackend::set_head_mode`), сброс при DPMS/VT (`Head::reset_bridge`), порядок уничтожения полей `DrmBackend` (`heads` до `extra`/`renderer`/`gbm`) и `wp_presentation` (состояния элементов с основного прохода) приведены в соответствие с новой схемой.
+- **Проверено:** `cargo build --release` без ошибок и предупреждений; `dbus-run-session -- cargo test --release --bin feather-de` — **270 тестов прошли**, включая 8 тестов `drm_backend::tests` (выбор стратегий AMD↔NVIDIA, защита от `nvidia-drm → amdgpu`, схлопывание damage-прямоугольников, детекция чёрного/перевёрнутого/RB-перепутанного кадра и реальный двухконтекстный headless GLES/GBM-тест `headless_two_context_dma_probe_and_cpu_patch_roundtrip` на `/dev/dri/renderD128`). Проверка на физическом ноутбуке с двумя GPU остаётся за автором [#3](https://github.com/Zumka1991/feather-de/issues/3).
+
 ## 2026-11-21 — Выпуск 0.26.1 (Gemini/agy)
 
 - **Bluetooth-наушники и аксессуары сохраняют сопряжение после перезагрузки:** добавлен штатный

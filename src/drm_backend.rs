@@ -1,34 +1,48 @@
 //! Direct DRM/KMS backend: one scanout and damage history per connected connector.
-//! The primary GPU renders every output; hotplug is driven by udev, never polling.
-//! Connectors of other GPUs (hybrid laptops, docks) are scanned out by their own device:
-//! the frame is still composed by the primary renderer into a linear buffer both can use.
+//! The primary GPU composes every scene; hotplug is driven by udev, never polling.
+//! Secondary GPUs (hybrid AMD/NVIDIA laptops, docks) run their own EGL/GLES renderer and
+//! native scanout swapchain so each driver uses its own formats/modifiers and never submits
+//! foreign VRAM buffers into another GPU's command stream. Frames cross from primary to
+//! secondary via verified GPU DMA-BUF sampling (with native fence sync) or damage-rect CPU copy.
 use crate::{render::OutputElement, FeatherCompositor};
 use smithay::{
     backend::{
         allocator::{
-            dmabuf::AsDmabuf,
-            gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
-            Allocator, Fourcc, Modifier,
+            dmabuf::{AsDmabuf, Dmabuf},
+            format::FormatSet,
+            gbm::{GbmAllocator, GbmBuffer, GbmBufferFlags, GbmDevice},
+            Allocator, Buffer as AllocBuffer, Fourcc, Modifier,
         },
         drm::{
-            exporter::gbm::GbmFramebufferExporter,
+            compositor::{FrameFlags, PrimaryPlaneElement},
+            exporter::{gbm::GbmFramebufferExporter, ExportBuffer, ExportFramebuffer},
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
             DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType,
         },
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{gles::GlesRenderer, Bind, ImportDma},
+        renderer::{
+            damage::OutputDamageTracker,
+            element::{texture::TextureRenderElement, Id, Kind, RenderElementStates},
+            gles::{GlesRenderer, GlesTexture},
+            sync::SyncPoint,
+            utils::DamageBag,
+            Bind, Color32F, ExportMem, Frame, ImportDma, ImportMem, Offscreen, Renderer,
+        },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent},
     },
     output::OutputModeSource,
     reexports::{
         calloop::{LoopHandle, RegistrationToken},
-        drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
+        drm::{
+            control::{connector, crtc, Device as ControlDevice, ModeTypeFlags},
+            Device as DrmCoreDevice,
+        },
         input::Libinput,
         rustix::fs::OFlags,
     },
-    utils::{DeviceFd, Transform},
+    utils::{Buffer as BufferCoord, DeviceFd, Physical, Rectangle, Size, Transform},
 };
 use std::path::PathBuf;
 /// A queued frame carries the wp_presentation feedback of what it shows
@@ -43,10 +57,152 @@ pub type GbmDrmOutputManager = DrmOutputManager<
 >;
 const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
 const MAX_HEADS: usize = 8;
+const MAX_CPU_COPY_RECTS: usize = 4;
 const OPEN_FLAGS: OFlags = OFlags::RDWR.union(OFlags::CLOEXEC).union(OFlags::NOCTTY).union(OFlags::NONBLOCK);
-/// A video card other than the rendering one: only its connectors are used
+
+/// User override for transferring frames from primary GPU to secondary GPUs (`FEATHER_MULTIGPU_COPY`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultiGpuCopyMode {
+    Auto,
+    Dma,
+    Cpu,
+}
+
+fn multigpu_copy_mode() -> MultiGpuCopyMode {
+    match std::env::var("FEATHER_MULTIGPU_COPY")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("cpu" | "CPU") => MultiGpuCopyMode::Cpu,
+        Some("dma" | "DMA") => MultiGpuCopyMode::Dma,
+        _ => MultiGpuCopyMode::Auto,
+    }
+}
+
+/// Strategy for moving a composed frame from the primary GPU to a secondary GPU's renderer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CopyStrategy {
+    /// Primary allocates & renders into its own shared Dmabuf; secondary imports it as a texture
+    /// (2D or EXTERNAL_OES) and blits into its native scanout swapchain with GPU fence sync.
+    DmaCopy {
+        fourcc: Fourcc,
+        modifiers: Vec<Modifier>,
+    },
+    /// Primary renders into an offscreen texture and copies only damaged rectangles via PBO
+    /// into a persistent texture on the secondary GPU.
+    CpuCopy,
+}
+
+enum BridgeBacking {
+    Dma {
+        _bo: GbmBuffer,
+        dmabuf: Dmabuf,
+        last_read_sync: Option<SyncPoint>,
+    },
+    Cpu {
+        offscreen: GlesTexture,
+        sec_texture: GlesTexture,
+    },
+}
+
+/// Per-head offscreen bridge for an output driven by a secondary GPU with its own GLES renderer.
+pub struct SecondaryBridge {
+    size: (i32, i32),
+    backing: BridgeBacking,
+    damage_tracker: OutputDamageTracker,
+    damage_bag: DamageBag<i32, BufferCoord>,
+    element_id: Id,
+    initialized: bool,
+}
+
+impl SecondaryBridge {
+    fn new_dma(
+        size: (i32, i32),
+        primary_gbm: &GbmDevice<DrmDeviceFd>,
+        primary_renderer: &mut GlesRenderer,
+        sec_renderer: &mut GlesRenderer,
+        fourcc: Fourcc,
+        modifiers: &[Modifier],
+    ) -> Result<Self, String> {
+        let mut alloc = GbmAllocator::new(primary_gbm.clone(), GbmBufferFlags::RENDERING);
+        let bo = alloc
+            .create_buffer(size.0 as u32, size.1 as u32, fourcc, modifiers)
+            .map_err(|e| format!("allocate shared dmabuf {}x{}: {e}", size.0, size.1))?;
+        let mut dmabuf = bo.export().map_err(|e| format!("export shared dmabuf: {e}"))?;
+        if dmabuf.format().modifier == Modifier::Invalid {
+            return Err("shared dmabuf fell back to implicit modifier".into());
+        }
+        // Validate bind on primary and import on secondary up front so we fall back cleanly.
+        {
+            let _fb = primary_renderer
+                .bind(&mut dmabuf)
+                .map_err(|e| format!("primary bind shared dmabuf: {e}"))?;
+        }
+        let buf_size = Size::<i32, BufferCoord>::from(size);
+        let _tex = sec_renderer
+            .import_dmabuf(&dmabuf, Some(&[Rectangle::from_size(buf_size)]))
+            .map_err(|e| format!("secondary import shared dmabuf: {e}"))?;
+        Ok(Self {
+            size,
+            backing: BridgeBacking::Dma {
+                _bo: bo,
+                dmabuf,
+                last_read_sync: None,
+            },
+            damage_tracker: OutputDamageTracker::new(size, 1.0, Transform::Normal),
+            damage_bag: DamageBag::new(4),
+            element_id: Id::new(),
+            initialized: false,
+        })
+    }
+
+    fn new_cpu(
+        size: (i32, i32),
+        primary_renderer: &mut GlesRenderer,
+        sec_renderer: &mut GlesRenderer,
+    ) -> Result<Self, String> {
+        let buf_size = Size::<i32, BufferCoord>::from(size);
+        let offscreen: GlesTexture = primary_renderer
+            .create_buffer(Fourcc::Abgr8888, buf_size)
+            .map_err(|e| format!("primary offscreen {}x{}: {e}", size.0, size.1))?;
+        let sec_texture: GlesTexture = sec_renderer
+            .create_buffer(Fourcc::Abgr8888, buf_size)
+            .map_err(|e| format!("secondary texture {}x{}: {e}", size.0, size.1))?;
+        Ok(Self {
+            size,
+            backing: BridgeBacking::Cpu { offscreen, sec_texture },
+            damage_tracker: OutputDamageTracker::new(size, 1.0, Transform::Normal),
+            damage_bag: DamageBag::new(4),
+            element_id: Id::new(),
+            initialized: false,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.initialized = false;
+        if let BridgeBacking::Dma { last_read_sync, .. } = &mut self.backing {
+            *last_read_sync = None;
+        }
+    }
+
+    fn is_dma(&self) -> bool {
+        matches!(self.backing, BridgeBacking::Dma { .. })
+    }
+}
+
+pub enum SecondaryRenderResult {
+    Empty,
+    Rendered { states: RenderElementStates },
+}
+
+/// A video card other than the rendering one: drives its own connectors natively
 pub struct Gpu {
     pub manager: GbmDrmOutputManager,
+    /// This card's own GLES renderer (`None` only for display-only cards without EGL/3D)
+    pub renderer: Option<GlesRenderer>,
+    pub driver: String,
+    pub copy_strategy: CopyStrategy,
     pub device: u64,
     pub path: PathBuf,
     token: RegistrationToken,
@@ -74,6 +230,8 @@ pub struct Head {
     /// Not before this: the frame is composed just ahead of the next vblank, so a client
     /// frame committed meanwhile still makes it (see `render_deadline`)
     pub render_at: Option<std::time::Instant>,
+    /// Offscreen primary→secondary frame bridge (only created for heads on a secondary GPU)
+    pub bridge: Option<SecondaryBridge>,
 }
 impl Head {
     pub fn set_vrr(&mut self, want: bool) {
@@ -85,8 +243,16 @@ impl Head {
         }
         self.vrr_enabled = self.output.with_compositor(|c| c.vrr_enabled());
     }
+
+    pub fn reset_bridge(&mut self) {
+        if let Some(bridge) = self.bridge.as_mut() {
+            bridge.reset();
+        }
+    }
 }
 pub struct DrmBackend {
+    // Drop heads (DrmOutput + SecondaryBridge textures/dmabufs) before extra/manager/renderer/gbm.
+    pub heads: Vec<Head>,
     pub session: LibSeatSession,
     pub renderer: GlesRenderer,
     pub manager: GbmDrmOutputManager,
@@ -94,9 +260,9 @@ pub struct DrmBackend {
     /// Cards that appeared (`Some(path)`) or went away since the last `flush_hotplug`
     pub gpu_events: Vec<(u64, Option<PathBuf>)>,
     pub device: u64,
-    gbm: GbmDevice<DrmDeviceFd>,
+    pub driver: String,
+    pub gbm: GbmDevice<DrmDeviceFd>,
     handle: LoopHandle<'static, FeatherCompositor>,
-    pub heads: Vec<Head>,
     pub libinput: Libinput,
     pub render_node: Option<DrmNode>,
     pub active: bool,
@@ -128,6 +294,505 @@ fn pick_gpu(seat: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
         .or_else(|| all_gpus(seat).ok().and_then(|g| g.into_iter().next()))
         .ok_or_else(|| "видеокарта не найдена".into())
 }
+fn driver_name(fd: &DrmDeviceFd) -> String {
+    DrmCoreDevice::get_driver(fd)
+        .ok()
+        .map(|d| d.name().to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// Choose explicit DMA-BUF `(fourcc, modifiers)` candidates shared between primary rendering
+/// and secondary texture import. Never returns `Modifier::Invalid`.
+fn select_dma_candidates(
+    primary_driver: &str,
+    sec_driver: &str,
+    mode: MultiGpuCopyMode,
+    primary_render: &FormatSet,
+    sec_import: &FormatSet,
+) -> Result<Vec<(Fourcc, Vec<Modifier>)>, &'static str> {
+    if mode == MultiGpuCopyMode::Cpu {
+        return Err("FEATHER_MULTIGPU_COPY=cpu");
+    }
+    // Never import an NVIDIA-allocated VRAM dmabuf into a non-NVIDIA GPU in Auto mode:
+    // on hybrid laptops (e.g. nvidia-drm -> amdgpu) amdgpu_cs_ioctl can reject the foreign
+    // VRAM BO with -ENOMEM (-12) and Mesa aborts the compositor inside dri_create_fence_fd.
+    if mode == MultiGpuCopyMode::Auto && primary_driver == "nvidia-drm" && sec_driver != "nvidia-drm" {
+        return Err("nvidia-drm primary -> non-NVIDIA secondary uses CPU copy");
+    }
+    let same_vendor = primary_driver == sec_driver && primary_driver != "unknown";
+    let mut out = Vec::new();
+    for fourcc in COLOR_FORMATS {
+        let mut mods: Vec<Modifier> = primary_render
+            .iter()
+            .filter(|f| f.code == fourcc && f.modifier != Modifier::Invalid && sec_import.contains(f))
+            .map(|f| f.modifier)
+            .collect();
+        if mods.is_empty() {
+            continue;
+        }
+        let has_linear = mods.contains(&Modifier::Linear);
+        if !same_vendor {
+            if has_linear {
+                out.push((fourcc, vec![Modifier::Linear]));
+            }
+        } else {
+            // Prefer Linear first on same-vendor multi-GPU too so differing GPU generations
+            // or PCIe transfers do not trip over tiling/compression quirks.
+            if has_linear {
+                out.push((fourcc, vec![Modifier::Linear]));
+            }
+            mods.retain(|m| *m != Modifier::Linear);
+            if !mods.is_empty() {
+                out.push((fourcc, mods));
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err("no common explicit DMA-BUF format/modifier");
+    }
+    Ok(out)
+}
+
+fn probe_pixels_match(pixels: &[u8], width: usize, height: usize, check_alpha: bool) -> Result<(), String> {
+    let check = |x: usize, y: usize, exp: [u8; 4], label: &str| -> Result<(), String> {
+        let i = (y * width + x) * 4;
+        if i + 4 > pixels.len() {
+            return Err(format!("{label} pixel out of bounds"));
+        }
+        let got = [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]];
+        let channels = if check_alpha { 4 } else { 3 };
+        let ok = got[..channels]
+            .iter()
+            .zip(exp[..channels].iter())
+            .all(|(&a, &b)| a.abs_diff(b) <= 12);
+        if ok {
+            Ok(())
+        } else {
+            Err(format!("{label} pixel mismatch: got {got:?}, expected ~{exp:?}"))
+        }
+    };
+    let cx = width / 2;
+    let top_y = height / 4;
+    let bot_y = (height * 3) / 4;
+    check(cx, top_y, [64, 128, 191, 255], "top")?;
+    check(cx, bot_y, [191, 64, 128, 255], "bottom")?;
+    Ok(())
+}
+
+/// End-to-end 64x64 probe proving that a Dmabuf allocated & rendered on the primary GPU
+/// imports cleanly as a texture on the secondary GPU with valid fence sync, colors, and orientation.
+/// This catches silent GL_INVALID_OPERATION errors from EGLImageTargetTexture2DOES.
+fn probe_dma_copy(
+    primary_renderer: &mut GlesRenderer,
+    primary_gbm: &GbmDevice<DrmDeviceFd>,
+    sec_renderer: &mut GlesRenderer,
+    fourcc: Fourcc,
+    modifiers: &[Modifier],
+) -> Result<(), String> {
+    const PROBE_SIZE: i32 = 64;
+    let buf_size = Size::<i32, BufferCoord>::from((PROBE_SIZE, PROBE_SIZE));
+    let phys_size = Size::<i32, Physical>::from((PROBE_SIZE, PROBE_SIZE));
+    let full = Rectangle::from_size(phys_size);
+    let top_half = Rectangle::new((0, 0).into(), (PROBE_SIZE, PROBE_SIZE / 2).into());
+    let bot_half = Rectangle::new((0, PROBE_SIZE / 2).into(), (PROBE_SIZE, PROBE_SIZE / 2).into());
+
+    let mut alloc = GbmAllocator::new(primary_gbm.clone(), GbmBufferFlags::RENDERING);
+    let bo = alloc
+        .create_buffer(PROBE_SIZE as u32, PROBE_SIZE as u32, fourcc, modifiers)
+        .map_err(|e| format!("allocate probe bo: {e}"))?;
+    let mut dmabuf = bo.export().map_err(|e| format!("export probe dmabuf: {e}"))?;
+    if dmabuf.format().modifier == Modifier::Invalid {
+        return Err("probe dmabuf fell back to implicit modifier".into());
+    }
+
+    let sync = {
+        let mut fb = primary_renderer
+            .bind(&mut dmabuf)
+            .map_err(|e| format!("primary bind: {e}"))?;
+        let mut frame = primary_renderer
+            .render(&mut fb, phys_size, Transform::Normal)
+            .map_err(|e| format!("primary render: {e}"))?;
+        frame
+            .clear(Color32F::new(0.25, 0.50, 0.75, 1.0), &[top_half])
+            .map_err(|e| format!("primary clear top: {e}"))?;
+        frame
+            .clear(Color32F::new(0.75, 0.25, 0.50, 1.0), &[bot_half])
+            .map_err(|e| format!("primary clear bottom: {e}"))?;
+        frame.finish().map_err(|e| format!("primary finish: {e}"))?
+    };
+
+    let imported = sec_renderer
+        .import_dmabuf(&dmabuf, Some(&[Rectangle::from_size(buf_size)]))
+        .map_err(|e| format!("secondary import_dmabuf: {e}"))?;
+    let mut dst: GlesTexture = sec_renderer
+        .create_buffer(Fourcc::Abgr8888, buf_size)
+        .map_err(|e| format!("secondary create_buffer: {e}"))?;
+    {
+        let mut fb = sec_renderer
+            .bind(&mut dst)
+            .map_err(|e| format!("secondary bind: {e}"))?;
+        let mut frame = sec_renderer
+            .render(&mut fb, phys_size, Transform::Normal)
+            .map_err(|e| format!("secondary render: {e}"))?;
+        frame
+            .wait(&sync)
+            .map_err(|e| format!("secondary wait sync: {e}"))?;
+        frame
+            .clear(Color32F::new(0.0, 0.0, 0.0, 1.0), &[full])
+            .map_err(|e| format!("secondary clear: {e}"))?;
+        frame
+            .render_texture_from_to(
+                &imported,
+                Rectangle::from_size((PROBE_SIZE as f64, PROBE_SIZE as f64).into()),
+                full,
+                &[full],
+                &[full],
+                Transform::Normal,
+                1.0,
+                None,
+                &[],
+            )
+            .map_err(|e| format!("secondary draw: {e}"))?;
+        let dst_sync = frame.finish().map_err(|e| format!("secondary finish: {e}"))?;
+        let _ = dst_sync.wait();
+    }
+    let mapping = sec_renderer
+        .copy_texture(&dst, Rectangle::from_size(buf_size), Fourcc::Abgr8888)
+        .map_err(|e| format!("secondary copy_texture: {e}"))?;
+    let result = sec_renderer
+        .map_texture(&mapping)
+        .map_err(|e| format!("secondary map_texture: {e}"))
+        .and_then(|pixels| {
+            probe_pixels_match(
+                pixels,
+                PROBE_SIZE as usize,
+                PROBE_SIZE as usize,
+                fourcc == Fourcc::Argb8888,
+            )
+        });
+
+    drop(mapping);
+    drop(dst);
+    drop(imported);
+    drop(dmabuf);
+    drop(bo);
+    let _ = sec_renderer.cleanup_texture_cache();
+    let _ = primary_renderer.cleanup_texture_cache();
+    result
+}
+
+fn choose_copy_strategy(
+    primary_driver: &str,
+    sec_driver: &str,
+    mode: MultiGpuCopyMode,
+    primary_renderer: &mut GlesRenderer,
+    primary_gbm: &GbmDevice<DrmDeviceFd>,
+    sec_renderer: &mut GlesRenderer,
+) -> (CopyStrategy, String) {
+    let primary_render = primary_renderer.egl_context().dmabuf_render_formats().clone();
+    let sec_import = sec_renderer.dmabuf_formats();
+    let candidates = match select_dma_candidates(primary_driver, sec_driver, mode, &primary_render, &sec_import) {
+        Ok(c) => c,
+        Err(reason) => return (CopyStrategy::CpuCopy, reason.to_string()),
+    };
+    let mut last_err = String::new();
+    for (fourcc, modifiers) in candidates {
+        match probe_dma_copy(primary_renderer, primary_gbm, sec_renderer, fourcc, &modifiers) {
+            Ok(()) => {
+                let desc = format!("GPU DMA-BUF ({fourcc:?}, {modifiers:?})");
+                return (CopyStrategy::DmaCopy { fourcc, modifiers }, desc);
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "DRM multi-GPU DMA probe failed ({primary_driver} -> {sec_driver}, {fourcc:?}, {modifiers:?}): {e}"
+                );
+                last_err = e;
+            }
+        }
+    }
+    (CopyStrategy::CpuCopy, format!("DMA-BUF проба не прошла: {last_err}"))
+}
+
+fn clamp_damage_rects(
+    phys_damage: &[Rectangle<i32, Physical>],
+    bounds: Size<i32, BufferCoord>,
+) -> Vec<Rectangle<i32, BufferCoord>> {
+    let limit = Rectangle::from_size(bounds);
+    phys_damage
+        .iter()
+        .filter_map(|r| {
+            Rectangle::<i32, BufferCoord>::new((r.loc.x, r.loc.y).into(), (r.size.w, r.size.h).into())
+                .intersection(limit)
+        })
+        .filter(|r| r.size.w > 0 && r.size.h > 0)
+        .collect()
+}
+
+/// Clamp, deduplicate, and merge overlapping/touching damage rects for CPU readback.
+/// If more than `MAX_CPU_COPY_RECTS` disjoint rects remain, collapses them to their tight
+/// bounding box (rather than the whole screen) to keep readback tiny for localized updates.
+fn merge_copy_rects(
+    phys_damage: &[Rectangle<i32, Physical>],
+    bounds: Size<i32, BufferCoord>,
+) -> Vec<Rectangle<i32, BufferCoord>> {
+    let mut merged: Vec<Rectangle<i32, BufferCoord>> = Vec::new();
+    for mut rect in clamp_damage_rects(phys_damage, bounds) {
+        let mut i = 0;
+        while i < merged.len() {
+            if merged[i].overlaps_or_touches(rect) {
+                rect = rect.merge(merged.swap_remove(i));
+                i = 0;
+            } else {
+                i += 1;
+            }
+        }
+        merged.push(rect);
+    }
+    if merged.len() > MAX_CPU_COPY_RECTS {
+        if let Some(bbox) = merged.into_iter().reduce(|a, b| a.merge(b)) {
+            return vec![bbox];
+        }
+        return Vec::new();
+    }
+    merged
+}
+
+/// Compose `elements` for a secondary-GPU `head` on the primary GPU and transfer the damaged
+/// pixels into the secondary GPU's native `DrmOutput` via verified DMA-BUF or CPU damage copy.
+pub fn render_secondary_head(
+    head: &mut Head,
+    primary_renderer: &mut GlesRenderer,
+    primary_gbm: &GbmDevice<DrmDeviceFd>,
+    sec: &mut Gpu,
+    elements: &[OutputElement],
+    clear_color: Color32F,
+) -> Result<SecondaryRenderResult, String> {
+    let Some(sec_renderer) = sec.renderer.as_mut() else {
+        return Err("secondary GPU has no EGL renderer".into());
+    };
+    let size = head.size;
+    let want_dma = matches!(sec.copy_strategy, CopyStrategy::DmaCopy { .. });
+    let need_new = head
+        .bridge
+        .as_ref()
+        .is_none_or(|b| b.size != size || b.is_dma() != want_dma);
+    if need_new {
+        head.bridge = None;
+        let bridge = match &sec.copy_strategy {
+            CopyStrategy::DmaCopy { fourcc, modifiers } => {
+                match SecondaryBridge::new_dma(size, primary_gbm, primary_renderer, sec_renderer, *fourcc, modifiers) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(
+                            "DRM {} ({}): не удалось создать DMA-BUF мост ({e}), переключаюсь на CPU-копирование",
+                            head.name,
+                            sec.path.display(),
+                        );
+                        sec.copy_strategy = CopyStrategy::CpuCopy;
+                        SecondaryBridge::new_cpu(size, primary_renderer, sec_renderer)?
+                    }
+                }
+            }
+            CopyStrategy::CpuCopy => SecondaryBridge::new_cpu(size, primary_renderer, sec_renderer)?,
+        };
+        head.bridge = Some(bridge);
+    }
+
+    let first_attempt = render_secondary_with_bridge(head, primary_renderer, sec_renderer, elements, clear_color);
+    match first_attempt {
+        Ok(res) => Ok(res),
+        Err(e) if head.bridge.as_ref().is_some_and(SecondaryBridge::is_dma) => {
+            tracing::warn!(
+                "DRM {} ({}): сбой GPU DMA-BUF копирования ({e}), переключаюсь на CPU-копирование",
+                head.name,
+                sec.path.display(),
+            );
+            sec.copy_strategy = CopyStrategy::CpuCopy;
+            head.bridge = None;
+            let _ = sec_renderer.cleanup_texture_cache();
+            let _ = primary_renderer.cleanup_texture_cache();
+            head.bridge = Some(SecondaryBridge::new_cpu(size, primary_renderer, sec_renderer)?);
+            render_secondary_with_bridge(head, primary_renderer, sec_renderer, elements, clear_color)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn upload_cpu_patches(
+    primary_renderer: &mut GlesRenderer,
+    sec_renderer: &mut GlesRenderer,
+    sec_texture: &mut GlesTexture,
+    phys_size: Size<i32, Physical>,
+    mappings: Vec<(smithay::backend::renderer::gles::GlesMapping, Rectangle<i32, BufferCoord>)>,
+) -> Result<(), String> {
+    let mut patches = Vec::with_capacity(mappings.len());
+    for (mapping, rect) in &mappings {
+        let slice = primary_renderer
+            .map_texture(mapping)
+            .map_err(|e| format!("primary map_texture: {e}"))?;
+        let patch = sec_renderer
+            .import_memory(slice, Fourcc::Abgr8888, rect.size, false)
+            .map_err(|e| format!("secondary import_memory: {e}"))?;
+        patches.push((patch, *rect));
+    }
+    drop(mappings);
+    let _ = primary_renderer.cleanup_texture_cache();
+    {
+        let mut sec_fb = sec_renderer
+            .bind(sec_texture)
+            .map_err(|e| format!("secondary bind staging texture: {e}"))?;
+        let mut frame = sec_renderer
+            .render(&mut sec_fb, phys_size, Transform::Normal)
+            .map_err(|e| format!("secondary render staging: {e}"))?;
+        for (patch, rect) in &patches {
+            let dst = Rectangle::<i32, Physical>::new(
+                (rect.loc.x, rect.loc.y).into(),
+                (rect.size.w, rect.size.h).into(),
+            );
+            let src = Rectangle::<f64, BufferCoord>::from_size(
+                (rect.size.w as f64, rect.size.h as f64).into(),
+            );
+            let rel = [Rectangle::from_size(dst.size)];
+            frame
+                .render_texture_from_to(patch, src, dst, &rel, &rel, Transform::Normal, 1.0, None, &[])
+                .map_err(|e| format!("secondary blit patch: {e}"))?;
+        }
+        let _ = frame.finish().map_err(|e| format!("secondary finish staging: {e}"))?;
+    }
+    drop(patches);
+    let _ = sec_renderer.cleanup_texture_cache();
+    Ok(())
+}
+
+fn render_secondary_with_bridge(
+    head: &mut Head,
+    primary_renderer: &mut GlesRenderer,
+    sec_renderer: &mut GlesRenderer,
+    elements: &[OutputElement],
+    clear_color: Color32F,
+) -> Result<SecondaryRenderResult, String> {
+    let bridge = head.bridge.as_mut().ok_or_else(|| "bridge missing".to_string())?;
+    let size = bridge.size;
+    let buf_size = Size::<i32, BufferCoord>::from(size);
+    let phys_size = Size::<i32, Physical>::from(size);
+    let age = usize::from(bridge.initialized);
+
+    let (primary_states, tex, buf_damage) = match &mut bridge.backing {
+        BridgeBacking::Dma {
+            dmabuf,
+            last_read_sync,
+            ..
+        } => {
+            if let Some(prev) = last_read_sync.take() {
+                if !prev.is_reached() {
+                    let _ = primary_renderer.wait(&prev);
+                }
+            }
+            let (primary_sync, primary_states, mut buf_damage) = {
+                let mut fb = primary_renderer
+                    .bind(dmabuf)
+                    .map_err(|e| format!("primary bind dmabuf: {e}"))?;
+                let res = bridge
+                    .damage_tracker
+                    .render_output(primary_renderer, &mut fb, age, elements, clear_color)
+                    .map_err(|e| format!("primary render: {e:?}"))?;
+                let Some(phys_damage) = res.damage else {
+                    return Ok(SecondaryRenderResult::Empty);
+                };
+                let dmg = clamp_damage_rects(phys_damage, buf_size);
+                (res.sync, res.states, dmg)
+            };
+            if buf_damage.is_empty() {
+                if !bridge.initialized {
+                    buf_damage.push(Rectangle::from_size(buf_size));
+                } else {
+                    return Ok(SecondaryRenderResult::Empty);
+                }
+            }
+            sec_renderer
+                .wait(&primary_sync)
+                .map_err(|e| format!("secondary wait sync: {e}"))?;
+            let tex = sec_renderer
+                .import_dmabuf(dmabuf, Some(&buf_damage))
+                .map_err(|e| format!("secondary import_dmabuf: {e}"))?;
+            (primary_states, tex, buf_damage)
+        }
+        BridgeBacking::Cpu {
+            offscreen,
+            sec_texture,
+        } => {
+            let (primary_states, copy_rects, mappings) = {
+                let mut fb = primary_renderer
+                    .bind(offscreen)
+                    .map_err(|e| format!("primary bind offscreen: {e}"))?;
+                let res = bridge
+                    .damage_tracker
+                    .render_output(primary_renderer, &mut fb, age, elements, clear_color)
+                    .map_err(|e| format!("primary render offscreen: {e:?}"))?;
+                let _ = res.sync;
+                let Some(phys_damage) = res.damage else {
+                    return Ok(SecondaryRenderResult::Empty);
+                };
+                let mut rects = merge_copy_rects(phys_damage, buf_size);
+                if rects.is_empty() {
+                    if !bridge.initialized {
+                        rects.push(Rectangle::from_size(buf_size));
+                    } else {
+                        return Ok(SecondaryRenderResult::Empty);
+                    }
+                }
+                let mut mappings = Vec::with_capacity(rects.len());
+                for &rect in &rects {
+                    let mapping = primary_renderer
+                        .copy_framebuffer(&fb, rect, Fourcc::Abgr8888)
+                        .map_err(|e| format!("primary copy_framebuffer: {e}"))?;
+                    mappings.push((mapping, rect));
+                }
+                (res.states, rects, mappings)
+            };
+            upload_cpu_patches(primary_renderer, sec_renderer, sec_texture, phys_size, mappings)?;
+            (primary_states, sec_texture.clone(), copy_rects)
+        }
+    };
+
+    bridge.initialized = true;
+    bridge.damage_bag.add(buf_damage);
+    let elem = TextureRenderElement::from_texture_with_damage(
+        bridge.element_id.clone(),
+        sec_renderer.context_id(),
+        (0.0, 0.0),
+        tex,
+        1,
+        Transform::Normal,
+        Some(1.0),
+        None,
+        None,
+        Some(vec![Rectangle::from_size(buf_size)]),
+        bridge.damage_bag.snapshot(),
+        Kind::Unspecified,
+    );
+
+    let sec_elements = [elem];
+    let r = head
+        .output
+        .render_frame(sec_renderer, &sec_elements, clear_color, FrameFlags::empty())
+        .map_err(|e| format!("secondary output render_frame: {e:?}"))?;
+    if r.is_empty {
+        return Ok(SecondaryRenderResult::Empty);
+    }
+    if r.needs_sync() {
+        if let PrimaryPlaneElement::Swapchain(e) = &r.primary_element {
+            let _ = e.sync.wait();
+        }
+    }
+    if let BridgeBacking::Dma { last_read_sync, .. } = &mut bridge.backing {
+        if let PrimaryPlaneElement::Swapchain(e) = &r.primary_element {
+            *last_read_sync = Some(e.sync.clone());
+        }
+    }
+    Ok(SecondaryRenderResult::Rendered { states: primary_states })
+}
+
 impl DrmBackend {
     pub fn sync_primary(&mut self, name: &str) {
         if let Some(h) = self.heads.iter().find(|h| h.name == name) {
@@ -138,6 +803,50 @@ impl DrmBackend {
             self.modes = h.modes.clone();
         }
     }
+    /// Change resolution/refresh of head `name` using the renderer that owns its GPU.
+    pub fn set_head_mode(
+        &mut self,
+        name: &str,
+        mode: smithay::reexports::drm::control::Mode,
+    ) -> Result<(), String> {
+        let Some(head) = self.heads.iter_mut().find(|h| h.name == name) else {
+            return Err("Выход больше недоступен".into());
+        };
+        let renderer = if head.device == self.device {
+            &mut self.renderer
+        } else {
+            self.extra
+                .iter_mut()
+                .find(|g| g.device == head.device)
+                .and_then(|g| g.renderer.as_mut())
+                .unwrap_or(&mut self.renderer)
+        };
+        head.output
+            .use_mode::<_, crate::render::OutputElement>(
+                mode,
+                renderer,
+                &DrmOutputRenderElements::default(),
+            )
+            .map_err(|e| format!("Не удалось применить режим: {e:?}"))?;
+        let info = mode_info(mode);
+        let size = (info.width, info.height);
+        self.size = size;
+        self.refresh = info.refresh;
+        head.size = size;
+        head.refresh = info.refresh;
+        head.output.with_compositor(|c| {
+            c.set_output_mode_source(OutputModeSource::Static {
+                size: size.into(),
+                scale: 1.0.into(),
+                transform: Transform::Normal,
+            })
+        });
+        head.output.reset_buffers();
+        head.bridge = None;
+        head.pending = false;
+        head.protected = false;
+        Ok(())
+    }
     pub fn clear_all(&mut self) -> Result<(), String> {
         let mut error = None;
         for h in &mut self.heads {
@@ -145,6 +854,7 @@ impl DrmBackend {
                 Ok(()) => {
                     h.pending = false;
                     h.protected = true;
+                    h.reset_bridge();
                 }
                 Err(e) => error = Some(format!("{}: {e}", h.name)),
             }
@@ -175,15 +885,18 @@ impl DrmBackend {
         let primary = scan(&mut self.manager, &mut self.renderer, &mut self.heads, self.device, &self.fd, saved);
         for g in &mut self.extra {
             let fd = g.manager.device().device_fd().clone();
-            if let Err(e) = scan(&mut g.manager, &mut self.renderer, &mut self.heads, g.device, &fd, saved) {
+            let renderer = g.renderer.as_mut().unwrap_or(&mut self.renderer);
+            if let Err(e) = scan(&mut g.manager, renderer, &mut self.heads, g.device, &fd, saved) {
                 tracing::warn!("DRM {}: {e}", g.path.display());
             }
         }
         primary
     }
-    /// Opens another card for its connectors. The primary renderer draws straight into
-    /// that card's linear buffers when it can import them; otherwise the frame is drawn
-    /// into a linear buffer of the primary card that the other one imports for scanout.
+    /// Opens another card for its connectors.
+    /// When the card supports EGL/GLES (NVIDIA, AMD, Intel), it gets its own `GlesRenderer`
+    /// and native scanout swapchain so it never forces foreign VRAM buffers into the primary
+    /// GPU's command stream; composed frames are copied via verified DMA-BUF or CPU damage copy.
+    /// Display-only cards without EGL fall back to verified primary-allocated linear scanout.
     fn open_secondary(&mut self, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         let fd = self.session.open(path, OPEN_FLAGS).map_err(|e| format!("{}: {e}", path.display()))?;
         let fd = DrmDeviceFd::new(DeviceFd::from(fd));
@@ -191,43 +904,109 @@ impl DrmBackend {
         if device == self.device || self.extra.iter().any(|g| g.device == device) {
             return Ok(());
         }
-        tracing::info!("DRM: probing secondary card {}", path.display());
+        let driver = driver_name(&fd);
+        tracing::info!("DRM: probing secondary card {} (driver {driver})", path.display());
         let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
         let gbm = GbmDevice::new(fd.clone())?;
-        let linear: Vec<_> = self
-            .renderer
-            .egl_context()
-            .dmabuf_render_formats()
-            .iter()
-            .filter(|f| f.modifier == Modifier::Linear)
-            .copied()
-            .collect();
-        let mut own = GbmAllocator::new(gbm.clone(), GbmBufferFlags::SCANOUT);
-        let direct = own
-            .create_buffer(256, 256, COLOR_FORMATS[0], &[Modifier::Linear])
-            .ok()
-            .and_then(|b| b.export().ok())
-            .is_some_and(|mut d| self.renderer.bind(&mut d).is_ok());
-        let allocator = if direct { own } else { GbmAllocator::new(self.gbm.clone(), GbmBufferFlags::RENDERING) };
-        // No cursor plane and no client scanout here: both need buffers of this very card
-        let manager = GbmDrmOutputManager::new(
-            drm,
-            allocator,
-            GbmFramebufferExporter::new(gbm, None),
-            None,
-            COLOR_FORMATS,
-            linear,
-        );
+
+        let sec_renderer = (|| -> Result<GlesRenderer, Box<dyn std::error::Error>> {
+            let egl = unsafe { EGLDisplay::new(gbm.clone())? };
+            let context = EGLContext::new(&egl)?;
+            let renderer = unsafe { GlesRenderer::new(context)? };
+            Ok(renderer)
+        })();
+
+        let (manager, renderer, copy_strategy, desc) = match sec_renderer {
+            Ok(mut sec_renderer) => {
+                let formats = sec_renderer.egl_context().dmabuf_render_formats().clone();
+                let manager = GbmDrmOutputManager::new(
+                    drm,
+                    GbmAllocator::new(
+                        gbm.clone(),
+                        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+                    ),
+                    GbmFramebufferExporter::new(gbm, None),
+                    None,
+                    COLOR_FORMATS,
+                    formats,
+                );
+                let mode = multigpu_copy_mode();
+                let (strategy, detail) = choose_copy_strategy(
+                    &self.driver,
+                    &driver,
+                    mode,
+                    &mut self.renderer,
+                    &self.gbm,
+                    &mut sec_renderer,
+                );
+                let desc = match &strategy {
+                    CopyStrategy::DmaCopy { .. } => format!("свой EGL, {detail}"),
+                    CopyStrategy::CpuCopy => format!("свой EGL, CPU-копирование повреждений ({detail})"),
+                };
+                (manager, Some(sec_renderer), strategy, desc)
+            }
+            Err(egl_err) => {
+                tracing::warn!(
+                    "DRM {}: EGL недоступен ({egl_err}), пробую линейный вывод буферов основной карты",
+                    path.display(),
+                );
+                if self.driver == "nvidia-drm" {
+                    return Err(format!("EGL unavailable on secondary card ({egl_err}) and primary is nvidia-drm").into());
+                }
+                let linear: Vec<_> = self
+                    .renderer
+                    .egl_context()
+                    .dmabuf_render_formats()
+                    .iter()
+                    .filter(|f| f.modifier == Modifier::Linear)
+                    .copied()
+                    .collect();
+                if linear.is_empty() {
+                    return Err(format!("EGL unavailable ({egl_err}) and primary has no linear render formats").into());
+                }
+                let mut primary_alloc = GbmAllocator::new(self.gbm.clone(), GbmBufferFlags::RENDERING);
+                let exporter = GbmFramebufferExporter::new(gbm, None);
+                let probe_bo = primary_alloc
+                    .create_buffer(64, 64, COLOR_FORMATS[0], &[Modifier::Linear])
+                    .map_err(|e| format!("probe primary linear bo: {e}"))?;
+                exporter
+                    .add_framebuffer(&fd, ExportBuffer::Allocator(&probe_bo), false)
+                    .map_err(|e| format!("secondary cannot import primary linear framebuffer: {e}"))?;
+                drop(probe_bo);
+                let manager = GbmDrmOutputManager::new(
+                    drm,
+                    primary_alloc,
+                    exporter,
+                    None,
+                    COLOR_FORMATS,
+                    linear,
+                );
+                (
+                    manager,
+                    None,
+                    CopyStrategy::CpuCopy,
+                    "без EGL, линейный вывод буферов основной карты".into(),
+                )
+            }
+        };
+
         let token = self.handle.insert_source(notifier, move |event, metadata, state| match event {
             DrmEvent::VBlank(crtc) => state.on_drm_vblank(device, crtc, metadata.take()),
             DrmEvent::Error(e) => tracing::warn!("DRM: {e}"),
         })?;
         tracing::info!(
-            "DRM: вторая видеокарта {} ({})",
+            "DRM: вторая видеокарта {} (driver {driver}, {desc})",
             path.display(),
-            if direct { "отрисовка в её буферы" } else { "вывод буферов основной карты" }
         );
-        self.extra.push(Gpu { manager, device, path: path.to_path_buf(), token });
+        self.extra.push(Gpu {
+            manager,
+            renderer,
+            driver,
+            copy_strategy,
+            device,
+            path: path.to_path_buf(),
+            token,
+        });
         Ok(())
     }
     /// Cards plugged in or removed while running (docks, external GPUs)
@@ -410,6 +1189,7 @@ fn scan(
                 vrr_enabled,
                 dirty: true,
                 render_at: None,
+                bridge: None,
             });
         }
     }
@@ -438,6 +1218,11 @@ pub fn init(
         )
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
+    let driver = driver_name(&fd);
+    tracing::info!(
+        "DRM: primary card {} (driver {driver}, seat {seat}, single GPU: {single_gpu})",
+        path.display(),
+    );
     let (drm, drm_notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd.clone())?;
     let primary_gbm = gbm.clone();
@@ -499,15 +1284,16 @@ pub fn init(
         d.hotplug_pending = true;
     })?;
     let mut backend = DrmBackend {
+        heads: Vec::new(),
         session,
         renderer,
         manager,
         extra: Vec::new(),
         gpu_events: Vec::new(),
         device,
+        driver,
         gbm: primary_gbm,
         handle: handle.clone(),
-        heads: Vec::new(),
         libinput,
         render_node,
         active: true,
@@ -616,6 +1402,302 @@ mod tests {
         assert_eq!(deadline_wait(hz60, ms(8)), None);
         assert_eq!(deadline_wait(crate::render::refresh_period(240000).unwrap(), Duration::ZERO), None);
         assert_eq!(crate::render::refresh_period(0), None);
+    }
+
+    fn format_set(entries: &[(Fourcc, Modifier)]) -> FormatSet {
+        use smithay::backend::allocator::Format;
+        entries
+            .iter()
+            .map(|&(code, modifier)| Format { code, modifier })
+            .collect()
+    }
+
+    #[test]
+    fn hybrid_amd_primary_nvidia_secondary_selects_linear_dma_copy() {
+        let amd_render = format_set(&[
+            (Fourcc::Argb8888, Modifier::Linear),
+            (Fourcc::Argb8888, Modifier::Unrecognized(0x0200000000000001)),
+            (Fourcc::Xrgb8888, Modifier::Linear),
+            (Fourcc::Argb8888, Modifier::Invalid),
+        ]);
+        // NVIDIA reports Linear as external_only=true, so Linear is in texture/import formats
+        // (even though absent from render formats).
+        let nvidia_import = format_set(&[
+            (Fourcc::Argb8888, Modifier::Linear),
+            (Fourcc::Xrgb8888, Modifier::Linear),
+            (Fourcc::Argb8888, Modifier::Unrecognized(0x0300000000000010)),
+            (Fourcc::Argb8888, Modifier::Invalid),
+        ]);
+        let candidates = select_dma_candidates(
+            "amdgpu",
+            "nvidia-drm",
+            MultiGpuCopyMode::Auto,
+            &amd_render,
+            &nvidia_import,
+        )
+        .expect("AMD -> NVIDIA should find shared Linear formats");
+        assert_eq!(
+            candidates,
+            vec![
+                (Fourcc::Argb8888, vec![Modifier::Linear]),
+                (Fourcc::Xrgb8888, vec![Modifier::Linear]),
+            ]
+        );
+    }
+
+    #[test]
+    fn hybrid_nvidia_primary_amd_secondary_avoids_amdgpu_foreign_vram_cs() {
+        // Even if a future NVIDIA driver advertised Linear in render_formats, Auto mode
+        // must still choose CPU copy to avoid amdgpu CS -ENOMEM (-12) SIGABRT.
+        let nvidia_render_with_linear = format_set(&[
+            (Fourcc::Argb8888, Modifier::Linear),
+            (Fourcc::Argb8888, Modifier::Unrecognized(0x0300000000000010)),
+            (Fourcc::Argb8888, Modifier::Invalid),
+        ]);
+        let amd_import = format_set(&[
+            (Fourcc::Argb8888, Modifier::Linear),
+            (Fourcc::Argb8888, Modifier::Invalid),
+        ]);
+        assert!(select_dma_candidates(
+            "nvidia-drm",
+            "amdgpu",
+            MultiGpuCopyMode::Auto,
+            &nvidia_render_with_linear,
+            &amd_import,
+        )
+        .is_err());
+
+        // Real NVIDIA driver: Linear is external_only (absent from render_formats), so even
+        // explicit Dma override cleanly falls back when there is no common explicit modifier.
+        let nvidia_render_real = format_set(&[
+            (Fourcc::Argb8888, Modifier::Unrecognized(0x0300000000000010)),
+            (Fourcc::Argb8888, Modifier::Invalid),
+        ]);
+        assert!(select_dma_candidates(
+            "nvidia-drm",
+            "amdgpu",
+            MultiGpuCopyMode::Dma,
+            &nvidia_render_real,
+            &amd_import,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cpu_copy_override_and_same_vendor_modifier_order() {
+        let tiled = Modifier::Unrecognized(0x0200000000000001);
+        let amd = format_set(&[
+            (Fourcc::Argb8888, tiled),
+            (Fourcc::Argb8888, Modifier::Linear),
+            (Fourcc::Argb8888, Modifier::Invalid),
+        ]);
+        assert!(select_dma_candidates("amdgpu", "amdgpu", MultiGpuCopyMode::Cpu, &amd, &amd).is_err());
+        let same = select_dma_candidates("amdgpu", "amdgpu", MultiGpuCopyMode::Auto, &amd, &amd).unwrap();
+        assert_eq!(
+            same,
+            vec![
+                (Fourcc::Argb8888, vec![Modifier::Linear]),
+                (Fourcc::Argb8888, vec![tiled]),
+            ]
+        );
+        // Cross-vendor never passes tiled vendor modifiers
+        let intel = format_set(&[(Fourcc::Argb8888, tiled), (Fourcc::Argb8888, Modifier::Invalid)]);
+        assert!(select_dma_candidates("amdgpu", "i915", MultiGpuCopyMode::Auto, &amd, &intel).is_err());
+    }
+
+    #[test]
+    fn cpu_copy_rects_clamp_merge_and_bound_localized_updates() {
+        let bounds = Size::<i32, BufferCoord>::from((1920, 1080));
+        // Out-of-bounds and empty rects are dropped/clamped, touching/overlapping merge.
+        let rects = merge_copy_rects(
+            &[
+                Rectangle::new((-10, -5).into(), (30, 25).into()),
+                Rectangle::new((20, 0).into(), (15, 20).into()),
+                Rectangle::new((2000, 1200).into(), (10, 10).into()),
+                Rectangle::new((100, 100).into(), (0, 50).into()),
+            ],
+            bounds,
+        );
+        assert_eq!(rects, vec![Rectangle::new((0, 0).into(), (35, 20).into())]);
+
+        // More than MAX_CPU_COPY_RECTS disjoint rects collapse to their tight bounding box,
+        // not the full 1920x1080 screen.
+        let many: Vec<_> = (0..6)
+            .map(|i| Rectangle::new((100 + i * 30, 200).into(), (10, 10).into()))
+            .collect();
+        let collapsed = merge_copy_rects(&many, bounds);
+        assert_eq!(collapsed, vec![Rectangle::new((100, 200).into(), (160, 10).into())]);
+    }
+
+    #[test]
+    fn dma_probe_pixel_check_catches_black_swapped_rb_and_flipped_y() {
+        let (w, h) = (64usize, 64usize);
+        let make_img = |top: [u8; 4], bot: [u8; 4]| {
+            let mut buf = vec![0u8; w * h * 4];
+            for y in 0..h {
+                let c = if y < h / 2 { top } else { bot };
+                for x in 0..w {
+                    let i = (y * w + x) * 4;
+                    buf[i..i + 4].copy_from_slice(&c);
+                }
+            }
+            buf
+        };
+        let good = make_img([64, 128, 191, 255], [191, 64, 128, 255]);
+        assert!(probe_pixels_match(&good, w, h, true).is_ok());
+
+        // Black / broken EGLImage fails
+        let black = make_img([0, 0, 0, 255], [0, 0, 0, 255]);
+        assert!(probe_pixels_match(&black, w, h, true).is_err());
+
+        // Swapped R/B fails
+        let swapped_rb = make_img([191, 128, 64, 255], [128, 64, 191, 255]);
+        assert!(probe_pixels_match(&swapped_rb, w, h, true).is_err());
+
+        // Upside-down Y-inversion fails
+        let flipped_y = make_img([191, 64, 128, 255], [64, 128, 191, 255]);
+        assert!(probe_pixels_match(&flipped_y, w, h, true).is_err());
+
+        // XRGB with zero alpha from external sampler is tolerated when check_alpha=false
+        let xrgb_zero_alpha = make_img([64, 128, 191, 0], [191, 64, 128, 0]);
+        assert!(probe_pixels_match(&xrgb_zero_alpha, w, h, false).is_ok());
+        assert!(probe_pixels_match(&xrgb_zero_alpha, w, h, true).is_err());
+    }
+
+    #[test]
+    fn headless_two_context_dma_probe_and_cpu_patch_roundtrip() {
+        use std::fs::OpenOptions;
+        let Some(node_path) = std::fs::read_dir("/dev/dri")
+            .ok()
+            .and_then(|rd| {
+                rd.filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("renderD")))
+            })
+        else {
+            return;
+        };
+        let open_ctx = || -> Option<(GbmDevice<DrmDeviceFd>, GlesRenderer)> {
+            let file = OpenOptions::new().read(true).write(true).open(&node_path).ok()?;
+            let fd = DrmDeviceFd::new(DeviceFd::from(std::os::fd::OwnedFd::from(file)));
+            let gbm = GbmDevice::new(fd).ok()?;
+            let egl = unsafe { EGLDisplay::new(gbm.clone()).ok()? };
+            let ctx = EGLContext::new(&egl).ok()?;
+            let renderer = unsafe { GlesRenderer::new(ctx).ok()? };
+            Some((gbm, renderer))
+        };
+        let Some((gbm1, mut primary)) = open_ctx() else { return };
+        let Some((_gbm2, mut secondary)) = open_ctx() else { return };
+
+        // 1. Real copy-strategy negotiation + DMA-BUF probe across two separate EGL/GLES contexts.
+        //    GPUs with explicit Linear modifiers (e.g. RDNA/Rembrandt/Intel) must pass the full
+        //    DMA-BUF pixel+orientation probe; GPUs without explicit modifiers (e.g. Polaris GFX8)
+        //    must cleanly select CpuCopy without crashing.
+        let has_linear = primary
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .any(|f| f.code == Fourcc::Argb8888 && f.modifier == Modifier::Linear);
+        let (strategy, detail) = choose_copy_strategy(
+            "amdgpu",
+            "amdgpu",
+            MultiGpuCopyMode::Auto,
+            &mut primary,
+            &gbm1,
+            &mut secondary,
+        );
+        if has_linear {
+            assert!(
+                matches!(strategy, CopyStrategy::DmaCopy { .. }),
+                "expected DmaCopy when GPU supports explicit Linear modifier, got {strategy:?} ({detail})"
+            );
+        } else {
+            assert_eq!(strategy, CopyStrategy::CpuCopy);
+        }
+
+        // 2. Real CpuCopy full-frame + localized damage-rect roundtrip
+        let (w, h) = (64i32, 64i32);
+        let buf_size = Size::<i32, BufferCoord>::from((w, h));
+        let phys_size = Size::<i32, Physical>::from((w, h));
+        let mut bridge = SecondaryBridge::new_cpu((w, h), &mut primary, &mut secondary)
+            .expect("create CPU bridge");
+        let BridgeBacking::Cpu { offscreen, sec_texture } = &mut bridge.backing else {
+            unreachable!()
+        };
+
+        // Frame 1: top/bottom two-color full clear
+        let top = Rectangle::new((0, 0).into(), (w, h / 2).into());
+        let bot = Rectangle::new((0, h / 2).into(), (w, h / 2).into());
+        let full_mapping = {
+            let mut fb = primary.bind(offscreen).unwrap();
+            let mut frame = primary.render(&mut fb, phys_size, Transform::Normal).unwrap();
+            frame.clear(Color32F::new(0.25, 0.50, 0.75, 1.0), &[top]).unwrap();
+            frame.clear(Color32F::new(0.75, 0.25, 0.50, 1.0), &[bot]).unwrap();
+            let _ = frame.finish().unwrap();
+            primary.copy_framebuffer(&fb, Rectangle::from_size(buf_size), Fourcc::Abgr8888).unwrap()
+        };
+        upload_cpu_patches(
+            &mut primary,
+            &mut secondary,
+            sec_texture,
+            phys_size,
+            vec![(full_mapping, Rectangle::from_size(buf_size))],
+        )
+        .unwrap();
+        let read_all = |sec: &mut GlesRenderer, tex: &GlesTexture| -> Vec<u8> {
+            let map = sec.copy_texture(tex, Rectangle::from_size(buf_size), Fourcc::Abgr8888).unwrap();
+            sec.map_texture(&map).unwrap().to_vec()
+        };
+        let px1 = read_all(&mut secondary, sec_texture);
+        probe_pixels_match(&px1, w as usize, h as usize, true)
+            .expect("CpuCopy full-frame pixel/orientation check failed");
+
+        // Frame 2: localized 16x16 green patch at (10, 40) only — verify partial rect transfer!
+        let patch_phys = Rectangle::new((10, 40).into(), (16, 16).into());
+        let patch_buf = Rectangle::<i32, BufferCoord>::new((10, 40).into(), (16, 16).into());
+        let patch_mapping = {
+            let mut fb = primary.bind(offscreen).unwrap();
+            let mut frame = primary.render(&mut fb, phys_size, Transform::Normal).unwrap();
+            frame.clear(Color32F::new(0.10, 0.90, 0.20, 1.0), &[patch_phys]).unwrap();
+            let _ = frame.finish().unwrap();
+            primary.copy_framebuffer(&fb, patch_buf, Fourcc::Abgr8888).unwrap()
+        };
+        upload_cpu_patches(
+            &mut primary,
+            &mut secondary,
+            sec_texture,
+            phys_size,
+            vec![(patch_mapping, patch_buf)],
+        )
+        .unwrap();
+        let px2 = read_all(&mut secondary, sec_texture);
+        let at = |x: usize, y: usize| -> [u8; 4] {
+            let i = (y * w as usize + x) * 4;
+            [px2[i], px2[i + 1], px2[i + 2], px2[i + 3]]
+        };
+        let inside = at(18, 48);
+        assert!(
+            inside[0].abs_diff(26) <= 6
+                && inside[1].abs_diff(230) <= 6
+                && inside[2].abs_diff(51) <= 6
+                && inside[3] >= 250,
+            "localized patch pixel mismatch at (18, 48): {inside:?}"
+        );
+        // Untouched top and bottom regions outside the patch must stay intact
+        let untouched_top = at(32, 16);
+        assert!(
+            untouched_top[0].abs_diff(64) <= 6
+                && untouched_top[1].abs_diff(128) <= 6
+                && untouched_top[2].abs_diff(191) <= 6,
+            "top region corrupted outside patch: {untouched_top:?}"
+        );
+        let untouched_bot = at(50, 50);
+        assert!(
+            untouched_bot[0].abs_diff(191) <= 6
+                && untouched_bot[1].abs_diff(64) <= 6
+                && untouched_bot[2].abs_diff(128) <= 6,
+            "bottom region corrupted outside patch: {untouched_bot:?}"
+        );
     }
 }
 
@@ -742,6 +1824,7 @@ impl FeatherCompositor {
             }
             for h in &mut d.heads {
                 h.output.reset_buffers();
+                h.reset_bridge();
                 h.pending = false;
                 h.protected = false;
             }
