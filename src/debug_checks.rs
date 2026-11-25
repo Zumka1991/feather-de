@@ -240,6 +240,31 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             eprintln!("[feather-game-fullscreen] under={:?}",st.surface_under_pointer(p.x as f64+300.0,p.y as f64+200.0).map(|(_,l)|l));
             st.debug_pointer_button(0x110,true);st.debug_pointer_button(0x110,false);
         })?;
+        at(state,2800,|st| {
+            let files = st.app_registry.index_of(crate::apps::AppRegistry::PERMANENT).unwrap();
+            let target = DockTarget::App(files);
+            let (dx, dy, dsize) = st.shell.dock_slot_global(target).expect("dock slot");
+            let (cx, cy) = ((dx + dsize * 0.5).round() as i32, (dy + dsize * 0.5).round() as i32);
+            st.debug_pointer_motion(cx as f64, cy as f64);
+            assert!(st.surface_under_pointer(cx as f64, cy as f64).is_some(), "fullscreen game must keep pointer over hidden Dock");
+            // RMB over a Dock icon in a fullscreen game must never open the Dock context menu
+            st.debug_pointer_button(0x111, true);
+            assert!(st.shell.dock_menu.is_none(), "RMB in fullscreen game opened Dock menu");
+            assert!(st.consumed_buttons.is_empty(), "RMB in fullscreen game was consumed by shell");
+            st.debug_pointer_button(0x111, false);
+            // MMB over a Dock icon must also reach the game instead of launching another app copy
+            st.debug_pointer_button(0x112, true);
+            assert!(st.consumed_buttons.is_empty(), "MMB in fullscreen game was consumed by shell");
+            st.debug_pointer_button(0x112, false);
+            // Even while a notification toast is on screen, LMB in the Dock area must reach the game
+            st.shell.notify("Test", "Banner");
+            st.debug_pointer_button(0x110, true);
+            assert!(st.consumed_buttons.is_empty(), "LMB over hidden Dock during toast was consumed by shell");
+            st.debug_pointer_button(0x110, false);
+            st.shell.toasts.clear();
+            st.shell.overlay_dirty = true;
+            eprintln!("[feather-game-fullscreen] dock_passthrough={} {}", cx * 2, cy * 2);
+        })?;
     }
     if std::env::var_os("FEATHER_DEBUG_GAME_POINTER").is_some() {
         if state.backend.is_drm() || !state.debug_input_only { return Err("game pointer check requires isolated windowed input".into()); }

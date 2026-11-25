@@ -94,7 +94,7 @@ see the [verification order](LOCK_POWER.md#проверки). The overall accept
 
 - [x] XWayland (running X11 programs) through xwayland-satellite on demand — [XWAYLAND.md](XWAYLAND.md)
 - [x] Wine/XWayland: persistent HiDPI scale with a setting in Displays — [GAMING.md](GAMING.md)
-- [x] Games: relative pointer, lock/confine, a single `wl_pointer.frame` (`POINTER_NORAW`), holding `x11_warp_lock` while rotating the camera with the right button in Wine/XWayland, releasing the grab, releasing buttons and clearing `forwarded_pressed_keys` / modifiers on focus change — [GAMING.md](GAMING.md)
+- [x] Games: relative pointer, lock/confine, a single `wl_pointer.frame` (`POINTER_NORAW`), holding `x11_warp_lock` while rotating the camera with the right button in Wine/XWayland, passing RMB/MMB/LMB clicks and pointer motion straight through the hidden Dock and menu bar in fullscreen games (including during notification banners, Proton helper windows and `pointer_locked`), releasing the grab, releasing buttons and clearing `forwarded_pressed_keys` / modifiers on focus change — [GAMING.md](GAMING.md)
 - [x] Proton Dock: immediate title/app_id, separate games and filtering out an unnamed service window — [GAMING.md](GAMING.md)
 - [x] XWayland resize with CSD: the outer edge over the window below, `Resizing`, the real size of the X11 client — [GAMING.md](GAMING.md)
 - [x] Uniform resize of all windows: a 10+5 px (15 px) band, 24 px corners + 7 px inside the rounding, keeping the resize cursor when leaving the client surface, preloading corner cursors in DRM, client min/max, stopping at the menu bar — `FEATHER_DEBUG_RESIZE=1`, [WINDOWS.md](WINDOWS.md#ресайз-окон-srcwindowrs-srcinputrs-srchandlersrs)

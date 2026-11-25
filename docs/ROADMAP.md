@@ -93,7 +93,7 @@
 
 - [x] XWayland (запуск X11-программ) через xwayland-satellite по требованию — [XWAYLAND.md](XWAYLAND.md)
 - [x] Wine/XWayland: сохраняемый HiDPI-масштаб с настройкой в «Дисплеях» — [GAMING.md](GAMING.md)
-- [x] Игры: relative pointer, lock/confine, единый `wl_pointer.frame` (`POINTER_NORAW`), удержание `x11_warp_lock` при вращении камеры ПКМ в Wine/XWayland, снятие захвата, отпускание кнопок и очистка `forwarded_pressed_keys` / модификаторов при смене фокуса — [GAMING.md](GAMING.md)
+- [x] Игры: relative pointer, lock/confine, единый `wl_pointer.frame` (`POINTER_NORAW`), удержание `x11_warp_lock` при вращении камеры ПКМ в Wine/XWayland, пропуск кликов ПКМ/СКМ/ЛКМ и движения мыши сквозь скрытые полноэкранной игрой Dock и меню-бар (включая баннеры уведомлений, служебное окно Proton и `pointer_locked`), снятие захвата, отпускание кнопок и очистка `forwarded_pressed_keys` / модификаторов при смене фокуса — [GAMING.md](GAMING.md)
 - [x] Proton Dock: немедленные title/app_id, отдельные игры и фильтрация безымянного служебного окна — [GAMING.md](GAMING.md)
 - [x] Resize XWayland с CSD: внешний край поверх нижнего окна, `Resizing`, настоящий размер X11-клиента — [GAMING.md](GAMING.md)
 - [x] Единый ресайз всех окон: полоса 10+5 px (15 px), углы 24 px + 7 px внутри скругления, удержание курсора ресайза при уходе с поверхности клиента, предзагрузка угловых курсоров в DRM, min/max клиента, упор в верхнюю панель — `FEATHER_DEBUG_RESIZE=1`, [WINDOWS.md](WINDOWS.md#ресайз-окон-srcwindowrs-srcinputrs-srchandlersrs)

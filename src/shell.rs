@@ -2026,6 +2026,13 @@ impl MacShell {
         }
     }
 
+    pub fn clear_dock_hover(&mut self) {
+        if self.dock_cursor_x.take().is_some() {
+            self.dock_anchor = None;
+            self.dock_dirty = true;
+        }
+    }
+
     pub fn anchor_dock_target(&mut self, target: DockTarget) {
         if self.dock_cursor_x.is_some() {
             self.dock_anchor = self.dock_slots.iter().find(|s|s.target==target)
@@ -3019,7 +3026,21 @@ impl MacShell {
     // ───────────────────────── Pointer ─────────────────────────
 
     pub fn update_pointer_hover(&mut self, px: f64, py: f64) {
-        let hover=if py>=0.0&&py<TOP_BAR_HEIGHT as f64{self.topbar_item_at(px as f32)}else{None};
+        self.update_pointer_hover_visible(px, py, !self.topbar_hidden, true);
+    }
+
+    pub fn update_pointer_hover_visible(
+        &mut self,
+        px: f64,
+        py: f64,
+        topbar_shown: bool,
+        dock_shown: bool,
+    ) {
+        let hover = if topbar_shown && py >= 0.0 && py < TOP_BAR_HEIGHT as f64 {
+            self.topbar_item_at(px as f32)
+        } else {
+            None
+        };
         if hover!=self.status_hover{self.status_hover=hover;self.topbar_dirty=true;}
         let center = self.center_at(px as f32, py as f32);
         if center != self.center_hover {
@@ -3100,7 +3121,8 @@ impl MacShell {
 
         let (local_x, local_y) = self.dock_local(px, py);
         let bar = self.dock_bar;
-        let in_dock = !self.dock_dragging
+        let in_dock = dock_shown
+            && !self.dock_dragging
             && local_y >= bar.y - 10.0
             && local_y <= self.dock_buf_h as f32
             && local_x >= bar.x - 20.0
@@ -3122,6 +3144,17 @@ impl MacShell {
     }
 
     pub fn handle_pointer_click(&mut self, px: f64, py: f64, registry: &AppRegistry) -> Option<ShellClickAction> {
+        self.handle_pointer_click_visible(px, py, registry, !self.topbar_hidden, true)
+    }
+
+    pub fn handle_pointer_click_visible(
+        &mut self,
+        px: f64,
+        py: f64,
+        registry: &AppRegistry,
+        topbar_shown: bool,
+        dock_shown: bool,
+    ) -> Option<ShellClickAction> {
         let mx = px as f32;
         let my = py as f32;
 
@@ -3139,7 +3172,7 @@ impl MacShell {
         }
 
         // Menu bar
-        if mx>=0.0 && mx<self.screen_w as f32 && my >= 0.0 && my < TOP_BAR_HEIGHT as f32 {
+        if topbar_shown && mx>=0.0 && mx<self.screen_w as f32 && my >= 0.0 && my < TOP_BAR_HEIGHT as f32 {
             let hit = self.topbar_item_at(mx);
             let was = (self.open_menu, self.control_center_open, self.spotlight_open, self.center_open);
             let sound_open = self.control_center_open && self.cc.sound_only;
@@ -3293,7 +3326,7 @@ impl MacShell {
             return Some(ShellClickAction::None);
         }
 
-        if self.center_open && my >= TOP_BAR_HEIGHT as f32 {
+        if self.center_open && (!topbar_shown || my >= TOP_BAR_HEIGHT as f32) {
             match self.center_at(mx, my) {
                 Some(hit) => self.center_click(hit),
                 None if self.center_layout().0.contains(mx, my) || self.calendar_rect().contains(mx, my) => {}
@@ -3320,21 +3353,23 @@ impl MacShell {
         }
 
         // Dock
-        let (lx, ly) = self.dock_local(px, py);
-        let on_icon = self
-            .dock_slots
-            .iter()
-            .any(|s| R::new(s.x, s.y, s.size, s.size).contains(lx, ly));
-        if self.dock_bar.contains(lx, ly) || on_icon {
-            let half_gap = self.dock_slot_gap * 0.5;
-            let slot = self
+        if dock_shown {
+            let (lx, ly) = self.dock_local(px, py);
+            let on_icon = self
                 .dock_slots
                 .iter()
-                .find(|s| lx >= s.x - half_gap && lx < s.x + s.size + half_gap);
-            return Some(match slot.map(|s| s.target) {
-                Some(target) => ShellClickAction::DockPress(target),
-                None => ShellClickAction::None,
-            });
+                .any(|s| R::new(s.x, s.y, s.size, s.size).contains(lx, ly));
+            if self.dock_bar.contains(lx, ly) || on_icon {
+                let half_gap = self.dock_slot_gap * 0.5;
+                let slot = self
+                    .dock_slots
+                    .iter()
+                    .find(|s| lx >= s.x - half_gap && lx < s.x + s.size + half_gap);
+                return Some(match slot.map(|s| s.target) {
+                    Some(target) => ShellClickAction::DockPress(target),
+                    None => ShellClickAction::None,
+                });
+            }
         }
 
         None
@@ -5767,6 +5802,54 @@ mod cc_backdrop_tests {
             assert!(shell.overlay_geometry.size.h > 0 && shell.overlay_geometry.size.h < 450);
             assert!(shell.mission_title_geometry.size.h > 0 && shell.mission_title_geometry.size.h < 160);
             assert!(shell.mission_title_geometry.loc.y > 1750);
+        });
+    }
+
+    #[test]
+    fn hidden_topbar_and_dock_ignore_clicks_and_hover_even_with_toast() {
+        let registry = AppRegistry::new();
+        let mut fonts = FontSystem::new();
+        crate::theme::with_render_settings(1.0, Appearance::Dark, || {
+            let mut shell = MacShell::new(1440, 900);
+            shell.set_dock_items(vec![DockItem {
+                target: DockTarget::App(0),
+                label: "Файлы".into(),
+                icon: AppIcon { kind: IconKind::Finder, name: None },
+                windows: 1,
+                pinned: true,
+            }]);
+            shell.ensure_dock_rendered(&mut fonts);
+            let (dx, dy, dsize) = shell.dock_slot_global(DockTarget::App(0)).unwrap();
+            let (cx, cy) = ((dx + dsize * 0.5) as f64, (dy + dsize * 0.5) as f64);
+
+            // A notification toast is visible on screen while a fullscreen game hides top bar & Dock
+            shell.notify("Чат", "Сообщение в рейде");
+            shell.dock_dirty = false;
+            shell.topbar_dirty = false;
+
+            shell.update_pointer_hover_visible(cx, cy, false, false);
+            assert!(!shell.dock_dirty && shell.dock_cursor_x.is_none());
+            shell.update_pointer_hover_visible(20.0, 10.0, false, false);
+            assert!(!shell.topbar_dirty && shell.status_hover.is_none());
+
+            // Clicks in the hidden Dock and hidden menu bar pass straight through (`None`)
+            assert!(shell.handle_pointer_click_visible(cx, cy, &registry, false, false).is_none());
+            assert!(shell.handle_pointer_click_visible(20.0, 10.0, &registry, false, false).is_none());
+
+            // Clicking the visible toast banner itself still dismisses it
+            let tr = shell.toast_rects()[0];
+            assert!(
+                shell
+                    .handle_pointer_click_visible(
+                        (tr.x + tr.w * 0.5) as f64,
+                        (tr.y + tr.h * 0.5) as f64,
+                        &registry,
+                        false,
+                        false,
+                    )
+                    .is_some()
+            );
+            assert!(shell.toasts.is_empty());
         });
     }
 }

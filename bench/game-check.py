@@ -58,6 +58,10 @@ with (root/'session.log').open('w') as log:
    assert '[feather-game-fullscreen] window 1440x900 at 0,0 fullscreen=true' in text,text[-3000:]
    assert 'size 2880 1800 at 0 0\n' in client,client
    assert 'button 1 600 400\n' in client,client
+   dock_xy=next(l.split('=',1)[1] for l in text.splitlines() if '[feather-game-fullscreen] dock_passthrough=' in l)
+   assert f'button 3 {dock_xy}\n' in client,client
+   assert f'button 2 {dock_xy}\n' in client,client
+   assert f'button 1 {dock_xy}\n' in client,client
   else:
    assert '[feather-game-x11-check]' in text,text[-3000:]
    assert client.count('button 1 1 200 100\n')==2,client

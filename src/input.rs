@@ -1450,7 +1450,10 @@ impl FeatherCompositor {
     /// Auto-hide Dock: the bottom edge brings it, leaving its area sends it away (not while
     /// its menu is open or an icon is being dragged onto it)
     pub(crate) fn dock_autohide_motion(&mut self, x: f64, y: f64) {
-        if !crate::theme::dock_autohide() || self.shell.scratch_open {
+        if !crate::theme::dock_autohide()
+            || !self.dock_interactive()
+            || self.active_constraint.is_some()
+        {
             return;
         }
         // Distance from the Dock's screen edge, and how deep its bar reaches
@@ -1466,7 +1469,9 @@ impl FeatherCompositor {
         if hidden != self.shell.dock_hidden {
             self.shell.dock_hidden = hidden;
             self.animations.set_dock_hidden(hidden);
-            self.shell.update_pointer_hover(x, y);
+            let topbar_shown = self.topbar_interactive();
+            let dock_shown = self.dock_interactive();
+            self.shell.update_pointer_hover_visible(x, y, topbar_shown, dock_shown);
             self.needs_redraw = true;
         }
     }
@@ -1653,16 +1658,25 @@ impl FeatherCompositor {
             }
         }
         self.dock_autohide_motion(pos.x, pos.y);
-        // Not while a button is held: a drag into a corner is not a request
-        if self.pressed_buttons.is_empty() && self.monitor_at(pos.x,pos.y).contains(0.0,0.0) {
+        let fullscreen_top_id = crate::render::top_window_on(&self.windows, self.primary_monitor_rect())
+            .filter(|w| w.fullscreen)
+            .map(|w| w.id);
+        // Not while a button is held, a game captures the pointer, or a fullscreen window covers the screen
+        if self.pressed_buttons.is_empty()
+            && self.active_constraint.is_none()
+            && fullscreen_top_id.is_none()
+            && self.monitor_at(pos.x, pos.y).contains(0.0, 0.0)
+        {
             let screen = (self.shell.screen_w as f64, self.shell.screen_h as f64);
             if let Some(action) = self.hot_corners.motion(pos.x, pos.y, screen) {
                 self.run_hot_corner(action);
             }
         }
 
-        if !self.shell.scratch_open || self.shell.has_visible_overlay() {
-            self.shell.update_pointer_hover(pos.x, pos.y);
+        let topbar_shown = self.topbar_interactive();
+        let dock_shown = self.dock_interactive();
+        if topbar_shown || dock_shown || self.shell.has_visible_overlay() {
+            self.shell.update_pointer_hover_visible(pos.x, pos.y, topbar_shown, dock_shown);
             if self.shell.topbar_dirty || self.shell.overlay_dirty || self.shell.dock_dirty {
                 self.needs_redraw = true;
             }
@@ -1671,7 +1685,8 @@ impl FeatherCompositor {
         for win in &mut self.windows {
             if win.is_visible() {
                 let was = win.dirty;
-                if win.pip && win.pip_ghost && !super_held {
+                let covered_by_fullscreen = fullscreen_top_id.is_some_and(|id| !win.pip && win.id != id);
+                if covered_by_fullscreen || (win.pip && win.pip_ghost && !super_held) {
                     win.update_hover(-1e6, -1e6);
                 } else {
                     win.update_hover(pos.x, pos.y);
@@ -1875,6 +1890,7 @@ impl FeatherCompositor {
         }
         self.cancel_key_repeat();
         self.cancel_green_hover();
+        let mut from_mission_dock = false;
         if self.mission_open() && !self.lock.active && !(btn_state == ButtonState::Released && self.pointer.is_grabbed()) {
             let (x, y) = (self.pointer_location.x, self.pointer_location.y);
             if self.drop_shelf.contains(x, y, (self.shell.screen_w, self.shell.screen_h))
@@ -1896,6 +1912,7 @@ impl FeatherCompositor {
             if btn_state == ButtonState::Pressed && self.shell.dock_contains(x, y) {
                 // A Dock click leaves Mission Control and works as usual
                 self.close_mission(None);
+                from_mission_dock = true;
             } else {
                 if button == BTN_LEFT {
                     self.mission_button(btn_state == ButtonState::Pressed, x, y);
@@ -2005,8 +2022,12 @@ impl FeatherCompositor {
             if button == BTN_LEFT && self.icon_drag.is_some() {
                 self.finish_icon_press();
             }
+            if self.active_constraint.is_some() {
+                self.sync_pointer_constraint();
+            }
             if was_dragging
                 || (self.pressed_buttons.is_empty()
+                    && !self.pointer_locked()
                     && !self
                         .surface_under_pointer(pos.x, pos.y)
                         .is_some_and(|(s, _)| {
@@ -2039,20 +2060,25 @@ impl FeatherCompositor {
         if button!=BTN_LEFT && self.shell.control_center_open {
             self.consumed_buttons.push(button); return;
         }
+        self.sync_pointer_constraint();
+        if self.pointer_locked() {
+            pointer.button(self, &event);
+            pointer.frame(self);
+            return;
+        }
         if self.pressed_buttons.len() == 1 {
             // Make sure the press goes to the surface really under the cursor right now
             self.refresh_pointer_focus();
         }
 
-        let primary=self.primary_monitor().map(|m|m.info.rect).unwrap_or_else(||self.monitor_at(0.0,0.0));
-        // Larvis's desktop keeps our menu bar over its own, so its item can switch back
-        let over_bar=pos.y<(primary.y+TOP_BAR_HEIGHT) as f64;
-        let fullscreen_top=self.windows.iter().rev().find(|w|w.is_visible()&&!w.pip&&crate::monitors::Rect{x:w.x,y:w.y,w:w.width,h:w.total_height()}.intersection(primary)>0).is_some_and(|w|w.fullscreen&&!(w.larvis&&over_bar))||self.shell.scratch_open;
-        if !primary.contains(pos.x,pos.y)&&self.shell.launchpad.is_some(){self.shell.launchpad=None;self.needs_redraw=true;}
-        // Over the Подложка the menu bar and the Dock are gone: a passing banner must not revive
-        // them, but a click on the banner itself (its body, buttons, close) is the banner's
-        let panels=if self.shell.scratch_open {self.shell.has_open_panel()||self.shell.toast_contains(pos.x,pos.y)} else {self.shell.has_visible_overlay()};
-        if (!fullscreen_top || panels) && self.shell.launchpad.is_none() {
+        let primary = self.primary_monitor_rect();
+        if !primary.contains(pos.x, pos.y) && self.shell.launchpad.is_some() {
+            self.shell.launchpad = None;
+            self.needs_redraw = true;
+        }
+        let topbar_shown = self.topbar_interactive();
+        let dock_shown = self.dock_interactive() || from_mission_dock;
+        if topbar_shown {
             if let Some((item,_))=self.shell.tray_hit(pos.x,pos.y).map(|(i,r)|(i.clone(),r)) {
                 let action=match button {
                     BTN_LEFT if !item.menu_only=>crate::tray::Action::Activate,
@@ -2065,7 +2091,7 @@ impl FeatherCompositor {
             }
         }
         // Middle click on a Dock app: another copy of it
-        if button == 0x112 && self.shell.dock_menu.is_none() && !self.shell.scratch_open {
+        if dock_shown && button == 0x112 && self.shell.dock_menu.is_none() {
             if let Some((DockTarget::App(i), _)) = self.shell.dock_target_at(pos.x, pos.y) {
                 self.consumed_buttons.push(button);
                 self.launch_app_instance(i);
@@ -2073,7 +2099,7 @@ impl FeatherCompositor {
             }
         }
         // Right click on a Dock icon: its context menu
-        if button == BTN_RIGHT && self.shell.dock_menu.is_none() && !self.shell.scratch_open {
+        if dock_shown && button == BTN_RIGHT && self.shell.dock_menu.is_none() {
             if let Some((target, anchor)) = self.shell.dock_target_at(pos.x, pos.y) {
                 self.consumed_buttons.push(button);
                 self.open_dock_menu_for(target, anchor);
@@ -2088,7 +2114,7 @@ impl FeatherCompositor {
 
         // Launchpad covers the desktop; the menu bar and the Dock stay usable above it
         // Launchpad hides the menu bar; only the Dock stays usable above it
-        let over_chrome = self.shell.dock_target_at(pos.x, pos.y).is_some()
+        let over_chrome = (dock_shown && self.shell.dock_target_at(pos.x, pos.y).is_some())
             || self.drop_shelf.contains(pos.x, pos.y, (self.shell.screen_w, self.shell.screen_h));
         if self.shell.launchpad.is_some() && !over_chrome && self.shell.dock_menu.is_none() {
             self.consumed_buttons.push(button);
@@ -2124,8 +2150,7 @@ impl FeatherCompositor {
             let panel = self.shell.control_panel_rect();
             self.shell.cc.click_password(panel, pos.x as f32, pos.y as f32, &mut self.fonts, self.keyboard.modifier_state().shift);
         }
-        if (!fullscreen_top || panels)
-            && self.shell.launchpad.is_none()
+        if topbar_shown
             && button == BTN_RIGHT
             && self.shell.topbar_pip_hit(pos.x, pos.y)
         {
@@ -2135,10 +2160,14 @@ impl FeatherCompositor {
             self.execute_shell_action(ShellClickAction::TopbarPipClick(false));
             return;
         }
-        if !fullscreen_top || panels {
+        if topbar_shown
+            || dock_shown
+            || self.shell.has_open_panel()
+            || !self.shell.toasts.is_empty()
+        {
             if let Some(action) = self
                 .shell
-                .handle_pointer_click(pos.x, pos.y, &self.app_registry)
+                .handle_pointer_click_visible(pos.x, pos.y, &self.app_registry, topbar_shown, dock_shown)
             {
                 self.consumed_buttons.push(button);
                 self.pointer_focus_dirty = true;
@@ -2219,9 +2248,9 @@ impl FeatherCompositor {
         let mut builtin_action: Option<ShellClickAction> = None;
         let r=self.window_monitor(idx);
 
-        if super_held && button == BTN_LEFT {
+        if super_held && button == BTN_LEFT && !self.windows[idx].fullscreen {
             self.start_move(idx);
-        } else if super_held && button == BTN_RIGHT {
+        } else if super_held && button == BTN_RIGHT && !self.windows[idx].fullscreen {
             if self.windows[idx].space == crate::scratch::SCRATCH_SPACE {
                 if let Some(edges) = self.scratch_super_resize_edges(idx) {
                     self.start_resize(idx, edges, false);
@@ -2537,8 +2566,7 @@ impl FeatherCompositor {
             self.needs_redraw = true;
             return;
         }
-        let fullscreen=self.windows.iter().rev().find(|w|w.is_visible()&&!w.pip).is_some_and(|w|w.fullscreen&&!w.larvis);
-        if !fullscreen&&self.shell.launchpad.is_none() {
+        if self.topbar_interactive() {
             if let Some(key)=self.shell.tray_hit(self.pointer_location.x,self.pointer_location.y).map(|(i,_)|i.key.clone()) {
                 for (axis,horizontal) in [(Axis::Vertical,false),(Axis::Horizontal,true)] {
                     let delta=event.amount_v120(axis).unwrap_or_else(||event.amount(axis).unwrap_or(0.0)*8.0).round() as i32;

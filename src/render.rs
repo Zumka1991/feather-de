@@ -364,6 +364,35 @@ fn to_phys_point(x: i32, y: i32, scale: f64) -> Point<i32, Physical> {
     Point::from(((x as f64 * scale).round() as i32, (y as f64 * scale).round() as i32))
 }
 
+pub(crate) fn is_auxiliary_game_window(windows: &[ManagedWindow], w: &ManagedWindow) -> bool {
+    w.app_id.eq_ignore_ascii_case("steam_app_default")
+        && w.title == "Окно Wayland"
+        && windows.iter().any(|other| {
+            other.mapped
+                && other.app_id.eq_ignore_ascii_case("steam_app_default")
+                && other.title != "Окно Wayland"
+        })
+}
+
+pub(crate) fn top_window_on<'a>(
+    windows: &'a [ManagedWindow],
+    view: crate::monitors::Rect,
+) -> Option<&'a ManagedWindow> {
+    windows.iter().rev().find(|w| {
+        w.is_visible()
+            && !w.pip
+            && !is_auxiliary_game_window(windows, w)
+            && crate::monitors::Rect {
+                x: w.x,
+                y: w.y,
+                w: w.width,
+                h: w.total_height(),
+            }
+            .intersection(view)
+                > 0
+    })
+}
+
 pub(crate) fn scene_windows_front_to_back(
     windows: &[ManagedWindow],
 ) -> impl Iterator<Item = &ManagedWindow> {
@@ -417,18 +446,7 @@ pub(crate) fn collect_glass_specs(
         specs.push(s);
     }
 
-    let top = windows.iter().rev().find(|w| {
-        w.is_visible()
-            && !w.pip
-            && crate::monitors::Rect {
-                x: w.x,
-                y: w.y,
-                w: w.width,
-                h: w.total_height(),
-            }
-            .intersection(view)
-                > 0
-    });
+    let top = top_window_on(windows, view);
     let fullscreen_top = top.is_some_and(|w| w.fullscreen && animations.window(w).identity());
     let larvis_top = top.is_some_and(|w| w.larvis);
 
@@ -938,38 +956,12 @@ pub(crate) fn build_scene(
     if !shell.layers.is_empty() {
         use smithay::wayland::shell::wlr_layer::Layer;
         push_layers(&mut out, renderer, shell, Layer::Overlay, view, scale);
-        let covered = windows
-            .iter()
-            .rev()
-            .find(|w| {
-                w.is_visible()
-                    && !w.pip
-                    && crate::monitors::Rect {
-                        x: w.x,
-                        y: w.y,
-                        w: w.width,
-                        h: w.total_height(),
-                    }
-                    .intersection(view)
-                        > 0
-            })
-            .is_some_and(|w| w.fullscreen);
+        let covered = top_window_on(windows, view).is_some_and(|w| w.fullscreen);
         if !covered {
             push_layers(&mut out, renderer, shell, Layer::Top, view, scale);
         }
     }
-    let top = windows.iter().rev().find(|w| {
-        w.is_visible()
-            && !w.pip
-            && crate::monitors::Rect {
-                x: w.x,
-                y: w.y,
-                w: w.width,
-                h: w.total_height(),
-            }
-            .intersection(view)
-                > 0
-    });
+    let top = top_window_on(windows, view);
     let fullscreen_top = top.is_some_and(|w| w.fullscreen && animations.window(w).identity());
     // Larvis's desktop is fullscreen under our menu bar (its item switches back); its own Dock stays
     let larvis_top = top.is_some_and(|w| w.larvis);
@@ -1979,22 +1971,7 @@ impl FeatherCompositor {
                 && !self.shell.has_visible_overlay()
                 && !self.drop_shelf.is_visible()
                 && self.shell.launchpad.is_none()
-                && self
-                    .windows
-                    .iter()
-                    .rev()
-                    .find(|w| {
-                        w.is_visible()
-                            && !w.pip
-                            && crate::monitors::Rect {
-                                x: w.x,
-                                y: w.y,
-                                w: w.width,
-                                h: w.total_height(),
-                            }
-                            .intersection(info.rect)
-                                > 0
-                    })
+                && top_window_on(&self.windows, info.rect)
                     .is_some_and(|w| w.fullscreen && self.animations.window(w).identity());
             let want_vrr = match vrr_policy {
                 0 => false,
@@ -2380,6 +2357,37 @@ impl FeatherCompositor {
         }
     }
 
+    pub(crate) fn primary_monitor_rect(&self) -> crate::monitors::Rect {
+        self.primary_monitor()
+            .map(|m| m.info.rect)
+            .unwrap_or_else(|| self.monitor_at(0.0, 0.0))
+    }
+
+    /// True when the menu bar on the primary monitor is shown in the scene.
+    pub(crate) fn topbar_interactive(&self) -> bool {
+        if self.shell.topbar_hidden
+            || self.shell.launchpad.is_some()
+            || self.shell.scratch_open
+        {
+            return false;
+        }
+        !top_window_on(&self.windows, self.primary_monitor_rect())
+            .is_some_and(|w| w.fullscreen && !w.larvis)
+    }
+
+    /// True when the Dock on the primary monitor is part of the scene (`dock_origin()`
+    /// handles the auto-hide slide separately).
+    pub(crate) fn dock_interactive(&self) -> bool {
+        if self.shell.scratch_open {
+            return false;
+        }
+        if self.shell.launchpad.is_some() || self.mission_open() {
+            return true;
+        }
+        !top_window_on(&self.windows, self.primary_monitor_rect())
+            .is_some_and(|w| w.fullscreen)
+    }
+
     /// True when the compositor's own shell UI (modals, menus, top bar, visible Dock) owns the
     /// pointer at `(px, py)` ahead of client windows and their outer resize bands.
     pub(crate) fn shell_takes_pointer(&self, px: f64, py: f64) -> bool {
@@ -2399,37 +2407,15 @@ impl FeatherCompositor {
         {
             return true;
         }
-        let primary = self
-            .primary_monitor()
-            .map(|m| m.info.rect)
-            .unwrap_or_else(|| self.monitor_at(0.0, 0.0));
-        let over_bar = px >= primary.x as f64
+        let primary = self.primary_monitor_rect();
+        let over_bar = self.topbar_interactive()
+            && px >= primary.x as f64
             && px < (primary.x + primary.w) as f64
             && py >= primary.y as f64
             && py < (primary.y + crate::theme::TOP_BAR_HEIGHT) as f64;
-        let fullscreen_top = self
-            .windows
-            .iter()
-            .rev()
-            .find(|w| {
-                w.is_visible()
-                    && crate::monitors::Rect {
-                        x: w.x,
-                        y: w.y,
-                        w: w.width,
-                        h: w.total_height(),
-                    }
-                    .intersection(primary)
-                        > 0
-            })
-            .is_some_and(|w| w.fullscreen && !(w.larvis && over_bar))
-            || self.shell.scratch_open;
-        if fullscreen_top {
-            return false;
-        }
-        over_bar
-            || self.shell.dock_contains(px, py)
-            || self.shell.dock_target_at(px, py).is_some()
+        let over_dock = self.dock_interactive()
+            && (self.shell.dock_contains(px, py) || self.shell.dock_target_at(px, py).is_some());
+        over_bar || over_dock
     }
 
     /// Topmost visible surface (popups first) under a logical point
@@ -2450,7 +2436,14 @@ impl FeatherCompositor {
         }
         use smithay::wayland::shell::wlr_layer::Layer;
         if !self.shell.layers.is_empty() {
-            if let Some(hit) = self.layer_under(&[Layer::Overlay, Layer::Top], px, py) {
+            let covered = top_window_on(&self.windows, self.monitor_at(px, py))
+                .is_some_and(|w| w.fullscreen);
+            let front: &[Layer] = if covered {
+                &[Layer::Overlay]
+            } else {
+                &[Layer::Overlay, Layer::Top]
+            };
+            if let Some(hit) = self.layer_under(front, px, py) {
                 return Some(hit);
             }
         }
@@ -2506,5 +2499,32 @@ impl FeatherCompositor {
             return None;
         }
         self.layer_under(&[Layer::Bottom, Layer::Background], px, py)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::apps::BuiltinWindowKind;
+
+    #[test]
+    fn top_window_on_skips_pip_and_proton_auxiliary_helper() {
+        let view = crate::monitors::Rect { x: 0, y: 0, w: 1920, h: 1080 };
+        let mut game = ManagedWindow::new_builtin(1, BuiltinWindowKind::AboutFeather, 0, 0);
+        game.app_id = "steam_app_default".into();
+        game.title = "World of Warcraft".into();
+        game.set_fullscreen(true, 1920, 1080);
+
+        let mut helper = ManagedWindow::new_builtin(2, BuiltinWindowKind::AboutFeather, 0, 0);
+        helper.app_id = "steam_app_default".into();
+        helper.title = "Окно Wayland".into();
+
+        let mut pip = ManagedWindow::new_builtin(3, BuiltinWindowKind::QuickNotes, 1500, 700);
+        pip.pip = true;
+
+        let windows = vec![game, helper, pip];
+        let top = top_window_on(&windows, view).expect("game window must be found");
+        assert_eq!(top.id, 1);
+        assert!(top.fullscreen);
     }
 }

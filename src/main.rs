@@ -624,8 +624,7 @@ impl FeatherCompositor {
     }
 
     fn auxiliary_game_window(&self, w: &ManagedWindow) -> bool {
-        w.app_id.eq_ignore_ascii_case("steam_app_default") && w.title == "Окно Wayland"
-            && self.windows.iter().any(|other| other.mapped && other.app_id.eq_ignore_ascii_case("steam_app_default") && other.title != "Окно Wayland")
+        crate::render::is_auxiliary_game_window(&self.windows, w)
     }
 
     fn icon_for_key(&self, key: AppKey, w: Option<&ManagedWindow>) -> (String, AppIcon) {

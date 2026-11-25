@@ -9,6 +9,16 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.3 — 2026-11-25
+
+- **Fullscreen games no longer trigger the hidden Dock context menu on right-click:** fixed an
+  issue where right-clicking or middle-clicking near the bottom of the screen in a fullscreen
+  game (e.g. World of Warcraft) opened the invisible Dock's context menu over the game. Also
+  keeps the hidden Dock and menu bar inert during notification banners, ignores Proton's unnamed
+  helper window and PiP overlays when detecting fullscreen games, forwards clicks directly while
+  `pointer_locked()` is active, and stops repainting the hidden Dock on bottom-edge mouse motion.
+- No new package dependencies.
+
 ## 0.26.2 — 2026-11-21
 
 - **Multi-monitor across hybrid/dual GPUs (AMD + NVIDIA, [#3](https://github.com/Zumka1991/feather-de/issues/3)):**

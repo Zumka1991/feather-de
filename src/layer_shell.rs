@@ -144,7 +144,14 @@ impl FeatherCompositor {
         if self.shell.layers.is_empty() {
             return None;
         }
-        self.layer_under(&[Layer::Overlay, Layer::Top], px, py).map(|(surface, _)| surface)
+        let covered = crate::render::top_window_on(&self.windows, self.monitor_at(px, py))
+            .is_some_and(|w| w.fullscreen);
+        let front: &[Layer] = if covered {
+            &[Layer::Overlay]
+        } else {
+            &[Layer::Overlay, Layer::Top]
+        };
+        self.layer_under(front, px, py).map(|(surface, _)| surface)
     }
 
     /// Pointer press at the top level: gives or takes back an on-demand layer's keyboard

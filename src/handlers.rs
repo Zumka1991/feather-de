@@ -166,6 +166,16 @@ impl FeatherCompositor {
         self.sync_window_scale(idx);
         self.windows[idx].fullscreen = was;
         self.windows[idx].fullscreen_on(on, r);
+        if on {
+            if self.shell.dock_menu.is_some() {
+                self.shell.close_menus();
+            }
+            self.shell.clear_dock_hover();
+            if crate::theme::dock_autohide() && !self.shell.dock_hidden {
+                self.shell.dock_hidden = true;
+                self.animations.set_dock_hidden(true);
+            }
+        }
         let space = self.windows[idx].space;
         if space == crate::scratch::SCRATCH_SPACE {
             self.scratch.invalidate();
