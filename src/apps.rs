@@ -72,6 +72,8 @@ pub struct AppEntry {
     pub pinned_in_dock: bool,
     /// Always draw the procedural icon: a .desktop theme icon must not replace it
     pub own_icon: bool,
+    /// Declared `Categories=Game;` in its `.desktop` entry (excluding store launchers)
+    pub is_game: bool,
 }
 
 impl AppEntry {
@@ -93,6 +95,7 @@ impl AppEntry {
             action,
             pinned_in_dock: pinned,
             own_icon: false,
+            is_game: false,
         }
     }
 
@@ -462,6 +465,7 @@ impl AppRegistry {
             let mut exec = None;
             let mut icon_name = None;
             let mut wm_class = None;
+            let mut is_game = false;
             let mut no_display = false;
             let mut in_desktop_entry = false;
 
@@ -495,6 +499,10 @@ impl AppRegistry {
                     icon_name = Some(v.trim().to_string());
                 } else if let Some(v) = line.strip_prefix("StartupWMClass=") {
                     wm_class = Some(v.trim().to_string());
+                } else if let Some(v) = line.strip_prefix("Categories=") {
+                    if v.split(';').any(|c| c.trim().eq_ignore_ascii_case("Game")) {
+                        is_game = true;
+                    }
                 } else if line == "NoDisplay=true" || line == "Hidden=true" {
                     no_display = true;
                 }
@@ -517,6 +525,7 @@ impl AppRegistry {
                 action: AppAction::Exec(cmd),
                 pinned_in_dock: false,
                 own_icon: false,
+                is_game: is_game && !crate::game_mode::is_launcher_app_id(&stem),
             };
 
             // Same program as a pinned/known entry: enrich it (icon, WM class) instead of
@@ -750,7 +759,42 @@ pub fn spawn_wayland_app(cmd_line: &str, wayland_socket: &str) -> Option<i32> {
         line = larvis_browser_command(&line, std::path::Path::new(&profile));
     }
 
-    let mut command = Command::new("sh");
+    // Isolate each launched app (and all its early-forked Zygote/GPU/Wine children) in its own
+    // `app.slice` transient `.scope` when user systemd is up. Snap and Flatpak create their own.
+    let use_systemd_scope = std::env::var_os("FEATHER_LARVIS_PROFILE").is_none()
+        && std::env::var_os("FEATHER_DEBUG_INPUT_ONLY").is_none()
+        && std::env::var_os("FEATHER_DEBUG_CHECK").is_none()
+        && std::env::var_os("FEATHER_DEBUG_OPEN").is_none()
+        && std::env::var_os("FEATHER_DEBUG_SCREENSHOT").is_none()
+        && std::env::var_os("XDG_RUNTIME_DIR")
+            .is_some_and(|d| Path::new(&d).join("systemd/private").exists())
+        && Path::new("/usr/bin/systemd-run").is_file()
+        && !line.contains("systemd-run")
+        && !line.starts_with("/snap/bin/")
+        && !line.contains(" /snap/bin/")
+        && !line.starts_with("snap ")
+        && !line.starts_with("flatpak ");
+
+    let mut command = if use_systemd_scope {
+        let mut c = Command::new("/usr/bin/systemd-run");
+        c.args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--slice=app.slice",
+            "--",
+            "sh",
+            "-c",
+            "c=$FEATHER_LAUNCH_CMD; unset FEATHER_LAUNCH_CMD; eval \"$c\"",
+        ])
+        .env("FEATHER_LAUNCH_CMD", &line);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(&line);
+        c
+    };
     if let Some((theme, size)) = CURSOR_ENV.lock().unwrap().clone() {
         command.env("XCURSOR_THEME", theme).env("XCURSOR_SIZE", size.to_string());
     }
@@ -762,8 +806,6 @@ pub fn spawn_wayland_app(cmd_line: &str, wayland_socket: &str) -> Option<i32> {
     }
     let region_locale = feather_ui::scale::region().locale_code();
     command
-        .arg("-c")
-        .arg(&line)
         .env("PATH", enriched_path)
         .env("WAYLAND_DISPLAY", wayland_socket)
         .env("XDG_SESSION_TYPE", "wayland")

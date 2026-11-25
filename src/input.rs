@@ -1237,6 +1237,7 @@ impl FeatherCompositor {
                 if let Some(top) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
                     was_scratch = top.space == crate::scratch::SCRATCH_SPACE;
                     top.minimized = true;
+                    top.auto_minimized = false;
                     self.shell.dock_dirty = true;
                 }
                 if was_scratch {
@@ -1418,14 +1419,33 @@ impl FeatherCompositor {
     fn switcher_commit(&mut self) {
         // Resolve through a live window: unknown-app group ids and registry indices can
         // change while Alt is held. A closed selection must never launch an application.
-        let target=self.shell.switcher.as_ref().and_then(|sw|sw.items.get(sw.selected))
-            .and_then(|item| self.windows.iter().find(|w|w.mapped && w.id==item.window_id))
-            .map(|w|self.app_key(w));
+        let selected_id = self
+            .shell
+            .switcher
+            .as_ref()
+            .and_then(|sw| sw.items.get(sw.selected))
+            .map(|item| item.window_id);
+        let target = selected_id
+            .and_then(|id| self.windows.iter().find(|w| w.mapped && w.id == id))
+            .map(|w| self.app_key(w));
         if self.shell.switcher.take().is_some() {
             self.consume_held_switcher_modifiers();
-            self.pointer_focus_dirty=true;self.needs_redraw=true;
-            if let Some(key)=target {self.unfocus_desktop();self.activate_app(key);}
-            else {self.refresh_focus();}
+            self.pointer_focus_dirty = true;
+            self.needs_redraw = true;
+            if let Some(key) = target {
+                if let Some(id) = selected_id {
+                    if let Some(w) = self.windows.iter_mut().find(|w| w.mapped && w.id == id && w.minimized) {
+                        w.minimized = false;
+                        w.auto_minimized = false;
+                        w.space = self.spaces.current;
+                        w.off_space = false;
+                    }
+                }
+                self.unfocus_desktop();
+                self.activate_app(key);
+            } else {
+                self.refresh_focus();
+            }
         }
     }
 
@@ -2270,6 +2290,7 @@ impl FeatherCompositor {
                 crate::window::TrafficButton::Minimize => {
                     let was_scratch = self.windows[idx].space == crate::scratch::SCRATCH_SPACE;
                     self.windows[idx].minimized = true;
+                    self.windows[idx].auto_minimized = false;
                     self.shell.dock_dirty = true;
                     if was_scratch {
                         let ids = self.scratch_tiled();

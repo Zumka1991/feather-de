@@ -22,6 +22,7 @@ mod brightness;
 mod gtk_theme;
 mod gtk_shell;
 mod debug_checks;
+mod game_mode;
 use feather_ui::cpu_profile;
 mod drm_backend;
 mod monitors;
@@ -325,6 +326,7 @@ pub struct FeatherCompositor {
     /// The pointer rests on this window's green button: its menu opens when the timer fires
     pub green_hover: Option<(u64, smithay::reexports::calloop::RegistrationToken)>,
     pub window_memory: crate::window_memory::WindowMemory,
+    pub game_mode: crate::game_mode::GameMode,
     pub disk_search: crate::spotlight::DiskSearch,
     pub clip_history: crate::clipboard::ClipHistory,
     /// At login, start again the programs that were open at the end of the last session
@@ -408,8 +410,14 @@ impl FeatherCompositor {
     /// The topmost visible window is active; only Wayland windows receive keyboard focus.
     pub fn refresh_focus(&mut self) {
         self.cancel_key_repeat();
+        for w in &mut self.windows {
+            if !w.minimized {
+                w.auto_minimized = false;
+            }
+        }
         self.scratch_sync();
         self.space_layout_sync();
+        self.auto_minimize_displaced_fullscreen();
         self.sync_pip_topbar();
         let top = self.windows.iter().rposition(|w| w.is_visible() && !w.pip_ghost && !self.auxiliary_game_window(w));
         // The desktop keeps the keyboard until another window comes to the front
@@ -442,6 +450,131 @@ impl FeatherCompositor {
         self.sync_appmenu_focus();
         self.api_sync();
         self.foreign_sync();
+        self.sync_game_mode();
+    }
+
+    /// When focus moves to another application on the same display and desktop, a displaced
+    /// fullscreen window is minimized automatically (keeping its `Alt+Tab` MRU slot via
+    /// `auto_minimized`) so a 4K 3D game does not keep compositing and blurring behind maximized
+    /// desktop apps. Managed `Tile`/`Tape` columns exit fullscreen back into their tile instead.
+    fn auto_minimize_displaced_fullscreen(&mut self) {
+        if !crate::game_mode::game_mode_enabled()
+            || self.lock.active
+            || self.shell.scratch_open
+            || self.mission_open()
+            || self.shell.desktop.focused
+        {
+            return;
+        }
+        let candidates: Vec<usize> = self
+            .windows
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| {
+                w.is_visible()
+                    && w.fullscreen
+                    && !w.larvis
+                    && !w.pip
+                    && w.space != crate::scratch::SCRATCH_SPACE
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for fs_idx in candidates {
+            let r = self.window_monitor(fs_idx);
+            let Some(top_id) = crate::render::top_window_on(&self.windows, r).map(|w| w.id) else {
+                continue;
+            };
+            if top_id == self.windows[fs_idx].id {
+                continue;
+            }
+            let Some(top_idx) = self.windows.iter().position(|w| w.id == top_id) else {
+                continue;
+            };
+            if self.windows[top_idx].space != self.windows[fs_idx].space
+                || self.windows[top_idx].larvis
+                || self.app_key(&self.windows[top_idx]) == self.app_key(&self.windows[fs_idx])
+            {
+                continue;
+            }
+            let is_child = self.windows[top_idx]
+                .toplevel()
+                .and_then(|t| t.parent())
+                .is_some_and(|p| Some(&p) == self.windows[fs_idx].wl_surface());
+            if is_child {
+                continue;
+            }
+            if self.windows[fs_idx].managed_layout {
+                self.set_window_fullscreen(fs_idx, false, r);
+            } else {
+                self.windows[fs_idx].minimized = true;
+                self.windows[fs_idx].auto_minimized = true;
+                self.shell.dock_dirty = true;
+            }
+        }
+    }
+
+    pub fn is_game_window(&self, w: &ManagedWindow) -> bool {
+        let aux = self.auxiliary_game_window(w);
+        if aux || w.is_builtin() || w.larvis || w.pip {
+            return false;
+        }
+        let desktop_is_game = match self.app_key(w) {
+            AppKey::App(i) => self.app_registry.apps.get(i).is_some_and(|a| a.is_game),
+            AppKey::Window(_) => false,
+        };
+        let xwayland = w.wl_surface().is_some_and(crate::xwayland::is_xwayland_surface);
+        let pointer_constrained = self
+            .active_constraint
+            .as_ref()
+            .is_some_and(|c| Some(&c.surface) == w.wl_surface());
+        crate::game_mode::classify_game_window(
+            &w.app_id,
+            &w.title,
+            w.fullscreen,
+            xwayland,
+            desktop_is_game,
+            pointer_constrained,
+            w.is_builtin(),
+            w.larvis,
+            w.pip,
+            aux,
+        )
+    }
+
+    pub fn sync_game_mode(&mut self) {
+        if self.debug_input_only || self.larvis_desktop {
+            return;
+        }
+        let enabled = crate::game_mode::game_mode_enabled();
+        let any_game = enabled && self.windows.iter().any(|w| w.mapped && self.is_game_window(w));
+        let mut samples = Vec::new();
+        if any_game {
+            for w in &self.windows {
+                if !w.mapped || w.larvis || w.is_builtin() || self.auxiliary_game_window(w) {
+                    continue;
+                }
+                let xwayland = w.wl_surface().is_some_and(crate::xwayland::is_xwayland_surface);
+                let wl_client_pid = w.wl_surface().and_then(crate::handlers::surface_client_pid);
+                samples.push(crate::game_mode::WindowSample {
+                    id: w.id,
+                    wl_client_pid,
+                    xwayland,
+                    fullscreen: w.fullscreen,
+                    minimized: w.minimized,
+                    visible: w.is_visible(),
+                    focused: w.activated && w.is_visible(),
+                    is_game: self.is_game_window(w),
+                    app_id: w.app_id.clone(),
+                    title: w.title.clone(),
+                });
+            }
+        }
+        self.game_mode.sync(crate::game_mode::Snapshot {
+            enabled,
+            x11_display: crate::xwayland::display(),
+            satellite_pid: self.xwayland.as_ref().and_then(|x| x.running_pid),
+            windows: samples,
+        });
     }
 
     pub fn modal_keyboard_wanted(&self) -> bool {
@@ -753,13 +886,14 @@ impl FeatherCompositor {
     /// Apps in most-recently-used order for Alt+Tab
     pub fn switcher_items(&self) -> Vec<SwitcherItem> {
         let mut items: Vec<SwitcherItem> = Vec::new();
-        // Shown windows first (top of the stack = most recent, any desktop), then minimized
+        // Shown windows first (top of the stack = most recent, any desktop), including
+        // fullscreen games auto-minimized on focus loss, then explicitly minimized windows.
         let order = self
             .windows
             .iter()
             .rev()
-            .filter(|w| w.mapped && !w.larvis && !w.minimized && !self.auxiliary_game_window(w))
-            .chain(self.windows.iter().rev().filter(|w| w.mapped && !w.larvis && w.minimized && !self.auxiliary_game_window(w)));
+            .filter(|w| w.mapped && !w.larvis && (!w.minimized || w.auto_minimized) && !self.auxiliary_game_window(w))
+            .chain(self.windows.iter().rev().filter(|w| w.mapped && !w.larvis && w.minimized && !w.auto_minimized && !self.auxiliary_game_window(w)));
         for w in order {
             let key = self.app_key(w);
             if items.iter().any(|i| i.key == key) {
@@ -880,14 +1014,31 @@ impl FeatherCompositor {
                 self.reveal_window_space(id);
             }
         }
-        let all_minimized = ids
+        // Restore any fullscreen windows of this app that were auto-minimized on focus loss
+        for w in &mut self.windows {
+            if ids.contains(&w.id) && w.minimized && w.auto_minimized {
+                w.minimized = false;
+                w.auto_minimized = false;
+                w.space = self.spaces.current;
+                w.off_space = false;
+            }
+        }
+        let real_ids: Vec<u64> = self
+            .windows
+            .iter()
+            .filter(|w| ids.contains(&w.id) && !self.auxiliary_game_window(w))
+            .map(|w| w.id)
+            .collect();
+        let check_ids = if real_ids.is_empty() { &ids } else { &real_ids };
+        let all_minimized = check_ids
             .iter()
             .all(|id| self.windows.iter().any(|w| w.id == *id && w.minimized));
         if all_minimized {
             // Restore only the most recent one, like clicking a Dock icon on macOS
-            if let Some(&id) = ids.last() {
+            if let Some(&id) = check_ids.last() {
                 if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {
                     w.minimized = false;
+                    w.auto_minimized = false;
                     w.space = self.spaces.current;
                     w.off_space = false;
                 }
@@ -961,6 +1112,7 @@ impl FeatherCompositor {
             dock_size: crate::theme::dock_icon(),
             dock_autohide: crate::theme::dock_autohide(),
             dock_minimize_to_app: crate::theme::dock_minimize_to_app(),
+            game_mode: crate::game_mode::game_mode_enabled(),
             dock_edge: crate::theme::dock_edge(),
             gtk_theme: self.gtk_theme,
             do_not_disturb: self.shell.dnd_enabled,
@@ -2322,6 +2474,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     crate::theme::set_dock_icon(saved.dock_size);
     crate::theme::set_dock_autohide(saved.dock_autohide);
     crate::theme::set_dock_minimize_to_app(saved.dock_minimize_to_app);
+    crate::game_mode::set_game_mode_enabled(saved.game_mode);
     crate::theme::set_dock_edge(saved.dock_edge);
     let mut winit_loop = None;
     let mut drm_info = None;
@@ -2463,8 +2616,10 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         {
             Ok(client) => {
                 if let Ok(credentials) = client.get_credentials(&state.display_handle) {
+                    let cs = client.get_data::<ClientState>().unwrap();
+                    cs.pid.store(credentials.pid as u32, std::sync::atomic::Ordering::Relaxed);
                     if state.xwayland.as_ref().and_then(|x| x.running_pid) == Some(credentials.pid as u32) {
-                        client.get_data::<ClientState>().unwrap().xwayland.store(true, std::sync::atomic::Ordering::Relaxed);
+                        cs.xwayland.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -2656,6 +2811,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         active_drag: None,
         green_hover: None,
         window_memory: crate::window_memory::WindowMemory::load(),
+        game_mode: crate::game_mode::GameMode::default(),
         disk_search: crate::spotlight::DiskSearch::new(&event_loop.handle())?,
         clip_history: crate::clipboard::ClipHistory::new(saved.clipboard_history, &event_loop.handle())?,
         restore_session: saved.restore_session,
@@ -3403,6 +3559,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
 
+    state.game_mode.shutdown();
     // Logout: our programs run in sessions of their own and would outlive us
     let ended = feather_ui::process::end_sessions(Duration::from_millis(1500));
     tracing::info!("Выход: завершено программ сеанса: {ended}");

@@ -408,6 +408,30 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             assert_eq!(front(s),ids[0],"clicking an Alt+Tab icon must activate the clicked window");
             eprintln!("[feather-switcher-check] pointer hover ignored / manual click selects: ok");
         })?;
+        at(state,5050,|s| {
+            let ids=fixture(s,&[("fixture.telegram",0,false),("fixture.chrome",0,false),("steam_app_default",0,false),("steam_app_default",0,false)]);
+            // ids[2] = Proton auxiliary window ("Окно Wayland"), ids[3] = fullscreen World of Warcraft
+            s.windows[2].title="Окно Wayland".into();
+            s.windows[3].title="World of Warcraft".into();
+            let r=s.window_monitor(3);
+            s.set_window_fullscreen(3,true,r);
+            s.refresh_focus();
+            assert_eq!(front(s),ids[3]);
+            // Alt+Tab from fullscreen WoW to Chrome auto-minimizes WoW while keeping its #2 MRU slot
+            begin(s);finish(s);
+            assert_eq!(front(s),ids[1],"Alt+Tab from fullscreen game must focus Chrome");
+            let wow=s.windows.iter().find(|w|w.id==ids[3]).unwrap();
+            assert!(wow.minimized && wow.auto_minimized && wow.fullscreen,"displaced fullscreen game must auto-minimize");
+            let items=s.switcher_items();
+            assert_eq!(items[0].window_id,ids[1]);
+            assert_eq!(items[1].window_id,ids[3],"auto-minimized fullscreen game must keep MRU slot #2 ahead of older windows");
+            // Single Alt+Tab returns straight back into fullscreen WoW even with Proton's auxiliary window present
+            begin(s);finish(s);
+            assert_eq!(front(s),ids[3],"single Alt+Tab must return to fullscreen game");
+            let wow=s.windows.iter().find(|w|w.id==ids[3]).unwrap();
+            assert!(!wow.minimized && !wow.auto_minimized && wow.fullscreen,"game must restore straight into fullscreen");
+            eprintln!("[feather-switcher-check] fullscreen game auto-minimize & MRU restore: ok");
+        })?;
         at(state,5200,|s| {
             fixture(s,&[("builtin.about",0,false),("builtin.monitor",0,false),("builtin.settings",0,false)]);
             begin(s);

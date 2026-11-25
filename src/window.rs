@@ -316,6 +316,9 @@ pub struct ManagedWindow {
     pub client_shadow: bool,
     pub activated: bool,
     pub minimized: bool,
+    /// Minimized automatically when focus left a fullscreen window on the same display;
+    /// keeps its recent slot in `Alt+Tab` so a single `Alt+Tab` returns straight to the game.
+    pub auto_minimized: bool,
     pub maximized: bool,
     pub fullscreen: bool,
     pub saved_rect: Option<(i32, i32, i32, i32)>,
@@ -497,6 +500,7 @@ impl ManagedWindow {
             client_shadow: false,
             activated: false,
             minimized: false,
+            auto_minimized: false,
             space: 0,
             off_space: false,
             larvis: false,
@@ -565,6 +569,7 @@ impl ManagedWindow {
             client_shadow: false,
             activated: false,
             minimized: false,
+            auto_minimized: false,
             space: 0,
             off_space: false,
             larvis: false,

@@ -193,6 +193,7 @@ pub enum Action {
     DockEdge(crate::theme::DockEdge),
     DockAutohide,
     DockMinimizeToApp,
+    GameMode,
     WallpaperTheme(WallpaperTheme),
     WallpaperImage(Option<crate::wallpaper::ImageSource>),
     WallpaperFit(crate::wallpaper::Fit),
@@ -1662,6 +1663,16 @@ impl Panel {
                 l.end();
                 l.footer("Выключение экрана и сон всегда требуют пароль при возвращении.");
                 l.footer(if c.direct && c.power_ready {"После пробуждения экран блокируется автоматически. Видео в видимом окне может отложить действия по простою."} else if c.direct {"Служба питания недоступна. Блокировка работает; автоматический сон пока недоступен."} else {"В оконном режиме гаснет только окно Пёрышка. Сон компьютера доступен в прямой сессии DRM."});
+                l.header("Производительность и игры");
+                l.begin();
+                l.row(
+                    52.0,
+                    "Игровой режим и экономия фона",
+                    "Приоритет активной игре и ограничение ресурсов неактивных программ".into(),
+                    Style::Toggle(crate::game_mode::game_mode_enabled()),
+                    Some(Action::GameMode),
+                );
+                l.end();
             }
             Page::Notifications => {
                 l.hero(Page::Notifications);
@@ -4095,6 +4106,12 @@ impl crate::FeatherCompositor {
                 crate::theme::set_dock_minimize_to_app(on);
                 self.dock_model_dirty = true;
                 self.shell.dock_dirty = true;
+                self.save_settings();
+            }
+            Action::GameMode => {
+                let on = !crate::game_mode::game_mode_enabled();
+                crate::game_mode::set_game_mode_enabled(on);
+                self.sync_game_mode();
                 self.save_settings();
             }
             Action::HotCorner(i) => {

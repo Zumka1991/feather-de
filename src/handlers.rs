@@ -68,6 +68,15 @@ use crate::{
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     pub xwayland: std::sync::atomic::AtomicBool,
+    pub pid: std::sync::atomic::AtomicU32,
+}
+
+pub fn surface_client_pid(surface: &WlSurface) -> Option<u32> {
+    use smithay::reexports::wayland_server::Resource;
+    surface
+        .client()
+        .and_then(|c| c.get_data::<ClientState>().map(|s| s.pid.load(std::sync::atomic::Ordering::Relaxed)))
+        .filter(|&p| p > 0)
 }
 
 impl ClientData for ClientState {
@@ -559,6 +568,7 @@ impl XdgShellHandler for FeatherCompositor {
 impl FeatherCompositor {
     pub fn minimize_window(&mut self, idx: usize) {
         self.windows[idx].minimized = true;
+        self.windows[idx].auto_minimized = false;
         self.shell.dock_dirty = true;
         self.shell.topbar_dirty = true;
         self.refresh_focus();

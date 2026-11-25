@@ -9,6 +9,14 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.5 — 2026-11-25
+
+- **Game Mode & Background Resource Optimizer (locked 60 FPS on `Alt+Tab` out of heavy games, automatic background game mute, and opaque window occlusion culling):**
+  - Switching away from a fullscreen game (e.g. 4K World of Warcraft under Proton/XWayland) via `Alt+Tab` now automatically minimizes the displaced game while keeping its `#2` MRU slot for instant 1-tap `Alt+Tab` return, mutes its PipeWire playback stream while minimized (unmuting immediately on return with zero latency buildup), and throttles its cgroup scope with 5 ms micro-slices (`cpu.max = "750 5000"`) so GPU load drops from 100% to under 5% without dropping online game TCP connections.
+  - Conversely, while a game is actively focused, its `.scope` gets top CPU priority (`cpu.weight = 1000`) while idle background apps in `app.slice` drop to `SCHED_IDLE` + capped CPU — automatically exempting active voice chat / media streams (including sibling Chromium/Electron GPU & video-decoder scopes) and VPN tunnels.
+  - Maximized and floating windows completely covered by an opaque front window are now culled from both GL composition and Liquid Glass blur invalidation and drop from 60 Hz to 1 Hz `wl_surface.frame` callbacks, making the whole desktop snappier even outside games.
+  - Configurable via *System Settings → Lock Screen & Energy Saver → Game Mode & Background Saver* (enabled by default). No new package dependencies.
+
 ## 0.26.4 — 2026-11-25
 
 - **Minimize windows into their application icon in the Dock (enabled by default):** minimized

@@ -583,6 +583,143 @@ fn hash_surface_tree(surface: &WlSurface, h: &mut impl std::hash::Hasher) {
     );
 }
 
+fn window_opaque_rects(
+    win: &ManagedWindow,
+    visual: crate::animation::Visual,
+) -> Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>> {
+    use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
+    use smithay::utils::{Logical, Point, Rectangle, Transform};
+    if !visual.identity() || win.minimized || win.pip_ghost {
+        return Vec::new();
+    }
+    let Some(surface) = win.wl_surface() else {
+        return Vec::new();
+    };
+    let mut raw: Vec<Rectangle<i32, Logical>> = Vec::new();
+    with_surface_tree_downward(
+        surface,
+        win.surface_origin(),
+        |_, states, loc: &Point<i32, Logical>| {
+            if let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() {
+                let data = data.lock().unwrap();
+                if let Some(view) = data.view() {
+                    return TraversalAction::DoChildren(*loc + view.offset);
+                }
+            }
+            TraversalAction::SkipChildren
+        },
+        |_, states, loc: &Point<i32, Logical>| {
+            if let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() {
+                let data = data.lock().unwrap();
+                if data.buffer_transform() == Transform::Normal {
+                    if let Some(regions) = data.opaque_regions() {
+                        for r in regions {
+                            if !r.is_empty() {
+                                raw.push(Rectangle::new(*loc + r.loc, r.size));
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        |_, _, _| true,
+    );
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    if win.has_titlebar() && win.width > 0 {
+        raw.push(Rectangle::new(
+            (win.x, win.y).into(),
+            (win.width, crate::theme::TITLEBAR_HEIGHT).into(),
+        ));
+    }
+    clip_opaque_rounded_corners(
+        raw,
+        win.x,
+        win.y,
+        win.width,
+        win.total_height(),
+        !win.maximized && !win.fullscreen && (win.has_titlebar() || !win.client_shadow),
+    )
+}
+
+fn clip_opaque_rounded_corners(
+    rects: Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    round: bool,
+) -> Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>> {
+    use smithay::utils::{Logical, Rectangle};
+    // Clip to the logical frame so stale oversize surface geometry never claims extra coverage
+    let frame = Rectangle::<i32, Logical>::new((x, y).into(), (w.max(0), h.max(0)).into());
+    let clipped: Vec<Rectangle<i32, Logical>> = rects
+        .into_iter()
+        .filter_map(|r| r.intersection(frame))
+        .filter(|r| !r.is_empty())
+        .collect();
+    if !round {
+        return clipped;
+    }
+    let cr = (crate::theme::WINDOW_CORNER_RADIUS.ceil() as i32 + 2).min(w / 2).min(h / 2);
+    if cr <= 0 {
+        return clipped;
+    }
+    let corners = [
+        Rectangle::new((x, y).into(), (cr, cr).into()),
+        Rectangle::new((x + w - cr, y).into(), (cr, cr).into()),
+        Rectangle::new((x, y + h - cr).into(), (cr, cr).into()),
+        Rectangle::new((x + w - cr, y + h - cr).into(), (cr, cr).into()),
+    ];
+    clipped
+        .into_iter()
+        .flat_map(|r| r.subtract_rects(corners))
+        .filter(|r| !r.is_empty())
+        .collect()
+}
+
+fn rect_fully_occluded(
+    bounds: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    opaque: &[smithay::utils::Rectangle<i32, smithay::utils::Logical>],
+) -> bool {
+    !bounds.is_empty() && !opaque.is_empty() && bounds.subtract_rects(opaque.iter().copied()).is_empty()
+}
+
+fn window_occluded_by(
+    win: &ManagedWindow,
+    visual: crate::animation::Visual,
+    with_shadow: bool,
+    has_tile_preview: bool,
+    opaque: &[smithay::utils::Rectangle<i32, smithay::utils::Logical>],
+) -> bool {
+    use smithay::utils::{Logical, Rectangle};
+    if opaque.is_empty() || !visual.identity() || has_tile_preview {
+        return false;
+    }
+    if let Some(surface) = win.wl_surface() {
+        if PopupManager::popups_for_surface(surface).next().is_some() {
+            return false;
+        }
+    }
+    let pad = if with_shadow && win.draws_shadow() {
+        crate::theme::SHADOW_PAD
+    } else {
+        0
+    };
+    let mut bounds = Rectangle::<i32, Logical>::new(
+        (win.x - pad, win.y - pad).into(),
+        ((win.width + pad * 2).max(0), (win.total_height() + pad * 2).max(0)).into(),
+    );
+    if let Some(surface) = win.wl_surface() {
+        let surf_bbox = smithay::desktop::utils::bbox_from_surface_tree(surface, win.surface_origin());
+        if !surf_bbox.is_empty() {
+            bounds = bounds.merge(surf_bbox);
+        }
+    }
+    rect_fully_occluded(bounds, opaque)
+}
+
 fn build_world_snap(
     shell: &MacShell,
     windows: &[ManagedWindow],
@@ -635,6 +772,7 @@ fn build_world_snap(
     let sx = l0_size.0 as f64 / view.w.max(1) as f64;
     let sy = l0_size.1 as f64 / view.h.max(1) as f64;
     let mut win_snaps = Vec::with_capacity(windows.len());
+    let mut opaque_front: Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>> = Vec::new();
     for win in scene_windows_front_to_back(windows) {
         let v = animations.window(win);
         if !animations.draws_window(win)
@@ -648,6 +786,9 @@ fn build_world_snap(
                 .intersection(view)
                     == 0)
         {
+            continue;
+        }
+        if window_occluded_by(win, v, false, false, &opaque_front) {
             continue;
         }
         // In the blur pass we skip window shadows (`!blur_pass`), only padding slightly for CSD/popups
@@ -713,6 +854,7 @@ fn build_world_snap(
         {
             break;
         }
+        opaque_front.extend(window_opaque_rects(win, v));
     }
 
     crate::glass::WorldSnap {
@@ -822,6 +964,7 @@ pub(crate) fn build_world_scene(
 
     let backdrop = animations.scratch_progress().clamp(0.0, 1.0);
     let mut backdrop_due = backdrop > 0.0;
+    let mut opaque_front: Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>> = Vec::new();
     for win in scene_windows_front_to_back(windows) {
         // Everything below the Подложка's windows is seen through its backdrop
         if backdrop_due && win.space != crate::scratch::SCRATCH_SPACE {
@@ -842,6 +985,14 @@ pub(crate) fn build_world_scene(
             continue;
         }
         let visual = animations.window(win);
+        let has_preview = !blur_pass
+            && shell
+                .tile_preview
+                .target
+                .is_some_and(|(id, frame, _)| id == win.id && frame.intersection(view) > 0);
+        if window_occluded_by(win, visual, !blur_pass, has_preview, &opaque_front) {
+            continue;
+        }
         push_window(&mut out, renderer, win, visual, scale, rounded, !blur_pass);
         drawn.push(win.id);
         if !blur_pass {
@@ -869,6 +1020,7 @@ pub(crate) fn build_world_scene(
             // Nothing below a fullscreen window is visible
             return out;
         }
+        opaque_front.extend(window_opaque_rects(win, visual));
     }
 
     if backdrop_due {
@@ -2528,5 +2680,55 @@ mod tests {
         let top = top_window_on(&windows, view).expect("game window must be found");
         assert_eq!(top.id, 1);
         assert!(top.fullscreen);
+    }
+
+    #[test]
+    fn opaque_occlusion_culls_maximized_and_tiled_but_preserves_rounded_corners() {
+        use smithay::utils::{Logical, Rectangle};
+        // 1. Maximized window (no rounded corners) completely occludes an identical maximized window
+        let max_opaque = clip_opaque_rounded_corners(
+            vec![Rectangle::<i32, Logical>::new((0, 24).into(), (1920, 982).into())],
+            0,
+            24,
+            1920,
+            982,
+            false,
+        );
+        let lower_max = Rectangle::<i32, Logical>::new((0, 24).into(), (1920, 982).into());
+        assert!(rect_fully_occluded(lower_max, &max_opaque));
+
+        // 2. Two side-by-side tiled halves together occlude a smaller centered window behind them
+        let left = clip_opaque_rounded_corners(
+            vec![Rectangle::new((0, 24).into(), (960, 982).into())],
+            0,
+            24,
+            960,
+            982,
+            true,
+        );
+        let right = clip_opaque_rounded_corners(
+            vec![Rectangle::new((960, 24).into(), (960, 982).into())],
+            960,
+            24,
+            960,
+            982,
+            true,
+        );
+        let mut combined = left;
+        combined.extend(right);
+        let inner = Rectangle::new((500, 200).into(), (800, 500).into());
+        assert!(rect_fully_occluded(inner, &combined));
+
+        // 3. A floating rounded-corner window must NOT claim to occlude the corners of an identically-sized window
+        let rounded_front = clip_opaque_rounded_corners(
+            vec![Rectangle::new((200, 150).into(), (800, 600).into())],
+            200,
+            150,
+            800,
+            600,
+            true,
+        );
+        let identical_lower = Rectangle::new((200, 150).into(), (800, 600).into());
+        assert!(!rect_fully_occluded(identical_lower, &rounded_front));
     }
 }
