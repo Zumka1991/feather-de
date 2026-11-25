@@ -18,7 +18,7 @@ use crate::icons::{draw_icon, IconCache};
 use crate::text::FontSystem;
 use crate::theme::{
     appearance, draw_control_center_icon, draw_feather_logo, draw_glass_panel, draw_search_icon,
-    draw_wifi_icon, fill_circle, fill_rounded_rect, palette, rgba,
+    draw_wifi_icon, fill_circle, fill_rounded_rect, palette, rgba, stroke_circle,
     stroke_line, stroke_rounded_rect, to_phys, ui_scale, with_alpha, Appearance, WallpaperTheme,
     DOCK_BOTTOM_MARGIN, DOCK_ICON_GAP, DOCK_PAD_X, DOCK_PAD_Y, DOCK_RADIUS, dock_icon,
     TOP_BAR_HEIGHT,
@@ -591,6 +591,8 @@ pub struct DockItem {
     pub icon: AppIcon,
     /// Open windows of the app (dots under the icon, up to three)
     pub windows: u8,
+    /// Minimized windows of the app (shown as amber ring dots under the icon)
+    pub minimized: u8,
     /// Kept in the Dock by the user (left part, reorderable)
     pub pinned: bool,
 }
@@ -602,6 +604,9 @@ pub enum DockMenuAction {
     KeepInDock,
     RemoveFromDock,
     ToggleDockLock,
+    ToggleMinimizeToApp,
+    RestoreAllWindows,
+    DockSettings,
     Quit,
     /// Raise this window of the app (window list in the menu)
     Window(u64),
@@ -1075,6 +1080,7 @@ pub struct MacShell {
     pub dock_dirty: bool,
     pub dock_zoom_enabled: bool,
     dock_items: Vec<DockItem>,
+    window_dock_targets: Vec<(u64, DockTarget)>,
     dock_cursor_x: Option<f32>,
     /// Keep the icon under the pointer still when a minimized tile is added/removed.
     dock_anchor: Option<(DockTarget, f32)>,
@@ -1260,6 +1266,7 @@ impl MacShell {
             dock_dirty: true,
             dock_zoom_enabled: true,
             dock_items: Vec::new(),
+            window_dock_targets: Vec::new(),
             dock_cursor_x: None,
             dock_anchor: None,
             dock_slots: Vec::new(),
@@ -2067,11 +2074,30 @@ impl MacShell {
         }
     }
 
+    pub fn set_window_dock_targets(&mut self, targets: Vec<(u64, DockTarget)>) {
+        self.window_dock_targets = targets;
+    }
+
     /// Global icon destination for minimizing; layout is updated before animation sampling.
     pub fn minimized_target(&self, id: u64) -> R {
-        self.dock_slots.iter().find(|s| s.target == DockTarget::Minimized(id))
-            .map(|s| self.dock_global_rect(R::new(s.x, s.y, s.size, s.size)))
-            .unwrap_or_else(|| R::new(self.screen_w as f32 * 0.5 - 24.0, self.screen_h as f32 - 64.0, 48.0, 48.0))
+        let slot = self
+            .dock_slots
+            .iter()
+            .find(|s| s.target == DockTarget::Minimized(id))
+            .or_else(|| {
+                let app_target = self
+                    .window_dock_targets
+                    .iter()
+                    .find(|(wid, _)| *wid == id)
+                    .map(|(_, t)| *t)?;
+                self.dock_slots.iter().find(|s| s.target == app_target)
+            });
+        if let Some(s) = slot {
+            let (ox, oy) = self.dock_shown_origin();
+            let b = self.dock_map().rect(R::new(s.x, s.y, s.size, s.size));
+            return R::new(b.x + ox, b.y + oy, b.w, b.h);
+        }
+        R::new(self.screen_w as f32 * 0.5 - 24.0, self.screen_h as f32 - 64.0, 48.0, 48.0)
     }
 
     /// Crop cached transparent margins before GPU animation, limiting output damage.
@@ -3913,11 +3939,32 @@ impl MacShell {
                 }
 
                 for (i, (slot, item)) in slots.iter().zip(items.iter()).enumerate() {
-                    let n = item.windows.min(3) as f32;
-                    for k in 0..n as usize {
+                    let total_dots = item.windows.min(3) as usize;
+                    let vis_dots = if item.minimized == 0 {
+                        total_dots
+                    } else if item.minimized >= item.windows {
+                        0
+                    } else {
+                        total_dots - (item.minimized as usize).min(total_dots.saturating_sub(1)).max(1)
+                    };
+                    let n = total_dots as f32;
+                    for k in 0..total_dots {
                         let dx = (k as f32 - (n - 1.0) * 0.5) * 5.0 * dot_scale;
                         let (cx, cy) = map.point(slot.x + slot.size * 0.5 + dx, bar.y + bar.h - (3.0 * dot_scale).max(1.5));
-                        fill_circle(&mut pm, cx, cy, 1.9 * dot_scale, p.dock_dot);
+                        let r_dot = 1.9 * dot_scale;
+                        if k < vis_dots {
+                            fill_circle(&mut pm, cx, cy, r_dot, p.dock_dot);
+                        } else {
+                            fill_circle(&mut pm, cx, cy, r_dot, with_alpha(p.dock_dot_minimized, 0.28));
+                            stroke_circle(
+                                &mut pm,
+                                cx,
+                                cy,
+                                (r_dot - 0.45 * dot_scale).max(0.9),
+                                (0.95 * dot_scale).max(0.8),
+                                p.dock_dot_minimized,
+                            );
+                        }
                     }
                     // The bouncing icon is drawn as its own GPU element above the Dock
                     if bouncing == Some(item.target) || on_gpu.contains(&i) {
@@ -4692,7 +4739,7 @@ mod dock_tests {
     use std::time::Duration;
 
     fn item(target: DockTarget) -> DockItem {
-        DockItem { target, label: "Test".into(), icon: AppIcon { kind: crate::apps::IconKind::Terminal, name: None }, windows: 1, pinned: true }
+        DockItem { target, label: "Test".into(), icon: AppIcon { kind: crate::apps::IconKind::Terminal, name: None }, windows: 1, minimized: 0, pinned: true }
     }
 
     fn switch_items(n: u64) -> Vec<SwitcherItem> {
@@ -5484,7 +5531,7 @@ mod appmenu_tests {
     #[test]
     fn hidden_dock_takes_no_clicks_and_its_buffer_follows_the_icon_size() {
         let mut shell = MacShell::new(1440, 900);
-        shell.set_dock_items(vec![DockItem { target: DockTarget::Trash, label: "Корзина".into(), icon: AppIcon { kind: crate::apps::IconKind::TrashEmpty, name: None }, windows: 0, pinned: false }]);
+        shell.set_dock_items(vec![DockItem { target: DockTarget::Trash, label: "Корзина".into(), icon: AppIcon { kind: crate::apps::IconKind::TrashEmpty, name: None }, windows: 0, minimized: 0, pinned: false }]);
         let mut fonts = FontSystem::new();
         shell.ensure_dock_rendered(&mut fonts);
         let (x, y) = (720.0, 900.0 - 30.0);
@@ -5511,7 +5558,7 @@ mod appmenu_tests {
             crate::theme::with_render_settings(1.0, Appearance::Light, || {
                 let mut fonts = FontSystem::new();
                 let mut shell = MacShell::new(1440, 900);
-                let items = (0..6).map(|i| DockItem { target: DockTarget::App(i), label: format!("Программа {i}"), icon: AppIcon { kind: crate::apps::IconKind::GenericApp, name: None }, windows: (i % 3) as u8, pinned: true }).chain(std::iter::once(DockItem { target: DockTarget::Trash, label: "Корзина".into(), icon: AppIcon { kind: crate::apps::IconKind::TrashEmpty, name: None }, windows: 0, pinned: false })).collect();
+                let items = (0..6).map(|i| DockItem { target: DockTarget::App(i), label: format!("Программа {i}"), icon: AppIcon { kind: crate::apps::IconKind::GenericApp, name: None }, windows: (i % 3) as u8, minimized: u8::from(i == 4), pinned: true }).chain(std::iter::once(DockItem { target: DockTarget::Trash, label: "Корзина".into(), icon: AppIcon { kind: crate::apps::IconKind::TrashEmpty, name: None }, windows: 0, minimized: 0, pinned: false })).collect();
                 shell.set_dock_items(items);
                 shell.ensure_dock_rendered(&mut fonts);
                 let (x, y, size) = shell.dock_slot_global(DockTarget::App(2)).unwrap();
@@ -5816,6 +5863,7 @@ mod cc_backdrop_tests {
                 label: "Файлы".into(),
                 icon: AppIcon { kind: IconKind::Finder, name: None },
                 windows: 1,
+                minimized: 0,
                 pinned: true,
             }]);
             shell.ensure_dock_rendered(&mut fonts);
@@ -5850,6 +5898,70 @@ mod cc_backdrop_tests {
                     .is_some()
             );
             assert!(shell.toasts.is_empty());
+        });
+    }
+
+    #[test]
+    fn minimize_into_app_icon_targets_app_slot_and_paints_amber_dots() {
+        let mut fonts = FontSystem::new();
+        crate::theme::with_render_settings(2.0, Appearance::Dark, || {
+            let mut shell = MacShell::new(1440, 900);
+            shell.set_dock_items(vec![
+                DockItem {
+                    target: DockTarget::App(0),
+                    label: "Файлы".into(),
+                    icon: AppIcon { kind: IconKind::Finder, name: None },
+                    windows: 2,
+                    minimized: 1,
+                    pinned: true,
+                },
+                DockItem {
+                    target: DockTarget::App(1),
+                    label: "Терминал".into(),
+                    icon: AppIcon { kind: IconKind::Terminal, name: None },
+                    windows: 1,
+                    minimized: 1,
+                    pinned: true,
+                },
+                DockItem {
+                    target: DockTarget::Trash,
+                    label: "Корзина".into(),
+                    icon: AppIcon { kind: IconKind::TrashEmpty, name: None },
+                    windows: 0,
+                    minimized: 0,
+                    pinned: false,
+                },
+            ]);
+            shell.set_window_dock_targets(vec![(42, DockTarget::App(1))]);
+            shell.ensure_dock_rendered(&mut fonts);
+
+            let (sx, sy, sz) = shell.dock_slot_global(DockTarget::App(1)).unwrap();
+            let dest = shell.minimized_target(42);
+            assert_eq!((dest.x, dest.y, dest.w, dest.h), (sx, sy, sz, sz));
+
+            // Even while auto-hide hides the Dock, the spring flies to the icon's shown slot
+            shell.dock_hidden = true;
+            assert_eq!(shell.minimized_target(42), dest);
+            shell.dock_hidden = false;
+
+            // Check that the right-hand dot under App(0) (1 visible + 1 minimized) is amber (`R > B + 60`)
+            let mut buf = Vec::new();
+            let _ = shell.dock_buffer.render().draw(|d| {
+                buf.extend_from_slice(d);
+                Ok::<_, ()>(Vec::new())
+            });
+            let pw = to_phys(shell.dock_buf_w) as usize;
+            let slot0 = &shell.dock_slots[0];
+            let cy = ((shell.dock_bar.y + shell.dock_bar.h - 3.0) * 2.0).round() as usize;
+            let cx_vis = ((slot0.x + slot0.size * 0.5 - 2.5) * 2.0).round() as usize;
+            let cx_min = ((slot0.x + slot0.size * 0.5 + 2.5) * 2.0).round() as usize;
+            // Edge of the amber ring (`cx_min + 2`) vs centre of the white visible dot (`cx_vis`)
+            let idx_vis = (cy * pw + cx_vis) * 4;
+            let idx_ring = (cy * pw + cx_min + 2) * 4;
+            let (vr, _vg, vb) = (buf[idx_vis], buf[idx_vis + 1], buf[idx_vis + 2]);
+            let (mr, _mg, mb) = (buf[idx_ring], buf[idx_ring + 1], buf[idx_ring + 2]);
+            assert!((vr as i32 - vb as i32).abs() <= 8, "visible dot must be neutral: {vr},{vb}");
+            assert!(mr as i32 > mb as i32 + 60, "minimized ring dot must be amber: r={mr}, b={mb}");
         });
     }
 }

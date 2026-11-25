@@ -676,6 +676,7 @@ impl FeatherCompositor {
                 label: app.name.clone(),
                 icon: AppIcon::of(app),
                 windows: keys.iter().filter(|(k, _)| *k == AppKey::App(i)).count().min(255) as u8,
+                minimized: keys.iter().filter(|(k, w)| *k == AppKey::App(i) && w.minimized).count().min(255) as u8,
                 pinned: true,
             });
         }
@@ -703,19 +704,23 @@ impl FeatherCompositor {
                 label,
                 icon,
                 windows: keys.iter().filter(|(k, _)| k == key).count().min(255) as u8,
+                minimized: keys.iter().filter(|(k, w)| k == key && w.minimized).count().min(255) as u8,
                 pinned: false,
             });
         }
 
-        for (key, w) in keys.iter().filter(|(_, w)| w.minimized) {
-            let (_, icon) = self.icon_for_key(*key, Some(w));
-            items.push(DockItem {
-                target: DockTarget::Minimized(w.id),
-                label: w.title.clone(),
-                icon,
-                windows: 0,
-                pinned: false,
-            });
+        if !crate::theme::dock_minimize_to_app() {
+            for (key, w) in keys.iter().filter(|(_, w)| w.minimized) {
+                let (_, icon) = self.icon_for_key(*key, Some(w));
+                items.push(DockItem {
+                    target: DockTarget::Minimized(w.id),
+                    label: w.title.clone(),
+                    icon,
+                    windows: 0,
+                    minimized: 0,
+                    pinned: false,
+                });
+            }
         }
         items.push(DockItem {
             target: DockTarget::Trash,
@@ -725,9 +730,24 @@ impl FeatherCompositor {
                 name: None,
             },
             windows: 0,
+            minimized: 0,
             pinned: false,
         });
         items
+    }
+
+    pub fn build_window_dock_targets(&self) -> Vec<(u64, DockTarget)> {
+        self.windows
+            .iter()
+            .filter(|w| w.mapped && !w.larvis && !self.auxiliary_game_window(w))
+            .map(|w| {
+                let target = match self.app_key(w) {
+                    AppKey::App(i) => DockTarget::App(i),
+                    AppKey::Window(rep_id) => DockTarget::Window(rep_id),
+                };
+                (w.id, target)
+            })
+            .collect()
     }
 
     /// Apps in most-recently-used order for Alt+Tab
@@ -940,6 +960,7 @@ impl FeatherCompositor {
             dock_locked: self.dock_locked,
             dock_size: crate::theme::dock_icon(),
             dock_autohide: crate::theme::dock_autohide(),
+            dock_minimize_to_app: crate::theme::dock_minimize_to_app(),
             dock_edge: crate::theme::dock_edge(),
             gtk_theme: self.gtk_theme,
             do_not_disturb: self.shell.dnd_enabled,
@@ -1176,7 +1197,9 @@ impl FeatherCompositor {
             if self.trash_full {
                 items.push(("Очистить Корзину…".to_string(), DockMenuAction::EmptyTrash));
             }
+            items.push(self.dock_minimize_menu_item());
             items.push(self.dock_lock_menu_item());
+            items.push(("Настройки Dock…".to_string(), DockMenuAction::DockSettings));
             self.shell.open_dock_menu(target, anchor, items, &mut self.fonts);
             return;
         }
@@ -1189,10 +1212,17 @@ impl FeatherCompositor {
         let mut items = Vec::new();
         if let (true, Some(key)) = (running, key) {
             let front = self.windows.iter().rev().find(|w| w.is_visible()).map(|w| w.id);
+            let mut min_count = 0usize;
             for w in self.windows.iter().filter(|w| w.mapped && self.app_key(w) == key) {
+                if w.minimized {
+                    min_count += 1;
+                }
                 let mark = if Some(w.id) == front { "✓ " } else if w.minimized { "◇ " } else { "    " };
                 let title = if w.title.is_empty() { "Без названия".to_string() } else { w.title.chars().take(48).collect() };
                 items.push((format!("{mark}{title}"), DockMenuAction::Window(w.id)));
+            }
+            if min_count >= 2 && !matches!(target, DockTarget::Minimized(_)) {
+                items.push(("Развернуть все окна".to_string(), DockMenuAction::RestoreAllWindows));
             }
         } else {
             items.push(("Открыть".to_string(), DockMenuAction::Open));
@@ -1219,6 +1249,18 @@ impl FeatherCompositor {
         self.shell.open_dock_menu(target, anchor, items, &mut self.fonts);
     }
 
+    fn dock_minimize_menu_item(&self) -> (String, DockMenuAction) {
+        (
+            if crate::theme::dock_minimize_to_app() {
+                "✓ Сворачивать в значок программы"
+            } else {
+                "Сворачивать в значок программы"
+            }
+            .into(),
+            DockMenuAction::ToggleMinimizeToApp,
+        )
+    }
+
     fn dock_lock_menu_item(&self) -> (String, DockMenuAction) {
         (
             if self.dock_locked { "✓ Заблокировать Dock" } else { "Заблокировать Dock" }.into(),
@@ -1228,7 +1270,11 @@ impl FeatherCompositor {
 
     pub fn open_dock_background_menu(&mut self) {
         self.shell.open_context_menu(
-            vec![self.dock_lock_menu_item()],
+            vec![
+                self.dock_minimize_menu_item(),
+                self.dock_lock_menu_item(),
+                ("Настройки Dock…".to_string(), DockMenuAction::DockSettings),
+            ],
             self.pointer_location.x as f32,
             self.pointer_location.y as f32,
             &mut self.fonts,
@@ -1426,7 +1472,12 @@ impl FeatherCompositor {
                 }
                 let action = match target {
                     DockTarget::App(i) => ShellClickAction::ActivateApp(i),
-                    DockTarget::Window(id) => ShellClickAction::ActivateWindow(id),
+                    DockTarget::Window(_) => {
+                        if let Some(key) = self.dock_target_key(target) {
+                            self.activate_app(key);
+                        }
+                        return;
+                    }
                     DockTarget::Minimized(id) => ShellClickAction::RestoreMinimizedWindow(id),
                     DockTarget::Trash => {
                         self.open_trash();
@@ -1448,6 +1499,42 @@ impl FeatherCompositor {
                 DockMenuAction::ToggleDockLock => {
                     self.dock_locked = !self.dock_locked;
                     self.save_settings();
+                }
+                DockMenuAction::ToggleMinimizeToApp => {
+                    let on = !crate::theme::dock_minimize_to_app();
+                    crate::theme::set_dock_minimize_to_app(on);
+                    self.dock_model_dirty = true;
+                    self.shell.dock_dirty = true;
+                    self.mark_builtin_windows_dirty();
+                    self.needs_redraw = true;
+                    self.save_settings();
+                }
+                DockMenuAction::RestoreAllWindows => {
+                    if let Some(key) = self.dock_target_key(target) {
+                        self.leave_larvis_desktop();
+                        let ids: Vec<u64> = self
+                            .windows
+                            .iter()
+                            .filter(|w| w.mapped && w.minimized && self.app_key(w) == key)
+                            .map(|w| w.id)
+                            .collect();
+                        for id in ids {
+                            if let Some(pos) = self.windows.iter().position(|w| w.id == id) {
+                                let mut win = self.windows.remove(pos);
+                                win.minimized = false;
+                                win.space = self.spaces.current;
+                                win.off_space = false;
+                                self.windows.push(win);
+                            }
+                        }
+                        self.shell.dock_dirty = true;
+                        self.refresh_focus();
+                    }
+                }
+                DockMenuAction::DockSettings => {
+                    self.execute_shell_action(ShellClickAction::OpenSettingsPage(
+                        crate::system_settings::Page::Desktop,
+                    ));
                 }
                 DockMenuAction::Open => {
                     if let Some(key) = self.dock_target_key(target) {
@@ -2234,6 +2321,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     // Before the shell exists: its Dock buffer is sized from these
     crate::theme::set_dock_icon(saved.dock_size);
     crate::theme::set_dock_autohide(saved.dock_autohide);
+    crate::theme::set_dock_minimize_to_app(saved.dock_minimize_to_app);
     crate::theme::set_dock_edge(saved.dock_edge);
     let mut winit_loop = None;
     let mut drm_info = None;

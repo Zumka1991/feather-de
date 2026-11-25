@@ -9,6 +9,16 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.4 — 2026-11-25
+
+- **Minimize windows into their application icon in the Dock (enabled by default):** minimized
+  windows no longer duplicate full-sized icons next to the Trash — they smoothly fly into the
+  application's own Dock icon and show an amber ring indicator dot underneath (matching the yellow
+  minimize traffic light). Can be toggled anytime in *System Settings → Desktop & Dock* or from the
+  Dock background / Trash right-click menu; apps with multiple minimized windows also get a quick
+  "Restore All Windows" item on right-click.
+- No new package dependencies.
+
 ## 0.26.3 — 2026-11-25
 
 - **Fullscreen games no longer trigger the hidden Dock context menu on right-click:** fixed an

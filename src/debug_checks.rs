@@ -1938,8 +1938,9 @@ pub fn install(state: &mut FeatherCompositor) -> Result<(), Box<dyn std::error::
             s.debug_pointer_button(0x111, true);
             s.debug_pointer_button(0x111, false);
             let m = s.shell.dock_menu.as_ref().expect("right-click Dock background");
-            assert_eq!(m.items.len(), 1);
-            assert_eq!(m.items[0].1, DockMenuAction::ToggleDockLock);
+            assert!(m.items.iter().any(|(_, a)| *a == DockMenuAction::ToggleMinimizeToApp));
+            assert!(m.items.iter().any(|(_, a)| *a == DockMenuAction::ToggleDockLock));
+            assert!(m.items.iter().any(|(_, a)| *a == DockMenuAction::DockSettings));
             s.shell.close_menus();
             s.debug_pointer_motion(20.0, 90.0);
         })?;

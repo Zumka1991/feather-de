@@ -1562,6 +1562,8 @@ impl FeatherCompositor {
                 self.dock_model_dirty = false;
                 let items = self.build_dock_items();
                 self.shell.set_dock_items(items);
+                self.shell
+                    .set_window_dock_targets(self.build_window_dock_targets());
                 let ctx = self.build_menu_context();
                 self.shell.set_menu_context(ctx);
             }

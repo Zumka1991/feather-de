@@ -46,6 +46,7 @@ computer — [DRM_CHECKLIST.md](DRM_CHECKLIST.md).
 - [x] Dock: "Files" keeps the chosen position instead of being forced to first place — [DOCK_PINS.md](DOCK_PINS.md)
 - [x] Dock: centring of slightly rectangular icons (the terminal is no longer pressed to the top edge)
 - [x] Dock: the launch bounce is always upward, including left and right placement — [DOCK_RESIZE_CHECKS.md](DOCK_RESIZE_CHECKS.md#направление-отскока-2026-10-26)
+- [x] Dock: minimize windows directly into the application icon (enabled by default, with an amber ring indicator dot under the icon, "Restore All Windows" on right-click, and a toggle in System Settings and the Dock context menu)
 - [x] Dock: automatic proportional shrinking of a huge Dock to the screen size (at rest and with magnification on hover, at the bottom and at the side without running into the menu bar), as in macOS
 - [x] Wallpapers: fixed `No such file or directory` after a rebuild inside a running session — [WALLPAPERS.md](WALLPAPERS.md)
 - [x] Input fields — Ctrl+A, cursor anywhere, selection (`feather_ui::input::TextInput`) — [TEXT_INPUTS.md](TEXT_INPUTS.md)

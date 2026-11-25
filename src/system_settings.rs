@@ -192,6 +192,7 @@ pub enum Action {
     GtkTheme,
     DockEdge(crate::theme::DockEdge),
     DockAutohide,
+    DockMinimizeToApp,
     WallpaperTheme(WallpaperTheme),
     WallpaperImage(Option<crate::wallpaper::ImageSource>),
     WallpaperFit(crate::wallpaper::Fit),
@@ -2743,6 +2744,13 @@ impl Panel {
                 for (i, edge) in crate::theme::DockEdge::ALL.into_iter().enumerate() {
                     l.push(R::new(track.x + i as f32 * 96.0, track.y, 96.0, track.h), edge.label(), Style::Segment(crate::theme::dock_edge() == edge), Some(Action::DockEdge(edge)));
                 }
+                l.row(
+                    52.0,
+                    "Сворачивать окна в значок программы",
+                    "Без отдельных значков у Корзины; свёрнутые окна отмечены янтарной точкой".into(),
+                    Style::Toggle(crate::theme::dock_minimize_to_app()),
+                    Some(Action::DockMinimizeToApp),
+                );
                 l.row(52.0, "Автоматически скрывать Dock", "Появляется, когда указатель у нижнего края".into(), Style::Toggle(crate::theme::dock_autohide()), Some(Action::DockAutohide));
                 l.end();
                 l.header("Снимки экрана");
@@ -4080,6 +4088,13 @@ impl crate::FeatherCompositor {
                 self.animations.set_dock_hidden(on);
                 self.shell.desktop.invalidate();
                 self.refit_maximized_windows();
+                self.save_settings();
+            }
+            Action::DockMinimizeToApp => {
+                let on = !crate::theme::dock_minimize_to_app();
+                crate::theme::set_dock_minimize_to_app(on);
+                self.dock_model_dirty = true;
+                self.shell.dock_dirty = true;
                 self.save_settings();
             }
             Action::HotCorner(i) => {

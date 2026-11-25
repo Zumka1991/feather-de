@@ -1140,3 +1140,8 @@ Wi‑Fi-адаптер недоступен или заблокирован	The 
 Имя новой папки в «{}»	Name of the new folder in “{}”	Nombre de la nueva carpeta en «{}»	Name des neuen Ordners in „{}“	Nom du nouveau dossier dans « {} »	在“{}”中新建文件夹的名称
 Введите имя папки без символа /	Enter a folder name without “/”	Introduce un nombre de carpeta sin «/»	Ordnername ohne „/“ eingeben	Saisissez un nom de dossier sans « / »	请输入不含“/”的文件夹名称
 Создана папка «{}»	Created folder “{}”	Carpeta «{}» creada	Ordner „{}“ erstellt	Dossier « {} » créé	已创建文件夹“{}”
+Сворачивать окна в значок программы	Minimize Windows into Application Icon	Minimizar ventanas en el icono de la aplicación	Fenster hinter Programmsymbol im Dock ablegen	Réduire les fenêtres dans l’icône de l’application	将窗口最小化为应用程序图标
+Без отдельных значков у Корзины; свёрнутые окна отмечены янтарной точкой	Keeps minimized windows out of the Trash area and marks them with an amber dot	Sin iconos duplicados junto a la Papelera; las ventanas minimizadas se marcan en ámbar	Keine zusätzlichen Symbole neben dem Papierkorb; minimierte Fenster erhalten einen gelben Punkt	Sans icônes supplémentaires près de la Corbeille ; les fenêtres réduites sont marquées d’un point ambré	不在废纸篓旁重复显示图标；最小化窗口以琥珀色圆点标记
+Сворачивать в значок программы	Minimize into Application Icon	Minimizar en el icono de la aplicación	Hinter Programmsymbol ablegen	Réduire dans l’icône de l’application	最小化为应用程序图标
+Развернуть все окна	Restore All Windows	Restaurar todas las ventanas	Alle Fenster wiederherstellen	Restaurer toutes les fenêtres	恢复所有窗口
+Настройки Dock…	Dock Settings…	Ajustes del Dock…	Dock-Einstellungen…	Réglages du Dock…	程序坞设置…

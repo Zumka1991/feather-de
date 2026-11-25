@@ -378,6 +378,7 @@ pub struct Settings {
     pub dock_locked: bool,
     pub dock_size: f32,
     pub dock_autohide: bool,
+    pub dock_minimize_to_app: bool,
     pub dock_edge: crate::theme::DockEdge,
     pub gtk_theme: bool,
     pub do_not_disturb: bool,
@@ -440,6 +441,7 @@ impl Default for Settings {
             dock_locked: false,
             dock_size: 50.0,
             dock_autohide: false,
+            dock_minimize_to_app: true,
             dock_edge: Default::default(),
             gtk_theme: true,
             do_not_disturb: false,
@@ -747,6 +749,11 @@ impl Settings {
                         s.dock_autohide = v;
                     }
                 }
+                "dock_minimize_to_app" => {
+                    if let Ok(v) = v.parse() {
+                        s.dock_minimize_to_app = v;
+                    }
+                }
                 "do_not_disturb" => {
                     if let Ok(v) = v.parse() {
                         s.do_not_disturb = v;
@@ -873,7 +880,7 @@ impl Settings {
         text.push_str(&format!("dock_locked={}\n", self.dock_locked));
         text.push_str(&format!("do_not_disturb={}\n", self.do_not_disturb));
         text.push_str(&format!("xwayland_hidpi={}\n", self.xwayland_hidpi));
-        text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_edge={}\ngtk_theme={}\n", self.dock_size, self.dock_autohide, self.dock_edge.id(), self.gtk_theme));
+        text.push_str(&format!("dock_size={}\ndock_autohide={}\ndock_minimize_to_app={}\ndock_edge={}\ngtk_theme={}\n", self.dock_size, self.dock_autohide, self.dock_minimize_to_app, self.dock_edge.id(), self.gtk_theme));
         text.push_str(&format!("notify_sounds={}\ndnd_urgent={}\n", self.notify_sounds, self.dnd_urgent));
         text.push_str(&format!("alert_sounds={}\nalert_sound={}\nalert_volume={}\ninterface_sounds={}\nvolume_feedback={}\n",
             self.sounds.alerts,self.sounds.tone.id(),self.sounds.volume,self.sounds.interface,self.sounds.volume_feedback));
@@ -1149,8 +1156,10 @@ mod tests {
         assert_eq!(k.caps, Caps::Escape, "a chord leaves other Caps Lock jobs alone");
         s.dock_size = 64.0;
         s.dock_autohide = true;
+        s.dock_minimize_to_app = false;
         let back = Settings::parse(&s.text());
-        assert!(back.dock_size == 64.0 && back.dock_autohide);
+        assert!(back.dock_size == 64.0 && back.dock_autohide && !back.dock_minimize_to_app);
+        assert!(Settings::default().dock_minimize_to_app);
         s.dock_edge = crate::theme::DockEdge::Left;
         assert_eq!(Settings::parse(&s.text()).dock_edge, crate::theme::DockEdge::Left);
         assert_eq!(Settings::parse("dock_edge=top").dock_edge, crate::theme::DockEdge::Bottom);

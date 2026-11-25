@@ -20,6 +20,7 @@ pub const DOCK_SIZES: [f32; 3] = [40.0, 50.0, 64.0];
 
 static DOCK_ICON_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x4248_0000); // 50.0
 static DOCK_AUTOHIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DOCK_MINIMIZE_TO_APP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Resting size of a Dock icon (logical points)
 pub fn dock_icon() -> f32 {
@@ -33,6 +34,12 @@ pub fn dock_autohide() -> bool {
 }
 pub fn set_dock_autohide(on: bool) {
     DOCK_AUTOHIDE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn dock_minimize_to_app() -> bool {
+    DOCK_MINIMIZE_TO_APP.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub fn set_dock_minimize_to_app(on: bool) {
+    DOCK_MINIMIZE_TO_APP.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 /// Screen edge the Dock sits on
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -164,6 +171,7 @@ pub struct Palette {
     pub traffic_inactive: Color,
     pub traffic_inactive_edge: Color,
     pub dock_dot: Color,
+    pub dock_dot_minimized: Color,
     pub shadow_strength: f32,
 }
 
@@ -203,6 +211,7 @@ pub fn palette_for(app: Appearance) -> Palette {
             traffic_inactive: rgba(221, 221, 221, 255),
             traffic_inactive_edge: rgba(0, 0, 0, if hc { 70 } else { 30 }),
             dock_dot: rgba(0, 0, 0, if hc { 225 } else { 175 }),
+            dock_dot_minimized: rgba(214, 134, 6, if hc { 250 } else { 232 }),
             shadow_strength: 1.0,
         },
         Appearance::Dark => Palette {
@@ -229,6 +238,7 @@ pub fn palette_for(app: Appearance) -> Palette {
             traffic_inactive: rgba(78, 78, 80, 255),
             traffic_inactive_edge: rgba(0, 0, 0, if hc { 100 } else { 60 }),
             dock_dot: rgba(255, 255, 255, if hc { 245 } else { 200 }),
+            dock_dot_minimized: rgba(255, 198, 48, if hc { 255 } else { 238 }),
             shadow_strength: 1.6,
         },
     }
