@@ -656,6 +656,12 @@ impl FeatherCompositor {
         }
         self.needs_redraw = true;
     }
+    fn emit_typing_key_sound(&mut self, keycode: smithay::input::keyboard::Keycode, key_state: KeyState) {
+        let evdev = keycode.raw().saturating_sub(8);
+        let allowed = self.typing_sound_allowed();
+        let (profile, volume) = (self.keyboard_config.typing_profile, self.keyboard_config.typing_volume);
+        self.typing_sound.key_event(evdev, key_state == KeyState::Pressed, allowed, profile, volume);
+    }
     fn process_keyboard_key(&mut self,keycode:smithay::input::keyboard::Keycode,key_state:KeyState,time:u32){
         // Кольцо программ: детектор тапа Super видит каждую клавишу до любых ранних выходов
         let is_super = matches!(keycode.raw().saturating_sub(8), 125 | 126);
@@ -668,6 +674,7 @@ impl FeatherCompositor {
         {
             self.cancel_key_repeat();
             self.caps_switch_key(key_state, time);
+            self.emit_typing_key_sound(keycode, key_state);
             return;
         }
         if key_state == KeyState::Pressed {
@@ -685,6 +692,7 @@ impl FeatherCompositor {
                         if self.latched_modifiers.remove(&keycode) {
                             // Pressing an already-latched modifier unlatches it on release
                             self.modifier_used_while_held = true;
+                            self.emit_typing_key_sound(keycode, key_state);
                             return;
                         }
                         self.modifier_used_while_held = false;
@@ -698,6 +706,7 @@ impl FeatherCompositor {
                         && !self.capturing_shortcut()
                     {
                         self.latched_modifiers.insert(keycode);
+                        self.emit_typing_key_sound(keycode, key_state);
                         return;
                     }
                 }
@@ -1155,6 +1164,17 @@ impl FeatherCompositor {
         {
             self.close_ring();
         }
+        let silent_key_action = matches!(
+            &deferred,
+            Some(
+                KeyAction::Lock
+                    | KeyAction::Unlock
+                    | KeyAction::Auth(_)
+                    | KeyAction::Audio(_)
+                    | KeyAction::Screenshot { .. }
+                    | KeyAction::SwitchVt(_)
+            )
+        );
         match deferred {
             Some(KeyAction::Ring(key)) => self.ring_key(key),
             Some(KeyAction::Audio(key)) => {
@@ -1262,6 +1282,9 @@ impl FeatherCompositor {
                 }
             }
             None => {}
+        }
+        if !silent_key_action {
+            self.emit_typing_key_sound(keycode, key_state);
         }
         if is_super && self.has_visible_ghost_pip() {
             self.refresh_pointer_focus();
@@ -1643,6 +1666,14 @@ impl FeatherCompositor {
             self.pointer_focus_dirty = true;
             return false;
         }
+        if self.system_settings.typing_volume_drag.is_some() {
+            if let Some(action) = self.system_settings.typing_volume_motion(pos.x as f32) {
+                self.apply_system_setting(action);
+            }
+            self.mark_settings_dirty();
+            self.needs_redraw = true;
+            return false;
+        }
         if self.system_settings.audio_drag.is_some() {
             if let Some(action) = self.system_settings.audio_motion(pos.x as f32) {
                 self.apply_system_setting(action);
@@ -2010,6 +2041,12 @@ impl FeatherCompositor {
         if btn_state == ButtonState::Released {
             if button==BTN_LEFT {
                 if let Some(action) = self.system_settings.audio_release() { self.apply_system_setting(action); }
+                if self.system_settings.typing_volume_release().is_some() {
+                    self.save_settings();
+                    if self.keyboard_config.typing_volume > 0 {
+                        self.typing_sound.preview(self.keyboard_config.typing_profile, self.keyboard_config.typing_volume);
+                    }
+                }
                 if let Some(action)=self.shell.cc.release() {self.shell.overlay_dirty=true;self.execute_shell_action(action);}
                 self.desktop_release();
                 let _ = self.drop_shelf_release();
@@ -2530,6 +2567,8 @@ impl FeatherCompositor {
         self.pressed_buttons.clear();
         self.consumed_buttons.clear();
         self.system_settings.audio_drag = None;
+        self.system_settings.typing_volume_drag = None;
+        self.typing_sound.clear_held();
         let _ = self.drop_shelf_release();
         if let Some(DragOperation::ResizeWindow { win_id, .. }) = self.active_drag.take() {
             if let Some(win) = self.windows.iter().find(|w| w.id == win_id) { win.set_resizing(false); }

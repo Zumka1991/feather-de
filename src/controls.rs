@@ -607,7 +607,8 @@ pub(crate) fn parse_streams(json: &str, sinks: &[Sink]) -> Result<Vec<AudioStrea
     let mut result = Vec::new();
     for s in list.iter().take(64) {
         let props = &s["properties"];
-        if props["media.role"].as_str() == Some("event")
+        if props["media.role"].as_str().is_some_and(|r| r.eq_ignore_ascii_case("event"))
+            || props["node.name"].as_str() == Some("feather-typing-sound")
             || props["application.id"].as_str() == Some("org.PulseAudio.pavucontrol")
             || props["media.name"].as_str() == Some("Peak detect")
             || props["stream.monitor"].as_str() == Some("true")

@@ -10,6 +10,7 @@ mod tray;
 mod tray_icon;
 mod notifications;
 mod sounds;
+mod typing_sound;
 mod xwayland;
 mod x11_wm;
 mod gtk_menu;
@@ -368,6 +369,7 @@ pub struct FeatherCompositor {
     pub active_layout_name: String,
     pub active_layout_index: usize,
     pub keyboard_config: crate::settings::Keyboard,
+    pub typing_sound: crate::typing_sound::TypingSound,
     pub keybindings: crate::shortcuts::Bindings,
     pub key_repeat: crate::key_repeat::Repeat,
     pub sticky_keys: bool,
@@ -2837,6 +2839,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         active_layout_name: "EN".to_string(),
         active_layout_index: 0,
         keyboard_config: saved.keyboard.clone(),
+        typing_sound: Default::default(),
         keybindings: saved.keybindings.clone(),
         key_repeat: Default::default(),
         sticky_keys: saved.sticky_keys,
@@ -2883,6 +2886,7 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     state.start_wallpaper_cycle();
     state.system_worker=Some(crate::system_preferences::Worker::new(&state.loop_handle,saved.default_browser.clone(),saved.default_terminal.clone(),saved.default_file_manager.clone())?);
     state.refresh_input_source(0);
+    state.sync_typing_sound();
     crate::animation::set_speed(saved.animation_speed);
     crate::tray_icon::set_colored(saved.tray_colored_icons);
     state.animations.set_enabled(saved.animations,&state.windows,&state.shell);

@@ -95,6 +95,7 @@ pub enum Choice {
     AlertTone,
     NotifyDelivery(usize),
     CapsLock,
+    TypingProfile,
     Region,
     DisplayMode,
     StreamOutput(u32),
@@ -122,6 +123,7 @@ fn choice_options(choice: Choice, c: &Context<'_>) -> (Vec<String>, Option<usize
             None => (Vec::new(), None),
         },
         Choice::CapsLock => pick(&crate::settings::Caps::ALL, c.keyboard.caps, |k| k.label().into()),
+        Choice::TypingProfile => pick(&crate::typing_sound::TypingProfile::ALL, c.keyboard.typing_profile, |p| p.label().into()),
         Choice::Region => pick(&crate::theme::Region::ALL, crate::theme::region(), |r| r.label().into()),
         Choice::DisplayMode => pick(c.modes, c.current, Mode::label),
         Choice::StreamOutput(index) => {
@@ -239,6 +241,10 @@ pub enum Action {
     CapsLock,
     Typography,
     AppRing,
+    TypingSound,
+    TypingVolume(u8),
+    PreviewTypingSound,
+    TypingMuteGames,
     EditShortcut(crate::shortcuts::Action),
     ResetShortcuts,
     RepeatDelay(u32),
@@ -313,6 +319,7 @@ pub struct Panel {
     pub picker_scroll: f32,
     pub audio_drag: Option<(R, crate::controls::Control)>,
     pub audio_sent_volume: Option<f32>,
+    pub typing_volume_drag: Option<(R, u8)>,
 }
 pub struct Context<'a> {
     pub system: crate::system_preferences::State,
@@ -2008,6 +2015,52 @@ impl Panel {
                 l.row(52.0, "Кольцо программ", "Короткое нажатие Cmd (Super) без других клавиш".into(), Style::Toggle(c.keyboard.app_ring), kb.then_some(Action::AppRing));
                 l.end();
                 l.footer("Автоповтор применяется сразу во всех программах. В кольце программы выбирают стрелками, Tab, колесом, первой буквой или движением мыши; Enter или щелчок — перейти, Esc — закрыть. Типографская раскладка Ильи Бирмана: с правым Alt набираются типографские символы, с Shift + правый Alt — дополнительные.");
+                l.header("Озвучивание набора");
+                l.begin();
+                l.row(
+                    52.0,
+                    "Звук при наборе текста",
+                    "Тактильный ASMR-отклик клавиш при печати".into(),
+                    Style::Toggle(c.keyboard.typing_sound),
+                    Some(Action::TypingSound),
+                );
+                l.choice(
+                    48.0,
+                    "Звуковой профиль",
+                    String::new(),
+                    c.keyboard.typing_profile.label().into(),
+                    Some(Action::ChoiceMenu(Some(Choice::TypingProfile))),
+                );
+                let typing_vol = self.typing_volume_drag.map_or(c.keyboard.typing_volume, |(_, v)| v);
+                let r = l.row(
+                    88.0,
+                    "Громкость клавиш",
+                    format!("{} %", typing_vol),
+                    Style::Row,
+                    None,
+                );
+                l.push(
+                    R::new(r.x + 14.0, r.y + 52.0, r.w - 28.0, 26.0),
+                    "",
+                    Style::Volume((typing_vol as f32 / 100.0).clamp(0.0, 1.0)),
+                    Some(Action::TypingVolume(typing_vol)),
+                );
+                let r = l.row(44.0, "Прослушать профиль", String::new(), Style::Row, None);
+                l.push(
+                    right(r, 112.0, 26.0),
+                    "Прослушать",
+                    Style::Push(false),
+                    Some(Action::PreviewTypingSound),
+                );
+                l.row(
+                    52.0,
+                    "Отключать в играх",
+                    "Не озвучивать нажатия клавиш, когда активна игра".into(),
+                    Style::Toggle(c.keyboard.typing_mute_games),
+                    Some(Action::TypingMuteGames),
+                );
+                l.end();
+                l.footer("Чёткий мгновенный отклик на каждое нажатие клавиши. На экране блокировки и в полях ввода пароля звук выключен.");
                 l.header("Сочетания действий");
                 l.begin();
                 for action in crate::shortcuts::Action::ALL.iter().copied() {
@@ -2950,6 +3003,19 @@ impl Panel {
         self.audio_sent_volume = None;
         self.audio_drag.take().map(|(_, command)| Action::Audio(command))
     }
+    pub fn typing_volume_motion(&mut self, x: f32) -> Option<Action> {
+        let (rect, current) = self.typing_volume_drag.as_mut()?;
+        let t = ((x - rect.x - 10.0) / (rect.w - 20.0)).clamp(0.0, 1.0);
+        let next = (t * 100.0).round() as u8;
+        if *current == next {
+            return None;
+        }
+        *current = next;
+        Some(Action::TypingVolume(next))
+    }
+    pub fn typing_volume_release(&mut self) -> Option<u8> {
+        self.typing_volume_drag.take().map(|(_, v)| v)
+    }
     /// The control a click at the pointer would reach, if it does anything.
     fn hovered_index(&self, controls: &[Control], h: f32) -> Option<usize> {
         let (x, y) = self.pointer?;
@@ -2980,6 +3046,10 @@ impl Panel {
             (Style::Slider(_), Some(Action::AnimationSpeed(_))) => {
                 let t = ((x - control.rect.x - 10.0) / (control.rect.w - 20.0)).clamp(0.0, 1.0);
                 Some(Action::AnimationSpeed(crate::animation::slider_to_speed(t as f64)))
+            }
+            (Style::Volume(_), Some(Action::TypingVolume(_))) => {
+                let t = ((x - control.rect.x - 10.0) / (control.rect.w - 20.0)).clamp(0.0, 1.0);
+                Some(Action::TypingVolume((t * 100.0).round() as u8))
             }
             (Style::Volume(_), Some(Action::Audio(command))) => {
                 let value = ((x-control.rect.x-10.0)/(control.rect.w-20.0)).clamp(0.0, 1.0);
@@ -3663,6 +3733,23 @@ impl Panel {
 
 impl crate::FeatherCompositor {
     pub fn settings_control_press(&mut self, action: &Action, x: f32, y: f32, w: f32, h: f32) {
+        if let Action::TypingVolume(vol) = action {
+            if let Some(control) = self
+                .system_settings
+                .controls(w, h, &self.settings_context())
+                .into_iter()
+                .rev()
+                .find(|c| matches!(c.style, Style::Volume(_)) && c.rect.contains(x, y))
+            {
+                if let Some(win) = self.windows.iter().find(|w| w.app_id == "builtin.settings") {
+                    let r = control.rect;
+                    self.system_settings.typing_volume_drag = Some((
+                        R::new(r.x + win.x as f32, r.y + (win.y + win.titlebar_h()) as f32, r.w, r.h),
+                        *vol,
+                    ));
+                }
+            }
+        }
         if matches!(
             action,
             Action::Audio(
@@ -3760,6 +3847,13 @@ impl crate::FeatherCompositor {
                 let mut config = self.keyboard_config.clone();
                 config.caps = caps;
                 self.request_keyboard(config);
+            }
+            Choice::TypingProfile => {
+                let Some(&profile) = crate::typing_sound::TypingProfile::ALL.get(i) else { return };
+                self.keyboard_config.typing_profile = profile;
+                self.sync_typing_sound();
+                self.save_settings();
+                self.typing_sound.preview(profile, self.keyboard_config.typing_volume);
             }
             Choice::Region => {
                 let Some(&region) = crate::theme::Region::ALL.get(i) else { return };
@@ -3929,6 +4023,11 @@ impl crate::FeatherCompositor {
                 let mut config = config;
                 config.repeat_rate = self.keyboard_config.repeat_rate;
                 config.repeat_delay = self.keyboard_config.repeat_delay;
+                config.app_ring = self.keyboard_config.app_ring;
+                config.typing_sound = self.keyboard_config.typing_sound;
+                config.typing_profile = self.keyboard_config.typing_profile;
+                config.typing_volume = self.keyboard_config.typing_volume;
+                config.typing_mute_games = self.keyboard_config.typing_mute_games;
                 self.keyboard_config = config;
                 self.select_input_source(index);
                 self.save_settings();
@@ -4179,6 +4278,7 @@ impl crate::FeatherCompositor {
                 self.system_settings.wifi_target = None;
                 self.system_settings.wifi_password.clear();
                 self.system_settings.audio_drag = None;
+                self.system_settings.typing_volume_drag = None;
                 self.system_settings.page = page;
                 self.system_settings.adding = false;
                 self.system_settings.scroll = 0.0;
@@ -4660,6 +4760,37 @@ impl crate::FeatherCompositor {
             Action::AppRing => {
                 self.keyboard_config.app_ring = !self.keyboard_config.app_ring;
                 self.close_ring();
+                self.save_settings();
+            }
+            Action::TypingSound => {
+                self.keyboard_config.typing_sound = !self.keyboard_config.typing_sound;
+                self.sync_typing_sound();
+                self.save_settings();
+                if self.keyboard_config.typing_sound {
+                    self.typing_sound.preview(
+                        self.keyboard_config.typing_profile,
+                        self.keyboard_config.typing_volume,
+                    );
+                }
+            }
+            Action::TypingVolume(vol) => {
+                let clamped = vol.min(100);
+                if self.keyboard_config.typing_volume != clamped {
+                    self.keyboard_config.typing_volume = clamped;
+                    self.sync_typing_sound();
+                    if self.system_settings.typing_volume_drag.is_none() {
+                        self.save_settings();
+                    }
+                }
+            }
+            Action::PreviewTypingSound => {
+                self.typing_sound.preview(
+                    self.keyboard_config.typing_profile,
+                    self.keyboard_config.typing_volume,
+                );
+            }
+            Action::TypingMuteGames => {
+                self.keyboard_config.typing_mute_games = !self.keyboard_config.typing_mute_games;
                 self.save_settings();
             }
             Action::RepeatDelay(delay) => {
@@ -5432,6 +5563,8 @@ mod tests {
                     || {
                         let overlays = [
                             Panel { page: Page::Keyboard, adding: true, ..Default::default() },
+                            Panel { page: Page::Keyboard, scroll: 640.0, ..Default::default() },
+                            Panel { page: Page::Keyboard, scroll: 640.0, choice_menu: Some(Choice::TypingProfile), ..Default::default() },
                             Panel { page: Page::Defaults, apps_picker: Some(crate::system_preferences::DefaultKind::Browser), ..Default::default() },
                             Panel { page: Page::Defaults, autostart_picker: true, ..Default::default() },
                             Panel { page: Page::Privacy, privacy_picker: true, ..Default::default() },
@@ -5668,5 +5801,104 @@ mod tests {
         p.autostart_picker = false;
         p.apps_picker = Some(crate::system_preferences::DefaultKind::Browser);
         assert!(!p.scroll_by(40.0, 800.0, 540.0, &c));
+    }
+
+    #[test]
+    fn keyboard_typing_sound_controls_slider_and_profile_menu() {
+        let mut keyboard = Keyboard::default();
+        keyboard.typing_sound = true;
+        keyboard.typing_profile = crate::typing_sound::TypingProfile::Topre;
+        keyboard.typing_volume = 75;
+        let mode = Mode { width: 1920, height: 1080, refresh: 60000 };
+        let c = Context {
+            system: Default::default(),
+            pointer: Default::default(),
+            power: Default::default(),
+            power_ready: false,
+            pointer_managed: true,
+            keyboard: &keyboard,
+            active: 0,
+            animations: true,
+            dock_zoom: true,
+            restore_session: true,
+            battery: None,
+            clipboard_history: true,
+            scale: 1.0,
+            xwayland_hidpi: true,
+            display_name: "DP-1",
+            modes: std::slice::from_ref(&mode),
+            monitors: Vec::new(),
+            current: mode,
+            direct: false,
+            wallpaper: WallpaperTheme::for_appearance(Appearance::Light),
+            wallpaper_image: None,
+            wallpaper_prefs: Default::default(),
+            wallpaper_preview: Default::default(),
+            dnd: false,
+            dnd_schedule: None,
+            notify_sounds: true,
+            dnd_urgent: true,
+            sounds: Default::default(),
+            audio: Default::default(),
+            wifi: Default::default(),
+            bluetooth: Default::default(),
+            hot_corners: Default::default(),
+            night: Default::default(),
+            night_active: false,
+            notify_apps: &[],
+            sticky_keys: false,
+            screen_capture_policy: crate::file_portal::ScreenCapturePolicy::Ask,
+            screen_capture_cursor: true,
+            screen_capture_apps: &[],
+        };
+        let mut panel = Panel {
+            page: Page::Keyboard,
+            ..Default::default()
+        };
+        let all = panel.controls(800.0, 540.0, &c);
+        let toggle = all
+            .iter()
+            .find(|i| matches!(i.action, Some(Action::TypingSound)))
+            .expect("typing sound toggle missing");
+        panel.scroll = (toggle.rect.y - 120.0).max(0.0);
+
+        let scrolled = panel.controls(800.0, 540.0, &c);
+        assert!(scrolled.iter().any(|i| matches!(i.action, Some(Action::TypingMuteGames))));
+        assert!(scrolled.iter().any(|i| matches!(i.action, Some(Action::PreviewTypingSound))));
+
+        let vol_rect = scrolled
+            .iter()
+            .find(|i| matches!(i.action, Some(Action::TypingVolume(_))))
+            .expect("typing volume slider missing")
+            .rect;
+        for (frac, expected) in [(0.0, 0u8), (0.35, 35u8), (1.0, 100u8)] {
+            let hit = panel.hit(
+                vol_rect.x + 10.0 + (vol_rect.w - 20.0) * frac,
+                vol_rect.y + 10.0,
+                800.0,
+                540.0,
+                &c,
+            );
+            assert!(matches!(hit, Some(Action::TypingVolume(v)) if v == expected));
+        }
+
+        panel.typing_volume_drag = Some((vol_rect, 75));
+        assert!(matches!(
+            panel.typing_volume_motion(vol_rect.x + 10.0 + (vol_rect.w - 20.0) * 0.42),
+            Some(Action::TypingVolume(42))
+        ));
+        assert_eq!(panel.typing_volume_release(), Some(42));
+        assert!(panel.typing_volume_motion(vol_rect.x).is_none());
+
+        panel.choice_menu = Some(Choice::TypingProfile);
+        let menu_items: Vec<_> = panel
+            .controls(800.0, 540.0, &c)
+            .into_iter()
+            .filter_map(|i| match i.action {
+                Some(Action::SetChoice(Choice::TypingProfile, idx)) => Some((idx, i.label)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(menu_items.len(), crate::typing_sound::TypingProfile::ALL.len());
     }
 }

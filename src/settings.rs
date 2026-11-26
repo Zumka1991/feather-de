@@ -218,6 +218,13 @@ pub struct Keyboard {
     pub repeat_rate: u32,
     /// Короткий тап Cmd (Super) открывает кольцо программ
     pub app_ring: bool,
+    /// ASMR tactile switch sound while typing
+    pub typing_sound: bool,
+    pub typing_profile: crate::typing_sound::TypingProfile,
+    /// 0..=100 relative volume of typing keystrokes
+    pub typing_volume: u8,
+    /// Optional toggle to silence typing sounds while a game window is active
+    pub typing_mute_games: bool,
 }
 impl Default for Keyboard {
     fn default() -> Self {
@@ -229,6 +236,10 @@ impl Default for Keyboard {
             repeat_delay: 250,
             repeat_rate: 35,
             app_ring: true,
+            typing_sound: false,
+            typing_profile: crate::typing_sound::TypingProfile::default(),
+            typing_volume: 65,
+            typing_mute_games: false,
         }
     }
 }
@@ -803,6 +814,26 @@ impl Settings {
                 }
                 "keyboard_typography" => s.keyboard.typography = v == "true",
                 "keyboard_app_ring" => s.keyboard.app_ring = v != "false",
+                "keyboard_typing_sound" => {
+                    if let Ok(on) = v.parse() {
+                        s.keyboard.typing_sound = on;
+                    }
+                }
+                "keyboard_typing_profile" => {
+                    if let Some(p) = crate::typing_sound::TypingProfile::parse(v) {
+                        s.keyboard.typing_profile = p;
+                    }
+                }
+                "keyboard_typing_volume" => {
+                    if let Some(vol) = v.parse::<u8>().ok().filter(|v| *v <= 100) {
+                        s.keyboard.typing_volume = vol;
+                    }
+                }
+                "keyboard_typing_mute_games" => {
+                    if let Ok(on) = v.parse() {
+                        s.keyboard.typing_mute_games = on;
+                    }
+                }
                 "keyboard_repeat_delay" => {
                     if let Some(v) = v.parse().ok().filter(|v| REPEAT_DELAYS.contains(v)) {
                         s.keyboard.repeat_delay = v;
@@ -876,6 +907,13 @@ impl Settings {
             self.display.as_ref().map(|d|format!("display={};{};{};{}\n",d.name,d.mode.width,d.mode.height,d.mode.refresh)).unwrap_or_default());
         text.push_str(&format!("idle_lock_minutes={}\nidle_blank_minutes={}\nidle_suspend_minutes={}\n",self.power.lock,self.power.blank,self.power.suspend));
         text.push_str(&format!("keyboard_caps={}\nkeyboard_typography={}\nkeyboard_repeat_delay={}\nkeyboard_repeat_rate={}\nkeyboard_app_ring={}\n", self.keyboard.caps.id(), self.keyboard.typography, self.keyboard.repeat_delay, self.keyboard.repeat_rate, self.keyboard.app_ring));
+        text.push_str(&format!(
+            "keyboard_typing_sound={}\nkeyboard_typing_profile={}\nkeyboard_typing_volume={}\nkeyboard_typing_mute_games={}\n",
+            self.keyboard.typing_sound,
+            self.keyboard.typing_profile.id(),
+            self.keyboard.typing_volume,
+            self.keyboard.typing_mute_games,
+        ));
         for line in self.keybindings.lines() { text.push_str(&line); }
         text.push_str(&format!("animation_speed={}\n", self.animation_speed));
         text.push_str(&format!("tray_colored_icons={}\n", self.tray_colored_icons));
@@ -1068,6 +1106,30 @@ mod tests {
         assert_eq!(Settings::parse(&s.text()).sounds,s.sounds);
         assert_eq!(Settings::parse("alert_volume=101\nalert_volume=-1\nalert_volume=NaN\nalert_sound=../x\nalert_sounds=yes\ninterface_sounds=no\nvolume_feedback=1").sounds,crate::sounds::Preferences::default());
         assert_eq!(Settings::parse("alert_volume=0").sounds.volume,0);
+    }
+    #[test]
+    fn keyboard_typing_sound_preferences_round_trip_and_validate() {
+        let mut s = Settings::parse("");
+        assert!(!s.keyboard.typing_sound);
+        assert_eq!(s.keyboard.typing_profile, crate::typing_sound::TypingProfile::Oreo);
+        assert_eq!(s.keyboard.typing_volume, 65);
+        assert!(!s.keyboard.typing_mute_games);
+
+        s.keyboard.typing_sound = true;
+        s.keyboard.typing_profile = crate::typing_sound::TypingProfile::CrystalPurple;
+        s.keyboard.typing_volume = 85;
+        s.keyboard.typing_mute_games = true;
+        let restored = Settings::parse(&s.text());
+        assert!(restored.keyboard.typing_sound);
+        assert_eq!(restored.keyboard.typing_profile, crate::typing_sound::TypingProfile::CrystalPurple);
+        assert_eq!(restored.keyboard.typing_volume, 85);
+        assert!(restored.keyboard.typing_mute_games);
+
+        let bad = Settings::parse("keyboard_typing_volume=150\nkeyboard_typing_profile=unknown\nkeyboard_typing_sound=maybe\nkeyboard_typing_mute_games=2");
+        assert!(!bad.keyboard.typing_sound);
+        assert_eq!(bad.keyboard.typing_profile, crate::typing_sound::TypingProfile::Oreo);
+        assert_eq!(bad.keyboard.typing_volume, 65);
+        assert!(!bad.keyboard.typing_mute_games);
     }
     #[test]
     fn notification_preferences_round_trip_and_reject_bad_lines() {

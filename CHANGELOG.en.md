@@ -9,6 +9,13 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.6 — 2026-11-26
+
+- **ASMR Mechanical Keyboard Typing Sounds in *System Settings → Keyboard*:**
+  - Added a "Typing Sounds" section with 6 studio-recorded mechanical and Topre switch profiles (`Everglide Oreo`, `Crystal Purple`, `Topre Hybrid PBT`, `Cherry MX Brown PBT`, `Cherry MX Blue PBT`, and `Typewriter` — MIT Mechvibes / Tickeys, 48 kHz 16-bit PCM embedded in read-only `.rodata`, `0` bytes of extra heap `RssAnon`).
+  - Features a 24-voice polyphonic PipeWire mixer with subtle stereo key-column panning, sub-quantum finger-roll separation, wait-free SPSC delivery into PipeWire's RT thread (`buffer.requested()`, zero mutex contention), 120 s hot audio keepalive to avoid ALSA suspend lag, and automatic idle pause (`0 %` idle CPU).
+  - Includes a smooth volume slider (`0–100 %`), live "Preview" button, optional "Mute in Games" toggle (off by default), and automatic muting on lock screen, password dialogs, shortcut capture, and key auto-repeat without being muted by Do Not Disturb. No new package dependencies.
+
 ## 0.26.5 — 2026-11-25
 
 - **Game Mode & Background Resource Optimizer (locked 60 FPS on `Alt+Tab` out of heavy games, automatic background game mute, and opaque window occlusion culling):**

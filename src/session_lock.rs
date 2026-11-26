@@ -1492,6 +1492,7 @@ impl FeatherCompositor {
         self.refresh_focus();
         self.refresh_pointer_focus();
         tracing::info!("Сессия разблокирована");
+        self.warm_typing_sound();
         self.maybe_launch_autostart();
     }
 

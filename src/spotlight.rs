@@ -258,7 +258,7 @@ fn page_words(page: Page) -> &'static str {
         Page::Language => "перевод регион language region",
         Page::Network => "интернет wi-fi wifi вайфай vpn ethernet network",
         Page::Bluetooth => "блютуз наушники bluetooth",
-        Page::Keyboard => "раскладка сочетания клавиши автоповтор keyboard shortcuts layout",
+        Page::Keyboard => "раскладка сочетания клавиши автоповтор щелчки печать звук asmr keyboard shortcuts layout typing sound",
         Page::Pointer => "мышь трекпад курсор тачпад mouse trackpad cursor",
         Page::Displays => "монитор экран разрешение масштаб ночной яркость display monitor resolution scale night",
         Page::Desktop => "обои dock док углы wallpaper desktop",

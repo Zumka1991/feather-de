@@ -1,6 +1,6 @@
 [package]
 name = "feather-de"
-version = "0.26.5"
+version = "0.26.6"
 edition = "2021"
 description = "Пёрышко (Feather DE) — сверхбыстрое и легкое окружение рабочего стола для Wayland в стиле macOS на Rust"
 license = "GPL-3.0-or-later"
@@ -47,7 +47,7 @@ x11rb = { version = "0.13", default-features = false }
 zeroize = "1"
 libloading = "0.8"
 # Screen cast for OBS and browsers: the compositor streams monitor frames to PipeWire
-pipewire = { version = "0.10", features = ["v0_3_34"] }
+pipewire = { version = "0.10", features = ["v0_3_49"] }
 feather-api = { path = "crates/feather-api", default-features = false }
 
 [dev-dependencies]

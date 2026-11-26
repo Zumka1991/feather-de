@@ -110,6 +110,13 @@ Files: usr/share/feather-de/fonts/*
 Copyright: The Inter Project Authors; JetBrains s.r.o.; Google LLC
 License: OFL-1.1 or Apache-2.0
  See the *.copyright files in /usr/share/feather-de/fonts.
+
+Files: src/typing_packs.pcm
+Copyright: Mechvibes contributors (hainguyents13/mechvibes); Ying Dev (yingDev/Tickeys)
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files to deal in the Software
+ without restriction, subject to the MIT License notice.
 EOF
 gzip -9n -c "$ROOT_DIR/CHANGELOG.md" > "$DOC/changelog.gz" && rm -f "$DOC/CHANGELOG.md"
 

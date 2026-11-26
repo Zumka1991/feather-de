@@ -146,6 +146,7 @@ see the [verification order](LOCK_POWER.md#проверки). The overall accept
 - [x] Keyboard: key repeat (delay, rate), Caps Lock
 - [x] Keyboard: Caps Lock as a way in "Switch Language" (from forum feedback)
 - [x] Keyboard: Ilya Birman's typographic layout on the right Alt (`misc:typo`) — from the first feedback
+- [x] Keyboard: ASMR mechanical keyboard typing sounds on PipeWire (`src/typing_sound.rs`: 6 studio-recorded switch profiles — `Everglide Oreo`, `Crystal Purple`, `Topre Hybrid PBT`, `Cherry MX Brown PBT`, `Cherry MX Blue PBT`, `Typewriter`, stereo panning, smooth volume slider, live preview, and optional "Mute in Games"; verified by the user in DRM)
 - [x] Default programs: Flatpak/Snap browsers are visible in the choice and open links without `XDG_DATA_DIRS` from profile.d
 - [x] Flatpak and Snap program icons in the Dock, Launchpad, Spotlight, tray and on the desktop (`exports/share/icons`, `$XDG_DATA_DIRS`, an AppStream fallback)
 - [x] X11: a notification at login if xwayland-satellite is missing (build from source)

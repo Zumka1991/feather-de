@@ -145,6 +145,7 @@
 - [x] Клавиатура: автоповтор (задержка, скорость), Caps Lock
 - [x] Клавиатура: Caps Lock как способ в «Переключение языка» (по отзыву с форума)
 - [x] Клавиатура: типографская раскладка Бирмана на правом Alt (`misc:typo`) — по первому отзыву
+- [x] Клавиатура: ASMR-озвучивание набора текста на PipeWire (`src/typing_sound.rs`: 6 студийных профилей реальных свитчей — `Everglide Oreo`, `Crystal Purple`, `Topre Hybrid PBT`, `Cherry MX Brown PBT`, `Cherry MX Blue PBT`, `Печатная машинка`, стереопанорама, громкость, предпрослушивание и галочка «Отключать в играх»; проверено пользователем в DRM)
 - [x] Программы по умолчанию: Flatpak/Snap-браузеры видны в выборе и открывают ссылки без `XDG_DATA_DIRS` от profile.d
 - [x] Значки программ Flatpak и Snap в Dock, Launchpad, Spotlight, трее и на рабочем столе (`exports/share/icons`, `$XDG_DATA_DIRS`, резерв AppStream)
 - [x] X11: уведомление при входе, если нет xwayland-satellite (сборка из исходников)

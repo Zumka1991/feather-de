@@ -1148,3 +1148,16 @@ Wi‑Fi-адаптер недоступен или заблокирован	The 
 Производительность и игры	Performance & Gaming	Rendimiento y juegos	Leistung & Spiele	Performances et jeux	性能与游戏
 Игровой режим и экономия фона	Game Mode & Background Saver	Modo de juego y ahorro en segundo plano	Spielmodus & Hintergrunddrosselung	Mode Jeu et économie d’arrière-plan	游戏模式与后台节流
 Приоритет активной игре и ограничение ресурсов неактивных программ	Prioritizes active games and throttles unfocused games and background apps	Prioriza el juego activo y limita los juegos en segundo plano y las apps inactivas	Priorisiert aktive Spiele und begrenzt inaktive Spiele sowie Hintergrundprogramme	Donne la priorité au jeu actif et limite les jeux hors focus et les apps en arrière-plan	为前台游戏提供最高优先级，并限制切到后台的游戏与闲置程序资源
+Озвучивание набора	Typing Sound	Sonido al escribir	Tippgeräusche	Son de frappe	打字音效
+Звук при наборе текста	Typing Sound Effects	Sonido al pulsar teclas	Tastengeräusche beim Tippen	Son lors de la saisie	按键打字音效
+Тактильный ASMR-отклик клавиш при печати	Tactile ASMR switch feedback while typing	Respuesta acústica ASMR al escribir	Angenehmes ASMR-Tastenfeedback beim Tippen	Retour acoustique ASMR agréable lors de la frappe	输入时提供舒适的 ASMR 机械轴声学反馈
+Звуковой профиль	Switch Profile	Perfil de sonido	Klangprofil	Profil sonore	轴体音效风格
+Кремовая механика	Creamy Mechanical	Mecánico cremoso	Cremig mechanisch	Mécanique crémeux	奶油机械轴
+Мягкий Topre	Soft Topre	Topre suave	Sanftes Topre	Topre doux	柔和静电容 Topre
+Тактильный щелчок	Tactile Clicky	Clic táctil	Taktiler Klick	Clic tactile	清脆段落轴
+Печатная машинка	Typewriter	Máquina de escribir	Schreibmaschine	Machine à écrire	复古打字机
+Громкость клавиш	Keystroke Volume	Volumen de teclas	Tastenlautstärke	Volume des touches	按键音量
+Прослушать профиль	Preview Profile	Probar perfil	Profil anhören	Écouter le profil	试听音效风格
+Отключать в играх	Mute in Games	Silenciar en juegos	In Spielen stummschalten	Couper dans les jeux	在游戏中静音
+Не озвучивать нажатия клавиш, когда активна игра	Silence typing sounds while a game window is active	Desactiva el sonido de teclas cuando hay un juego activo	Keine Tippgeräusche, solange ein Spiel im Fokus ist	Désactive le son des touches lorsqu’un jeu est au premier plan	当前台运行游戏时自动关闭按键声
+Чёткий мгновенный отклик на каждое нажатие клавиши. На экране блокировки и в полях ввода пароля звук выключен.	Crisp instant click on every keystroke. Automatically muted on the lock screen and in password fields.	Clic nítido e instantáneo en cada pulsación. Se silencia en la pantalla bloqueada y en contraseñas.	Klarer, verzögerungsfreier Klick bei jedem Tastendruck. Auf Sperrbildschirm und in Passwortfeldern stumm.	Clic net et instantané à chaque frappe. Muet sur l’écran verrouillé et dans les champs de mot de passe.	每次按键均提供清脆即时的声学点击反馈。在锁定屏幕和密码输入框中自动静音。

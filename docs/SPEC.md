@@ -80,6 +80,7 @@ calloop EventLoop (один поток)
 | `render.rs` | Сцена (front-to-back), damage tracking, темп кадров, frame callbacks, профайлер |
 | `window.rs` | Модель окна: geometry, SSD/CSD, mapped, maximize/fullscreen, 9-slice тень, встроенные окна |
 | `sounds.rs` | Общий спящий worker системных сигналов/уведомлений: короткий PCM в memfd, один ограниченный по времени проигрыватель, без очереди звуков |
+| `typing_sound.rs` | Полифонический ASMR-движок озвучивания клавиш на PipeWire: 6 студийных профилей свитчей в `.rodata` (`0` Б `RssAnon`), стереопанорама, `INACTIVE` и автопауза (`0 %` CPU в простое) |
 | `notifications.rs` | Сервер `org.freedesktop.Notifications` на worker: разбор подсказок, картинки ≤ 96 px, сигналы закрытия/действий; имя чужого демона не перехватывается |
 | `api/` | `org.feather.Shell1` ([API.md](API.md)): zbus в потоке `feather-api`, запросы в цикл через ограниченный канал и одноразовые ответы, сигналы окон из `refresh_focus`; типы и клиент — крейт `crates/feather-api`, утилита `featherctl` |
 | `xwayland.rs` | Свой X-дисплей: lock и сокеты, xwayland-satellite по первому X-клиенту через `-listenfd`, перезапуск и очистка |
