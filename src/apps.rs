@@ -737,11 +737,16 @@ fn larvis_browser_command(command: &str, profile: &std::path::Path) -> String {
 }
 
 pub fn spawn_wayland_command(cmd_line: &str, wayland_socket: &str) -> bool {
-    spawn_wayland_app(cmd_line, wayland_socket).is_some()
+    spawn_wayland_app_with_token(cmd_line, wayland_socket, None).is_some()
 }
 
-/// Like spawn_wayland_command; returns the pid, which leads the program's own session
-pub fn spawn_wayland_app(cmd_line: &str, wayland_socket: &str) -> Option<i32> {
+/// Spawns a Wayland app, optionally carrying a compositor-minted `XDG_ACTIVATION_TOKEN`
+/// so single-instance apps (VS Code, Chrome, Telegram…) raise cleanly on re-launch.
+pub fn spawn_wayland_app_with_token(
+    cmd_line: &str,
+    wayland_socket: &str,
+    activation_token: Option<&str>,
+) -> Option<i32> {
     let trimmed = cmd_line.trim();
     if trimmed.is_empty() {
         return None;
@@ -797,6 +802,11 @@ pub fn spawn_wayland_app(cmd_line: &str, wayland_socket: &str) -> Option<i32> {
     };
     if let Some((theme, size)) = CURSOR_ENV.lock().unwrap().clone() {
         command.env("XCURSOR_THEME", theme).env("XCURSOR_SIZE", size.to_string());
+    }
+    if let Some(token) = activation_token {
+        command
+            .env("XDG_ACTIVATION_TOKEN", token)
+            .env("DESKTOP_STARTUP_ID", token);
     }
     // X programs go to our XWayland, never to a host X server of a nested run
     match crate::xwayland::display() {

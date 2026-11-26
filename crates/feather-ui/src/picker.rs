@@ -38,6 +38,8 @@ pub struct Config {
     pub filters: Vec<Filter>,
     pub filter: usize,
     pub choices: Vec<Choice>,
+    /// Exported `xdg_foreign` v2 handle of the requesting parent toplevel (from portal `parent_window`)
+    pub parent_wayland: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Selection {
@@ -121,6 +123,14 @@ impl Config {
                 }
             } else if !choice.options.iter().any(|(id, _)| *id == choice.selected) {
                 choice.selected = choice.options[0].0.clone();
+            }
+        }
+        if let Some(parent) = &self.parent_wayland {
+            if parent.is_empty()
+                || parent.len() > 256
+                || !parent.bytes().all(|b| b.is_ascii_graphic())
+            {
+                self.parent_wayland = None;
             }
         }
         Ok(())

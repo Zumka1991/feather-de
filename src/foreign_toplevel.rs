@@ -151,11 +151,7 @@ impl FeatherCompositor {
             R::UnsetMaximized => self.set_window_maximized(idx, false, r),
             R::SetFullscreen { .. } => self.set_window_fullscreen(idx, true, r),
             R::UnsetFullscreen => self.set_window_fullscreen(idx, false, r),
-            R::SetMinimized => {
-                self.windows[idx].minimized = true;
-                self.shell.dock_dirty = true;
-                self.refresh_focus();
-            }
+            R::SetMinimized => self.minimize_window(idx),
             R::UnsetMinimized => self.execute_shell_action(ShellClickAction::RestoreMinimizedWindow(id)),
             _ => {}
         }

@@ -354,14 +354,14 @@ impl FeatherCompositor {
                 }
                 win.x = s.x;
                 win.y = s.y;
-                if space_mode != crate::space_layout::SpaceMode::Free && !win.has_parent() {
+                if space_mode != crate::space_layout::SpaceMode::Free && !win.is_dialog() {
                     win.enter_managed_layout();
                 } else if s.maximized && space_mode == crate::space_layout::SpaceMode::Free {
                     win.maximize_on(true, mon);
                 }
                 (win.x, win.y)
             } else {
-                if space_mode != crate::space_layout::SpaceMode::Free && !win.has_parent() {
+                if space_mode != crate::space_layout::SpaceMode::Free && !win.is_dialog() {
                     win.enter_managed_layout();
                 }
                 (win.x, win.y)

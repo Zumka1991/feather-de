@@ -9,6 +9,14 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.8 — 2026-11-26
+
+- **Fixed newly opened windows and modal dialogs slipping behind their parent (`xdg_foreign` v2, `xdg_wm_dialog_v1`, FileChooser parent linking, and `xdg_activation_v1` focus-steal guard):**
+  - Enabled `xdg_foreign` v2 (`zxdg_exporter_v2` / `zxdg_importer_v2`) and `xdg_wm_dialog_v1` (`XdgDialogState`), plus `parent_changed` and `modal_changed` handling, so cross-connection native GTK3 dialogs in Electron/Chromium apps (VS Code, Antigravity, Chrome, Brave) attach properly to their parent window instead of losing their parent and freezing the app behind it.
+  - Wired `parent_window` (`wayland:<handle>`) through the built-in FileChooser portal to `feather-files --file-picker`, linking file open/save dialogs via `zxdg_importer_v2.set_parent_of` and `xdg_dialog_v1.set_modal`.
+  - Enforced global parent-child stacking (including multi-level dialog chains), automatic centering of new dialogs over their parent on its monitor and workspace, synchronized minimize/restore across all shortcuts and Dock actions, and exclusion of dialogs from `window_memory`, `Tile`/`Tape` layouts, Scratch BSP tiles, and zoomed-tile hiding.
+  - Guarded `xdg_activation_v1` against stale client self-activation stealing focus from freshly mapped windows or active dialogs, while minting trusted compositor `XDG_ACTIVATION_TOKEN`s on Dock/Launchpad/Spotlight launches. No new package dependencies.
+
 ## 0.26.7 — 2026-11-26
 
 - **Fixed OBS Studio screen capture (ScreenCast portal + zero-copy 4K PipeWire) and modal child dialog stacking:**

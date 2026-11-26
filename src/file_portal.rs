@@ -29,7 +29,14 @@ fn get<T: TryFrom<OwnedValue>>(o: &Options, key: &str) -> Option<T> {
 fn value(v: impl Into<Value<'static>>) -> OwnedValue {
     v.into().try_into().expect("owned portal value")
 }
-fn config(title: String, o: &Options, mode: Mode) -> Result<Config, String> {
+fn parent_wayland_handle(parent_window: &str) -> Option<String> {
+    parent_window
+        .strip_prefix("wayland:")
+        .map(str::trim)
+        .filter(|h| !h.is_empty() && h.len() <= 256 && h.bytes().all(|b| b.is_ascii_graphic()))
+        .map(str::to_owned)
+}
+fn config(title: String, o: &Options, mode: Mode, parent_window: &str) -> Result<Config, String> {
     let filters: Vec<WireFilter> = get(o, "filters").unwrap_or_default();
     let current: Option<WireFilter> = get(o, "current_filter");
     let filter = current
@@ -71,6 +78,7 @@ fn config(title: String, o: &Options, mode: Mode) -> Result<Config, String> {
                 selected,
             })
             .collect(),
+        parent_wayland: parent_wayland_handle(parent_window),
     };
     if c.start.is_none() {
         if let Some(mut bytes) = get::<Vec<u8>>(o, "current_file") {
@@ -245,11 +253,13 @@ impl Drop for Active {
     }
 }
 impl Chooser {
+    #[allow(clippy::too_many_arguments)]
     async fn choose(
         &self,
         server: &ObjectServer,
         sender: String,
         handle: OwnedObjectPath,
+        parent_window: String,
         title: String,
         options: Options,
         mode: Mode,
@@ -262,7 +272,7 @@ impl Chooser {
         {
             return failed();
         }
-        let c = match config(title, &options, mode) {
+        let c = match config(title, &options, mode, &parent_window) {
             Ok(c) => c,
             Err(_) => return failed(),
         };
@@ -339,14 +349,14 @@ impl Chooser {
         #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<Reply> {
         let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
-        let _ = (app_id, parent_window);
+        let _ = app_id;
         let mode = if get::<bool>(&options, "directory").unwrap_or(false) {
             Mode::Directory
         } else {
             Mode::Open
         };
         Ok(self
-            .choose(server, sender, handle, title, options, mode, false)
+            .choose(server, sender, handle, parent_window, title, options, mode, false)
             .await)
     }
     #[allow(clippy::too_many_arguments)]
@@ -362,9 +372,9 @@ impl Chooser {
         #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<Reply> {
         let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
-        let _ = (app_id, parent_window);
+        let _ = app_id;
         Ok(self
-            .choose(server, sender, handle, title, options, Mode::Save, false)
+            .choose(server, sender, handle, parent_window, title, options, Mode::Save, false)
             .await)
     }
     #[allow(clippy::too_many_arguments)]
@@ -380,9 +390,9 @@ impl Chooser {
         #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<Reply> {
         let sender = crate::dbus_auth::verify_xdg_portal_frontend(conn, &header).await?;
-        let _ = (app_id, parent_window);
+        let _ = app_id;
         Ok(self
-            .choose(server, sender, handle, title, options, Mode::Directory, true)
+            .choose(server, sender, handle, parent_window, title, options, Mode::Directory, true)
             .await)
     }
 }
@@ -1211,15 +1221,17 @@ mod tests {
             "current_folder".into(),
             value([picker::path_bytes(&root), vec![0]].concat()),
         );
-        let c = config("Pick".into(), &o, Mode::Open).unwrap();
+        let c = config("Pick".into(), &o, Mode::Open, "wayland:handle123").unwrap();
+        assert_eq!(c.parent_wayland.as_deref(), Some("handle123"));
         // Electron's `defaultPath: "image.png"` arrives as the folder "."
         let mut relative = Options::new();
         relative.insert("current_folder".into(), value(b".\0".to_vec()));
         relative.insert("current_name".into(), value("image.png"));
-        let saved = config("Save".into(), &relative, Mode::Save).unwrap();
+        let saved = config("Save".into(), &relative, Mode::Save, "x11:0x42").unwrap();
+        assert_eq!(saved.parent_wayland, None);
         assert_eq!(saved.name, "image.png");
         assert!(saved.start.is_none_or(|p| p.starts_with(b"/")));
-        assert!(config("Open".into(), &relative, Mode::Open).unwrap().start.is_none());
+        assert!(config("Open".into(), &relative, Mode::Open, "").unwrap().start.is_none());
         assert!(c.matches(&root.join("photo.png"), 0));
         assert!(!c.matches(&root.join("photo.pdf"), 0));
         let r = result(

@@ -1253,19 +1253,15 @@ impl FeatherCompositor {
             Some(KeyAction::PipGhostToggle) => self.toggle_focused_pip_ghost(),
             Some(KeyAction::CloseTop) => self.close_top_window(),
             Some(KeyAction::MinimizeTop) => {
-                let mut was_scratch = false;
-                if let Some(top) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
-                    was_scratch = top.space == crate::scratch::SCRATCH_SPACE;
-                    top.minimized = true;
-                    top.auto_minimized = false;
-                    self.shell.dock_dirty = true;
+                if let Some(pos) = self.windows.iter().rposition(|w| w.is_visible()) {
+                    let was_scratch = self.windows[pos].space == crate::scratch::SCRATCH_SPACE;
+                    self.minimize_window(pos);
+                    if was_scratch {
+                        let ids = self.scratch_tiled();
+                        let area = self.scratch_area();
+                        self.scratch_apply(&ids, area);
+                    }
                 }
-                if was_scratch {
-                    let ids = self.scratch_tiled();
-                    let area = self.scratch_area();
-                    self.scratch_apply(&ids, area);
-                }
-                self.refresh_focus();
             }
             Some(KeyAction::ToggleFullscreenTop) => {
                 if let Some(i) = self.windows.iter().rposition(|w| w.is_visible()) {
@@ -2298,6 +2294,13 @@ impl FeatherCompositor {
             self.space_layouts.hold_focus_on_resize_click(win.space, win.id);
         }
         self.windows.push(win);
+        if self.collect_child_dialog_ids(clicked_id).into_iter().any(|cid| {
+            self.windows
+                .iter()
+                .any(|w| w.id == cid && w.minimized && (w.modal || w.auto_minimized))
+        }) {
+            self.restore_minimized_child_dialogs(clicked_id);
+        }
         self.refresh_focus();
         if self.windows.last().map(|w| w.id) != Some(clicked_id) {
             // A visible transient/modal child dialog was raised above the clicked parent

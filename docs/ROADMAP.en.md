@@ -106,6 +106,7 @@ see the [verification order](LOCK_POWER.md#проверки). The overall accept
   - [ ] Chrome, Firefox, Electron and Telegram draw their own buttons (on the left); toggles are in the programs themselves — [DECORATIONS.md](DECORATIONS.md#кто-остаётся-со-своими-кнопками-и-почему)
 - [x] Protocols for third-party panels and input methods: layer-shell, foreign-toplevel (wlr and ext), text-input, input-method, virtual-keyboard — [PROTOCOLS.md](PROTOCOLS.md)
   - [ ] Testing with real waybar, rofi, fcitx5 and ibus
+- [x] Dialog & cross-process transient parent protocols: `xdg_foreign` v2 (`zxdg_exporter_v2` / `zxdg_importer_v2`), `xdg_wm_dialog_v1`, FileChooser `feather-files --file-picker` parent linking, centering over parent, and `xdg_activation_v1` focus-steal guard for newly mapped windows and dialogs (VS Code, Electron, GTK3/4, Qt)
 - [x] Clipboard without window focus: `ext-data-control-v1` and `zwlr-data-control-v1` (wl-copy/wl-paste, clipboard managers, arboard; images no longer go to the X11 clipboard)
 
 ## Windows and workspaces

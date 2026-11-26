@@ -4,6 +4,28 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-26 — Выпуск 0.26.8 (Gemini/agy)
+
+- **Исправлен уход новых окон и модальных диалогов назад (`xdg_foreign` v2, `xdg_wm_dialog_v1`, портал выбора файлов и защита `xdg_activation_v1`):**
+  - Включены протоколы `xdg_foreign` v2 (`zxdg_exporter_v2` / `zxdg_importer_v2`) и `xdg_wm_dialog_v1`: нативные GTK3-диалоги Electron/Chromium (VS Code, Antigravity, Chrome, Brave) и диалоги `feather-files --file-picker` теперь привязываются к родительскому окну, открываются строго по центру поверх него и не перекрываются при клике или переключении.
+  - В `xdg_activation_v1` добавлена защита от перехвата фокуса устаревшей самоактивацией клиента поверх нового окна или активного диалога; при запуске программ из Dock/Launchpad/Spotlight передаётся доверенный `XDG_ACTIVATION_TOKEN`.
+  - Дочерние и модальные диалоги исключены из `window_memory`, `Tile`/`Tape` и плиток Подложки, не скрываются при зуме плитки и синхронно сворачиваются/восстанавливаются вместе с родителем. Новых зависимостей пакета нет.
+
+## 2026-11-26 — Исправлен уход новых окон и диалогов назад (`xdg_foreign` v2, `xdg_wm_dialog_v1` и защита `xdg_activation_v1`) (Gemini/agy)
+
+- **Новые и модальные диалоги (VS Code, Electron/Chromium, GTK3/4, Qt и диалог выбора файла `feather-files`) больше не уходят за родительское окно и не «подвешивают» программу** (`src/main.rs`, `src/handlers.rs`, `src/window.rs`, `src/window_memory.rs`, `src/space_layout.rs`, `src/scratch.rs`, `src/input.rs`, `src/pip.rs`, `src/apps.rs`, `src/foreign_toplevel.rs`, `src/file_portal.rs`, `crates/feather-ui/src/picker.rs`, `files/src/main.rs`):
+  - **Почему окна уходили назад (как диалог VS Code `code` 584×197 позади развёрнутого `com.microsoft.VSCode`):**
+    1. В композиторе не были объявлены протоколы `xdg_foreign` v2 (`zxdg_exporter_v2` / `zxdg_importer_v2`) и `xdg_wm_dialog_v1`: Electron/Chromium (VS Code, Antigravity, Chrome, Brave) открывают нативные диалоги GTK3 через отдельное Wayland-подключение и связывают их с главным окном именно через `zxdg_exporter_v2` → `gdk_wayland_window_set_transient_for_exported`. Без этого у диалога было `parent = None`, и он легко перекрывался родителем, блокируя клики по приложению.
+    2. `XdgActivationHandler::request_activation` без проверок поднимал окно при любом токене: асинхронный `win.focus()` главного окна Electron/VS Code (токен выпущен до появления диалога) мог прийти через миллисекунды после `newly_mapped` нового окна/диалога и мгновенно увести новое окно назад.
+    3. Портал выбора файлов (`src/file_portal.rs`) отбрасывал `parent_window` (`wayland:<handle>`), а `feather-files --file-picker` не привязывался к родителю; кроме того, `XdgShellHandler::parent_changed` не обрабатывался, `window_memory` мог запоминать и восстанавливать состояние диалогов (в т. ч. `scratch = 1`), `set_scratch_open(true)` в `newly_mapped` сдвигал индекс `idx`, а `is_hidden_by_zoom` скрывал плавающие диалоги на увеличенной плитке `Tile`/`Подложка`.
+  - **Что сделано:**
+    - Включены протоколы `zxdg_exporter_v2` / `zxdg_importer_v2` (`XdgForeignState`) и `xdg_wm_dialog_v1` (`XdgDialogState`), добавлены обработчики `XdgShellHandler::parent_changed` и `XdgDialogHandler::modal_changed`.
+    - Через `file_portal.rs` → `feather_ui::picker::Config::parent_wayland` → `files/src/main.rs` передаётся `wayland:<handle>`: диалоги открытия/сохранения `feather-files --file-picker` привязываются к вызывающему окну через `zxdg_importer_v2.set_parent_of` и `xdg_dialog_v1.set_modal`.
+    - `keep_child_dialogs_above_parents()` теперь поддерживает инвариант «дочерний/модальный диалог всегда выше своего родителя» для всех окон (включая цепочки и родительский фоновый стек, не перебивая постороннее верхнее окно), центрирует новые диалоги строго над родителем на его мониторе и рабочем столе, исключает диалоги из `window_memory`, `Tile`/`Tape` и BSP-плитки Подложки, а все пути сворачивания/разворачивания (`Cmd+M`, Dock, меню, `foreign_toplevel`, клик по родителю) синхронизируют дочерние диалоги.
+    - В `XdgActivationHandler::request_activation` добавлен фильтр `should_honor_activation`: внешние токены композитора (запуск из Dock/Launchpad/Spotlight/уведомлений/трея) и передача фокуса между приложениями работают как раньше, а устаревшая самоактивация клиента (токен старше нового верхнего окна, попытка перекрыть активный диалог или фоновая самоактивация без input-serial поверх только что открытого окна) отклоняется. При запуске программ через `LaunchApp` передаётся доверенный `XDG_ACTIVATION_TOKEN`.
+    - Исправлен устаревший индекс `idx` после `set_scratch_open(true)` в `handle_toplevel_commit` и видимость плавающих диалогов при зуме плитки в `space_layout.rs` / `scratch.rs`.
+  - **Проверено:** `cargo build --release --workspace` без ошибок и предупреждений; модульные тесты `feather-de` (22/22, включая `dialog_stack_tests` и `activation_tests`), `feather-files` (48/48) и `feather-ui` (27/27); проверка Wayland-реестра на живом вложенном композиторе (`zxdg_exporter_v2`, `zxdg_importer_v2`, `xdg_wm_dialog_v1`, `xdg_activation_v1` объявлены) и замер бюджетов SPEC §2 (`idle_ticks_5s = 0`, `RssAnon = 34 484` КиБ ≈ 33,7 МиБ).
+
 ## 2026-11-26 — Выпуск 0.26.7 (Gemini/agy)
 
 - **Исправлен захват экрана в OBS Studio (портал ScreenCast + zero-copy 4K PipeWire) и защита модальных диалогов:**

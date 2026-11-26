@@ -204,6 +204,7 @@ fn spawn_open_dialog(start_dir: Option<Vec<u8>>, tx: channel::Sender<Msg>) {
                 ],
                 filter: 0,
                 choices: Vec::new(),
+                parent_wayland: None,
             };
             if let Ok(Some(sel)) = feather_ui::picker::run(&cfg, None, |_| {}) {
                 if let Ok(paths) = sel.local_paths() {
@@ -253,6 +254,7 @@ fn spawn_save_dialog(
                 ],
                 filter: 0,
                 choices: Vec::new(),
+                parent_wayland: None,
             };
             if let Ok(Some(sel)) = feather_ui::picker::run(&cfg, None, |_| {}) {
                 if let Ok(mut paths) = sel.local_paths() {

@@ -71,8 +71,10 @@ pub struct Scratch {
 
 impl Scratch {
     pub fn is_hidden_by_zoom(&self, win_id: u64) -> bool {
-        self.zoomed
-            .is_some_and(|z| z != win_id && self.order.len() > 1 && self.order.contains(&z))
+        self.order.contains(&win_id)
+            && self
+                .zoomed
+                .is_some_and(|z| z != win_id && self.order.len() > 1 && self.order.contains(&z))
     }
 
     pub fn invalidate(&mut self) {
@@ -237,7 +239,12 @@ impl FeatherCompositor {
             .copied()
             .filter(|id| {
                 self.windows.iter().any(|w| {
-                    w.id == *id && w.mapped && !w.minimized && !w.maximized && !w.fullscreen
+                    w.id == *id
+                        && w.mapped
+                        && !w.minimized
+                        && !w.maximized
+                        && !w.fullscreen
+                        && !w.is_dialog()
                 })
             })
             .collect()
@@ -427,6 +434,9 @@ impl FeatherCompositor {
 
     /// A window joins: moved there, or opened while the Подложка is in front
     pub fn scratch_adopt(&mut self, idx: usize) {
+        if self.windows[idx].is_dialog() {
+            return;
+        }
         if self.windows[idx].fullscreen {
             let r = self.window_monitor(idx);
             self.set_window_fullscreen(idx, false, r);
@@ -445,6 +455,23 @@ impl FeatherCompositor {
         self.apply_space_visibility();
         self.scratch_sync();
         self.window_memory_changed();
+    }
+
+    /// Releases a dialog from Подложка BSP tiling while keeping its current `space`.
+    pub fn scratch_release_from_tiles(&mut self, idx: usize) {
+        let id = self.windows[idx].id;
+        if !self.scratch.order.contains(&id) {
+            return;
+        }
+        self.scratch.order.retain(|&o| o != id);
+        if self.scratch.zoomed == Some(id) {
+            self.scratch.zoomed = None;
+        }
+        self.scratch.invalidate();
+        let r = self.window_monitor(idx);
+        self.windows[idx].leave_scratch(r);
+        self.apply_space_visibility();
+        self.scratch_sync();
     }
 
     /// Super+F on the Подложка: zoom the focused tile across the whole screen and back

@@ -273,6 +273,8 @@ pub struct FeatherCompositor {
     /// KDE's server-decoration protocol: how GTK 3/4 windows without a header bar ask for ours
     pub kde_decoration_state: smithay::wayland::shell::kde::decoration::KdeDecorationState,
     pub xdg_activation_state: XdgActivationState,
+    pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
+    pub xdg_dialog_state: smithay::wayland::shell::xdg::dialog::XdgDialogState,
     pub shm_state: ShmState,
     pub dmabuf_state: DmabufState,
     pub dmabuf_global: Option<DmabufGlobal>,
@@ -456,39 +458,74 @@ impl FeatherCompositor {
         self.sync_game_mode();
     }
 
-    /// Keeps visible transient/modal child dialogs (`xdg_toplevel.set_parent`) strictly above
-    /// their active parent window so clicking the parent never buries a modal confirmation dialog
-    /// (e.g. Qt/OBS "Confirm Delete") underneath it.
-    fn keep_child_dialogs_above_parents(&mut self) {
-        let Some(top_idx) = self
-            .windows
-            .iter()
-            .rposition(|w| w.is_visible() && !w.pip_ghost && !self.auxiliary_game_window(w))
-        else {
-            return;
-        };
-        let mut parent_surfaces = match self.windows[top_idx].wl_surface() {
-            Some(s) => vec![s.clone()],
-            None => return,
-        };
-        let parent_space = self.windows[top_idx].space;
-        let parent_off_space = self.windows[top_idx].off_space;
-        let mut lifted_ids: Vec<u64> = Vec::new();
+    /// Mints a compositor-owned `xdg_activation_v1` token (10 s TTL) for launches, tray clicks,
+    /// and notification actions so single-instance programs raise cleanly.
+    pub(crate) fn mint_activation_token(&mut self) -> String {
+        let token = self.xdg_activation_state.create_external_token(None).0.clone();
+        let value = token.as_str().to_string();
+        let _ = self.loop_handle.insert_source(
+            Timer::from_duration(Duration::from_secs(10)),
+            move |_, _, state| {
+                state.xdg_activation_state.remove_token(&token);
+                TimeoutAction::Drop
+            },
+        );
+        value
+    }
+
+    /// Resolves the direct parent window ID for `self.windows[idx]`:
+    /// 1. Explicit Wayland parent (`xdg_toplevel.set_parent` or `xdg_foreign` `set_parent_of`);
+    /// 2. For parentless modal dialogs (`xdg_wm_dialog_v1`), the topmost mapped non-modal native
+    ///    Wayland window of the same client PID on the same Space.
+    pub(crate) fn parent_window_id_of(&self, idx: usize) -> Option<u64> {
+        let w = self.windows.get(idx)?;
+        if let Some(parent_surface) = w.toplevel().and_then(|t| t.parent()) {
+            return self
+                .windows
+                .iter()
+                .find(|p| p.id != w.id && p.wl_surface() == Some(&parent_surface))
+                .map(|p| p.id);
+        }
+        if w.modal {
+            let surface = w.wl_surface()?;
+            if !crate::xwayland::is_xwayland_surface(surface) {
+                let pid = crate::handlers::surface_client_pid(surface)?;
+                return self
+                    .windows
+                    .iter()
+                    .rev()
+                    .find(|p| {
+                        p.id != w.id
+                            && p.mapped
+                            && !p.modal
+                            && p.space == w.space
+                            && p.wl_surface().is_some_and(|ps| {
+                                !crate::xwayland::is_xwayland_surface(ps)
+                                    && crate::handlers::surface_client_pid(ps) == Some(pid)
+                            })
+                    })
+                    .map(|p| p.id);
+            }
+        }
+        None
+    }
+
+    /// Collects all mapped descendant dialog IDs of `parent_id` (up to depth 4), in bottom-to-top order.
+    pub(crate) fn collect_child_dialog_ids(&self, parent_id: u64) -> Vec<u64> {
+        let mut parents = vec![parent_id];
+        let mut children = Vec::new();
         for _ in 0..4 {
             let mut added = false;
-            for w in &self.windows {
-                if !w.mapped || w.minimized || lifted_ids.contains(&w.id) {
+            for (i, w) in self.windows.iter().enumerate() {
+                if !w.mapped || children.contains(&w.id) || parents.contains(&w.id) {
                     continue;
                 }
-                let is_child = w
-                    .toplevel()
-                    .and_then(|t| t.parent())
-                    .is_some_and(|p| parent_surfaces.iter().any(|ps| ps == &p));
-                if is_child {
-                    lifted_ids.push(w.id);
-                    if let Some(s) = w.wl_surface() {
-                        parent_surfaces.push(s.clone());
-                    }
+                if self
+                    .parent_window_id_of(i)
+                    .is_some_and(|pid| parents.contains(&pid))
+                {
+                    children.push(w.id);
+                    parents.push(w.id);
                     added = true;
                 }
             }
@@ -496,14 +533,76 @@ impl FeatherCompositor {
                 break;
             }
         }
-        for id in lifted_ids {
-            if let Some(pos) = self.windows.iter().position(|w| w.id == id) {
-                let mut child = self.windows.remove(pos);
-                child.space = parent_space;
-                child.off_space = parent_off_space;
-                self.windows.push(child);
+        children
+    }
+
+    /// Keeps visible transient/modal child dialogs (`xdg_toplevel.set_parent`, `xdg_foreign`,
+    /// `xdg_wm_dialog_v1`) strictly above their parent windows so clicking or activating a parent
+    /// never buries a modal confirmation or file dialog underneath it.
+    fn keep_child_dialogs_above_parents(&mut self) {
+        if self.windows.len() < 2 {
+            return;
+        }
+        // Keep child dialogs on the same Space/visibility as their mapped parent (transitively).
+        for _ in 0..4 {
+            let mut synced = false;
+            let mut updates: Vec<(usize, u32, bool)> = Vec::new();
+            for i in 0..self.windows.len() {
+                let w = &self.windows[i];
+                if !w.mapped || w.minimized {
+                    continue;
+                }
+                if let Some(pid) = self.parent_window_id_of(i) {
+                    if let Some(p) = self.windows.iter().find(|p| p.id == pid && p.mapped) {
+                        if w.space != p.space || w.off_space != p.off_space {
+                            updates.push((i, p.space, p.off_space));
+                        }
+                    }
+                }
+            }
+            for (i, space, off_space) in updates {
+                self.windows[i].space = space;
+                self.windows[i].off_space = off_space;
+                synced = true;
+            }
+            if !synced {
+                break;
             }
         }
+
+        let mut edges: Vec<(u64, u64)> = Vec::new();
+        for i in 0..self.windows.len() {
+            let w = &self.windows[i];
+            if !w.mapped || w.minimized {
+                continue;
+            }
+            if let Some(pid) = self.parent_window_id_of(i) {
+                if self.windows.iter().any(|p| p.id == pid && p.mapped && !p.minimized) {
+                    edges.push((w.id, pid));
+                }
+            }
+        }
+        if edges.is_empty() {
+            return;
+        }
+        let mut order: Vec<u64> = self.windows.iter().map(|w| w.id).collect();
+        if !enforce_child_dialog_order(&mut order, &edges) {
+            return;
+        }
+        let mut old: Vec<Option<ManagedWindow>> =
+            std::mem::take(&mut self.windows).into_iter().map(Some).collect();
+        let mut reordered = Vec::with_capacity(old.len());
+        for id in order {
+            if let Some(slot) = old
+                .iter_mut()
+                .find(|w| w.as_ref().is_some_and(|win| win.id == id))
+            {
+                if let Some(win) = slot.take() {
+                    reordered.push(win);
+                }
+            }
+        }
+        self.windows = reordered;
     }
 
     /// Un-minimizes any mapped child dialogs belonging to `parent_id` and lifts them above the
@@ -512,37 +611,13 @@ impl FeatherCompositor {
         let Some(parent_idx) = self.windows.iter().position(|w| w.id == parent_id) else {
             return false;
         };
-        let mut parent_surfaces = match self.windows[parent_idx].wl_surface() {
-            Some(s) => vec![s.clone()],
-            None => return false,
-        };
         let parent_space = self.windows[parent_idx].space;
         let parent_off_space = self.windows[parent_idx].off_space;
-        let mut restored_ids: Vec<u64> = Vec::new();
-        for _ in 0..4 {
-            let mut added = false;
-            for w in &self.windows {
-                if !w.mapped || restored_ids.contains(&w.id) {
-                    continue;
-                }
-                let is_child = w
-                    .toplevel()
-                    .and_then(|t| t.parent())
-                    .is_some_and(|p| parent_surfaces.iter().any(|ps| ps == &p));
-                if is_child {
-                    if w.minimized {
-                        restored_ids.push(w.id);
-                    }
-                    if let Some(s) = w.wl_surface() {
-                        parent_surfaces.push(s.clone());
-                    }
-                    added = true;
-                }
-            }
-            if !added {
-                break;
-            }
-        }
+        let restored_ids: Vec<u64> = self
+            .collect_child_dialog_ids(parent_id)
+            .into_iter()
+            .filter(|id| self.windows.iter().any(|w| w.id == *id && w.minimized))
+            .collect();
         if restored_ids.is_empty() {
             return false;
         }
@@ -1697,7 +1772,12 @@ impl FeatherCompositor {
             }
             ShellClickAction::LaunchApp(app_action, app_name) => match app_action {
                 AppAction::Exec(cmd) => {
-                    if let Some(sid) = crate::apps::spawn_wayland_app(&cmd, &self.wayland_socket_name) {
+                    let token = self.mint_activation_token();
+                    if let Some(sid) = crate::apps::spawn_wayland_app_with_token(
+                        &cmd,
+                        &self.wayland_socket_name,
+                        Some(&token),
+                    ) {
                         self.watch_launch(sid, cmd.clone());
                         self.shell.notify(
                             format!("Запуск: {}", app_name),
@@ -1727,10 +1807,12 @@ impl FeatherCompositor {
                     if visible.len() > 1 {
                         let w = self.windows.remove(visible[0]);
                         self.windows.push(w);
-                    } else if let Some(win) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
-                        win.minimized = true;
+                        self.refresh_focus();
+                    } else if let Some(pos) = self.windows.iter().rposition(|w| w.is_visible()) {
+                        self.minimize_window(pos);
+                    } else {
+                        self.refresh_focus();
                     }
-                    self.refresh_focus();
                     return;
                 }
                 let action = match target {
@@ -1855,6 +1937,7 @@ impl FeatherCompositor {
                     win.space = self.spaces.current;
                     win.off_space = false;
                     self.windows.push(win);
+                    self.restore_minimized_child_dialogs(win_id);
                     self.shell.dock_dirty = true;
                     self.refresh_focus();
                 }
@@ -1936,10 +2019,9 @@ impl FeatherCompositor {
                 }
             }
             ShellClickAction::MinimizeFocused => {
-                if let Some(w) = self.windows.iter_mut().rev().find(|w| w.is_visible()) {
-                    w.minimized = true;
+                if let Some(pos) = self.windows.iter().rposition(|w| w.is_visible()) {
+                    self.minimize_window(pos);
                 }
-                self.refresh_focus();
             }
             ShellClickAction::TileFocused(step) => self.tile_focused(step),
             ShellClickAction::PasteClip(clip) => {
@@ -2006,6 +2088,7 @@ impl FeatherCompositor {
                     let mut w = self.windows.remove(pos);
                     w.minimized = false;
                     self.windows.push(w);
+                    self.restore_minimized_child_dialogs(id);
                     self.refresh_focus();
                 }
             }
@@ -2529,6 +2612,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode::Server,
     );
     let xdg_activation_state = XdgActivationState::new::<FeatherCompositor>(&dh);
+    let xdg_foreign_state = smithay::wayland::xdg_foreign::XdgForeignState::new::<FeatherCompositor>(&dh);
+    let xdg_dialog_state = smithay::wayland::shell::xdg::dialog::XdgDialogState::new::<FeatherCompositor>(&dh);
     // RGBA byte order (tiny-skia, Feather's own clients) uploads without a channel swap
     let shm_state = ShmState::new::<FeatherCompositor>(&dh, vec![smithay::reexports::wayland_server::protocol::wl_shm::Format::Abgr8888, smithay::reexports::wayland_server::protocol::wl_shm::Format::Xbgr8888]);
     let mut seat_state = SeatState::new();
@@ -2865,6 +2950,8 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         xdg_decoration_state,
         kde_decoration_state,
         xdg_activation_state,
+        xdg_foreign_state,
+        xdg_dialog_state,
         shm_state,
         dmabuf_state,
         dmabuf_global,
@@ -3677,4 +3764,79 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
     let ended = feather_ui::process::end_sessions(Duration::from_millis(1500));
     tracing::info!("Выход: завершено программ сеанса: {ended}");
     Ok(())
+}
+
+/// Reorders bottom-to-top window IDs in `order` so that for every `(child, parent)` edge in
+/// `edges`, `child` appears strictly above (`index >`) `parent`, while preserving sibling order
+/// and leaving unrelated windows stacked above `parent` untouched.
+pub(crate) fn enforce_child_dialog_order(order: &mut Vec<u64>, edges: &[(u64, u64)]) -> bool {
+    if edges.is_empty() || order.len() < 2 {
+        return false;
+    }
+    let mut changed = false;
+    for _ in 0..4 {
+        let mut pass_moved = false;
+        let snapshot = order.clone();
+        for parent_id in snapshot {
+            let Some(p_idx) = order.iter().position(|&id| id == parent_id) else {
+                continue;
+            };
+            let below: Vec<u64> = order[..p_idx]
+                .iter()
+                .copied()
+                .filter(|&cid| edges.iter().any(|&(c, p)| c == cid && p == parent_id))
+                .collect();
+            if below.is_empty() {
+                continue;
+            }
+            order.retain(|id| !below.contains(id));
+            if let Some(new_p_idx) = order.iter().position(|&id| id == parent_id) {
+                let mut insert_at = new_p_idx + 1;
+                for cid in below {
+                    order.insert(insert_at, cid);
+                    insert_at += 1;
+                }
+                pass_moved = true;
+                changed = true;
+            }
+        }
+        if !pass_moved {
+            break;
+        }
+    }
+    changed
+}
+
+#[cfg(test)]
+mod dialog_stack_tests {
+    use super::enforce_child_dialog_order;
+
+    #[test]
+    fn raises_buried_child_dialog_above_clicked_parent_to_top() {
+        // Parent (48) was clicked and moved to top above its dialog (50) and unrelated (13)
+        let mut order = vec![50, 13, 48];
+        assert!(enforce_child_dialog_order(&mut order, &[(50, 48)]));
+        assert_eq!(order, vec![13, 48, 50]);
+    }
+
+    #[test]
+    fn keeps_background_parent_child_above_parent_without_stealing_top_window() {
+        // Unrelated window 13 is focused on top; dialog 50 slipped under parent 48
+        let mut order = vec![50, 48, 13];
+        assert!(enforce_child_dialog_order(&mut order, &[(50, 48)]));
+        assert_eq!(order, vec![48, 50, 13]);
+        // Already ordered: no-op
+        assert!(!enforce_child_dialog_order(&mut order, &[(50, 48)]));
+    }
+
+    #[test]
+    fn handles_nested_child_chains_and_sibling_order() {
+        let mut chain = vec![3, 2, 1];
+        assert!(enforce_child_dialog_order(&mut chain, &[(2, 1), (3, 2)]));
+        assert_eq!(chain, vec![1, 2, 3]);
+
+        let mut siblings = vec![10, 20, 99, 1];
+        assert!(enforce_child_dialog_order(&mut siblings, &[(10, 1), (20, 1)]));
+        assert_eq!(siblings, vec![99, 1, 10, 20]);
+    }
 }

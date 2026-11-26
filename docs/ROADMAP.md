@@ -105,6 +105,7 @@
   - [ ] Chrome, Firefox, Electron и Telegram рисуют свои кнопки (слева); переключатели в самих программах — [DECORATIONS.md](DECORATIONS.md#кто-остаётся-со-своими-кнопками-и-почему)
 - [x] Протоколы для чужих панелей и методов ввода: layer-shell, foreign-toplevel (wlr и ext), text-input, input-method, virtual-keyboard — [PROTOCOLS.md](PROTOCOLS.md)
   - [ ] Проверка с настоящими waybar, rofi, fcitx5 и ibus
+- [x] Протоколы диалогов и межпроцессного родительства: `xdg_foreign` v2 (`zxdg_exporter_v2` / `zxdg_importer_v2`), `xdg_wm_dialog_v1`, привязка диалогов выбора файлов `feather-files --file-picker` к родителю, центрирование над родителем и защита `xdg_activation_v1` от перехвата фокуса у новых окон и диалогов (VS Code, Electron, GTK3/4, Qt)
 - [x] Буфер обмена без фокуса окна: `ext-data-control-v1` и `zwlr-data-control-v1` (wl-copy/wl-paste, менеджеры буфера, arboard; картинки больше не уходят в X11-буфер)
 
 ## Окна и рабочие столы

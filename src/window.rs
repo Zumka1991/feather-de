@@ -312,6 +312,10 @@ pub struct ManagedWindow {
     pub ssd: bool,
     /// Client has attached a buffer; unmapped windows are invisible and never take input
     pub mapped: bool,
+    /// When this window last transitioned to mapped (used to guard against focus-stealing races)
+    pub mapped_at: Option<std::time::Instant>,
+    /// Marked modal by the client via `xdg_wm_dialog_v1`
+    pub modal: bool,
     /// Client draws its own shadow outside of its window geometry
     pub client_shadow: bool,
     pub activated: bool,
@@ -497,6 +501,8 @@ impl ManagedWindow {
             // Clients that never bind xdg-decoration draw their own frame (GTK, etc.)
             ssd: false,
             mapped: false,
+            mapped_at: None,
+            modal: false,
             client_shadow: false,
             activated: false,
             minimized: false,
@@ -566,6 +572,8 @@ impl ManagedWindow {
             geo_loc: (0, 0).into(),
             ssd: true,
             mapped: true,
+            mapped_at: Some(std::time::Instant::now()),
+            modal: false,
             client_shadow: false,
             activated: false,
             minimized: false,
@@ -618,6 +626,11 @@ impl ManagedWindow {
 
     pub fn has_parent(&self) -> bool {
         self.toplevel().is_some_and(|t| t.parent().is_some())
+    }
+
+    /// Transient child (`xdg_toplevel.set_parent` / `xdg_foreign`) or modal dialog (`xdg_wm_dialog_v1`)
+    pub fn is_dialog(&self) -> bool {
+        self.has_parent() || self.modal
     }
 
     /// Visible and able to receive input

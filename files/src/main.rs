@@ -60,6 +60,10 @@ use smithay_client_toolkit::reexports::protocols::wp::{
     fractional_scale::v1::client::{wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, wp_fractional_scale_v1::{self, WpFractionalScaleV1}},
     viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
 };
+use smithay_client_toolkit::reexports::protocols::xdg::{
+    dialog::v1::client::{xdg_dialog_v1::XdgDialogV1, xdg_wm_dialog_v1::XdgWmDialogV1},
+    foreign::zv2::client::{zxdg_imported_v2::ZxdgImportedV2, zxdg_importer_v2::ZxdgImporterV2},
+};
 use wayland_client::{Dispatch, Proxy};
 
 use app::{App, Effect, Mods};
@@ -134,6 +138,8 @@ struct Files {
     fractional: Option<f64>,
     viewport: Option<WpViewport>,
     _fractional_object: Option<WpFractionalScaleV1>,
+    _foreign_parent: Option<(ZxdgImporterV2, ZxdgImportedV2)>,
+    _modal_dialog: Option<(XdgWmDialogV1, XdgDialogV1)>,
     configured: bool,
     frame_pending: bool,
     exit: bool,
@@ -206,6 +212,21 @@ fn main() {
         (Some(v), Some(f)) => (Some(v.get_viewport(window.wl_surface(), &qh, ())), Some(f.get_fractional_scale(window.wl_surface(), &qh, ()))),
         _ => (None, None),
     };
+    let foreign_parent = picker_config
+        .as_ref()
+        .and_then(|c| c.parent_wayland.as_deref())
+        .and_then(|handle| {
+            let importer: ZxdgImporterV2 = globals.bind(&qh, 1..=1, ()).ok()?;
+            let imported = importer.import_toplevel(handle.to_owned(), &qh, ());
+            imported.set_parent_of(window.wl_surface());
+            Some((importer, imported))
+        });
+    let modal_dialog = picker_config.as_ref().and_then(|_| {
+        let wm: XdgWmDialogV1 = globals.bind(&qh, 1..=1, ()).ok()?;
+        let dialog = wm.get_xdg_dialog(window.xdg_toplevel(), &qh, ());
+        dialog.set_modal();
+        Some((wm, dialog))
+    });
     window.commit();
 
     let (tx, rx) = channel::channel::<Msg>();
@@ -356,6 +377,8 @@ fn main() {
         fractional: None,
         viewport,
         _fractional_object: fractional_object,
+        _foreign_parent: foreign_parent,
+        _modal_dialog: modal_dialog,
         configured: false,
         frame_pending: false,
         exit: false,
@@ -1166,4 +1189,12 @@ macro_rules! no_events {
         }
     )*};
 }
-no_events!(WpFractionalScaleManagerV1, WpViewporter, WpViewport);
+no_events!(
+    WpFractionalScaleManagerV1,
+    WpViewporter,
+    WpViewport,
+    ZxdgImporterV2,
+    ZxdgImportedV2,
+    XdgWmDialogV1,
+    XdgDialogV1
+);

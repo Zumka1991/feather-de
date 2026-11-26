@@ -318,6 +318,7 @@ impl Preview {
                 ],
                 filter: 0,
                 choices: Vec::new(),
+                parent_wayland: None,
             };
             if let Ok(Some(sel)) = feather_ui::picker::run(&cfg, None, |_| {}) {
                 if let Ok(mut paths) = sel.local_paths() {

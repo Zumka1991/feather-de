@@ -160,6 +160,7 @@ impl WindowMemory {
 /// own geometry, and Proton shares one id between unrelated games.
 pub fn remembers(win: &ManagedWindow) -> bool {
     !win.larvis
+        && !win.is_dialog()
         && !win.app_id.is_empty()
         && !win.is_builtin()
         && !win.app_id.eq_ignore_ascii_case("steam_app_default")

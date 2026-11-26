@@ -1,7 +1,7 @@
 use std::os::unix::io::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::backend::renderer::sync::Fence;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -14,7 +14,7 @@ use smithay::{
     delegate_compositor, delegate_cursor_shape, delegate_data_device, delegate_dmabuf,
     delegate_drm_syncobj, delegate_fractional_scale, delegate_output, delegate_primary_selection,
     delegate_seat, delegate_shm, delegate_viewporter, delegate_xdg_activation,
-    delegate_xdg_decoration, delegate_xdg_shell,
+    delegate_xdg_decoration, delegate_xdg_dialog, delegate_xdg_foreign, delegate_xdg_shell,
     desktop::{find_popup_root_surface, get_popup_toplevel_coords, PopupKind},
     input::{pointer::CursorImageStatus, Seat, SeatHandler, SeatState},
     reexports::{
@@ -49,12 +49,14 @@ use smithay::{
         },
         shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState},
         shell::xdg::{
-            decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
-            XdgShellHandler, XdgShellState,
+            decoration::XdgDecorationHandler,
+            dialog::XdgDialogHandler,
+            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
         },
         shm::{ShmHandler, ShmState},
         tablet_manager::TabletSeatHandler,
         xdg_activation::{XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData},
+        xdg_foreign::{XdgForeignHandler, XdgForeignState},
     },
 };
 
@@ -129,6 +131,56 @@ impl FeatherCompositor {
         win.x = ((sw - win.width) / 2 + cascade).clamp(0, max_x);
         win.y = ((sh - win.total_height()) / 2 + cascade - 20).clamp(min_y, max_y);
         win.x+=r.x;win.y+=r.y;
+    }
+
+    /// Centers a child dialog over its parent window, clamped inside the parent's monitor work area.
+    fn center_window_over_parent(&mut self, idx: usize, parent_idx: usize) {
+        let r = self.window_monitor(parent_idx);
+        let (px, py, pw, ph) = {
+            let p = &self.windows[parent_idx];
+            (p.x, p.y, p.width, p.total_height())
+        };
+        let top_pad = if r.x == 0 && r.y == 0 { TOP_BAR_HEIGHT } else { 0 };
+        let dock_pad = if r.x == 0 && r.y == 0 {
+            crate::theme::dock_reserved()
+        } else {
+            0
+        };
+        let win = &mut self.windows[idx];
+        let max_w = (r.w - 16).max(crate::window::MIN_WINDOW_W);
+        let max_h = (r.h - top_pad - dock_pad - win.titlebar_h()).max(crate::window::MIN_WINDOW_H);
+        if (win.width > max_w || win.height > max_h) && !win.maximized && !win.fullscreen {
+            let w = win.width.min(max_w);
+            let h = win.height.min(max_h);
+            win.width = w;
+            win.height = h;
+            win.resize_client(w, h);
+        }
+        if win.maximized || win.fullscreen {
+            return;
+        }
+        let min_x = r.x;
+        let max_x = (r.x + r.w - win.width).max(min_x);
+        let min_y = r.y + top_pad + 8;
+        let max_y = (r.y + r.h - dock_pad - win.total_height()).max(min_y);
+        let cx = px + (pw - win.width) / 2;
+        let cy = py + (ph - win.total_height()) / 2;
+        win.x = cx.clamp(min_x, max_x);
+        win.y = cy.clamp(min_y, max_y);
+    }
+
+    /// Ensures a dialog (`set_parent` / `xdg_foreign` / `xdg_wm_dialog_v1`) never stays tiled
+    /// or maximized from stale window memory when its dialog role arrives after creation.
+    fn detach_dialog_from_layouts(&mut self, idx: usize) {
+        self.windows[idx].remembered_place = None;
+        self.windows[idx].remembered_space = None;
+        self.windows[idx].remembered_scratch = None;
+        if !self.windows[idx].mapped && self.windows[idx].maximized {
+            let r = self.window_monitor(idx);
+            self.windows[idx].maximize_on(false, r);
+        }
+        self.space_layout_release_window(idx);
+        self.scratch_release_from_tiles(idx);
     }
 
     /// Preferred scale of a window's surface, which for X windows depends on fullscreen.
@@ -271,33 +323,61 @@ impl FeatherCompositor {
         }
         if changes.newly_mapped && !self.adopt_larvis_window(idx) {
             // A new (or Qt re-mapped) window opens visible on the user's desktop in front
+            let win_id = self.windows[idx].id;
+            self.windows[idx].mapped_at = Some(Instant::now());
             self.windows[idx].minimized = false;
             self.windows[idx].auto_minimized = false;
             self.leave_larvis_desktop();
-            // A program of the previous session goes back to its desktop
-            let space = self.windows[idx].remembered_space.take().unwrap_or(self.spaces.current).min(crate::spaces::MAX_SPACES - 1);
-            self.spaces.count = self.spaces.count.max(space + 1);
-            self.windows[idx].space = space;
-            self.windows[idx].off_space = space != self.spaces.current;
-            self.place_new_window(idx);
-            self.window_memory_changed();
-            // In front of the Подложка a new window joins it, as in Hyprland; so does a program
-            // that lived there when it was last closed
-            let remembered = self.windows[idx].remembered_scratch.take();
-            if self.shell.scratch_open || remembered.is_some() {
-                self.scratch_adopt(idx);
+            let parent_idx = self
+                .parent_window_id_of(idx)
+                .and_then(|pid| self.windows.iter().position(|w| w.id == pid));
+            if let Some(pidx) = parent_idx {
+                self.windows[idx].remembered_place = None;
+                self.windows[idx].remembered_space = None;
+                self.windows[idx].remembered_scratch = None;
+                self.windows[idx].space = self.windows[pidx].space;
+                self.windows[idx].off_space = self.windows[pidx].off_space;
+                self.center_window_over_parent(idx, pidx);
+            } else if self.windows[idx].is_dialog() {
+                self.windows[idx].remembered_space = None;
+                self.windows[idx].remembered_scratch = None;
+                self.windows[idx].space = self.spaces.current;
+                self.windows[idx].off_space = false;
+                self.place_new_window(idx);
             } else {
-                self.space_layout_adopt(idx);
-            }
-            if remembered == Some(false) {
-                self.set_scratch_open(true);
+                // A program of the previous session goes back to its desktop
+                let space = self.windows[idx]
+                    .remembered_space
+                    .take()
+                    .unwrap_or(self.spaces.current)
+                    .min(crate::spaces::MAX_SPACES - 1);
+                self.spaces.count = self.spaces.count.max(space + 1);
+                self.windows[idx].space = space;
+                self.windows[idx].off_space = space != self.spaces.current;
+                self.place_new_window(idx);
+                self.window_memory_changed();
+                // In front of the Подложка a new window joins it, as in Hyprland; so does a program
+                // that lived there when it was last closed
+                let remembered = self.windows[idx].remembered_scratch.take();
+                if self.shell.scratch_open || remembered.is_some() {
+                    self.scratch_adopt(idx);
+                } else {
+                    self.space_layout_adopt(idx);
+                }
+                if remembered == Some(false) {
+                    self.set_scratch_open(true);
+                }
             }
             // New windows go to the top of the stack and get keyboard focus
-            let win = self.windows.remove(idx);
-            self.windows.push(win);
+            // (re-resolve by id because `set_scratch_open` may have reordered `self.windows`)
+            if let Some(pos) = self.windows.iter().position(|w| w.id == win_id) {
+                let win = self.windows.remove(pos);
+                self.windows.push(win);
+            }
             self.refresh_focus();
         }
         if changes.unmapped {
+            self.windows[idx].mapped_at = None;
             self.remember_closing_window(idx);
             self.drop_keyboard_focus_if(surface);
             self.refresh_focus();
@@ -460,6 +540,36 @@ impl XdgShellHandler for FeatherCompositor {
         self.title_changed(surface);
     }
 
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        let Some(idx) = self.window_index_for_toplevel(surface.wl_surface()) else {
+            return;
+        };
+        if !self.windows[idx].has_parent() {
+            return;
+        }
+        let win_id = self.windows[idx].id;
+        self.detach_dialog_from_layouts(idx);
+        let Some(idx) = self.windows.iter().position(|w| w.id == win_id) else {
+            return;
+        };
+        if self.windows[idx].mapped {
+            if let Some(pidx) = self
+                .parent_window_id_of(idx)
+                .and_then(|pid| self.windows.iter().position(|w| w.id == pid))
+            {
+                self.windows[idx].space = self.windows[pidx].space;
+                self.windows[idx].off_space = self.windows[pidx].off_space;
+                if self.windows[idx]
+                    .mapped_at
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
+                {
+                    self.center_window_over_parent(idx, pidx);
+                }
+            }
+            self.refresh_focus();
+        }
+    }
+
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // The window stays unmapped (invisible, no input, no focus) until the client attaches
         // a buffer. The initial configure is sent from the commit handler, as xdg-shell requires.
@@ -569,16 +679,14 @@ impl XdgShellHandler for FeatherCompositor {
 
 impl FeatherCompositor {
     pub fn minimize_window(&mut self, idx: usize) {
-        let parent_surface = self.windows[idx].wl_surface().cloned();
+        let parent_id = self.windows[idx].id;
         self.windows[idx].minimized = true;
         self.windows[idx].auto_minimized = false;
         // Minimize visible child dialogs together with their parent so they restore together
-        if let Some(ps) = parent_surface {
-            for w in &mut self.windows {
-                if w.mapped
-                    && !w.minimized
-                    && w.toplevel().and_then(|t| t.parent()).as_ref() == Some(&ps)
-                {
+        let child_ids = self.collect_child_dialog_ids(parent_id);
+        for cid in child_ids {
+            if let Some(w) = self.windows.iter_mut().find(|w| w.id == cid) {
+                if w.mapped && !w.minimized {
                     w.minimized = true;
                     w.auto_minimized = true;
                 }
@@ -588,6 +696,35 @@ impl FeatherCompositor {
         self.shell.topbar_dirty = true;
         self.refresh_focus();
         self.needs_redraw = true;
+    }
+}
+
+impl XdgForeignHandler for FeatherCompositor {
+    fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
+        &mut self.xdg_foreign_state
+    }
+}
+
+impl XdgDialogHandler for FeatherCompositor {
+    fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
+        let Some(idx) = self.window_index_for_toplevel(toplevel.wl_surface()) else {
+            return;
+        };
+        if self.windows[idx].modal == is_modal {
+            return;
+        }
+        let win_id = self.windows[idx].id;
+        self.windows[idx].modal = is_modal;
+        if is_modal {
+            self.detach_dialog_from_layouts(idx);
+            if self
+                .windows
+                .iter()
+                .any(|w| w.id == win_id && w.mapped)
+            {
+                self.refresh_focus();
+            }
+        }
     }
 }
 
@@ -984,6 +1121,52 @@ impl SeatHandler for FeatherCompositor {
 
 impl TabletSeatHandler for FeatherCompositor {}
 
+/// Decides whether an `xdg_activation_v1.activate` request should raise `target_id`.
+/// Compositor-minted tokens (launches, notifications, tray) are always honored; client-minted
+/// self-activations cannot steal focus from a newer window or an active dialog.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn should_honor_activation(
+    locked: bool,
+    token_age: Duration,
+    token_timestamp: Instant,
+    is_external_token: bool,
+    has_serial: bool,
+    self_activate: bool,
+    target_id: u64,
+    target_mapped: bool,
+    target_off_space: bool,
+    top: Option<(u64, Option<Instant>, bool)>,
+    now: Instant,
+) -> bool {
+    if locked || !target_mapped || target_off_space || token_age >= Duration::from_secs(10) {
+        return false;
+    }
+    let Some((top_id, top_mapped_at, top_is_dialog)) = top else {
+        return true;
+    };
+    if top_id == target_id {
+        return false;
+    }
+    if is_external_token {
+        return true;
+    }
+    if self_activate {
+        if top_mapped_at.is_some_and(|t| t > token_timestamp) {
+            return false;
+        }
+        if top_is_dialog {
+            return false;
+        }
+        if !has_serial
+            && top_mapped_at
+                .is_some_and(|t| now.saturating_duration_since(t) < Duration::from_millis(1500))
+        {
+            return false;
+        }
+    }
+    true
+}
+
 impl XdgActivationHandler for FeatherCompositor {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.xdg_activation_state
@@ -998,17 +1181,41 @@ impl XdgActivationHandler for FeatherCompositor {
         // Prune abandoned tokens so XdgActivationState never accumulates unboundedly
         self.xdg_activation_state
             .retain_tokens(|_, d| d.timestamp.elapsed().as_secs() < 10);
-        // Honour fresh tokens only, never while locked or across other Spaces
-        if !self.lock.active && token_data.timestamp.elapsed().as_secs() < 10 {
-            if let Some(idx) = self.window_index_for_toplevel(&surface) {
-                if !self.windows[idx].off_space {
-                    let mut win = self.windows.remove(idx);
-                    win.minimized = false;
-                    self.windows.push(win);
-                    self.refresh_focus();
-                    self.shell.dock_dirty = true;
-                    self.needs_redraw = true;
-                }
+        let now = Instant::now();
+        if let Some(idx) = self.window_index_for_toplevel(&surface) {
+            let target_id = self.windows[idx].id;
+            let target_mapped = self.windows[idx].mapped;
+            let target_off_space = self.windows[idx].off_space;
+            let top = self
+                .windows
+                .iter()
+                .rev()
+                .find(|w| w.is_visible() && !w.pip_ghost && !self.auxiliary_game_window(w))
+                .map(|w| (w.id, w.mapped_at, w.is_dialog()));
+            let is_external = token_data.client_id.is_none();
+            let self_activate = token_data.surface.as_ref() == Some(&surface)
+                || (token_data.client_id.is_some()
+                    && token_data.client_id == surface.client().map(|c| c.id()));
+            if should_honor_activation(
+                self.lock.active,
+                now.saturating_duration_since(token_data.timestamp),
+                token_data.timestamp,
+                is_external,
+                token_data.serial.is_some(),
+                self_activate,
+                target_id,
+                target_mapped,
+                target_off_space,
+                top,
+                now,
+            ) {
+                let mut win = self.windows.remove(idx);
+                win.minimized = false;
+                self.windows.push(win);
+                self.restore_minimized_child_dialogs(target_id);
+                self.refresh_focus();
+                self.shell.dock_dirty = true;
+                self.needs_redraw = true;
             }
         }
         self.xdg_activation_state.remove_token(&token);
@@ -1017,6 +1224,8 @@ impl XdgActivationHandler for FeatherCompositor {
 
 delegate_xdg_shell!(FeatherCompositor);
 delegate_xdg_decoration!(FeatherCompositor);
+delegate_xdg_foreign!(FeatherCompositor);
+delegate_xdg_dialog!(FeatherCompositor);
 smithay::delegate_kde_decoration!(FeatherCompositor);
 delegate_xdg_activation!(FeatherCompositor);
 delegate_compositor!(FeatherCompositor);
@@ -1033,3 +1242,112 @@ delegate_viewporter!(FeatherCompositor);
 delegate_fractional_scale!(FeatherCompositor);
 delegate_cursor_shape!(FeatherCompositor);
 smithay::delegate_presentation!(FeatherCompositor);
+
+#[cfg(test)]
+mod activation_tests {
+    use super::should_honor_activation;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn blocks_stale_self_activation_after_new_window_maps() {
+        let now = Instant::now();
+        let token_ts = now - Duration::from_millis(80);
+        let dialog_mapped = now - Duration::from_millis(20);
+        // Electron main window (48) minted a token before dialog (50) mapped, then activates itself
+        assert!(!should_honor_activation(
+            false,
+            Duration::from_millis(80),
+            token_ts,
+            false,
+            true,
+            true,
+            48,
+            true,
+            false,
+            Some((50, Some(dialog_mapped), false)),
+            now,
+        ));
+    }
+
+    #[test]
+    fn blocks_self_activation_over_active_dialog_and_fresh_window_without_serial() {
+        let now = Instant::now();
+        let old = now - Duration::from_secs(5);
+        // Even with a fresh token, background app cannot self-activate over an active dialog
+        assert!(!should_honor_activation(
+            false,
+            Duration::from_millis(10),
+            now - Duration::from_millis(10),
+            false,
+            true,
+            true,
+            48,
+            true,
+            false,
+            Some((50, Some(old), true)),
+            now,
+        ));
+        // Background self-activation without serial cannot bury a window opened 300 ms ago
+        assert!(!should_honor_activation(
+            false,
+            Duration::from_millis(5),
+            now - Duration::from_millis(5),
+            false,
+            false,
+            true,
+            48,
+            true,
+            false,
+            Some((51, Some(now - Duration::from_millis(300)), false)),
+            now,
+        ));
+    }
+
+    #[test]
+    fn allows_external_launch_tokens_and_legitimate_handoffs() {
+        let now = Instant::now();
+        let recent = now - Duration::from_millis(100);
+        // Compositor-minted token (Dock/Launchpad/notification) always raises target
+        assert!(should_honor_activation(
+            false,
+            Duration::from_millis(50),
+            now - Duration::from_millis(50),
+            true,
+            false,
+            false,
+            48,
+            true,
+            false,
+            Some((50, Some(recent), true)),
+            now,
+        ));
+        // Focused app handing off activation to another app (e.g. Telegram -> Chrome link)
+        assert!(should_honor_activation(
+            false,
+            Duration::from_millis(50),
+            now - Duration::from_millis(50),
+            false,
+            true,
+            false,
+            24,
+            true,
+            false,
+            Some((11, Some(now - Duration::from_secs(60)), false)),
+            now,
+        ));
+        // Single-instance CLI launch from an already-open terminal (mapped 30 s ago)
+        assert!(should_honor_activation(
+            false,
+            Duration::from_millis(20),
+            now - Duration::from_millis(20),
+            false,
+            false,
+            true,
+            48,
+            true,
+            false,
+            Some((26, Some(now - Duration::from_secs(30)), false)),
+            now,
+        ));
+    }
+}

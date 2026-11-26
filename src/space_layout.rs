@@ -186,6 +186,7 @@ impl SpaceLayouts {
             return false;
         };
         ps.mode == SpaceMode::Tile
+            && ps.order.contains(&win_id)
             && ps
                 .zoomed
                 .is_some_and(|z| z != win_id && ps.order.len() > 1 && ps.order.contains(&z))
@@ -464,7 +465,7 @@ impl FeatherCompositor {
                         && !w.maximized
                         && !w.fullscreen
                         && !w.larvis
-                        && !w.has_parent()
+                        && !w.is_dialog()
                 })
             })
             .collect()
@@ -528,7 +529,7 @@ impl FeatherCompositor {
                         && w.mapped
                         && !w.pip
                         && !w.larvis
-                        && !w.has_parent()
+                        && !w.is_dialog()
                         && !w.fullscreen
                 })
                 .map(|w| (w.x, w.y, w.id))
@@ -577,7 +578,7 @@ impl FeatherCompositor {
             || self.space_layouts.mode(space) == SpaceMode::Free
             || self.windows[idx].pip
             || self.windows[idx].larvis
-            || self.windows[idx].has_parent()
+            || self.windows[idx].is_dialog()
         {
             return;
         }
@@ -602,6 +603,35 @@ impl FeatherCompositor {
             }
         }
         ps.invalidate();
+    }
+
+    /// Detaches a window from `Tile`/`Tape` layout (e.g. when a dialog sets `parent`/`modal`
+    /// after creation) so it floats freely above its parent.
+    pub fn space_layout_release_window(&mut self, idx: usize) {
+        let id = self.windows[idx].id;
+        let space = self.windows[idx].space;
+        let was_managed = self.windows[idx].managed_layout;
+        if space < MAX_SPACES {
+            let ps = &mut self.space_layouts.spaces[space as usize];
+            if ps.order.contains(&id) {
+                ps.order.retain(|&o| o != id);
+                ps.widths.retain(|&(wid, _)| wid != id);
+                if ps.zoomed == Some(id) {
+                    ps.zoomed = None;
+                }
+                if ps.saved_before_full.is_some_and(|(wid, _)| wid == id) {
+                    ps.saved_before_full = None;
+                }
+                if ps.focused_col == Some(id) {
+                    ps.focused_col = None;
+                }
+                ps.invalidate();
+            }
+        }
+        if was_managed {
+            let r = self.window_monitor(idx);
+            self.windows[idx].leave_managed_layout(r);
+        }
     }
 
     /// Synchronizes all `Tile` and `Tape` desktops. Fast-paths when all desktops are `Free`
@@ -650,7 +680,7 @@ impl FeatherCompositor {
                         && w.mapped
                         && !w.pip
                         && !w.larvis
-                        && !w.has_parent()
+                        && !w.is_dialog()
                         && !w.fullscreen
                         && !self.space_layouts.spaces[space as usize].order.contains(&w.id)
                 })
