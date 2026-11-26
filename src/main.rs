@@ -420,6 +420,7 @@ impl FeatherCompositor {
         self.scratch_sync();
         self.space_layout_sync();
         self.auto_minimize_displaced_fullscreen();
+        self.keep_child_dialogs_above_parents();
         self.sync_pip_topbar();
         let top = self.windows.iter().rposition(|w| w.is_visible() && !w.pip_ghost && !self.auxiliary_game_window(w));
         // The desktop keeps the keyboard until another window comes to the front
@@ -453,6 +454,110 @@ impl FeatherCompositor {
         self.api_sync();
         self.foreign_sync();
         self.sync_game_mode();
+    }
+
+    /// Keeps visible transient/modal child dialogs (`xdg_toplevel.set_parent`) strictly above
+    /// their active parent window so clicking the parent never buries a modal confirmation dialog
+    /// (e.g. Qt/OBS "Confirm Delete") underneath it.
+    fn keep_child_dialogs_above_parents(&mut self) {
+        let Some(top_idx) = self
+            .windows
+            .iter()
+            .rposition(|w| w.is_visible() && !w.pip_ghost && !self.auxiliary_game_window(w))
+        else {
+            return;
+        };
+        let mut parent_surfaces = match self.windows[top_idx].wl_surface() {
+            Some(s) => vec![s.clone()],
+            None => return,
+        };
+        let parent_space = self.windows[top_idx].space;
+        let parent_off_space = self.windows[top_idx].off_space;
+        let mut lifted_ids: Vec<u64> = Vec::new();
+        for _ in 0..4 {
+            let mut added = false;
+            for w in &self.windows {
+                if !w.mapped || w.minimized || lifted_ids.contains(&w.id) {
+                    continue;
+                }
+                let is_child = w
+                    .toplevel()
+                    .and_then(|t| t.parent())
+                    .is_some_and(|p| parent_surfaces.iter().any(|ps| ps == &p));
+                if is_child {
+                    lifted_ids.push(w.id);
+                    if let Some(s) = w.wl_surface() {
+                        parent_surfaces.push(s.clone());
+                    }
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+        for id in lifted_ids {
+            if let Some(pos) = self.windows.iter().position(|w| w.id == id) {
+                let mut child = self.windows.remove(pos);
+                child.space = parent_space;
+                child.off_space = parent_off_space;
+                self.windows.push(child);
+            }
+        }
+    }
+
+    /// Un-minimizes any mapped child dialogs belonging to `parent_id` and lifts them above the
+    /// parent. Returns `true` if at least one hidden child dialog was restored.
+    pub(crate) fn restore_minimized_child_dialogs(&mut self, parent_id: u64) -> bool {
+        let Some(parent_idx) = self.windows.iter().position(|w| w.id == parent_id) else {
+            return false;
+        };
+        let mut parent_surfaces = match self.windows[parent_idx].wl_surface() {
+            Some(s) => vec![s.clone()],
+            None => return false,
+        };
+        let parent_space = self.windows[parent_idx].space;
+        let parent_off_space = self.windows[parent_idx].off_space;
+        let mut restored_ids: Vec<u64> = Vec::new();
+        for _ in 0..4 {
+            let mut added = false;
+            for w in &self.windows {
+                if !w.mapped || restored_ids.contains(&w.id) {
+                    continue;
+                }
+                let is_child = w
+                    .toplevel()
+                    .and_then(|t| t.parent())
+                    .is_some_and(|p| parent_surfaces.iter().any(|ps| ps == &p));
+                if is_child {
+                    if w.minimized {
+                        restored_ids.push(w.id);
+                    }
+                    if let Some(s) = w.wl_surface() {
+                        parent_surfaces.push(s.clone());
+                    }
+                    added = true;
+                }
+            }
+            if !added {
+                break;
+            }
+        }
+        if restored_ids.is_empty() {
+            return false;
+        }
+        for id in restored_ids {
+            if let Some(pos) = self.windows.iter().position(|w| w.id == id) {
+                let mut child = self.windows.remove(pos);
+                child.minimized = false;
+                child.auto_minimized = false;
+                child.space = parent_space;
+                child.off_space = parent_off_space;
+                self.windows.push(child);
+            }
+        }
+        self.shell.dock_dirty = true;
+        true
     }
 
     /// When focus moves to another application on the same display and desktop, a displaced
@@ -1050,8 +1155,12 @@ impl FeatherCompositor {
         let (mut app_wins, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.windows)
             .into_iter()
             .partition(|w| ids.contains(&w.id) && !w.minimized);
+        let raised_ids: Vec<u64> = app_wins.iter().map(|w| w.id).collect();
         self.windows = rest;
         self.windows.append(&mut app_wins);
+        for id in raised_ids {
+            self.restore_minimized_child_dialogs(id);
+        }
         self.refresh_focus();
     }
 

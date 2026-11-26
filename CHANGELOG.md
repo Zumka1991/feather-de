@@ -4,6 +4,27 @@
 
 Новые записи добавляются сверху. Формат: дата → что сделано → почему → как проверено.
 
+## 2026-11-26 — Выпуск 0.26.7 (Gemini/agy)
+
+- **Исправлен захват экрана в OBS Studio (портал ScreenCast + zero-copy 4K PipeWire) и защита модальных диалогов:**
+  - В портале `org.freedesktop.impl.portal.desktop.feather` выставлено строчное D-Bus свойство `version` (вместо `Version`), благодаря чему `xdg-desktop-portal` корректно отдаёт `AvailableCursorModes = 3` и больше не отклоняет `SelectSources` в OBS ошибкой `Unavailable cursor mode 1`; при входе в сессию устаревший `--file-portal` обновляется автоматически.
+  - В PipeWire-стриме экрана (`pw_cast`) свойство `SPA_PARAM_BUFFERS_dataType` переведено на `SPA_CHOICE_Flags` (устраняет `error alloc buffers: Invalid argument (-22)` в OBS), а рендер переведён на zero-copy передачу GPU PBO в поток PipeWire (`0` байт копий `Vec<u8>` в главном потоке и `0` байт дополнительной кучи `RssAnon`) с backpressure `in_flight`, дедупликацией по монитору и плавным темпом `30 к/с` на 4K (`60 к/с` до 1440p).
+  - Видимые дочерние модальные окна (`xdg_toplevel.set_parent`, например «Подтвердить удаление» в OBS) теперь всегда держатся поверх активного родителя, сворачиваются вместе с ним и автоматически возвращаются при клике по Dock или кнопке закрытия родителя. Проверено пользователем в DRM; новых зависимостей пакета нет.
+
+## 2026-11-26 — Исправлен захват экрана в OBS, zero-copy 4K PipeWire и модальные диалоги (Gemini/agy)
+
+- **Починен захват экрана в OBS через `xdg-desktop-portal` / PipeWire, убраны лаги и рост памяти при 4K-стриме и защищены дочерние модальные окна** (`src/file_portal.rs`, `src/pw_cast.rs`, `src/main.rs`, `src/handlers.rs`, `src/input.rs`):
+  - **Почему OBS показывал чёрный экран, затем тормозил на 4K и переставал нажиматься:**
+    1. В `src/file_portal.rs` свойство `version` экспортировалось как `Version` вместо строчного `version`, из-за чего `xdg-desktop-portal` выставлял `AvailableCursorModes = 0` и отклонял `SelectSources` OBS ошибкой `InvalidArgument: Unavailable cursor mode 1`.
+    2. В `src/pw_cast.rs` свойство `SPA_PARAM_BUFFERS_dataType` передавалось как `Value::Int(6)` вместо `SPA_CHOICE_Flags`, из-за чего PipeWire не пересекал его с маской OBS (`Int 14`) и обрывал поток ошибкой `error alloc buffers: Invalid argument (-22)`.
+    3. После старта 4K-стрима `cast_flush()` выделял `33 МБ` `Vec<u8>` и копировал его на главном потоке без backpressure при `READBACK_DELAY = 3 мс`, что давало `79 %` CPU, `99,7 МБ` `RssAnon` и задержки ввода `libinput` до `64 мс`.
+    4. Дочерний модальный диалог Qt (например, «Подтвердить удаление» в OBS) мог уйти под родительское окно при клике или остаться свёрнутым, полностью блокируя клики и закрытие родителя.
+  - **Что сделано:**
+    - В `src/file_portal.rs` задано строчное `#[zbus(property, name = "version")]` на `ScreenCastPortal`, `ScreenshotPortal` и `PortalSession`, а в `session_start` добавлено автообновление устаревшего `--file-portal` и `xdg-desktop-portal.service`.
+    - В `src/pw_cast.rs` `SPA_PARAM_BUFFERS_dataType` переведён на `ChoiceEnum::Flags` (двойная буферизация `1..=3`), `Vec<u8>`-копии на главном потоке заменены на zero-copy `Arc<CastFrame>` (передача `GlesMapping` прямо в поток `feather-pipewire`, `0` Б `RssAnon`), добавлены backpressure `in_flight` + `FromPw::FrameDone`, дедупликация рендера для потоков одного монитора, `READBACK_DELAY = 10 мс` и адаптивный лимит `30 к/с` для 4K CPU readback (`60 к/с` до 1440p).
+    - В `src/main.rs`, `src/handlers.rs` и `src/input.rs` добавлены `keep_child_dialogs_above_parents` и `restore_minimized_child_dialogs`: видимые дочерние диалоги (`xdg_toplevel.set_parent`) всегда держатся поверх активного родителя, сворачиваются вместе с ним и восстанавливаются при клике по иконке в Dock или кнопке закрытия заблокированного родителя; при `newly_mapped` сбрасывается `minimized`.
+  - **Проверено:** `cargo build --release --workspace` без ошибок и предупреждений; тесты `file_portal::tests::portal_screencast_exposes_lowercase_version_and_suv_restore_data` и `pw_cast::tests::params_serialize`; проверка `spa_pod_filter` с точными pod-ами OBS; живой захват 4K-кадра через `org.freedesktop.portal.ScreenCast` + PipeWire (`3840×2160` RGBA).
+
 ## 2026-11-26 — Выпуск 0.26.6 (Gemini/agy)
 
 - **ASMR-озвучивание набора текста в «Системных настройках → Клавиатура» (6 студийных наборов реальных свитчей на PipeWire):**

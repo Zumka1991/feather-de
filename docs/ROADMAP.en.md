@@ -30,7 +30,7 @@ computer — [DRM_CHECKLIST.md](DRM_CHECKLIST.md).
   - [x] Five new procedural wallpapers: "Waves", "Dunes", "Ridges", "Emerald", "Graphite" (`tools/wallpaper-gen`)
 - [x] Own polkit agent with a password window in the compositor — [POLKIT.md](POLKIT.md)
 - [x] XDG Desktop Portal FileChooser through Files
-- [x] ScreenCast portal: our own PipeWire stream with a monitor (OBS, browsers, calls)
+- [x] ScreenCast portal: our own PipeWire stream with a monitor (OBS, browsers, calls; fixed lowercase `version` / `AvailableCursorModes = 3`, `SPA_CHOICE_Flags`, zero-copy 4K PBO streaming, and automatic `--file-portal` refresh; verified by the user in DRM)
 - [ ] ScreenCast: capturing a single window, a monitor picker, a sharing indicator in the menu bar
 - [x] Apps: Files, Terminal, Notes — [FILES.md](FILES.md), [TERMINAL.md](TERMINAL.md), [NOTES.md](NOTES.md)
   - [x] Terminal: macOS Tahoe-style tab bar, an activity dot for a background tab

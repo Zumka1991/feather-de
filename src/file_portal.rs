@@ -654,7 +654,7 @@ struct ScreenshotPortal;
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Screenshot")]
 impl ScreenshotPortal {
-    #[zbus(property)]
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         3
     }
@@ -777,6 +777,11 @@ struct PortalSession {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
 impl PortalSession {
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        1
+    }
+
     async fn close(
         &self,
         #[zbus(header)] header: Header<'_>,
@@ -816,7 +821,9 @@ struct ScreenCastPortal {
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.ScreenCast")]
 impl ScreenCastPortal {
-    #[zbus(property)]
+    // xdg-desktop-portal looks up strictly lowercase `version`; without it, it assumes v1
+    // and clamps AvailableCursorModes to 0 (breaking OBS SelectSources with InvalidArgument).
+    #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
         5
     }
@@ -1082,6 +1089,65 @@ pub fn configure(config: &Path, data: &Path, exe: &Path) -> std::io::Result<()> 
     )?;
     Ok(())
 }
+/// After a package upgrade or early portal start, `user@<uid>.service` can keep an older
+/// `feather-de --file-portal` (deleted exe) or a stale `xdg-desktop-portal` instance across
+/// relogins. Restart only the stale `--file-portal` process (never the compositor) and refresh
+/// `xdg-desktop-portal` when needed.
+fn refresh_stale_portal(current_exe: Option<&Path>) {
+    let needs_portal_restart = futures_lite::future::block_on(async {
+        let Ok(conn) = zbus::Connection::session().await else {
+            return false;
+        };
+        let Ok(dbus) = zbus::fdo::DBusProxy::new(&conn).await else {
+            return false;
+        };
+        let mut restarted_backend = false;
+        if let Ok(bus_name) = zbus::names::BusName::try_from(NAME) {
+            if let Ok(owner) = dbus.get_name_owner(bus_name).await {
+                if let Ok(pid) = dbus.get_connection_unix_process_id(owner.into()).await {
+                    let is_self = pid == std::process::id();
+                    let raw_cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                    let is_portal_proc = crate::dbus_auth::cmdline_has_arg(&raw_cmdline, "--file-portal");
+                    let raw_exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+                    let stale_exe = match (raw_exe.as_deref(), current_exe) {
+                        (Some(running), Some(cur)) => running != cur,
+                        _ => false,
+                    };
+                    if !is_self && is_portal_proc && stale_exe {
+                        unsafe {
+                            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                        }
+                        restarted_backend = true;
+                    }
+                }
+            }
+        }
+        if restarted_backend {
+            return true;
+        }
+        // Also refresh xdg-desktop-portal if it cached AvailableCursorModes == 0 (e.g. started
+        // before XDG_CURRENT_DESKTOP=FeatherDE or against an older backend)
+        let proxy = zbus::Proxy::new(
+            &conn,
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.ScreenCast",
+        )
+        .await;
+        if let Ok(proxy) = proxy {
+            if matches!(proxy.get_property::<u32>("AvailableCursorModes").await, Ok(0)) {
+                return true;
+            }
+        }
+        false
+    });
+    if needs_portal_restart {
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "try-restart", "xdg-desktop-portal.service"])
+            .status();
+    }
+}
+
 pub fn session_start(socket: String) {
     let _ = std::thread::Builder::new()
         .name("feather-portal-setup".into())
@@ -1093,9 +1159,11 @@ pub fn session_start(socket: String) {
             let data = std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".local/share"));
-            if let Err(e) = std::env::current_exe().and_then(|exe| configure(&config, &data, &exe))
-            {
-                tracing::warn!("FileChooser setup: {e}");
+            let exe = std::env::current_exe().ok();
+            if let Some(exe_path) = exe.as_deref() {
+                if let Err(e) = configure(&config, &data, exe_path) {
+                    tracing::warn!("FileChooser setup: {e}");
+                }
             }
             let _ = std::process::Command::new("dbus-update-activation-environment")
                 .args([
@@ -1109,6 +1177,7 @@ pub fn session_start(socket: String) {
                     "PLASMA_INTEGRATION_USE_PORTAL=1",
                 ])
                 .status();
+            refresh_stale_portal(exe.as_deref());
         });
 }
 
@@ -1266,5 +1335,40 @@ mod tests {
         assert!(saved.contains("screen_capture_app=org.chromium.Chromium|Chromium|deny"));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn portal_screencast_exposes_lowercase_version_and_suv_restore_data() {
+        use zbus::object_server::Interface;
+        let check = |iface: &dyn Interface, label: &str| {
+            let mut xml = String::new();
+            iface.introspect_to_writer(&mut xml, 0);
+            assert!(
+                xml.contains(r#"property name="version" type="u""#),
+                "{label} must expose lowercase `version`: {xml}"
+            );
+            assert!(
+                !xml.contains(r#"property name="Version""#),
+                "{label} must not expose PascalCase `Version`: {xml}"
+            );
+            xml
+        };
+        let sc_xml = check(&ScreenCastPortal::default(), "ScreenCastPortal");
+        assert!(sc_xml.contains(r#"property name="AvailableCursorModes" type="u""#));
+        assert!(sc_xml.contains(r#"property name="AvailableSourceTypes" type="u""#));
+        check(&ScreenshotPortal, "ScreenshotPortal");
+        let sess = PortalSession {
+            path: OwnedObjectPath::try_from("/org/freedesktop/portal/desktop/session/t/s").unwrap(),
+            sender: ":1.1".into(),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+        };
+        check(&sess, "PortalSession");
+
+        let restore = value((
+            "FeatherDE".to_string(),
+            1u32,
+            Value::from("com.obsproject.Studio".to_string()),
+        ));
+        assert_eq!(restore.value_signature().to_string(), "(suv)");
     }
 }

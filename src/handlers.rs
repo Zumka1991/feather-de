@@ -270,7 +270,9 @@ impl FeatherCompositor {
             self.pointer_focus_dirty = true;
         }
         if changes.newly_mapped && !self.adopt_larvis_window(idx) {
-            // A new window opens on the user's desktop in front
+            // A new (or Qt re-mapped) window opens visible on the user's desktop in front
+            self.windows[idx].minimized = false;
+            self.windows[idx].auto_minimized = false;
             self.leave_larvis_desktop();
             // A program of the previous session goes back to its desktop
             let space = self.windows[idx].remembered_space.take().unwrap_or(self.spaces.current).min(crate::spaces::MAX_SPACES - 1);
@@ -567,8 +569,21 @@ impl XdgShellHandler for FeatherCompositor {
 
 impl FeatherCompositor {
     pub fn minimize_window(&mut self, idx: usize) {
+        let parent_surface = self.windows[idx].wl_surface().cloned();
         self.windows[idx].minimized = true;
         self.windows[idx].auto_minimized = false;
+        // Minimize visible child dialogs together with their parent so they restore together
+        if let Some(ps) = parent_surface {
+            for w in &mut self.windows {
+                if w.mapped
+                    && !w.minimized
+                    && w.toplevel().and_then(|t| t.parent()).as_ref() == Some(&ps)
+                {
+                    w.minimized = true;
+                    w.auto_minimized = true;
+                }
+            }
+        }
         self.shell.dock_dirty = true;
         self.shell.topbar_dirty = true;
         self.refresh_focus();

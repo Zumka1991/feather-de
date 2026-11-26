@@ -9,6 +9,13 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.7 — 2026-11-26
+
+- **Fixed OBS Studio screen capture (ScreenCast portal + zero-copy 4K PipeWire) and modal child dialog stacking:**
+  - Fixed the D-Bus `version` property casing (`version` instead of `Version`) on `ScreenCast`, `Screenshot`, and `Session` in the built-in portal backend so `xdg-desktop-portal` advertises `AvailableCursorModes = 3` instead of rejecting OBS with `Unavailable cursor mode 1`, and automatically refreshes stale `--file-portal` processes across package upgrades.
+  - Fixed PipeWire buffer negotiation in `pw_cast` by advertising `SPA_PARAM_BUFFERS_dataType` as `SPA_CHOICE_Flags` (fixing OBS's `error alloc buffers: Invalid argument`), and upgraded frame delivery to zero-copy GPU PBO handoff (`Arc<CastFrame>`, zero main-thread `Vec<u8>` allocations / `0` bytes extra `RssAnon`), `in_flight` backpressure, per-monitor deduplication, double-buffered `MemFd` (`1..=3`), and `30 fps` 4K readback pacing (`60 fps` up to 1440p).
+  - Transient/modal child dialogs (`xdg_toplevel.set_parent`, such as Qt/OBS confirmation dialogs) now stay strictly above their active parent, minimize together with the parent, and auto-restore when clicking the parent's Close button or Dock icon. Verified in DRM; no new package dependencies.
+
 ## 0.26.6 — 2026-11-26
 
 - **ASMR Mechanical Keyboard Typing Sounds in *System Settings → Keyboard*:**

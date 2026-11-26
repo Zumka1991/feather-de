@@ -27,7 +27,7 @@
   - [x] Пять новых процедурных обоев: «Волны», «Дюны», «Хребты», «Изумруд», «Графит» (`tools/wallpaper-gen`)
 - [x] Собственный polkit-агент с окном пароля в композиторе — [POLKIT.md](POLKIT.md)
 - [x] XDG Desktop Portal FileChooser через «Файлы»
-- [x] Портал ScreenCast: свой поток PipeWire с монитором (OBS, браузеры, звонки)
+- [x] Портал ScreenCast: свой поток PipeWire с монитором (OBS, браузеры, звонки; исправлены строчное `version` / `AvailableCursorModes = 3`, `SPA_CHOICE_Flags`, zero-copy PBO 4K-стрим и автообновление `--file-portal`; проверено пользователем в DRM)
 - [ ] ScreenCast: захват отдельного окна, окно выбора монитора, значок демонстрации в строке меню
 - [x] Приложения: «Файлы», «Терминал», «Заметки» — [FILES.md](FILES.md), [TERMINAL.md](TERMINAL.md), [NOTES.md](NOTES.md)
   - [x] Терминал: панель вкладок в стиле macOS Tahoe, точка активности фоновой вкладки

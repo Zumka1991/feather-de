@@ -19,6 +19,10 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -26,11 +30,44 @@ use crate::{api::{Reply, Responder}, FeatherCompositor};
 
 /// Наибольшая частота кадров, которую предлагаем потребителю
 pub const MAX_FPS: u32 = 60;
+/// Для 4K CPU readback (33 МБ/кадр) ограничиваем частоту 30 к/с, чтобы главный поток
+/// композитора оставался в бюджете < 1 мс и не задерживал ввод libinput.
+const UHD_READBACK_FPS: u32 = 30;
+
+fn cast_fps(width: i32, height: i32) -> u32 {
+    if (width as i64) * (height as i64) > 2560 * 1440 {
+        UHD_READBACK_FPS
+    } else {
+        MAX_FPS
+    }
+}
+
+/// Zero-copy GPU PBO readback frame shared across casts of the same monitor.
+/// Dropping the last `Arc<CastFrame>` drops `GlesMapping`, which in Smithay queues the
+/// GL buffer unmap for the next main-thread renderer cleanup (0 bytes of `RssAnon` heap).
+pub struct CastFrame {
+    ptr: *const u8,
+    len: usize,
+    _mapping: GlesMapping,
+}
+
+// SAFETY: `ptr` points into a completed GL pixel-pack buffer mapping that remains immutable
+// and mapped until `_mapping` is dropped; PipeWire workers only read `&[u8]`.
+unsafe impl Send for CastFrame {}
+unsafe impl Sync for CastFrame {}
+
+impl CastFrame {
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: valid for `self.len` bytes for the entire lifetime of `self._mapping`.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
 
 pub enum ToPw {
-    Start { id: u64, width: u32, height: u32 },
-    /// Плотно упакованные строки RGBA сверху вниз, `width * height * 4` байт
-    Frame { id: u64, rgba: Vec<u8> },
+    Start { id: u64, width: u32, height: u32, in_flight: Arc<AtomicBool> },
+    /// Плотно упакованные строки RGBA сверху вниз прямо из GPU PBO без копии в главном потоке
+    Frame { id: u64, frame: Arc<CastFrame> },
     Stop(u64),
 }
 
@@ -40,6 +77,8 @@ pub enum FromPw {
     Node { id: u64, node: u32 },
     /// Потребитель подключился (`true`) или приостановил поток
     Streaming { id: u64, on: bool },
+    /// Кадр скопирован в PipeWire MemFd: композитор может снимать следующий, если экран менялся
+    FrameDone { id: u64 },
     Failed { id: u64, reason: String },
     BusDown(String),
 }
@@ -49,9 +88,10 @@ struct Shared {
     width: u32,
     height: u32,
     events: channel::Sender<FromPw>,
+    in_flight: Arc<AtomicBool>,
     node_sent: bool,
     /// Последний кадр, ещё не отданный в буфер
-    frame: Option<Vec<u8>>,
+    frame: Option<Arc<CastFrame>>,
 }
 
 struct Cast {
@@ -87,8 +127,8 @@ fn run(
     let casts: Rc<RefCell<HashMap<u64, Cast>>> = Rc::new(RefCell::new(HashMap::new()));
     let casts_in = casts.clone();
     let _receiver = rx.attach(mainloop.loop_(), move |msg| match msg {
-        ToPw::Start { id, width, height } => {
-            match start(&core, id, width, height, events.clone()) {
+        ToPw::Start { id, width, height, in_flight } => {
+            match start(&core, id, width, height, in_flight, events.clone()) {
                 Ok(cast) => {
                     casts_in.borrow_mut().insert(id, cast);
                 }
@@ -97,20 +137,26 @@ fn run(
                 }
             }
         }
-        ToPw::Frame { id, rgba } => {
+        ToPw::Frame { id, frame } => {
             let casts = casts_in.borrow();
             let Some(cast) = casts.get(&id) else { return };
-            cast.shared.borrow_mut().frame = Some(rgba);
-            if cast.stream.state() == pw::stream::StreamState::Streaming {
-                // We drive the graph: one cycle per new frame. Under another driver the
-                // frame waits for its next process call.
-                if cast.stream.is_driving() {
-                    let _ = cast.stream.trigger_process();
-                }
+            if cast.stream.state() != pw::stream::StreamState::Streaming {
+                cast.shared.borrow().in_flight.store(false, Ordering::Release);
+                return;
+            }
+            cast.shared.borrow_mut().frame = Some(frame);
+            // We drive the graph: one cycle per new frame. Under another driver the
+            // frame waits for its next process call.
+            if cast.stream.is_driving() {
+                let _ = cast.stream.trigger_process();
             }
         }
         ToPw::Stop(id) => {
             if let Some(cast) = casts_in.borrow_mut().remove(&id) {
+                let mut s = cast.shared.borrow_mut();
+                s.frame = None;
+                s.in_flight.store(false, Ordering::Release);
+                drop(s);
                 let _ = cast.stream.disconnect();
             }
         }
@@ -125,6 +171,7 @@ fn start(
     id: u64,
     width: u32,
     height: u32,
+    in_flight: Arc<AtomicBool>,
     events: channel::Sender<FromPw>,
 ) -> Result<Cast, pw::Error> {
     let stream = pw::stream::StreamRc::new(
@@ -144,6 +191,7 @@ fn start(
         width,
         height,
         events,
+        in_flight,
         node_sent: false,
         frame: None,
     }));
@@ -153,6 +201,8 @@ fn start(
             let mut s = shared.borrow_mut();
             match new {
                 pw::stream::StreamState::Paused => {
+                    s.frame = None;
+                    s.in_flight.store(false, Ordering::Release);
                     if !s.node_sent {
                         s.node_sent = true;
                         let _ = s.events.send(FromPw::Node { id: s.id, node: stream.node_id() });
@@ -164,6 +214,8 @@ fn start(
                     let _ = s.events.send(FromPw::Streaming { id: s.id, on: true });
                 }
                 pw::stream::StreamState::Error(reason) => {
+                    s.frame = None;
+                    s.in_flight.store(false, Ordering::Release);
                     let _ = s.events.send(FromPw::Failed { id: s.id, reason });
                 }
                 _ => {}
@@ -191,12 +243,17 @@ fn start(
             };
             let stride = s.width * 4;
             let size = stride * s.height;
+            let src = frame.bytes();
             let datas = buffer.datas_mut();
-            let Some(data) = datas.first_mut() else { return };
+            let Some(data) = datas.first_mut() else {
+                s.in_flight.store(false, Ordering::Release);
+                let _ = s.events.send(FromPw::FrameDone { id: s.id });
+                return;
+            };
             let written = match data.data() {
                 Some(dst) => {
-                    let n = dst.len().min(frame.len()).min(size as usize);
-                    dst[..n].copy_from_slice(&frame[..n]);
+                    let n = dst.len().min(src.len()).min(size as usize);
+                    dst[..n].copy_from_slice(&src[..n]);
                     n as u32
                 }
                 None => 0,
@@ -205,6 +262,9 @@ fn start(
             *chunk.offset_mut() = 0;
             *chunk.stride_mut() = stride as i32;
             *chunk.size_mut() = written;
+            drop(frame);
+            s.in_flight.store(false, Ordering::Release);
+            let _ = s.events.send(FromPw::FrameDone { id: s.id });
             // The buffer is queued back to the stream when dropped
         })
         .register()?;
@@ -275,29 +335,41 @@ fn format_param(width: u32, height: u32) -> spa::pod::Object {
     }
 }
 
-/// Буферы в памяти (memfd): одна плоскость, строки без выравнивания
+/// Буферы в памяти (memfd): одна плоскость, строки без выравнивания.
+/// `SPA_PARAM_BUFFERS_dataType` обязан быть `SPA_CHOICE_Flags`, иначе PipeWire
+/// сравнивает битовую маску на точное равенство и отвергает OBS (`Int 14` = MemFd|MemPtr|DmaBuf)
+/// с `error alloc buffers: Invalid argument (-22)`.
 fn buffers_param(width: u32, height: u32) -> spa::pod::Object {
-    use spa::pod::{Property, Value};
+    use spa::pod::{ChoiceValue, Property, Value};
     use spa::sys;
+    use spa::utils::{Choice, ChoiceEnum, ChoiceFlags};
     let stride = (width * 4) as i32;
+    let mem_types = ((1 << sys::SPA_DATA_MemFd) | (1 << sys::SPA_DATA_MemPtr)) as i32;
     spa::pod::Object {
         type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
         id: spa::param::ParamType::Buffers.as_raw(),
         properties: vec![
-            Property::new(sys::SPA_PARAM_BUFFERS_buffers, choice_int(4, 2, 8)),
+            Property::new(sys::SPA_PARAM_BUFFERS_buffers, choice_int(2, 1, 3)),
             Property::new(sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
             Property::new(sys::SPA_PARAM_BUFFERS_size, Value::Int(stride * height as i32)),
             Property::new(sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
             Property::new(
                 sys::SPA_PARAM_BUFFERS_dataType,
-                Value::Int((1 << sys::SPA_DATA_MemFd) | (1 << sys::SPA_DATA_MemPtr)),
+                Value::Choice(ChoiceValue::Int(Choice(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::Flags {
+                        default: mem_types,
+                        flags: Vec::new(),
+                    },
+                ))),
             ),
         ],
     }
 }
 
-/// Сколько ждём, пока видеокарта допишет кадр в PBO, прежде чем его прочитать
-const READBACK_DELAY: Duration = Duration::from_millis(3);
+/// Сколько ждём, пока видеокарта асинхронно допишет 4K-кадр в PBO, прежде чем вызывать map_texture
+/// (10 мс избавляет главный поток от синхронного ожидания GPU и задержек libinput)
+const READBACK_DELAY: Duration = Duration::from_millis(10);
 /// Не больше потоков одновременно
 const MAX_CASTS: usize = 4;
 
@@ -313,15 +385,23 @@ struct ActiveCast {
     streaming: bool,
     /// Монитор перерисовался после последнего снятого кадра
     dirty: bool,
+    /// Предыдущий кадр ещё копируется в PipeWire: не запускаем новый PBO readback
+    in_flight: Arc<AtomicBool>,
     offscreen: Option<(GlesTexture, smithay::backend::renderer::damage::OutputDamageTracker, (i32, i32))>,
-    pending: Option<GlesMapping>,
     last: Option<Instant>,
+}
+
+struct PendingCapture {
+    size: (i32, i32),
+    cast_ids: Vec<u64>,
+    mapping: GlesMapping,
 }
 
 #[derive(Default)]
 pub struct ScreenCasts {
     tx: Option<pw::channel::Sender<ToPw>>,
     casts: Vec<ActiveCast>,
+    pending: Vec<PendingCapture>,
     next_id: u64,
     flush_armed: bool,
     due_armed: Option<Instant>,
@@ -382,7 +462,13 @@ impl FeatherCompositor {
         let size = (((r.w as f64 * s).round() as i32).max(1), ((r.h as f64 * s).round() as i32).max(1));
         self.casts.next_id += 1;
         let id = self.casts.next_id;
-        self.casts.send(ToPw::Start { id, width: size.0 as u32, height: size.1 as u32 });
+        let in_flight = Arc::new(AtomicBool::new(false));
+        self.casts.send(ToPw::Start {
+            id,
+            width: size.0 as u32,
+            height: size.1 as u32,
+            in_flight: in_flight.clone(),
+        });
         tracing::info!("Демонстрация экрана {id}: {} {}×{}", info.name, size.0, size.1);
         self.casts.casts.push(ActiveCast {
             id,
@@ -393,8 +479,8 @@ impl FeatherCompositor {
             reply: Some(reply),
             streaming: false,
             dirty: true,
+            in_flight,
             offscreen: None,
-            pending: None,
             last: None,
         });
     }
@@ -402,6 +488,10 @@ impl FeatherCompositor {
     pub fn cast_stop(&mut self, id: u64) {
         let Some(i) = self.casts.casts.iter().position(|c| c.id == id) else { return };
         self.casts.casts.remove(i);
+        for p in &mut self.casts.pending {
+            p.cast_ids.retain(|&cid| cid != id);
+        }
+        self.casts.pending.retain(|p| !p.cast_ids.is_empty());
         self.casts.send(ToPw::Stop(id));
         tracing::info!("Демонстрация экрана {id} остановлена");
         self.shell.topbar_dirty = true;
@@ -425,6 +515,11 @@ impl FeatherCompositor {
                 self.needs_redraw = true;
                 self.cast_capture_due();
             }
+            FromPw::FrameDone { id } => {
+                if self.casts.casts.iter().any(|c| c.id == id && c.streaming && c.dirty) {
+                    self.cast_capture_due();
+                }
+            }
             FromPw::Failed { id, reason } => {
                 tracing::warn!("Демонстрация экрана {id}: {reason}");
                 if let Some(cast) = self.casts.casts.iter_mut().find(|c| c.id == id) {
@@ -436,6 +531,7 @@ impl FeatherCompositor {
             }
             FromPw::BusDown(reason) => {
                 self.casts.tx = None;
+                self.casts.pending.clear();
                 let mut casts = std::mem::take(&mut self.casts.casts);
                 for cast in &mut casts {
                     if let Some(reply) = cast.reply.take() {
@@ -481,30 +577,54 @@ impl FeatherCompositor {
         self.cast_capture_due();
     }
 
-    /// Снимает кадры тех потоков, чей монитор изменился, не чаще `MAX_FPS`
+    /// Снимает кадры тех потоков, чей монитор изменился, с дедупликацией одинаковых
+    /// `(monitor, cursor)` и backpressure `in_flight` (не более 1 кадра в полёте на поток).
     fn cast_capture_due(&mut self) {
-        let interval = Duration::from_nanos(1_000_000_000 / MAX_FPS as u64);
         let now = Instant::now();
         let mut next: Option<Instant> = None;
+        let mut ready_groups: Vec<(String, bool, (i32, i32), usize, Vec<u64>)> = Vec::new();
         for i in 0..self.casts.casts.len() {
             let cast = &self.casts.casts[i];
-            if !cast.streaming || !cast.dirty || cast.pending.is_some() {
+            if !cast.streaming || !cast.dirty || cast.in_flight.load(Ordering::Acquire) {
                 continue;
             }
+            if self.casts.pending.iter().any(|p| p.cast_ids.contains(&cast.id)) {
+                continue;
+            }
+            let fps = cast_fps(cast.size.0, cast.size.1);
+            let interval = Duration::from_nanos(1_000_000_000 / fps as u64);
             if let Some(at) = cast.last.map(|l| l + interval).filter(|at| *at > now) {
                 next = Some(next.map_or(at, |n| n.min(at)));
                 continue;
             }
-            let (monitor, cursor) = (cast.monitor.clone(), cast.cursor);
-            let mut target = self.casts.casts[i].offscreen.take();
-            let mapping = self.render_cast_frame(&monitor, cursor, &mut target);
-            let cast = &mut self.casts.casts[i];
-            cast.offscreen = target;
-            cast.dirty = false;
-            cast.last = Some(now);
-            cast.pending = mapping;
+            if let Some(group) = ready_groups
+                .iter_mut()
+                .find(|(m, cur, sz, _, _)| *m == cast.monitor && *cur == cast.cursor && *sz == cast.size)
+            {
+                group.4.push(cast.id);
+            } else {
+                ready_groups.push((cast.monitor.clone(), cast.cursor, cast.size, i, vec![cast.id]));
+            }
         }
-        if self.casts.casts.iter().any(|c| c.pending.is_some()) && !self.casts.flush_armed {
+        for (monitor, cursor, size, leader_idx, cast_ids) in ready_groups {
+            let mut target = self.casts.casts[leader_idx].offscreen.take();
+            let mapping = self.render_cast_frame(&monitor, cursor, &mut target);
+            self.casts.casts[leader_idx].offscreen = target;
+            for cid in &cast_ids {
+                if let Some(c) = self.casts.casts.iter_mut().find(|c| c.id == *cid) {
+                    c.dirty = false;
+                    c.last = Some(now);
+                }
+            }
+            if let Some(mapping) = mapping {
+                self.casts.pending.push(PendingCapture {
+                    size,
+                    cast_ids,
+                    mapping,
+                });
+            }
+        }
+        if !self.casts.pending.is_empty() && !self.casts.flush_armed {
             self.casts.flush_armed = true;
             let _ = self.loop_handle.insert_source(Timer::from_duration(READBACK_DELAY), |_, _, state| {
                 state.casts.flush_armed = false;
@@ -526,17 +646,33 @@ impl FeatherCompositor {
         }
     }
 
-    /// Готовые кадры из PBO → поток PipeWire
+    /// Готовые кадры из PBO → поток PipeWire напрямую через zero-copy `Arc<CastFrame>`
     fn cast_flush(&mut self) {
-        for i in 0..self.casts.casts.len() {
-            let Some(mapping) = self.casts.casts[i].pending.take() else { continue };
-            let (w, h) = self.casts.casts[i].size;
-            let id = self.casts.casts[i].id;
-            let Ok(bytes) = self.backend.renderer().map_texture(&mapping) else { continue };
-            if bytes.len() < (w * h * 4) as usize {
+        let pending = std::mem::take(&mut self.casts.pending);
+        for cap in pending {
+            let need = (cap.size.0 as usize) * (cap.size.1 as usize) * 4;
+            let Ok((ptr, len)) = self
+                .backend
+                .renderer()
+                .map_texture(&cap.mapping)
+                .map(|b| (b.as_ptr(), b.len()))
+            else {
+                continue;
+            };
+            if len < need {
                 continue;
             }
-            self.casts.send(ToPw::Frame { id, rgba: bytes[..(w * h * 4) as usize].to_vec() });
+            let frame = Arc::new(CastFrame {
+                ptr,
+                len: need,
+                _mapping: cap.mapping,
+            });
+            for cid in cap.cast_ids {
+                if let Some(cast) = self.casts.casts.iter().find(|c| c.id == cid && c.streaming) {
+                    cast.in_flight.store(true, Ordering::Release);
+                    self.casts.send(ToPw::Frame { id: cid, frame: frame.clone() });
+                }
+            }
         }
         // Changes that came while the readback was in flight
         self.cast_capture_due();
@@ -552,6 +688,31 @@ mod tests {
         for obj in [format_param(1920, 1080), buffers_param(1920, 1080)] {
             let bytes = serialize(obj).expect("pod");
             assert!(spa::pod::Pod::from_bytes(&bytes).is_some());
+        }
+        // Regression test for OBS: SPA_PARAM_BUFFERS_dataType must serialize as SPA_CHOICE_Flags
+        // so PipeWire intersects our MemFd|MemPtr (6) with OBS's MemFd|MemPtr|DmaBuf (14).
+        let buf_bytes = serialize(buffers_param(3840, 2160)).expect("buffers pod");
+        let (_, val) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(&buf_bytes)
+            .expect("deserialize buffers pod");
+        let spa::pod::Value::Object(obj) = val else {
+            panic!("expected pod object");
+        };
+        let dt = obj
+            .properties
+            .iter()
+            .find(|p| p.key == spa::sys::SPA_PARAM_BUFFERS_dataType)
+            .expect("missing dataType prop");
+        match &dt.value {
+            spa::pod::Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                _,
+                spa::utils::ChoiceEnum::Flags { default, .. },
+            ))) => {
+                let obs_mask = ((1 << spa::sys::SPA_DATA_MemFd)
+                    | (1 << spa::sys::SPA_DATA_MemPtr)
+                    | (1 << spa::sys::SPA_DATA_DmaBuf)) as i32;
+                assert_ne!(*default & obs_mask, 0);
+            }
+            other => panic!("dataType must be ChoiceEnum::Flags, got {other:?}"),
         }
     }
 }

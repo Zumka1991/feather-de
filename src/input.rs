@@ -2291,6 +2291,7 @@ impl FeatherCompositor {
 
         // Raise and focus on every click: also repairs focus after a window was closed
         self.unfocus_desktop();
+        let clicked_id = self.windows[idx].id;
         let pre_resize_edges = self.windows[idx].resize_edges_at(pos.x, pos.y);
         let win = self.windows.remove(idx);
         if pre_resize_edges.is_some() && win.managed_layout {
@@ -2298,7 +2299,14 @@ impl FeatherCompositor {
         }
         self.windows.push(win);
         self.refresh_focus();
-        let idx = self.windows.len() - 1;
+        if self.windows.last().map(|w| w.id) != Some(clicked_id) {
+            // A visible transient/modal child dialog was raised above the clicked parent
+            self.consumed_buttons.push(button);
+            return;
+        }
+        let Some(idx) = self.windows.iter().position(|w| w.id == clicked_id) else {
+            return;
+        };
 
         let super_held = self.keyboard.modifier_state().logo;
         let mut consumed = true;
@@ -2323,18 +2331,21 @@ impl FeatherCompositor {
             self.start_resize(idx, edges, true);
         } else if let Some(btn) = self.windows[idx].hit_test_traffic(pos.x, pos.y) {
             match btn {
-                crate::window::TrafficButton::Close => self.close_top_window(),
+                crate::window::TrafficButton::Close => {
+                    if self.restore_minimized_child_dialogs(clicked_id) {
+                        self.refresh_focus();
+                    } else {
+                        self.close_top_window();
+                    }
+                }
                 crate::window::TrafficButton::Minimize => {
                     let was_scratch = self.windows[idx].space == crate::scratch::SCRATCH_SPACE;
-                    self.windows[idx].minimized = true;
-                    self.windows[idx].auto_minimized = false;
-                    self.shell.dock_dirty = true;
+                    self.minimize_window(idx);
                     if was_scratch {
                         let ids = self.scratch_tiled();
                         let area = self.scratch_area();
                         self.scratch_apply(&ids, area);
                     }
-                    self.refresh_focus();
                 }
                 crate::window::TrafficButton::Maximize => {
                     if self.windows[idx].pip {
