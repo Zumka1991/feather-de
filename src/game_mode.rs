@@ -32,12 +32,14 @@ pub fn set_game_mode_enabled(on: bool) {
     GAME_MODE_ENABLED.store(on, Ordering::Relaxed);
 }
 
-/// CPU quota (`quota_us period_us`) for an unfocused/minimized game: 15% of one core
-/// using a 5 ms micro-period (`750 µs / 5000 µs`) so the process is scheduled twice inside
-/// every 10 ms PipeWire quantum — preventing ringbuffer backlog/lag while dropping DXVK/VKD3D
-/// GPU load from 100% down to <5% (so 60 FPS YouTube/browser video never drops frames) and
-/// keeping game server TCP heartbeats alive.
-const UNFOCUSED_GAME_CPU_MAX: &str = "750 5000";
+/// CPU quota (`quota_us period_us`) for an unfocused/minimized game: ~8.3% of one core
+/// using a 12 ms micro-period (`1000 µs / 12000 µs`).
+///
+/// NOTE: Linux kernel CFS bandwidth control enforces `quota >= 1000 µs` (`min_cfs_quota_period`);
+/// smaller quotas like `"750 5000"` fail with `EINVAL` and leave the scope uncapped.
+/// With `1000 12000`, TCP/UDP game server heartbeats stay alive while DXVK/VKD3D GPU submission
+/// drops from 100% down to near-zero.
+const UNFOCUSED_GAME_CPU_MAX: &str = "1000 12000";
 
 /// CPU quota for non-audio, non-VPN background apps while a game is actively focused:
 /// 35% of one core max (`3500 µs / 10000 µs` 10 ms micro-period) + `SCHED_IDLE` (`cpu.idle = 1`).
@@ -46,28 +48,41 @@ const BACKGROUND_APP_CPU_MAX: &str = "3500 10000";
 const UNLIMITED_CPU_MAX: &str = "max 100000";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemoryLowTier {
+    None,
+    Foreground,
+    FocusedGame,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScopeRole {
     /// Default desktop scheduling (`cpu.max = max`, `cpu.idle = 0`, `cpu.weight = 100`)
     Normal,
-    /// Focused desktop app while a game is running in the background (`weight = 500`)
+    /// Focused desktop app (`cpu.weight = 500`, soft `memory.low` protection)
     ForegroundDesktop,
-    /// Actively focused game (`cpu.max = max`, `cpu.idle = 0`, `cpu.weight = 1000`)
+    /// Actively focused game (`cpu.max = max`, `cpu.idle = 0`, `cpu.weight = 1000`, soft `memory.low`)
     FocusedGame,
-    /// Unfocused or minimized game (`cpu.max = 20000 100000`, `cpu.idle = 1`, `cpu.weight = 1`)
+    /// App Nap: desktop app whose windows are all minimized, off-space, or occluded
+    /// (`cpu.max = max` so idle-core work finishes at full speed, `cpu.idle = 1`, `cpu.weight = 10`)
+    BackgroundHiddenApp,
+    /// Unfocused or minimized game (`cpu.max = 1000 12000`, `cpu.idle = 1`, `cpu.weight = 1`)
     BackgroundGame,
-    /// Background non-audio/non-VPN app while a game is focused (`cpu.max = 35000 100000`, `cpu.idle = 1`)
+    /// Background non-audio/non-VPN app while a game is focused (`cpu.max = 3500 10000`, `cpu.idle = 1`)
     BackgroundAppDuringGame,
 }
 
 impl ScopeRole {
-    fn params(self) -> (&'static str, &'static str, &'static str) {
-        // Returns (cpu.max, cpu.idle, cpu.weight)
+    fn params(self) -> (&'static str, &'static str, &'static str, MemoryLowTier) {
+        // Returns (cpu.max, cpu.idle, cpu.weight, memory.low tier)
         match self {
-            Self::Normal => (UNLIMITED_CPU_MAX, "0", "100"),
-            Self::ForegroundDesktop => (UNLIMITED_CPU_MAX, "0", "500"),
-            Self::FocusedGame => (UNLIMITED_CPU_MAX, "0", "1000"),
-            Self::BackgroundGame => (UNFOCUSED_GAME_CPU_MAX, "1", "1"),
-            Self::BackgroundAppDuringGame => (BACKGROUND_APP_CPU_MAX, "1", "5"),
+            Self::Normal => (UNLIMITED_CPU_MAX, "0", "100", MemoryLowTier::None),
+            Self::ForegroundDesktop => (UNLIMITED_CPU_MAX, "0", "500", MemoryLowTier::Foreground),
+            Self::FocusedGame => (UNLIMITED_CPU_MAX, "0", "1000", MemoryLowTier::FocusedGame),
+            // On Linux cgroup v2, `cpu.idle = 1` pins `cpu.weight` to 1; fallback weight is used
+            // only on older kernels that do not expose `cpu.idle`.
+            Self::BackgroundHiddenApp => (UNLIMITED_CPU_MAX, "1", "10", MemoryLowTier::None),
+            Self::BackgroundGame => (UNFOCUSED_GAME_CPU_MAX, "1", "1", MemoryLowTier::None),
+            Self::BackgroundAppDuringGame => (BACKGROUND_APP_CPU_MAX, "1", "5", MemoryLowTier::None),
         }
     }
 }
@@ -80,6 +95,8 @@ pub struct WindowSample {
     pub fullscreen: bool,
     pub minimized: bool,
     pub visible: bool,
+    /// True when drawn in the last rendered scene (visible and NOT occluded by opaque windows)
+    pub shown: bool,
     pub focused: bool,
     pub is_game: bool,
     pub app_id: String,
@@ -123,13 +140,15 @@ fn worker_sender() -> Option<&'static mpsc::Sender<WorkerMsg>> {
 impl GameMode {
     pub fn sync(&mut self, snapshot: Snapshot) {
         let any_game = snapshot.enabled && snapshot.windows.iter().any(|w| w.is_game);
-        if !any_game && !self.had_active_policy {
+        let any_hidden = snapshot.enabled && snapshot.windows.iter().any(|w| !w.shown && !w.focused);
+        let active = any_game || any_hidden;
+        if !active && !self.had_active_policy {
             return;
         }
         if self.last_sent.as_ref() == Some(&snapshot) {
             return;
         }
-        self.had_active_policy = any_game;
+        self.had_active_policy = active;
         self.last_sent = Some(snapshot.clone());
         if let Some(tx) = worker_sender() {
             let _ = tx.send(WorkerMsg::Apply(snapshot));
@@ -149,6 +168,74 @@ impl GameMode {
             }
         }
     }
+}
+
+/// One-shot startup boost for the compositor main thread and Mesa GPU submission threads
+/// (`:cs0`, `:gl0`, `:gdrv0`) via `org.freedesktop.RealtimeKit1::MakeThreadHighPriority`.
+/// Uses high nice (`-11`, clamped to `MinNiceLevel`) instead of `SCHED_RR` so cold shader
+/// compilations can never trigger `RLIMIT_RTTIME` / `SIGKILL`, while giving the compositor
+/// ~11× EEVDF weight over normal apps and instant preemption over `cpu.idle = 1` scopes.
+///
+/// Spawns a tiny short-lived thread so the event loop never blocks on D-Bus; the thread exits
+/// immediately after the RPC completes (0 persistent threads, 0 % idle CPU).
+pub fn boost_compositor_priority() {
+    let main_tid = unsafe { libc::syscall(libc::SYS_gettid) as u64 };
+    if main_tid == 0 {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("feather-rtkit".into())
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let Ok(conn) = zbus::blocking::Connection::system() else {
+                return;
+            };
+            let Ok(proxy) = zbus::blocking::Proxy::new(
+                &conn,
+                "org.freedesktop.RealtimeKit1",
+                "/org/freedesktop/RealtimeKit1",
+                "org.freedesktop.RealtimeKit1",
+            ) else {
+                return;
+            };
+            let min_nice: i32 = proxy.get_property("MinNiceLevel").unwrap_or(-11);
+            let target_nice = (-11i32).max(min_nice).min(-1);
+
+            let mut tids = vec![(main_tid, "main".to_string())];
+            if let Ok(entries) = fs::read_dir("/proc/self/task") {
+                for entry in entries.flatten() {
+                    let Some(tid) = entry.file_name().to_str().and_then(|s| s.parse::<u64>().ok()) else {
+                        continue;
+                    };
+                    if tid == main_tid {
+                        continue;
+                    }
+                    let comm = fs::read_to_string(entry.path().join("comm"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    if comm.ends_with(":cs0") || comm.ends_with(":gl0") || comm.ends_with(":gdrv0") {
+                        tids.push((tid, comm));
+                    }
+                }
+            }
+
+            let mut boosted = Vec::new();
+            for (tid, label) in tids {
+                if proxy
+                    .call::<_, _, ()>("MakeThreadHighPriority", &(tid, target_nice))
+                    .is_ok()
+                {
+                    boosted.push(label);
+                }
+            }
+            if !boosted.is_empty() {
+                tracing::info!(
+                    "rtkit: compositor priority nice={target_nice} applied to [{}]",
+                    boosted.join(", ")
+                );
+            }
+        });
 }
 
 /// Game store / launcher main windows have `Categories=Game;` in their `.desktop` files,
@@ -233,6 +320,28 @@ pub fn is_non_game_app_id(app_id: &str) -> bool {
     NON_GAMES.iter().any(|p| lower == *p || lower.contains(p))
 }
 
+/// Wine/Proton store launchers share generic `steam_app_default` `WM_CLASS`, but when not
+/// fullscreen they are game downloaders/launchers rather than 3D games — they must not trigger
+/// hard Game Mode throttling while patching or updating games in the background.
+pub fn is_launcher_title(title: &str) -> bool {
+    let lower = title.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "battle.net"
+            | "blizzard battle.net"
+            | "battle.net update agent"
+            | "ubisoft connect"
+            | "ea"
+            | "ea app"
+            | "epic games launcher"
+            | "rockstar games launcher"
+            | "gog galaxy"
+            | "riot client"
+            | "wargaming.net game center"
+            | "vk play game center"
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn classify_game_window(
     app_id: &str,
@@ -249,7 +358,7 @@ pub fn classify_game_window(
     if is_builtin || larvis || pip || auxiliary {
         return false;
     }
-    if is_launcher_app_id(app_id) && !fullscreen {
+    if (is_launcher_app_id(app_id) || is_launcher_title(title)) && !fullscreen {
         return false;
     }
     if is_non_game_app_id(app_id) {
@@ -282,19 +391,28 @@ pub fn classify_game_window(
 }
 
 /// Pure policy planner: given all active `.scope` names in `app.slice` and which scopes hold
-/// focused games, unfocused games, the focused desktop app, active audio streams, or VPNs,
+/// focused games, unfocused games, the focused desktop app, currently shown desktop windows,
+/// mapped windowed apps (including hidden/occluded ones), and exempt streams (active audio / VPN),
 /// computes the target [`ScopeRole`] for every `.scope`.
 pub fn plan_scope_roles(
     all_scopes: &[String],
     focused_game_scopes: &HashSet<String>,
     unfocused_game_scopes: &HashSet<String>,
     focused_desktop_scopes: &HashSet<String>,
+    visible_desktop_scopes: &HashSet<String>,
+    windowed_scopes: &HashSet<String>,
     exempt_scopes: &HashSet<String>,
 ) -> HashMap<String, ScopeRole> {
     let mut out = HashMap::with_capacity(all_scopes.len());
     let has_focused_game = !focused_game_scopes.is_empty();
     let has_any_game = has_focused_game || !unfocused_game_scopes.is_empty();
-    if !has_any_game {
+    let has_hidden_windowed = windowed_scopes.iter().any(|s| {
+        !focused_desktop_scopes.contains(s)
+            && !visible_desktop_scopes.contains(s)
+            && !focused_game_scopes.contains(s)
+            && !unfocused_game_scopes.contains(s)
+    });
+    if !has_any_game && !has_hidden_windowed {
         for s in all_scopes {
             out.insert(s.clone(), ScopeRole::Normal);
         }
@@ -316,6 +434,12 @@ pub fn plan_scope_roles(
             }
         } else if focused_desktop_scopes.contains(s) {
             ScopeRole::ForegroundDesktop
+        } else if exempt_scopes.contains(s) || visible_desktop_scopes.contains(s) {
+            ScopeRole::Normal
+        } else if windowed_scopes.contains(s) {
+            // App Nap: every window in this scope is minimized, off-space, or occluded behind
+            // opaque windows — keep CPU uncapped on idle cores, but yield immediately (`cpu.idle=1`).
+            ScopeRole::BackgroundHiddenApp
         } else {
             ScopeRole::Normal
         };
@@ -484,17 +608,72 @@ fn ensure_subtree_cpu_controller(app_slice: &Path, cached: &mut bool) -> bool {
     false
 }
 
+fn total_ram_bytes() -> u64 {
+    static TOTAL: OnceLock<u64> = OnceLock::new();
+    *TOTAL.get_or_init(|| {
+        fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|txt| {
+                txt.lines().find_map(|line| {
+                    let rest = line.strip_prefix("MemTotal:")?;
+                    let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+                    Some(kib.saturating_mul(1024))
+                })
+            })
+            .unwrap_or(8 * 1024 * 1024 * 1024)
+    })
+}
+
+fn memory_low_bytes_for(tier: MemoryLowTier) -> u64 {
+    let ram = total_ram_bytes();
+    const MIB: u64 = 1024 * 1024;
+    match tier {
+        MemoryLowTier::None => 0,
+        MemoryLowTier::Foreground => (ram / 8).clamp(512 * MIB, 2048 * MIB),
+        MemoryLowTier::FocusedGame => (ram / 4).clamp(1024 * MIB, 4096 * MIB),
+    }
+}
+
+fn write_cgroup_param(path: &Path, value: &str, optional: bool) {
+    if let Err(err) = fs::write(path, value) {
+        let ignore = optional
+            && matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            );
+        if !ignore {
+            tracing::warn!(
+                "game_mode: failed to write {} = {:?}: {err}",
+                path.display(),
+                value
+            );
+        }
+    }
+}
+
 fn write_scope_role(scope_dir: &Path, role: ScopeRole) {
-    let (cpu_max, cpu_idle, cpu_weight) = role.params();
-    if role == ScopeRole::Normal || role == ScopeRole::FocusedGame || role == ScopeRole::ForegroundDesktop {
+    let (cpu_max, cpu_idle, cpu_weight, mem_tier) = role.params();
+    let mem_low = memory_low_bytes_for(mem_tier).to_string();
+    let mem_path = scope_dir.join("memory.low");
+    if cpu_idle == "0" {
         // Restore idle & quota before raising weight so the kernel accepts weight immediately
-        let _ = fs::write(scope_dir.join("cpu.idle"), cpu_idle);
-        let _ = fs::write(scope_dir.join("cpu.max"), cpu_max);
-        let _ = fs::write(scope_dir.join("cpu.weight"), cpu_weight);
+        write_cgroup_param(&scope_dir.join("cpu.idle"), cpu_idle, true);
+        write_cgroup_param(&scope_dir.join("cpu.max"), cpu_max, false);
+        write_cgroup_param(&scope_dir.join("cpu.weight"), cpu_weight, false);
+        if mem_path.exists() {
+            write_cgroup_param(&mem_path, &mem_low, true);
+        }
     } else {
-        let _ = fs::write(scope_dir.join("cpu.weight"), cpu_weight);
-        let _ = fs::write(scope_dir.join("cpu.idle"), cpu_idle);
-        let _ = fs::write(scope_dir.join("cpu.max"), cpu_max);
+        if mem_path.exists() {
+            write_cgroup_param(&mem_path, &mem_low, true);
+        }
+        // Setting `cpu.idle = 1` automatically pins `cpu.weight` to 1 in Linux cgroup v2 (and
+        // writing a non-1 `cpu.weight` while `cpu.idle == 1` returns EINVAL). Only write
+        // `cpu.weight` as a fallback when `cpu.idle` is not supported by the kernel.
+        if fs::write(scope_dir.join("cpu.idle"), cpu_idle).is_err() {
+            write_cgroup_param(&scope_dir.join("cpu.weight"), cpu_weight, false);
+        }
+        write_cgroup_param(&scope_dir.join("cpu.max"), cpu_max, false);
     }
 }
 
@@ -944,7 +1123,9 @@ fn session_members_of(leader_or_member_pid: i32, exclude: &HashSet<i32>) -> Vec<
 }
 
 fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
-    if !snapshot.enabled || !snapshot.windows.iter().any(|w| w.is_game) {
+    let any_game = snapshot.enabled && snapshot.windows.iter().any(|w| w.is_game);
+    let any_hidden = snapshot.enabled && snapshot.windows.iter().any(|w| !w.shown && !w.focused);
+    if !snapshot.enabled || (!any_game && !any_hidden) {
         state.restore_all();
         return;
     }
@@ -959,9 +1140,12 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
     let mut focused_game_scopes = HashSet::new();
     let mut unfocused_game_scopes = HashSet::new();
     let mut focused_desktop_scopes = HashSet::new();
+    let mut visible_desktop_scopes = HashSet::new();
+    let mut windowed_scopes = HashSet::new();
     let mut game_pids: Vec<(u32, bool)> = Vec::new();
     let mut bg_window_pids: Vec<u32> = Vec::new();
     let mut fg_window_pids: Vec<u32> = Vec::new();
+    let mut visible_window_pids: Vec<u32> = Vec::new();
 
     for w in &snapshot.windows {
         let resolved_pid = if w.xwayland {
@@ -970,6 +1154,9 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
             w.wl_client_pid
         };
         let scope = resolved_pid.and_then(|p| scope_of_pid(p, uid));
+        if let Some(ref s) = scope {
+            windowed_scopes.insert(s.clone());
+        }
         if w.is_game {
             if let Some(p) = resolved_pid {
                 game_pids.push((p, w.focused));
@@ -984,6 +1171,7 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
                 // Fallback for Wine/Proton games without `_NET_WM_PID`
                 for (p, s) in fallback_wine_game_scopes(uid) {
                     game_pids.push((p, w.focused));
+                    windowed_scopes.insert(s.clone());
                     if w.focused {
                         focused_game_scopes.insert(s);
                     } else {
@@ -998,6 +1186,13 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
             if let Some(s) = scope {
                 focused_desktop_scopes.insert(s);
             }
+        } else if w.shown {
+            if let Some(p) = resolved_pid {
+                visible_window_pids.push(p);
+            }
+            if let Some(s) = scope {
+                visible_desktop_scopes.insert(s);
+            }
         } else if let Some(p) = resolved_pid {
             bg_window_pids.push(p);
         }
@@ -1007,80 +1202,94 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
         || game_pids.iter().any(|&(_, focused)| focused);
 
     let audio_snap = query_audio_snapshot(uid);
-    let audio_pids = if has_focused_game {
-        audio_snap.active_pids.clone()
-    } else {
-        HashSet::new()
-    };
+    // Always exempt active playback/capture streams (music, voice chat, video) from both
+    // Game Mode throttling and desktop App Nap.
+    let audio_pids = audio_snap.active_pids.clone();
 
-    // 0. Automatically mute unfocused/minimized games and unmute focused games
-    let focused_game_pid_set: HashSet<u32> = game_pids
-        .iter()
-        .filter(|&&(_, focused)| focused)
-        .map(|&(p, _)| p)
-        .collect();
-    let unfocused_game_pid_set: HashSet<u32> = game_pids
-        .iter()
-        .filter(|&&(_, focused)| !focused)
-        .map(|&(p, _)| p)
-        .collect();
-    let focused_game_titles: Vec<&str> = snapshot
-        .windows
-        .iter()
-        .filter(|w| w.is_game && w.focused && !w.title.is_empty())
-        .map(|w| w.title.as_str())
-        .collect();
-    let unfocused_game_titles: Vec<&str> = snapshot
-        .windows
-        .iter()
-        .filter(|w| w.is_game && !w.focused && !w.title.is_empty())
-        .map(|w| w.title.as_str())
-        .collect();
+    // 0. Automatically mute unfocused/minimized games and unmute focused games (or restore if
+    //    no game remains open).
+    if any_game {
+        let focused_game_pid_set: HashSet<u32> = game_pids
+            .iter()
+            .filter(|&&(_, focused)| focused)
+            .map(|&(p, _)| p)
+            .collect();
+        let unfocused_game_pid_set: HashSet<u32> = game_pids
+            .iter()
+            .filter(|&&(_, focused)| !focused)
+            .map(|&(p, _)| p)
+            .collect();
+        let focused_game_titles: Vec<&str> = snapshot
+            .windows
+            .iter()
+            .filter(|w| w.is_game && w.focused && !w.title.is_empty())
+            .map(|w| w.title.as_str())
+            .collect();
+        let unfocused_game_titles: Vec<&str> = snapshot
+            .windows
+            .iter()
+            .filter(|w| w.is_game && !w.focused && !w.title.is_empty())
+            .map(|w| w.title.as_str())
+            .collect();
 
-    for si in &audio_snap.sink_inputs {
-        let is_fg_game = si
-            .scope
-            .as_ref()
-            .is_some_and(|s| focused_game_scopes.contains(s))
-            || si.host_pid.is_some_and(|p| focused_game_pid_set.contains(&p))
-            || (!si.app_name.is_empty()
-                && focused_game_titles
-                    .iter()
-                    .any(|t| si.app_name.eq_ignore_ascii_case(t)));
-        let is_bg_game = !is_fg_game
-            && (si
+        for si in &audio_snap.sink_inputs {
+            let is_fg_game = si
                 .scope
                 .as_ref()
-                .is_some_and(|s| unfocused_game_scopes.contains(s))
-                || si
-                    .host_pid
-                    .is_some_and(|p| unfocused_game_pid_set.contains(&p))
+                .is_some_and(|s| focused_game_scopes.contains(s))
+                || si.host_pid.is_some_and(|p| focused_game_pid_set.contains(&p))
                 || (!si.app_name.is_empty()
-                    && unfocused_game_titles
+                    && focused_game_titles
                         .iter()
-                        .any(|t| si.app_name.eq_ignore_ascii_case(t))));
+                        .any(|t| si.app_name.eq_ignore_ascii_case(t)));
+            let is_bg_game = !is_fg_game
+                && (si
+                    .scope
+                    .as_ref()
+                    .is_some_and(|s| unfocused_game_scopes.contains(s))
+                    || si
+                        .host_pid
+                        .is_some_and(|p| unfocused_game_pid_set.contains(&p))
+                    || (!si.app_name.is_empty()
+                        && unfocused_game_titles
+                            .iter()
+                            .any(|t| si.app_name.eq_ignore_ascii_case(t))));
 
-        if is_fg_game {
+            if is_fg_game {
+                if si.muted
+                    && (state.auto_muted_indices.contains(&si.index)
+                        || (!si.restore_key.is_empty()
+                            && state.auto_muted_keys.contains(&si.restore_key)))
+                {
+                    set_sink_input_mute(si.index, false);
+                    state.auto_muted_indices.remove(&si.index);
+                    state.auto_muted_keys.remove(&si.restore_key);
+                    state.persist_muted_keys();
+                }
+            } else if is_bg_game && !si.corked {
+                if !si.muted {
+                    set_sink_input_mute(si.index, true);
+                    state.auto_muted_indices.insert(si.index);
+                    if !si.restore_key.is_empty() {
+                        state.auto_muted_keys.insert(si.restore_key.clone());
+                        state.persist_muted_keys();
+                    }
+                }
+            }
+        }
+    } else if !state.auto_muted_indices.is_empty() || !state.auto_muted_keys.is_empty() {
+        for si in &audio_snap.sink_inputs {
             if si.muted
                 && (state.auto_muted_indices.contains(&si.index)
                     || (!si.restore_key.is_empty()
                         && state.auto_muted_keys.contains(&si.restore_key)))
             {
                 set_sink_input_mute(si.index, false);
-                state.auto_muted_indices.remove(&si.index);
                 state.auto_muted_keys.remove(&si.restore_key);
-                state.persist_muted_keys();
-            }
-        } else if is_bg_game && !si.corked {
-            if !si.muted {
-                set_sink_input_mute(si.index, true);
-                state.auto_muted_indices.insert(si.index);
-                if !si.restore_key.is_empty() {
-                    state.auto_muted_keys.insert(si.restore_key.clone());
-                    state.persist_muted_keys();
-                }
             }
         }
+        state.auto_muted_indices.clear();
+        state.persist_muted_keys();
     }
 
     // 1. Apply cgroup v2 `.scope` policies inside `app.slice`
@@ -1099,8 +1308,9 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
             }
             // Chromium / Electron move their main process into `app-*.scope` while leaving their
             // Zygote, GPU and YouTube video-decoder renderers in the initial `run-p*.scope`
-            // sharing the same Linux session ID (`sid`). Propagate foreground boost and audio
-            // exemption across sibling scopes of the same session so video playback never stutters.
+            // sharing the same Linux session ID (`sid`). Propagate foreground/visible/windowed
+            // membership and audio exemption across sibling scopes of the same session.
+            let comp_sid = unsafe { libc::getsid(0) };
             let scope_sids: Vec<(String, HashSet<i32>)> = active_scopes
                 .iter()
                 .map(|(name, pids)| {
@@ -1108,16 +1318,24 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
                         .iter()
                         .take(8)
                         .filter_map(|&p| feather_ui::process::session_of(p as i32))
-                        .filter(|&sid| sid > 1)
+                        .filter(|&sid| sid > 1 && sid != comp_sid)
                         .collect();
                     (name.clone(), sids)
                 })
                 .collect();
             let mut fg_sids = HashSet::new();
+            let mut vis_sids = HashSet::new();
+            let mut win_sids = HashSet::new();
             let mut exempt_sids = HashSet::new();
             for (name, sids) in &scope_sids {
                 if focused_desktop_scopes.contains(name) {
                     fg_sids.extend(sids.iter().copied());
+                }
+                if visible_desktop_scopes.contains(name) {
+                    vis_sids.extend(sids.iter().copied());
+                }
+                if windowed_scopes.contains(name) {
+                    win_sids.extend(sids.iter().copied());
                 }
                 if exempt_scopes.contains(name) {
                     exempt_sids.extend(sids.iter().copied());
@@ -1126,6 +1344,12 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
             for (name, sids) in &scope_sids {
                 if sids.iter().any(|sid| fg_sids.contains(sid)) {
                     focused_desktop_scopes.insert(name.clone());
+                }
+                if sids.iter().any(|sid| vis_sids.contains(sid)) {
+                    visible_desktop_scopes.insert(name.clone());
+                }
+                if sids.iter().any(|sid| win_sids.contains(sid)) {
+                    windowed_scopes.insert(name.clone());
                 }
                 if sids.iter().any(|sid| exempt_sids.contains(sid)) {
                     exempt_scopes.insert(name.clone());
@@ -1137,6 +1361,8 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
                 &focused_game_scopes,
                 &unfocused_game_scopes,
                 &focused_desktop_scopes,
+                &visible_desktop_scopes,
+                &windowed_scopes,
                 &exempt_scopes,
             );
 
@@ -1184,6 +1410,11 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
     for &p in &fg_window_pids {
         protected.insert(p as i32);
     }
+    if !has_focused_game {
+        for &p in &visible_window_pids {
+            protected.insert(p as i32);
+        }
+    }
     for &(p, focused) in &game_pids {
         if focused {
             protected.insert(p as i32);
@@ -1201,7 +1432,7 @@ fn apply_snapshot(state: &mut WorkerState, snapshot: &Snapshot) {
             }
         }
     }
-    if has_focused_game {
+    if has_focused_game || any_hidden {
         for p in bg_window_pids {
             if scope_of_pid(p, uid).is_none()
                 && !protected.contains(&(p as i32))
@@ -1239,6 +1470,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn all_cpu_max_quotas_respect_linux_cfs_minimum() {
+        // Linux kernel (`kernel/sched/core.c`) rejects CFS bandwidth quotas < 1000 µs with EINVAL.
+        let roles = [
+            ScopeRole::Normal,
+            ScopeRole::ForegroundDesktop,
+            ScopeRole::FocusedGame,
+            ScopeRole::BackgroundHiddenApp,
+            ScopeRole::BackgroundGame,
+            ScopeRole::BackgroundAppDuringGame,
+        ];
+        for role in roles {
+            let (cpu_max, _, _, _) = role.params();
+            let mut parts = cpu_max.split_whitespace();
+            let quota = parts.next().expect("quota token");
+            let period: u64 = parts
+                .next()
+                .expect("period token")
+                .parse()
+                .expect("numeric period");
+            assert!(
+                (1000..=1_000_000).contains(&period),
+                "{role:?} period {period} out of Linux CFS range"
+            );
+            if quota != "max" {
+                let q: u64 = quota.parse().expect("numeric quota");
+                assert!(
+                    q >= 1000,
+                    "{role:?} quota {q} < 1000 µs would be rejected with EINVAL by Linux kernel"
+                );
+                assert!(q <= period, "{role:?} quota {q} exceeds period {period}");
+            }
+        }
+    }
+
+    #[test]
     fn detects_proton_wine_and_skips_launchers_and_browsers() {
         // World of Warcraft via Heroic / Proton
         assert!(classify_game_window(
@@ -1270,6 +1536,19 @@ mod tests {
         assert!(classify_game_window(
             "wow.exe",
             "World of Warcraft",
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        ));
+        // Battle.net launcher sharing steam_app_default must NOT be treated as a 3D game
+        assert!(!classify_game_window(
+            "steam_app_default",
+            "Battle.net",
             false,
             true,
             false,
@@ -1350,13 +1629,15 @@ mod tests {
     }
 
     #[test]
-    fn plans_roles_for_focused_and_alt_tabbed_game() {
+    fn plans_roles_for_focused_alt_tabbed_game_and_app_nap() {
         let scopes = vec![
             "app-heroic-13561.scope".to_string(),
             "app-com.google.Chrome-6343.scope".to_string(),
             "snap.telegram-desktop.1.scope".to_string(),
+            "app-antigravity-19468.scope".to_string(),
             "app-discord-voice.scope".to_string(),
             "app-mousevpn.scope".to_string(),
+            "run-daemon-helper.scope".to_string(),
         ];
         let exempt: HashSet<String> = [
             "app-discord-voice.scope".to_string(),
@@ -1364,15 +1645,27 @@ mod tests {
         ]
         .into_iter()
         .collect();
+        let windowed: HashSet<String> = [
+            "app-heroic-13561.scope".to_string(),
+            "app-com.google.Chrome-6343.scope".to_string(),
+            "snap.telegram-desktop.1.scope".to_string(),
+            "app-antigravity-19468.scope".to_string(),
+            "app-discord-voice.scope".to_string(),
+            "app-mousevpn.scope".to_string(),
+        ]
+        .into_iter()
+        .collect();
 
         // 1. WoW is actively focused: WoW gets FocusedGame, Discord/VPN stay Normal,
-        // Chrome & Telegram get BackgroundAppDuringGame.
+        // Chrome, Telegram & Antigravity get BackgroundAppDuringGame.
         let fg_game: HashSet<String> = ["app-heroic-13561.scope".to_string()].into_iter().collect();
         let roles = plan_scope_roles(
             &scopes,
             &fg_game,
             &HashSet::new(),
             &HashSet::new(),
+            &HashSet::new(),
+            &windowed,
             &exempt,
         );
         assert_eq!(roles["app-heroic-13561.scope"], ScopeRole::FocusedGame);
@@ -1387,19 +1680,61 @@ mod tests {
         assert_eq!(roles["app-discord-voice.scope"], ScopeRole::Normal);
         assert_eq!(roles["app-mousevpn.scope"], ScopeRole::Normal);
 
-        // 2. User Alt+Tabs to Chrome: WoW drops to BackgroundGame (20% core cap),
-        // Chrome gets ForegroundDesktop, Telegram/Discord/VPN stay unthrottled Normal!
+        // 2. User Alt+Tabs to maximized Chrome: WoW drops to BackgroundGame (valid CFS quota),
+        // Chrome gets ForegroundDesktop, occluded Telegram gets App Nap (BackgroundHiddenApp),
+        // visible side-by-side Antigravity stays Normal, Discord/VPN & non-windowed helpers stay Normal!
         let bg_game: HashSet<String> = ["app-heroic-13561.scope".to_string()].into_iter().collect();
         let fg_desk: HashSet<String> = ["app-com.google.Chrome-6343.scope".to_string()]
             .into_iter()
             .collect();
-        let roles2 = plan_scope_roles(&scopes, &HashSet::new(), &bg_game, &fg_desk, &exempt);
+        let vis_desk: HashSet<String> = ["app-antigravity-19468.scope".to_string()]
+            .into_iter()
+            .collect();
+        let roles2 = plan_scope_roles(
+            &scopes,
+            &HashSet::new(),
+            &bg_game,
+            &fg_desk,
+            &vis_desk,
+            &windowed,
+            &exempt,
+        );
         assert_eq!(roles2["app-heroic-13561.scope"], ScopeRole::BackgroundGame);
         assert_eq!(
             roles2["app-com.google.Chrome-6343.scope"],
             ScopeRole::ForegroundDesktop
         );
-        assert_eq!(roles2["snap.telegram-desktop.1.scope"], ScopeRole::Normal);
+        assert_eq!(
+            roles2["snap.telegram-desktop.1.scope"],
+            ScopeRole::BackgroundHiddenApp
+        );
+        assert_eq!(roles2["app-antigravity-19468.scope"], ScopeRole::Normal);
+        assert_eq!(roles2["app-discord-voice.scope"], ScopeRole::Normal);
+        assert_eq!(roles2["app-mousevpn.scope"], ScopeRole::Normal);
+        assert_eq!(roles2["run-daemon-helper.scope"], ScopeRole::Normal);
+
+        // 3. Even with NO game running at all, occluded Telegram gets App Nap while focused
+        // Chrome gets ForegroundDesktop and visible/audio/VPN/helper scopes remain Normal.
+        let roles3 = plan_scope_roles(
+            &scopes,
+            &HashSet::new(),
+            &HashSet::new(),
+            &fg_desk,
+            &vis_desk,
+            &windowed,
+            &exempt,
+        );
+        assert_eq!(
+            roles3["app-com.google.Chrome-6343.scope"],
+            ScopeRole::ForegroundDesktop
+        );
+        assert_eq!(
+            roles3["snap.telegram-desktop.1.scope"],
+            ScopeRole::BackgroundHiddenApp
+        );
+        assert_eq!(roles3["app-antigravity-19468.scope"], ScopeRole::Normal);
+        assert_eq!(roles3["app-discord-voice.scope"], ScopeRole::Normal);
+        assert_eq!(roles3["run-daemon-helper.scope"], ScopeRole::Normal);
     }
 
     #[test]
@@ -1407,6 +1742,16 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("feather-cg-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("memory.low"), "0").unwrap();
+
+        write_scope_role(&tmp, ScopeRole::ForegroundDesktop);
+        let fg_mem: u64 = fs::read_to_string(tmp.join("memory.low"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(fg_mem >= 512 * 1024 * 1024);
+        assert_eq!(fs::read_to_string(tmp.join("cpu.weight")).unwrap(), "500");
 
         write_scope_role(&tmp, ScopeRole::BackgroundGame);
         assert_eq!(
@@ -1414,7 +1759,14 @@ mod tests {
             UNFOCUSED_GAME_CPU_MAX
         );
         assert_eq!(fs::read_to_string(tmp.join("cpu.idle")).unwrap(), "1");
-        assert_eq!(fs::read_to_string(tmp.join("cpu.weight")).unwrap(), "1");
+        assert_eq!(fs::read_to_string(tmp.join("memory.low")).unwrap(), "0");
+
+        write_scope_role(&tmp, ScopeRole::BackgroundHiddenApp);
+        assert_eq!(
+            fs::read_to_string(tmp.join("cpu.max")).unwrap(),
+            UNLIMITED_CPU_MAX
+        );
+        assert_eq!(fs::read_to_string(tmp.join("cpu.idle")).unwrap(), "1");
 
         write_scope_role(&tmp, ScopeRole::Normal);
         assert_eq!(
@@ -1423,6 +1775,7 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(tmp.join("cpu.idle")).unwrap(), "0");
         assert_eq!(fs::read_to_string(tmp.join("cpu.weight")).unwrap(), "100");
+        assert_eq!(fs::read_to_string(tmp.join("memory.low")).unwrap(), "0");
 
         let _ = fs::remove_dir_all(&tmp);
     }

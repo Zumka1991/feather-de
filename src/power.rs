@@ -286,6 +286,7 @@ impl FeatherCompositor {
             }
         }
         self.power.blanked = true;
+        self.sync_immediate_suspended_states();
         self.frame_pending = false;
         self.needs_redraw = true;
     }
@@ -294,6 +295,7 @@ impl FeatherCompositor {
             return;
         }
         self.power.blanked = false;
+        self.sync_immediate_suspended_states();
         if let crate::backend::Backend::Drm(d) = &mut self.backend {
             for h in &mut d.heads {
                 h.output.reset_buffers();

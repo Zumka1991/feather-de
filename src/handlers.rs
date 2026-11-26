@@ -299,23 +299,25 @@ impl FeatherCompositor {
         self.window_memory_changed();
     }
 
-    fn handle_toplevel_commit(&mut self, surface: &WlSurface) {
+    fn handle_toplevel_commit(&mut self, surface: &WlSurface) -> bool {
         let Some(idx) = self.window_index_for_toplevel(surface) else {
-            return;
+            return false;
         };
         if self.windows[idx].toplevel().is_some_and(|t| !t.is_initial_configure_sent()) {
             self.restore_window_place(idx);
         }
+        let prev_size = (self.windows[idx].width, self.windows[idx].height);
         let changes = {
             let win = &mut self.windows[idx];
             if let Some(toplevel) = win.toplevel() {
                 if !toplevel.is_initial_configure_sent() {
                     toplevel.send_configure();
-                    return;
+                    return false;
                 }
             }
             win.sync_wayland_metadata()
         };
+        let size_changed = (self.windows[idx].width, self.windows[idx].height) != prev_size;
 
         if changes.newly_mapped || changes.unmapped {
             tracing::debug!(id = self.windows[idx].id, mapped = self.windows[idx].mapped, "window mapping changed");
@@ -327,6 +329,7 @@ impl FeatherCompositor {
             self.windows[idx].mapped_at = Some(Instant::now());
             self.windows[idx].minimized = false;
             self.windows[idx].auto_minimized = false;
+            self.windows[idx].set_suspended(false);
             self.leave_larvis_desktop();
             let parent_idx = self
                 .parent_window_id_of(idx)
@@ -378,6 +381,7 @@ impl FeatherCompositor {
         }
         if changes.unmapped {
             self.windows[idx].mapped_at = None;
+            self.windows[idx].suspended = false;
             self.remember_closing_window(idx);
             self.drop_keyboard_focus_if(surface);
             self.refresh_focus();
@@ -393,6 +397,7 @@ impl FeatherCompositor {
             }
             self.foreign_sync();
         }
+        changes.newly_mapped || changes.unmapped || changes.title_changed || size_changed
     }
 
     /// Electron/Chromium recreate the xdg_toplevel on the same wl_surface when a window is
@@ -966,7 +971,6 @@ impl CompositorHandler for FeatherCompositor {
                     let dh = state.display_handle.clone();
                     state.client_compositor_state(&client_fd).blocker_cleared(state, &dh);
                 }
-                state.needs_redraw = true;
                 Ok(())
             });
             if inserted.is_err() {
@@ -1004,7 +1008,6 @@ impl CompositorHandler for FeatherCompositor {
                                 .client_compositor_state(&client_timer)
                                 .blocker_cleared(state, &dh);
                         }
-                        state.needs_redraw = true;
                     }
                     TimeoutAction::Drop
                 },
@@ -1015,7 +1018,6 @@ impl CompositorHandler for FeatherCompositor {
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         self.lock_surface_commit(surface);
-        self.needs_redraw = true;
         if let Some(stats) = self.frame_stats.as_mut() {
             stats.record_commit();
         }
@@ -1024,8 +1026,10 @@ impl CompositorHandler for FeatherCompositor {
         while let Some(parent) = get_parent(&root) {
             root = parent;
         }
-        if &root == surface && !self.layer_commit(surface) {
-            self.handle_toplevel_commit(surface);
+        let mut toplevel_changed = false;
+        let is_layer = &root == surface && self.layer_commit(surface);
+        if &root == surface && !is_layer {
+            toplevel_changed = self.handle_toplevel_commit(surface);
         }
 
         self.popups.commit(surface);
@@ -1034,6 +1038,45 @@ impl CompositorHandler for FeatherCompositor {
                 let _ = popup.send_configure();
             }
         }
+
+        // Hidden windows (minimized, off-space, completely occluded, or behind the lock screen)
+        // must not wake `render_if_needed` / `update_cpu_buffers` / `prepare_glass` on every
+        // commit; arm only the 1 Hz hidden frame-callback timer if the client requested one.
+        if self.lock.active {
+            let is_lock_or_cursor = self
+                .lock
+                .extra_surfaces
+                .iter()
+                .any(|(_, s)| s.wl_surface() == &root)
+                || matches!(
+                    &self.cursor.status,
+                    CursorImageStatus::Surface(s) if s == &root
+                );
+            if is_lock_or_cursor {
+                self.needs_redraw = true;
+            }
+            return;
+        }
+        if !is_layer {
+            if let Some(idx) = self.window_index_for_toplevel(&root) {
+                let w = &self.windows[idx];
+                let hidden = !toplevel_changed
+                    && w.mapped
+                    && !self.shown_windows.is_empty()
+                    && !self.window_shown(w)
+                    && !self.animations.draws_window(w)
+                    && smithay::desktop::PopupManager::popups_for_surface(&root)
+                        .next()
+                        .is_none();
+                if hidden {
+                    if crate::render::window_waits_for_frame(w) {
+                        self.schedule_hidden_frame_callbacks();
+                    }
+                    return;
+                }
+            }
+        }
+        self.needs_redraw = true;
     }
 }
 

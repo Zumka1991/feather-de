@@ -319,6 +319,8 @@ pub struct ManagedWindow {
     /// Client draws its own shadow outside of its window geometry
     pub client_shadow: bool,
     pub activated: bool,
+    /// `xdg_toplevel::State::Suspended` sent while minimized, off-space, occluded, or locked/blanked
+    pub suspended: bool,
     pub minimized: bool,
     /// Minimized automatically when focus left a fullscreen window on the same display;
     /// keeps its recent slot in `Alt+Tab` so a single `Alt+Tab` returns straight to the game.
@@ -505,6 +507,7 @@ impl ManagedWindow {
             modal: false,
             client_shadow: false,
             activated: false,
+            suspended: false,
             minimized: false,
             auto_minimized: false,
             space: 0,
@@ -576,6 +579,7 @@ impl ManagedWindow {
             modal: false,
             client_shadow: false,
             activated: false,
+            suspended: false,
             minimized: false,
             auto_minimized: false,
             space: 0,
@@ -1122,7 +1126,11 @@ impl ManagedWindow {
     }
 
     pub fn set_activated(&mut self, active: bool) {
-        if self.activated == active {
+        let unsuspended = active && self.suspended;
+        if unsuspended {
+            self.suspended = false;
+        }
+        if self.activated == active && !unsuspended {
             return;
         }
         self.activated = active;
@@ -1135,8 +1143,31 @@ impl ManagedWindow {
             t.with_pending_state(|state| {
                 if active {
                     state.states.set(xdg_toplevel::State::Activated);
+                    state.states.unset(xdg_toplevel::State::Suspended);
                 } else {
                     state.states.unset(xdg_toplevel::State::Activated);
+                }
+            });
+            if t.is_initial_configure_sent() {
+                t.send_pending_configure();
+            }
+        }
+    }
+
+    /// Tells the client via `xdg_toplevel::State::Suspended` (xdg-shell v6) whether its window is
+    /// currently hidden (minimized, on another workspace, completely occluded, or under lock/blank),
+    /// allowing Chromium/Electron/Firefox/Qt6/GTK4 to pause frame production and trim GPU caches.
+    pub fn set_suspended(&mut self, suspended: bool) {
+        if self.suspended == suspended {
+            return;
+        }
+        self.suspended = suspended;
+        if let Some(t) = self.toplevel() {
+            t.with_pending_state(|state| {
+                if suspended {
+                    state.states.set(xdg_toplevel::State::Suspended);
+                } else {
+                    state.states.unset(xdg_toplevel::State::Suspended);
                 }
             });
             if t.is_initial_configure_sent() {

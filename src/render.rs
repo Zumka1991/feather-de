@@ -592,10 +592,24 @@ fn window_opaque_rects(
     if !visual.identity() || win.minimized || win.pip_ghost {
         return Vec::new();
     }
+    let round = !win.maximized && !win.fullscreen && (win.has_titlebar() || !win.client_shadow);
+    if win.is_builtin() {
+        return clip_opaque_rounded_corners(
+            vec![win.frame_rect()],
+            win.x,
+            win.y,
+            win.width,
+            win.total_height(),
+            round,
+        );
+    }
     let Some(surface) = win.wl_surface() else {
         return Vec::new();
     };
     let mut raw: Vec<Rectangle<i32, Logical>> = Vec::new();
+    // Apply `view.offset` inside the filter callback (matching Smithay's `bbox_from_surface_tree`)
+    // so child subsurfaces with non-zero positions (e.g. Chromium/Electron `primary_subsurface`)
+    // record their opaque regions at exact global logical coordinates.
     with_surface_tree_downward(
         surface,
         win.surface_origin(),
@@ -603,25 +617,22 @@ fn window_opaque_rects(
             if let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() {
                 let data = data.lock().unwrap();
                 if let Some(view) = data.view() {
-                    return TraversalAction::DoChildren(*loc + view.offset);
+                    let cur = *loc + view.offset;
+                    if data.buffer_transform() == Transform::Normal {
+                        if let Some(regions) = data.opaque_regions() {
+                            for r in regions {
+                                if !r.is_empty() {
+                                    raw.push(Rectangle::new(cur + r.loc, r.size));
+                                }
+                            }
+                        }
+                    }
+                    return TraversalAction::DoChildren(cur);
                 }
             }
             TraversalAction::SkipChildren
         },
-        |_, states, loc: &Point<i32, Logical>| {
-            if let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() {
-                let data = data.lock().unwrap();
-                if data.buffer_transform() == Transform::Normal {
-                    if let Some(regions) = data.opaque_regions() {
-                        for r in regions {
-                            if !r.is_empty() {
-                                raw.push(Rectangle::new(*loc + r.loc, r.size));
-                            }
-                        }
-                    }
-                }
-            }
-        },
+        |_, _, _| {},
         |_, _, _| true,
     );
     if raw.is_empty() {
@@ -633,14 +644,40 @@ fn window_opaque_rects(
             (win.width, crate::theme::TITLEBAR_HEIGHT).into(),
         ));
     }
-    clip_opaque_rounded_corners(
+    let clipped = clip_opaque_rounded_corners(
         raw,
         win.x,
         win.y,
         win.width,
         win.total_height(),
-        !win.maximized && !win.fullscreen && (win.has_titlebar() || !win.client_shadow),
-    )
+        round,
+    );
+    maybe_fill_maximized_opaque(clipped, win.frame_rect(), win.maximized)
+}
+
+/// If a maximized opaque window leaves ≤ 2% of its frame uncovered (e.g. 1–2 px HiDPI rounding
+/// or tiny CSD corner bevels in Chromium/Electron/Firefox), treat the full maximized frame as
+/// opaque so hidden maximized apps behind it are properly occluded and stop burning CPU/GPU.
+/// Semi-transparent terminals/widgets report empty opaque regions and are never affected.
+fn maybe_fill_maximized_opaque(
+    clipped: Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+    frame: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    maximized: bool,
+) -> Vec<smithay::utils::Rectangle<i32, smithay::utils::Logical>> {
+    if !maximized || clipped.is_empty() || frame.size.w <= 0 || frame.size.h <= 0 {
+        return clipped;
+    }
+    let uncovered: i64 = frame
+        .subtract_rects(clipped.iter().copied())
+        .into_iter()
+        .map(|r| (r.size.w.max(0) as i64) * (r.size.h.max(0) as i64))
+        .sum();
+    let total = (frame.size.w as i64) * (frame.size.h as i64);
+    if uncovered > 0 && uncovered * 50 <= total {
+        vec![frame]
+    } else {
+        clipped
+    }
 }
 
 fn clip_opaque_rounded_corners(
@@ -689,6 +726,7 @@ fn rect_fully_occluded(
 fn window_occluded_by(
     win: &ManagedWindow,
     visual: crate::animation::Visual,
+    view: crate::monitors::Rect,
     with_shadow: bool,
     has_tile_preview: bool,
     opaque: &[smithay::utils::Rectangle<i32, smithay::utils::Logical>],
@@ -702,21 +740,33 @@ fn window_occluded_by(
             return false;
         }
     }
-    let pad = if with_shadow && win.draws_shadow() {
-        crate::theme::SHADOW_PAD
+    let mut bounds = if win.maximized || win.fullscreen {
+        // Maximized/fullscreen windows fill the work area / output without visible outer shadows;
+        // do not let overhanging CSD shadow buffers under the Dock/top bar defeat occlusion.
+        win.frame_rect()
     } else {
-        0
-    };
-    let mut bounds = Rectangle::<i32, Logical>::new(
-        (win.x - pad, win.y - pad).into(),
-        ((win.width + pad * 2).max(0), (win.total_height() + pad * 2).max(0)).into(),
-    );
-    if let Some(surface) = win.wl_surface() {
-        let surf_bbox = smithay::desktop::utils::bbox_from_surface_tree(surface, win.surface_origin());
-        if !surf_bbox.is_empty() {
-            bounds = bounds.merge(surf_bbox);
+        let pad = if with_shadow && win.draws_shadow() {
+            crate::theme::SHADOW_PAD
+        } else {
+            0
+        };
+        let mut b = Rectangle::<i32, Logical>::new(
+            (win.x - pad, win.y - pad).into(),
+            ((win.width + pad * 2).max(0), (win.total_height() + pad * 2).max(0)).into(),
+        );
+        if let Some(surface) = win.wl_surface() {
+            let surf_bbox = smithay::desktop::utils::bbox_from_surface_tree(surface, win.surface_origin());
+            if !surf_bbox.is_empty() {
+                b = b.merge(surf_bbox);
+            }
         }
-    }
+        b
+    };
+    let view_rect = Rectangle::<i32, Logical>::new((view.x, view.y).into(), (view.w, view.h).into());
+    let Some(visible_bounds) = bounds.intersection(view_rect) else {
+        return true;
+    };
+    bounds = visible_bounds;
     rect_fully_occluded(bounds, opaque)
 }
 
@@ -788,7 +838,7 @@ fn build_world_snap(
         {
             continue;
         }
-        if window_occluded_by(win, v, false, false, &opaque_front) {
+        if window_occluded_by(win, v, view, false, false, &opaque_front) {
             continue;
         }
         // In the blur pass we skip window shadows (`!blur_pass`), only padding slightly for CSD/popups
@@ -990,7 +1040,7 @@ pub(crate) fn build_world_scene(
                 .tile_preview
                 .target
                 .is_some_and(|(id, frame, _)| id == win.id && frame.intersection(view) > 0);
-        if window_occluded_by(win, visual, !blur_pass, has_preview, &opaque_front) {
+        if window_occluded_by(win, visual, view, !blur_pass, has_preview, &opaque_front) {
             continue;
         }
         push_window(&mut out, renderer, win, visual, scale, rounded, !blur_pass);
@@ -1646,7 +1696,7 @@ fn send_window_frames(win: &ManagedWindow, time: u32) {
 }
 
 /// Some surface of the window (or of its popups) asked for a frame callback
-fn window_waits_for_frame(win: &ManagedWindow) -> bool {
+pub(crate) fn window_waits_for_frame(win: &ManagedWindow) -> bool {
     let Some(surface) = win.wl_surface() else { return false };
     std::iter::once(surface.clone())
         .chain(PopupManager::popups_for_surface(surface).map(|(p, _)| p.wl_surface().clone()))
@@ -1878,6 +1928,7 @@ impl FeatherCompositor {
             self.render_winit()
         };
 
+        self.sync_window_visibility_states();
         self.shell.reclaim_after_frame();
         // Screen cast: the heads that changed (nested shows one view: any frame counts)
         if presented.is_some() && !self.casts.is_empty() {
@@ -2438,7 +2489,7 @@ impl FeatherCompositor {
 
     /// Drawn in the last frame of some output. A window without its first buffer is not
     /// drawn yet, but it must not wait a second for the frame it may need to map.
-    fn window_shown(&self, win: &ManagedWindow) -> bool {
+    pub(crate) fn window_shown(&self, win: &ManagedWindow) -> bool {
         self.window_shown_on(win, None)
     }
 
@@ -2454,7 +2505,7 @@ impl FeatherCompositor {
     /// Minimized, on another desktop or under a fullscreen window: the client gets its frame
     /// callbacks once a second instead of at the refresh rate, so it stops rendering what
     /// nobody sees but never stalls. The timer is armed only while such a callback waits.
-    fn schedule_hidden_frame_callbacks(&mut self) {
+    pub(crate) fn schedule_hidden_frame_callbacks(&mut self) {
         if self.hidden_frame_timer_armed {
             return;
         }
@@ -2730,5 +2781,41 @@ mod tests {
         );
         let identical_lower = Rectangle::new((200, 150).into(), (800, 600).into());
         assert!(!rect_fully_occluded(identical_lower, &rounded_front));
+    }
+
+    #[test]
+    fn maximized_opaque_fill_and_viewport_clipping_cull_hidden_csd_windows() {
+        use smithay::utils::{Logical, Rectangle};
+        let view = crate::monitors::Rect { x: 0, y: 0, w: 1920, h: 1080 };
+        let work = Rectangle::<i32, Logical>::new((56, 24).into(), (1864, 1056).into());
+
+        // 1. Maximized Chrome/Electron with 1px HiDPI rounding gap or tiny corner bevels fills frame
+        let slightly_inset = vec![Rectangle::new((56, 24).into(), (1863, 1055).into())];
+        let filled = maybe_fill_maximized_opaque(slightly_inset, work, true);
+        assert_eq!(filled, vec![work]);
+
+        // 2. Semi-transparent terminal reporting empty opaque region is NEVER promoted to opaque
+        assert!(maybe_fill_maximized_opaque(Vec::new(), work, true).is_empty());
+
+        // 3. A window with a >2% transparent header (e.g. 60px glass bar = 5.7%) is NOT promoted
+        let glass_header = vec![Rectangle::new((56, 84).into(), (1864, 996).into())];
+        let kept = maybe_fill_maximized_opaque(glass_header.clone(), work, true);
+        assert_eq!(kept, glass_header);
+
+        // 4. A floating window sticking partially off-screen is still occluded if its visible
+        //    on-screen portion is covered by the opaque front window.
+        let mut lower = ManagedWindow::new_builtin(10, BuiltinWindowKind::AboutFeather, 1700, 100);
+        lower.width = 500;
+        lower.height = 400;
+        lower.ssd = false;
+        lower.client_shadow = true; // no server shadow
+        assert!(window_occluded_by(
+            &lower,
+            crate::animation::Visual::default(),
+            view,
+            true,
+            false,
+            &[work],
+        ));
     }
 }

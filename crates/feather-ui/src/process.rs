@@ -69,11 +69,13 @@ impl Drop for ReapingHold {
 /// screen locked. A new session also keeps a hangup of that terminal away from them.
 pub fn new_session(cmd: &mut std::process::Command) -> &mut std::process::Command {
     use std::os::unix::process::CommandExt;
-    // SAFETY: setsid is async-signal-safe; it fails only for a group leader, which a freshly
-    // forked child is not, and then the child simply keeps the old session
+    // SAFETY: setsid and setpriority are direct syscalls (async-signal-safe); setsid fails only
+    // for a group leader, which a freshly forked child is not, and setpriority(..., 0) resets
+    // any elevated compositor nice level (rtkit) back to normal for launched apps.
     unsafe {
         cmd.pre_exec(|| {
             libc::setsid();
+            libc::setpriority(libc::PRIO_PROCESS, 0, 0);
             Ok(())
         })
     }

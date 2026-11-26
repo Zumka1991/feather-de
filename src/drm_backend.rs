@@ -19,7 +19,7 @@ use smithay::{
             output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements},
             DrmDevice, DrmDeviceFd, DrmEvent, DrmNode, NodeType,
         },
-        egl::{EGLContext, EGLDisplay},
+        egl::{context::ContextPriority, EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             damage::OutputDamageTracker,
@@ -294,6 +294,24 @@ fn pick_gpu(seat: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
         .or_else(|| all_gpus(seat).ok().and_then(|g| g.into_iter().next()))
         .ok_or_else(|| "видеокарта не найдена".into())
 }
+fn create_high_priority_egl_context(
+    egl: &EGLDisplay,
+    label: &str,
+) -> Result<EGLContext, smithay::backend::egl::Error> {
+    match EGLContext::new_with_priority(egl, ContextPriority::High) {
+        Ok(ctx) => {
+            tracing::info!("DRM ({label}): high-priority EGL context initialized");
+            Ok(ctx)
+        }
+        Err(err) => {
+            tracing::warn!(
+                "DRM ({label}): high-priority EGL context unavailable ({err}), falling back to default"
+            );
+            EGLContext::new(egl)
+        }
+    }
+}
+
 fn driver_name(fd: &DrmDeviceFd) -> String {
     DrmCoreDevice::get_driver(fd)
         .ok()
@@ -911,7 +929,7 @@ impl DrmBackend {
 
         let sec_renderer = (|| -> Result<GlesRenderer, Box<dyn std::error::Error>> {
             let egl = unsafe { EGLDisplay::new(gbm.clone())? };
-            let context = EGLContext::new(&egl)?;
+            let context = create_high_priority_egl_context(&egl, &driver)?;
             let renderer = unsafe { GlesRenderer::new(context)? };
             Ok(renderer)
         })();
@@ -1227,7 +1245,7 @@ pub fn init(
     let gbm = GbmDevice::new(fd.clone())?;
     let primary_gbm = gbm.clone();
     let egl = unsafe { EGLDisplay::new(gbm.clone())? };
-    let context = EGLContext::new(&egl)?;
+    let context = create_high_priority_egl_context(&egl, &driver)?;
     let renderer = unsafe { GlesRenderer::new(context)? };
     let node = DrmNode::from_file(&fd).ok();
     let device = node.map(|n| n.dev_id() as u64).unwrap_or(0);

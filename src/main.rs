@@ -455,6 +455,7 @@ impl FeatherCompositor {
         self.sync_appmenu_focus();
         self.api_sync();
         self.foreign_sync();
+        self.sync_immediate_suspended_states();
         self.sync_game_mode();
     }
 
@@ -723,20 +724,90 @@ impl FeatherCompositor {
         )
     }
 
+    /// Immediately wakes newly focused/visible windows from `xdg_toplevel::State::Suspended`,
+    /// and suspends all windows immediately under screen lock/blank. Suspending normal
+    /// minimized/off-space/occluded windows is left to [`Self::sync_window_visibility_states`]
+    /// after `animations.advance()` + scene composition so minimize animations never bounce
+    /// `Suspended` on and off.
+    pub fn sync_immediate_suspended_states(&mut self) {
+        let locked_or_blanked = self.lock.active || self.power.blanked;
+        let mission = self.mission_open();
+        let states: Vec<Option<bool>> = self
+            .windows
+            .iter()
+            .map(|w| {
+                if !w.mapped || w.larvis {
+                    return None;
+                }
+                if locked_or_blanked {
+                    Some(true)
+                } else if w.activated || mission || (!w.minimized && !w.off_space && self.animations.draws_window(w)) {
+                    Some(false)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (w, want) in self.windows.iter_mut().zip(states) {
+            if let Some(suspended) = want {
+                w.set_suspended(suspended);
+            }
+        }
+    }
+
+    /// Synchronizes `xdg_toplevel::State::Suspended` and Game Mode / App Nap with the actual
+    /// rendered `shown_windows` set (which includes opaque occlusion culling).
+    pub fn sync_window_visibility_states(&mut self) {
+        let locked_or_blanked = self.lock.active || self.power.blanked;
+        if self.shown_windows.is_empty() && !locked_or_blanked {
+            return;
+        }
+        let want_states: Vec<Option<bool>> = self
+            .windows
+            .iter()
+            .map(|w| {
+                if !w.mapped || w.larvis {
+                    return None;
+                }
+                let shown = self.window_shown(w);
+                let animating = self.animations.draws_window(w);
+                let want_suspended = locked_or_blanked || (!w.activated && !shown && !animating);
+                Some(want_suspended)
+            })
+            .collect();
+        for (w, want) in self.windows.iter_mut().zip(want_states) {
+            if let Some(suspended) = want {
+                w.set_suspended(suspended);
+            }
+        }
+        self.sync_game_mode();
+    }
+
     pub fn sync_game_mode(&mut self) {
         if self.debug_input_only || self.larvis_desktop {
             return;
         }
         let enabled = crate::game_mode::game_mode_enabled();
+        let has_shown = !self.shown_windows.is_empty();
         let any_game = enabled && self.windows.iter().any(|w| w.mapped && self.is_game_window(w));
+        let any_hidden = enabled
+            && self.windows.iter().any(|w| {
+                w.mapped
+                    && !w.larvis
+                    && !w.is_builtin()
+                    && !self.auxiliary_game_window(w)
+                    && !(w.activated && w.is_visible())
+                    && (w.minimized || w.off_space || (has_shown && !self.window_shown(w)))
+            });
         let mut samples = Vec::new();
-        if any_game {
+        if any_game || any_hidden {
             for w in &self.windows {
                 if !w.mapped || w.larvis || w.is_builtin() || self.auxiliary_game_window(w) {
                     continue;
                 }
                 let xwayland = w.wl_surface().is_some_and(crate::xwayland::is_xwayland_surface);
                 let wl_client_pid = w.wl_surface().and_then(crate::handlers::surface_client_pid);
+                let shown = !w.minimized && !w.off_space && (!has_shown || self.window_shown(w));
                 samples.push(crate::game_mode::WindowSample {
                     id: w.id,
                     wl_client_pid,
@@ -744,6 +815,7 @@ impl FeatherCompositor {
                     fullscreen: w.fullscreen,
                     minimized: w.minimized,
                     visible: w.is_visible(),
+                    shown,
                     focused: w.activated && w.is_visible(),
                     is_game: self.is_game_window(w),
                     app_id: w.app_id.clone(),
@@ -3150,6 +3222,9 @@ pub fn run_compositor() -> Result<(), Box<dyn std::error::Error>> {
         spawn_session_services(&socket_name, is_standalone);
     }
     state.own_session = is_standalone || use_drm;
+    if state.own_session && !state.debug_input_only && !larvis_desktop {
+        crate::game_mode::boost_compositor_priority();
+    }
     state.shell.topbar_hidden = larvis_desktop;
     crate::gtk_theme::set_enabled(state.gtk_theme);
     if state.own_session && state.gtk_theme {

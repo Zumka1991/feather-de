@@ -9,6 +9,13 @@ notes, is kept in Russian in [CHANGELOG.md](CHANGELOG.md).
 Installed systems get every release through `sudo apt update && sudo apt upgrade` (Ubuntu) or
 `sudo pacman -Syu` (Arch). After an upgrade, log out and log in again.
 
+## 0.26.9 — 2026-11-27
+
+- **Eliminated desktop freezes when a 3D game (e.g. World of Warcraft) is minimized or many apps are open (cgroup v2 `cpu.max` fix, high-priority compositor GPU/CPU, `xdg_toplevel::State::Suspended`, App Nap, and CSD occlusion culling):**
+  - Fixed the unfocused/minimized game cgroup v2 `cpu.max` quota to a valid Linux CFS slice (`"1000 12000"`, ~8.3% of one core — the previous `"750 5000"` was silently rejected with `EINVAL` because Linux requires quota ≥ `1000 µs`), fixed `cpu.idle = 1` / `cpu.weight` transition order, exempted non-fullscreen `Battle.net` / store launchers, and added universal desktop App Nap (`cpu.idle = 1`, `cpu.max = max` for hidden/occluded scopes, preserving active audio and VPN) with soft `memory.low` protection for the focused window.
+  - Enabled `EGL_IMG_context_priority` (`ContextPriority::High`) on DRM GPUs and one-shot `rtkit` high priority (`nice = -11`) for the compositor main thread and Mesa GPU submission threads (`:cs0`, `:gl0`, `:gdrv0`), while resetting `nice = 0` in `pre_exec` for launched applications.
+  - Implemented `xdg_toplevel::State::Suspended` (xdg-shell v6) for minimized, off-space, occluded, and lock/blanked windows (atomically cleared with `Activated` on restore), fixed `view.offset` and viewport clipping in CSD occlusion culling (`window_opaque_rects` / `window_occluded_by`), and stopped commits from hidden windows from waking the compositor render loop. Verified in DRM; no new package dependencies.
+
 ## 0.26.8 — 2026-11-26
 
 - **Fixed newly opened windows and modal dialogs slipping behind their parent (`xdg_foreign` v2, `xdg_wm_dialog_v1`, FileChooser parent linking, and `xdg_activation_v1` focus-steal guard):**
